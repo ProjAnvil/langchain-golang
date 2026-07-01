@@ -1,0 +1,30 @@
+# Binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test / build artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace (local dev only)
+go.work
+go.work.sum
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Profiles CLI binary (when built in place)
+/cmd/langchain-profiles/langchain-profiles
