@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -186,7 +187,26 @@ func (m ChatModel) createMessage(
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.config.Timeout)
 	defer cancel()
-	return postJSON[messagePayload](ctx, m.config, "/messages", req)
+	resp, err := postJSON[messagePayload](ctx, m.config, "/messages", req)
+	if err != nil {
+		return messagePayload{}, err
+	}
+	// Surface misconfigured endpoints / wrong model names loudly instead of
+	// returning a silently-empty message. Some gateways wrap errors in HTTP 200
+	// bodies (e.g. {"code":500,"msg":"404 NOT_FOUND","success":false}) or emit
+	// a standard Anthropic error object ({"type":"error",...}) with status 200;
+	// in both cases the JSON decodes into an all-zero messagePayload.
+	if resp.Type == "error" {
+		return messagePayload{}, fmt.Errorf(
+			"anthropic %s: provider returned an error response (type=%q); check BASE_URL, API key, and model",
+			m.config.Model, resp.Type)
+	}
+	if resp.Type != "message" && len(resp.Content) == 0 && resp.StopReason == "" && resp.Model == "" {
+		return messagePayload{}, fmt.Errorf(
+			"anthropic %s: response parsed but empty — likely wrong BASE_URL or unsupported model (ensure BASE_URL ends with /v1 and the model ID is valid for this endpoint)",
+			m.config.Model)
+	}
+	return resp, nil
 }
 
 func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error) {

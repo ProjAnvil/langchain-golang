@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -147,7 +148,19 @@ func (m ChatModel) createResponse(
 ) (responsePayload, error) {
 	ctx, cancel := context.WithTimeout(ctx, m.config.Timeout)
 	defer cancel()
-	return postJSON[responsePayload](ctx, m.config, "/responses", m.buildRequest(input))
+	resp, err := postJSON[responsePayload](ctx, m.config, "/responses", m.buildRequest(input))
+	if err != nil {
+		return responsePayload{}, err
+	}
+	// Surface misconfigured endpoints / wrong model names loudly. Gateways that
+	// wrap errors in HTTP 200 bodies (e.g. {"code":500,...} or {"error":{...}})
+	// decode into an all-zero responsePayload.
+	if len(resp.Output) == 0 && resp.Model == "" && resp.Usage == (usagePayload{}) {
+		return responsePayload{}, fmt.Errorf(
+			"openai %s: response parsed but empty — likely wrong BASE_URL or unsupported model (ensure BASE_URL ends with /v1 and the model ID is valid for this endpoint)",
+			m.config.Model)
+	}
+	return resp, nil
 }
 
 func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
