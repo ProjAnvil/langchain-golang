@@ -345,6 +345,65 @@ func TestFromFunc_InvokeMarshalsArgs(t *testing.T) {
 	}
 }
 
+func TestFromFunc_UntaggedFieldUsesGoName(t *testing.T) {
+	// A field with no json tag and one with an options-only tag
+	// (`json:",omitempty"`) must fall back to the Go field name, mirroring
+	// encoding/json. Without the fallback both would be keyed under "" and
+	// produce a broken schema (a single property named "").
+	type mixedArgs struct {
+		Query    string `json:"query"`
+		Untagged string
+		OptsOnly string `json:",omitempty"`
+	}
+	tool, err := FromFunc("mixed", "mixed tags", func(ctx context.Context, a mixedArgs) (Result, error) {
+		return Result{Content: a.Query + ":" + a.Untagged + ":" + a.OptsOnly}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	s := tool.ArgsSchema()
+	props, ok := s["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties not map[string]any: %#v", s["properties"])
+	}
+	// Each Go field name must be present as its own property key; the empty
+	// key (the pre-fix bug) must NOT exist.
+	if _, ok := props[""]; ok {
+		t.Errorf("found empty-string property key (broken schema): %v", props)
+	}
+	for _, key := range []string{"query", "Untagged", "OptsOnly"} {
+		prop, ok := props[key]
+		if !ok {
+			t.Errorf("expected property %q (Go field-name fallback), got %v", key, props)
+			continue
+		}
+		if p, ok := prop.(schema.Schema); !ok || p["type"] != "string" {
+			t.Errorf("property %q = %#v, want type=string", key, prop)
+		}
+	}
+	// Untagged is non-pointer, non-omitempty → required; OptsOnly (omitempty)
+	// → optional. Query is required.
+	required, _ := s["required"].([]string)
+	if !containsString(required, "Untagged") {
+		t.Errorf("required = %v, want Untagged included", required)
+	}
+	if containsString(required, "OptsOnly") {
+		t.Errorf("OptsOnly (omitempty) should not be required, got %v", required)
+	}
+	// Round-trip: invoking with the Go field names must populate the fields.
+	res, err := tool.Invoke(context.Background(), map[string]any{
+		"query":    "q",
+		"Untagged": "u",
+		"OptsOnly": "o",
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Content != "q:u:o" {
+		t.Errorf("content = %q, want q:u:o", res.Content)
+	}
+}
+
 // containsString reports whether s contains target. Keeps the test file
 // dependency-free.
 func containsString(s []string, target string) bool {

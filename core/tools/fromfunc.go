@@ -46,6 +46,17 @@ const maxStructDepth = 3
 // arrays of supported types, map[string]V, and nested structs (up to
 // maxStructDepth levels deep). Non-pointer, non-omitempty fields are marked
 // required, mirroring Python's default-required behaviour.
+//
+// Known limitations (these are reflected as-is and will NOT round-trip
+// through encoding/json; avoid or wrap them):
+//   - []byte fields: the schema reflects them as array-of-integer (per
+//     uint8), but encoding/json base64-encodes []byte, so the invoker's
+//     JSON round-trip will not populate them. Treat []byte fields as
+//     unsupported for now.
+//   - Embedded (anonymous) struct fields are not flattened (unlike
+//     encoding/json); use explicit top-level fields instead.
+//   - time.Time fields produce an empty object schema (only unexported
+//     fields reflect); avoid or wrap as a string.
 func FromFunc(name, description string, fn any) (Func, error) {
 	if name == "" {
 		return Func{}, fmt.Errorf("tool name is required")
@@ -207,6 +218,12 @@ func reflectStructSchema(t reflect.Type, depth int) (schema.Schema, error) {
 		name, omitempty, skip := parseJSONTag(field.Tag.Get("json"))
 		if skip {
 			continue
+		}
+		// parseJSONTag returns "" for a missing or options-only tag
+		// (e.g. `json:",omitempty"`); fall back to the Go field name so the
+		// property is keyed correctly and matches encoding/json's marshalling.
+		if name == "" {
+			name = field.Name
 		}
 		fieldSchema, err := reflectSchema(field.Type, depth+1)
 		if err != nil {
