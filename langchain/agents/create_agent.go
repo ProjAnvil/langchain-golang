@@ -188,11 +188,21 @@ type AgentOptions struct {
 	// `create_agent(store=...)`. When non-nil, it is injected into every
 	// ToolCallRequest.Store (see middleware.ToolCallRequest).
 	Store stores.BaseStore[any]
-	// Cache caches model responses, mirroring Python's `create_agent(cache=...)`.
-	// When non-nil, the model node consults it before the model-call middleware
-	// chain (a hit short-circuits the chain, so WrapModelCall middleware is not
-	// invoked for a cached call) and writes misses back. Keyed by
-	// (promptString, llmString); see cacheKey in create_agent.go.
+	// Cache caches model responses, mirroring Python's `create_agent(cache=...)`
+	// parameter (but with a deliberate behavioral divergence — see
+	// WithAgentCache). When non-nil, the model node consults it before the
+	// model-call middleware chain: a hit short-circuits the chain, so
+	// WrapModelCall middleware is NOT invoked for a cached call. This is an
+	// intentional divergence from Python, where BaseCache sits inside the
+	// chat-model layer and wrap_model_call middleware DOES observe
+	// cache-served calls; skipping the whole chain here means
+	// summarization/PII/retry middleware does not re-run on a cached answer,
+	// which is the intended behavior. Misses are written back. Only terminal
+	// text responses are cached; tool-call responses are skipped (a cached
+	// tool call would be rebuilt lossily as text). The cache is scoped to the
+	// non-streaming Invoke path; StreamEvents bypasses it entirely so
+	// model_delta/model_end events always fire. Keyed by (promptString,
+	// llmString); see cacheKey in create_agent.go.
 	Cache caches.Cache
 }
 
@@ -273,14 +283,28 @@ func WithAgentStore(store stores.BaseStore[any]) AgentOption {
 }
 
 // WithAgentCache installs a model-response cache, mirroring Python's
-// `create_agent(cache=...)`. When non-nil, the model node looks up the cache
+// `create_agent(cache=...)` parameter (but with a deliberate behavioral
+// divergence — see below). When non-nil, the model node looks up the cache
 // before entering the model-call middleware chain: a hit returns the cached
-// response without invoking the model (or any WrapModelCall middleware), and a
-// miss invokes the model as usual then writes the result back. The cache key
-// is (promptString, llmString) as derived by cacheKey (the rendered,
-// role-tagged message text, and the model type plus a stable hash of the bound
-// tools and model settings). Cache is scoped to the non-streaming Invoke path
-// (invokeModel); the streaming path is not cache-aware.
+// response without invoking the model OR any WrapModelCall middleware, and a
+// miss invokes the model as usual then writes the result back.
+//
+// Divergence from Python: in Python, BaseCache sits inside the chat-model
+// layer, so wrap_model_call middleware DOES observe cache-served calls. The
+// Go port intentionally short-circuits the whole model call (including
+// WrapModelCall middleware) on a cache hit, so summarization/PII/retry
+// middleware does not re-run on a cached answer. This is a beneficial
+// divergence, not an attempt to match Python's semantics.
+//
+// Scope: only terminal text responses are cached — tool-call responses are
+// skipped, since messages.Text would drop ToolCalls/ToolCallID and a cached
+// tool call would be rebuilt lossily as text on lookup. The cache is also
+// scoped to the non-streaming Invoke path; StreamEvents bypasses it entirely
+// so model_delta/model_end events always fire (a cache hit would otherwise
+// short-circuit the handler and emit no events). The cache key is
+// (promptString, llmString) as derived by cacheKey (the rendered, role-tagged
+// message text, and the model type plus a stable hash of the bound tools and
+// model settings).
 func WithAgentCache(cache caches.Cache) AgentOption {
 	return func(o *AgentOptions) { o.Cache = cache }
 }
@@ -826,15 +850,28 @@ func buildModelNode(
 			}
 		}
 
-		// Cache lookup happens before the model-call middleware chain so that a
-		// hit short-circuits both model.Invoke and any WrapModelCall middleware
-		// (mirroring Python's create_agent(cache=...) semantics where a cached
-		// response never reaches the model). On a miss the chain runs as usual
-		// and the fresh response is written back below. cacheKey derives
-		// (promptString, llmString) per langchain_core's BaseCache contract.
+		// The cache is scoped to the non-streaming Invoke path: when a stream
+		// sink is active, the streaming path (invokeModelStreaming) owns this
+		// call and must emit its own model_delta/model_end events — a cache hit
+		// here would short-circuit the handler and the consumer would see an
+		// abrupt, event-less completion. We also skip writing tool-call
+		// responses to the cache: messages.Text drops a message's
+		// ToolCalls/ToolCallID, so a cached tool call would be rebuilt as a
+		// text-only AI message on lookup, breaking a tool-calling agent on a
+		// second identical Invoke (the agent would get plain text instead of
+		// routing through the tool). Only terminal text responses are cached.
+		//
+		// On a cache hit the entire model call (including WrapModelCall
+		// middleware) is skipped. This is a deliberate divergence from Python:
+		// there BaseCache sits inside the chat-model layer and wrap_model_call
+		// middleware DOES observe cache-served calls. Skipping the whole chain
+		// here means summarization/PII/retry middleware does not re-run on a
+		// cached answer, which is the intended behavior. See WithAgentCache's
+		// doc comment for the full rationale.
 		var resp middleware.ModelResponse
 		cacheHit := false
-		if cache != nil {
+		cacheEnabled := cache != nil && sinkFromContext(ctx) == nil
+		if cacheEnabled {
 			promptString, llmString := cacheKey(req)
 			if gens, ok, lerr := cache.Lookup(ctx, promptString, llmString); lerr == nil && ok && len(gens) > 0 {
 				cached := make([]messages.Message, 0, len(gens))
@@ -858,8 +895,12 @@ func buildModelNode(
 			// structured-output detection / AfterModel hooks run, so the cached
 			// value is the raw model output (not post-hook additions). Errors
 			// from Update are non-fatal (cache is best-effort); logging them
-			// would be noisy, so they are silently ignored.
-			if cache != nil && len(resp.Result) > 0 {
+			// would be noisy, so they are silently ignored. A response that
+			// carries tool calls is never written (see the cacheEnabled note
+			// above): only terminal text responses are cacheable. The streaming
+			// path is also skipped (cacheEnabled is false when a sink is
+			// active) so streamed runs neither read from nor pollute the cache.
+			if cacheEnabled && len(resp.Result) > 0 && !anyResultHasToolCalls(resp.Result) {
 				promptString, llmString := cacheKey(req)
 				generations := make([]caches.Generation, 0, len(resp.Result))
 				for _, m := range resp.Result {
@@ -1081,6 +1122,21 @@ func invokeModel(ctx context.Context, req middleware.ModelRequest) (middleware.M
 		return middleware.ModelResponse{}, err
 	}
 	return middleware.ModelResponse{Result: []messages.Message{result}}, nil
+}
+
+// anyResultHasToolCalls reports whether any of msgs carries tool calls (i.e.
+// the model is requesting tool execution rather than producing a terminal text
+// response). Such responses must not be written to the cache: messages.Text
+// drops a message's ToolCalls/ToolCallID, so a cached tool call would be
+// rebuilt as a lossy text-only AI message on lookup, and a second identical
+// Invoke would return plain text instead of routing through the tool.
+func anyResultHasToolCalls(msgs []messages.Message) bool {
+	for _, m := range msgs {
+		if len(m.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // cacheKey derives (promptString, llmString) for a model request, mirroring

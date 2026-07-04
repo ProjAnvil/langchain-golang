@@ -642,11 +642,113 @@ func TestCreateAgent_CacheHitSkipsModel(t *testing.T) {
 	if _, err := agent.Invoke(context.Background(), msgs); err != nil {
 		t.Fatalf("invoke 1: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), msgs); err != nil {
+	out2, err := agent.Invoke(context.Background(), msgs)
+	if err != nil {
 		t.Fatalf("invoke 2: %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("expected model called once (second served from cache), got %d", calls)
+	}
+	// The second Invoke must return the CACHED content ("first"), not the
+	// would-be second response ("second"). This catches a regression where the
+	// cache short-circuits the chain but returns the wrong value.
+	last2 := out2[len(out2)-1]
+	if last2.Role != messages.RoleAI || last2.Content != "first" {
+		t.Fatalf("second Invoke returned %q (role %q), want cached %q",
+			last2.Content, last2.Role, "first")
+	}
+}
+
+// TestCreateAgent_CacheSkipsToolCallResponses verifies that a tool-call
+// response is NOT cached. messages.Text drops a message's ToolCalls, so a
+// cached tool call would be rebuilt as a text-only AI message; a second
+// identical Invoke would then return plain text instead of routing through the
+// tool, breaking a tool-calling agent. The fix: only terminal text responses
+// are written to the cache.
+//
+// With a tool-calling agent whose first model response is a tool call:
+//   - Invoke 1: model called for the tool call (NOT cached), tool runs, model
+//     called again for the final text response (cached). countModelCalls == 2.
+//   - Invoke 2: model called again for the tool call (NOT served from cache),
+//     tool runs, model's second call is a cache hit. countModelCalls == 3.
+//
+// If the bug were present, the tool-call response would be cached as empty
+// text and Invoke 2 would short-circuit to an empty text response without
+// ever re-invoking the model (countModelCalls would stay at 2 and the tool
+// would never run on the second Invoke).
+func TestCreateAgent_CacheSkipsToolCallResponses(t *testing.T) {
+	cache, err := caches.NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("NewInMemoryCache: %v", err)
+	}
+	calls := 0
+	toolCallMsg := messages.Message{
+		Role: messages.RoleAI,
+		ToolCalls: []messages.ToolCall{
+			{ID: "call_1", Name: "echo", Args: map[string]any{"tool_input": "hi"}},
+		},
+	}
+	// Two full loops: each Invoke consumes one tool-call response + one final
+	// text response. The second pair guards against a half-fix that only
+	// skipped the Lookup (the model still needs responses to serve Invoke 2).
+	model := &sequenceModel{responses: []messages.Message{
+		toolCallMsg,
+		messages.AI("final-1"),
+		toolCallMsg,
+		messages.AI("final-2"),
+	}}
+	echo := newEchoTool(t)
+	agent, err := CreateAgent(model, []coretools.Tool{echo},
+		WithAgentCache(cache),
+		WithAgentMiddleware(countModelCalls{&calls}),
+	)
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	msgs := []messages.Message{messages.Human("hi")}
+
+	out1, err := agent.Invoke(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("invoke 1: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("after invoke 1: expected model chain entered twice (tool call + final), got %d", calls)
+	}
+	// Invoke 1 must have actually run the tool (sanity: this is a real
+	// tool-calling loop, not a degenerate text-only path).
+	var sawToolResult1 bool
+	for _, m := range out1 {
+		if m.Role == messages.RoleTool {
+			sawToolResult1 = true
+		}
+	}
+	if !sawToolResult1 {
+		t.Fatalf("invoke 1 did not produce a tool-result message: %+v", out1)
+	}
+
+	out2, err := agent.Invoke(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("invoke 2: %v", err)
+	}
+	// The tool-call response was NOT cached, so Invoke 2 must re-enter the
+	// model chain for the tool-call step (calls goes 2 -> 3). The final-text
+	// step IS cached (deterministic tool result -> identical cache key), so
+	// calls goes to 3, not 4. calls == 2 indicates the bug (tool call served
+	// from cache as empty text); calls == 4 would indicate the final-text
+	// response was also not cached (a different bug).
+	if calls != 3 {
+		t.Fatalf("after invoke 2: expected model chain entered 3 times (tool call re-invoked, final cached), got %d", calls)
+	}
+	// Invoke 2 must also have run the tool — the lossy-cache bug would
+	// short-circuit Invoke 2 to a plain text response with no tool dispatch.
+	var sawToolResult2 bool
+	for _, m := range out2 {
+		if m.Role == messages.RoleTool {
+			sawToolResult2 = true
+		}
+	}
+	if !sawToolResult2 {
+		t.Fatalf("invoke 2 did not produce a tool-result message (tool call was served from cache as text?): %+v", out2)
 	}
 }
 
@@ -659,4 +761,64 @@ type countModelCalls struct{ n *int }
 func (m countModelCalls) WrapModelCall(ctx context.Context, req middleware.ModelRequest, next middleware.ModelHandler) (middleware.ModelResponse, error) {
 	*m.n++
 	return next(ctx, req)
+}
+
+// TestStreamEvents_CacheDoesNotSuppressEvents verifies that the cache is
+// scoped to the non-streaming Invoke path: a StreamEvents run with a cache
+// configured must still emit the normal model_delta/model_end sequence on
+// every call, including a second identical StreamEvents (which would otherwise
+// be a cache hit, short-circuit the handler, and produce an event-less
+// completion). The fix skips the cache entirely when a stream sink is active.
+//
+// Two coverage angles:
+//  1. A first StreamEvents call (with a cache configured) emits the normal
+//     event sequence — i.e. wiring the cache did not itself suppress events.
+//  2. A second identical StreamEvents call ALSO emits the normal sequence —
+//     i.e. even if the first call had populated the cache, the streaming path
+//     bypasses it. (Without the fix, the second call would be a cache hit and
+//     emit zero model_delta/model_end events.)
+func TestStreamEvents_CacheDoesNotSuppressEvents(t *testing.T) {
+	cache, err := caches.NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("NewInMemoryCache: %v", err)
+	}
+	// Two identical streamed responses so the model can serve both calls.
+	model := &streamSequenceModel{
+		responses: []messages.Message{
+			messages.AI("Hi there"),
+			messages.AI("Hi there"),
+		},
+		streamChunks: [][]messages.Message{
+			{messages.AI("Hi"), messages.AI(" there")},
+			{messages.AI("Hi"), messages.AI(" there")},
+		},
+	}
+	agent, err := CreateAgent(model, nil, WithAgentCache(cache))
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	msgs := []messages.Message{messages.Human("hi")}
+
+	runAndAssert := func(label string) {
+		stream, err := agent.StreamEvents(context.Background(), msgs)
+		if err != nil {
+			t.Fatalf("%s: StreamEvents: %v", label, err)
+		}
+		defer stream.Close()
+		events := drainStream(t, stream)
+
+		deltas := countType(events, StreamModelDelta)
+		ends := countType(events, StreamModelEnd)
+		if deltas == 0 {
+			t.Fatalf("%s: expected at least one model_delta event, got none (types=%v) — cache suppressed streaming events",
+				label, eventTypes(events))
+		}
+		if ends != 1 {
+			t.Fatalf("%s: expected exactly one model_end event, got %d (types=%v)",
+				label, ends, eventTypes(events))
+		}
+	}
+
+	runAndAssert("first StreamEvents")
+	runAndAssert("second StreamEvents (identical, would be a cache hit without the streaming guard)")
 }
