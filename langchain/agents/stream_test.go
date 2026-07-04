@@ -753,7 +753,10 @@ func (d deltaSpy) TransformModelStream(_ middleware.DeltaTransform) middleware.D
 // rewrite it — here, redacting a secret end-to-end so it never reaches the
 // consumer. This is the foundation for PII streaming-delta redaction. It also
 // asserts (per the task brief) that the assembled model_end text reflects the
-// same transform, so model_end is consistent with the streamed deltas.
+// same transform, so model_end is consistent with the streamed deltas, AND
+// that no raw surface a consumer can read (notably the content-block-finish
+// event's fully-assembled ev.Delta.Content["text"], which emitModelDelta
+// passes through verbatim) leaks the un-redacted text.
 func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
 	model := language.NewFakeChatModel(language.WithStreamChunks(
 		messages.AI("secret-"),
@@ -774,6 +777,7 @@ func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
 	}
 	defer stream.Close()
 
+	var events []StreamEvent
 	var deltaText string
 	var modelEndText string
 	for {
@@ -781,6 +785,7 @@ func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
 		if err != nil || !ok {
 			break
 		}
+		events = append(events, ev)
 		switch ev.Type {
 		case StreamModelDelta:
 			deltaText += ev.Text
@@ -806,5 +811,77 @@ func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
 	}
 	if got, want := modelEndText, "REDACTED-1234"; got != want {
 		t.Errorf("model_end text = %q, want %q", got, want)
+	}
+	// Leak guard: the legacy-bridge finish() stashes the fully-assembled text
+	// in the content-block-finish event's Content["text"], and emitModelDelta
+	// surfaces that raw event as StreamEvent.Delta. A consumer reading
+	// StreamEvent.Delta.Content["text"] must NOT see the secret.
+	for _, ev := range events {
+		if ev.Type != StreamModelDelta || ev.Delta == nil || ev.Delta.Content == nil {
+			continue
+		}
+		if ev.Delta.Content["type"] != "text" {
+			continue
+		}
+		text, ok := ev.Delta.Content["text"].(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(text, "secret") {
+			t.Errorf("raw Delta.Content[\"text\"] on finish event not redacted: %q", text)
+		}
+	}
+}
+
+// prefixStreamMW is a WrapModelStreamHook that COMPOSES with the inner
+// transform, prepending marker to each delta. Stacking two of these reveals
+// composition order: the outermost middleware's marker ends up leftmost in the
+// emitted text.
+type prefixStreamMW struct {
+	marker string
+}
+
+// TransformModelStream implements middleware.WrapModelStreamHook.
+func (m prefixStreamMW) TransformModelStream(inner middleware.DeltaTransform) middleware.DeltaTransform {
+	return func(s string) string {
+		return m.marker + inner(s)
+	}
+}
+
+// TestStreamEvents_MiddlewareTransformOrder verifies that stacked
+// WrapModelStreamHook middleware compose in WrapModelCall order — mws[0] is
+// outermost at execution, matching how the same middleware list orders under
+// WrapModelCall. With A (marker "A:") first and B (marker "B:") second, input
+// "x" must surface as "A:B:x" (A's marker outside B's). The old forward
+// composition loop produced "B:A:x" (mws[1] outermost); this test fails on
+// that loop and passes on the reversed loop.
+func TestStreamEvents_MiddlewareTransformOrder(t *testing.T) {
+	model := language.NewFakeChatModel(language.WithStreamChunks(
+		messages.AI("x"),
+	))
+	a := prefixStreamMW{marker: "A:"}
+	b := prefixStreamMW{marker: "B:"}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(a, b))
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	defer stream.Close()
+
+	var deltaText string
+	for {
+		ev, ok, err := stream.Next(context.Background())
+		if err != nil || !ok {
+			break
+		}
+		if ev.Type == StreamModelDelta && ev.Text != "" {
+			deltaText += ev.Text
+		}
+	}
+	if got, want := deltaText, "A:B:x"; got != want {
+		t.Errorf("delta text = %q, want %q (mws[0] must be outermost, matching WrapModelCall)", got, want)
 	}
 }

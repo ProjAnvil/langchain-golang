@@ -1280,9 +1280,16 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 	// loop reassigns `transform` but each hook.TransformModelStream received
 	// the prior value as its argument, capturing it by value inside the
 	// returned closure).
+	//
+	// The loop iterates BACKWARD (i := len-1 .. 0) so mws[0] ends up wrapping
+	// all the others — i.e. mws[0] is outermost at execution. This matches
+	// WrapModelCall / WrapToolCall composition (see the model node's
+	// WrapModelCallHook loop above and composeToolCallWrapper), so the same
+	// middleware list orders identically under streaming and non-streaming
+	// model-call wrapping.
 	transform := func(text string) string { return text }
-	for _, mw := range mws {
-		if hook, ok := mw.(middleware.WrapModelStreamHook); ok {
+	for i := len(mws) - 1; i >= 0; i-- {
+		if hook, ok := mws[i].(middleware.WrapModelStreamHook); ok {
 			transform = hook.TransformModelStream(transform)
 		}
 	}
@@ -1301,6 +1308,20 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 		if ev.Delta != nil && ev.Delta["type"] == "text-delta" {
 			if text, ok := ev.Delta["text"].(string); ok && text != "" {
 				ev.Delta["text"] = transform(text)
+			}
+		}
+		// The legacy-bridge finish() also emits a content-block-finish event
+		// carrying the fully-assembled text block in ev.Content["text"] (see
+		// streamChunkBridge.finish). emitModelDelta passes the raw event
+		// through as StreamEvent.Delta, so without redacting it here a consumer
+		// reading StreamEvent.Delta.Content["text"] would see un-redacted text
+		// — a leak for the PII use case (Task 3.2). The transform is idempotent
+		// for redaction, so re-running it on the assembled text is safe. The
+		// projection already saw the raw event above, so its assembled message
+		// is unaffected (applyDeltaTransform handles model_end separately).
+		if ev.Content != nil && ev.Content["type"] == "text" {
+			if text, ok := ev.Content["text"].(string); ok && text != "" {
+				ev.Content["text"] = transform(text)
 			}
 		}
 		sink.emitModelDelta(ev)
