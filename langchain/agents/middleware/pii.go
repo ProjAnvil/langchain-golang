@@ -256,10 +256,17 @@ const defaultStreamLookback = 128
 // once on the content-block-finish event's fully-assembled block text, and
 // once on the assembled model_end message. A naive append-only buffer would
 // re-process the full text on the latter calls and corrupt it (duplicating
-// the leading fragment). The transformer detects the full-text calls — the
-// incoming text starts with the raw text accumulated from prior deltas — and
-// resets the buffer, redacting the full text fresh. Regex PII redaction is
-// idempotent, so re-redacting the assembled text is safe.
+// the leading fragment). The transformer detects these terminal/full-text
+// calls — the incoming text re-delivers the raw text accumulated from prior
+// deltas (length >= accumulated raw bytes AND prefix matches rawSeen) — and
+// returns the freshly-redacted FULL text with no trailing withhold (so the
+// final message is never truncated). The held tail is PRESERVED across a
+// terminal call rather than discarded: a coincidental-prefix delta that
+// falsely triggers the terminal branch would otherwise lose the buffered tail
+// and leak any PII straddling the reset boundary. In the genuine terminal
+// path (finish/model_end) no further deltas arrive, so the preserved tail is
+// simply unused. Regex PII redaction is idempotent, so re-redacting the
+// assembled text is safe.
 //
 // Mirrors Python's _PIIStreamTransformer (langchain_v1/langchain/agents/
 // middleware/pii.py), scoped to the Go middleware streaming surface.
@@ -292,14 +299,22 @@ type piiStreamState struct {
 	patterns []*regexp.Regexp
 	lookback int
 
+	// mu guards held (and rawSeen) so that a concurrent Flush() from another
+	// goroutine does not race with the delta path. The streaming-agent
+	// pipeline drives the delta path single-threaded and never calls Flush,
+	// so in normal use mu is uncontended; this protects direct/test callers
+	// that MAY run Flush concurrently with a streaming producer.
+	mu sync.Mutex
+
 	// held is the trailing tail of the post-redaction buffer held back from
 	// the previous delta. Concatenating the next delta onto it lets the
-	// regex see straddling patterns as one continuous string.
+	// regex see straddling patterns as one continuous string. Guarded by mu.
 	held string
 	// rawSeen is the concatenation of every raw text input the delta path
 	// has observed so far this call. The full-text model_end / finish call
 	// delivers the entire assembled message; it will start with rawSeen (or
-	// equal it), which is the signature used to detect the reset case.
+	// equal it), which is the signature used to detect the terminal/reset
+	// case. Guarded by mu.
 	rawSeen string
 }
 
@@ -348,10 +363,14 @@ func (x *PIIStreamTransformer) Patterns() []*regexp.Regexp {
 // gets an independent state, so there is no shared mutable state to guard).
 //
 // The returned transform, per call:
-//  1. Multi-call reset detection: if the incoming text starts with the raw
+//  1. Terminal/full-text detection: if the incoming text re-delivers the raw
 //     text accumulated from prior deltas (the signature of a content-block-
 //     finish or model_end full-text call from Task 3.1's invokeModelStreaming
-//     path), reset the buffer and return the freshly-redacted full text.
+//     path — incoming length >= accumulated raw bytes AND text starts with
+//     rawSeen), return the freshly-redacted FULL text with no trailing
+//     withhold. The held tail is PRESERVED (not cleared) so that a false-
+//     positive reset on a coincidental-prefix delta does not lose buffered
+//     content; the next delta still concatenates with the pre-reset tail.
 //  2. Per-delta path: concatenate the held tail with the incoming text,
 //     redact, hold back the trailing `lookback` bytes, and emit the prefix.
 //
@@ -372,12 +391,14 @@ func (x *PIIStreamTransformer) TransformModelStream(next DeltaTransform) DeltaTr
 
 // Flush emits any held-back tail at stream end. Streaming-agent callers do
 // not need to call this — Task 3.1's invokeModelStreaming applies the
-// transform to the full assembled model_end text, which resets the buffer
-// (see TransformModelStream) and emits the cleanly-redacted full text. Flush
-// is provided for direct callers that consume only the per-delta output.
+// transform to the full assembled model_end text, which hits the terminal
+// branch (see TransformModelStream) and emits the cleanly-redacted full text.
+// Flush is provided for direct callers that consume only the per-delta output.
 //
-// Flush is safe to call at most once per stream; calling it twice returns
-// the held tail again only if new deltas have arrived in between.
+// Flush is safe to call concurrently with the delta path: both serialize on
+// the per-call state's mutex. It is safe to call at most once per stream;
+// calling it twice returns the held tail again only if new deltas have
+// arrived in between.
 func (x *PIIStreamTransformer) Flush() string {
 	// Flush operates on the receiver's patterns but needs access to the
 	// state held by the closure returned from TransformModelStream. Because
@@ -397,19 +418,41 @@ func (x *PIIStreamTransformer) Flush() string {
 
 // apply runs the per-call lookback machinery. See TransformModelStream for
 // the contract.
+//
+// apply is guarded by s.mu so a concurrent Flush cannot race with the delta
+// path's held read/write. The streaming pipeline runs the delta path single-
+// threaded, so the lock is uncontended in normal use.
 func (s *piiStreamState) apply(text string) string {
 	if text == "" {
 		return ""
 	}
-	// Multi-call reset: the incoming text is the assembled full text from
-	// a content-block-finish or model_end event. It will start with (or
-	// equal) the raw text accumulated from prior deltas. Reset the buffer
-	// and redact fresh; the idempotence of regex redaction makes this safe.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Terminal detection: the incoming text is the assembled full text from
+	// a content-block-finish or model_end event (Task 3.1's multi-call
+	// pattern). It re-delivers everything the delta path has emitted so far,
+	// so its length is >= the accumulated raw delta bytes and it begins with
+	// rawSeen. On a terminal call the transform returns the freshly-redacted
+	// FULL text with no trailing withhold — otherwise the final message would
+	// be truncated by up to `lookback` bytes (the held tail would never be
+	// released, since the streaming pipeline does not call Flush).
+	//
+	// held is INTENTIONALLY PRESERVED (not cleared) on a terminal. This is
+	// the fix for the false-positive reset bug: if a per-delta call happens
+	// to start with the accumulated rawSeen (rare for token streams, but a
+	// real correctness gap), discarding held would lose the buffered tail and
+	// any PII straddling the reset boundary would leak. Preserving held means
+	// the NEXT delta still concatenates with the pre-reset tail, so straddling
+	// patterns are caught. In the genuine terminal path (finish/model_end) no
+	// further deltas arrive for this call, so the preserved held is simply
+	// unused (harmless).
 	if s.rawSeen != "" && len(text) >= len(s.rawSeen) && strings.HasPrefix(text, s.rawSeen) {
-		s.held = ""
-		// Keep rawSeen as `text` so a subsequent delta (unlikely after
-		// model_end, but possible if more events arrive) extends rather
-		// than re-triggers.
+		// Do NOT clear held — see the preserve-held rationale above.
+		// Keep rawSeen as `text` so a subsequent terminal call (e.g.
+		// model_end after content-block-finish) re-fires rather than being
+		// mistaken for a delta, and so a post-reset delta does not
+		// false-match the old (shorter) prefix.
 		s.rawSeen = text
 		return s.redact(text)
 	}
@@ -431,7 +474,10 @@ func (s *piiStreamState) apply(text string) string {
 }
 
 // flush emits and clears the held tail. After flush, the state is empty.
+// flush is guarded by s.mu so it cannot race with a concurrent apply.
 func (s *piiStreamState) flush() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := s.held
 	s.held = ""
 	return out

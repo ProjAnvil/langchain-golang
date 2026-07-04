@@ -219,3 +219,107 @@ func TestPIIStreamTransformer_LongPatternStraddle(t *testing.T) {
 		t.Errorf("long pattern not redacted: %q", got)
 	}
 }
+
+// TestPIIStreamTransformer_CoincidentalPrefixNoHeldLoss is the covering test
+// for review Fix 1: a per-delta call whose text happens to start with the
+// accumulated rawSeen triggers the terminal branch (the same signature as a
+// real content-block-finish / model_end full-text call). With the OLD design
+// (clear held on reset) the buffered tail is discarded, so a PII pattern
+// straddling the reset boundary (start in the held tail, completion in a
+// later delta) leaks. With the preserve-held fix the tail survives and the
+// next delta still concatenates with it, so the straddling PII is redacted.
+//
+// Sequence: delta "pre SSN" (held buffers "SSN"), then a coincidental delta
+// equal to rawSeen ("pre SSN") that false-triggers terminal, then "-123 post"
+// which completes the PII. The pre-fix output contains the raw "SSN-123"; the
+// fixed output redacts it.
+func TestPIIStreamTransformer_CoincidentalPrefixNoHeldLoss(t *testing.T) {
+	xform := NewPIIStreamTransformer([]string{`SSN-\d+`})
+	tf := xform.TransformModelStream(func(s string) string { return s })
+
+	// Delta 1: "SSN" is buffered into the held tail (no complete match yet).
+	d1 := tf("pre SSN")
+	// Delta 2: coincidental — equals rawSeen, so it false-triggers the
+	// terminal branch. This is NOT a real finish; more deltas follow.
+	d2 := tf("pre SSN")
+	// Delta 3: completes the PII ("-123"). With preserve-held, the buffered
+	// "SSN" concatenates with "-123" and the regex matches; without it, the
+	// "SSN" was discarded and "-123" leaks unredacted.
+	d3 := tf("-123 post")
+	got := d1 + d2 + d3 + xform.Flush()
+
+	if strings.Contains(got, "SSN-123") {
+		t.Errorf("coincidental-prefix reset leaked straddling PII (held lost): %q", got)
+	}
+	// The PII completion must have produced a redaction token via the
+	// preserved held-tail path. (The token is absent in the pre-fix code,
+	// which discards held and redacts "-123 post" as a no-match.)
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] from preserved held-tail redaction, got %q", got)
+	}
+}
+
+// TestPIIStreamTransformer_ModelEndWithoutFinishIsComplete is the covering
+// test for review Fix 2: when the model_end full-text call arrives after
+// deltas WITHOUT an intervening content-block-finish event (or in any
+// multi-call ordering where the terminal text equals the accumulated raw
+// deltas), the transform must return the fully-redacted complete text — not
+// a lookback-truncated tail. A naive delta-path execution on the full text
+// would withhold the trailing `lookback` bytes and truncate the final
+// message. This test asserts the terminal branch fires and the suffix is
+// intact.
+func TestPIIStreamTransformer_ModelEndWithoutFinishIsComplete(t *testing.T) {
+	xform := NewPIIStreamTransformer([]string{`SSN-\d+`})
+	tf := xform.TransformModelStream(func(s string) string { return s })
+
+	// Per-delta path: the raw PII is split across the deltas.
+	deltaOut := tf("alpha SSN") + tf("-99 beta gamma delta")
+	// model_end full text arrives with NO prior content-block-finish. It
+	// equals the concatenation of the deltas, so the terminal branch must
+	// fire and return the cleanly-redacted FULL text.
+	endOut := tf("alpha SSN-99 beta gamma delta")
+
+	// The delta stream must not leak the raw PII.
+	if strings.Contains(deltaOut, "SSN-99") {
+		t.Errorf("delta leaked raw PII: %q", deltaOut)
+	}
+	// The model_end text must be the fully-redacted complete message: no
+	// raw PII, a redaction token present, AND the trailing suffix intact
+	// (not truncated by a withheld lookback tail).
+	if strings.Contains(endOut, "SSN-99") {
+		t.Errorf("model_end leaked raw PII: %q", endOut)
+	}
+	if !strings.Contains(endOut, "[REDACTED]") {
+		t.Errorf("model_end missing redaction token: %q", endOut)
+	}
+	if !strings.HasSuffix(endOut, "delta") {
+		t.Errorf("model_end truncated (lookback tail withheld): %q", endOut)
+	}
+	if c := strings.Count(endOut, "alpha"); c != 1 {
+		t.Errorf("model_end prefix corrupted (count(alpha)=%d): %q", c, endOut)
+	}
+}
+
+// TestPIIStreamTransformer_FlushConcurrentWithDeltas verifies the Flush race
+// fix (review Minor Fix): a concurrent Flush during streaming must not race
+// with the delta path's held read/write. Run under `go test -race` to catch
+// the data race that the pre-fix code (no synchronization on held) exhibited.
+func TestPIIStreamTransformer_FlushConcurrentWithDeltas(t *testing.T) {
+	xform := NewPIIStreamTransformer([]string{`SSN-\d+`})
+	tf := xform.TransformModelStream(func(s string) string { return s })
+
+	deltas := []string{"a SSN", "-1 b", "c SSN", "-2 d", "e SSN", "-3 f"}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			// Hammer Flush from another goroutine while deltas flow.
+			xform.Flush()
+		}
+	}()
+	for _, d := range deltas {
+		tf(d)
+	}
+	xform.Flush()
+	<-done
+}
