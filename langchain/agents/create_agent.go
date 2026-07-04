@@ -59,14 +59,15 @@ import (
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/prompts"
+	"github.com/projanvil/langchain-golang/core/stores"
 	"github.com/projanvil/langchain-golang/core/streamevents"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
-	agenttools "github.com/projanvil/langchain-golang/langchain/tools"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/channels"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/checkpoint"
 	graphpkg "github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
+	agenttools "github.com/projanvil/langchain-golang/langchain/tools"
 )
 
 // Node names used by the compiled graph, mirroring Python's "model"/"tools"
@@ -178,6 +179,10 @@ type AgentOptions struct {
 	// expected fields and reserves room for future validation; it does not
 	// gate WithContextValues/ContextValue.
 	ContextSchema []ContextField
+	// Store is the agent's cross-thread KV store, mirroring Python's
+	// `create_agent(store=...)`. When non-nil, it is injected into every
+	// ToolCallRequest.Store (see middleware.ToolCallRequest).
+	Store stores.BaseStore[any]
 }
 
 // AgentOption applies a functional option to AgentOptions.
@@ -246,6 +251,14 @@ func WithAgentMiddleware(mw ...any) AgentOption {
 // resume support on the compiled graph.
 func WithAgentCheckpointer(saver checkpoint.Saver) AgentOption {
 	return func(o *AgentOptions) { o.Checkpointer = saver }
+}
+
+// WithAgentStore installs a cross-thread KV store, mirroring Python's
+// `create_agent(store=...)`. The store is injected into each tool call via
+// middleware.ToolCallRequest.Store (Go has no Python-style InjectedStore
+// annotation; tools read it explicitly).
+func WithAgentStore(store stores.BaseStore[any]) AgentOption {
+	return func(o *AgentOptions) { o.Store = store }
 }
 
 // WithAgentRecursionLimit overrides the compiled graph's superstep limit.
@@ -394,7 +407,7 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 	}
 
 	if len(toolList) > 0 {
-		toolNode, err := newToolsNode(toolList, options.Middleware, logger)
+		toolNode, err := newToolsNode(toolList, options.Middleware, logger, options.Store)
 		if err != nil {
 			return nil, err
 		}
@@ -1095,11 +1108,17 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 // newToolsNode builds the "tools" graph node backed by a
 // langchain/tools.ToolNode, with any WrapToolCallHook middleware composed
 // into its ToolCallWrapper. logger, when non-nil, emits a debug log per tool
-// dispatch (mirroring Python's debug output around the tools node).
-func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger) (graphpkg.NodeFunc, error) {
-	nodeOpts := make([]agenttools.ToolNodeOption, 0, 1)
+// dispatch (mirroring Python's debug output around the tools node). store,
+// when non-nil, is installed on the ToolNode so each ToolCallRequest.Store is
+// populated for tools/wrappers that need it (mirroring Python's
+// `create_agent(store=...)`).
+func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, store stores.BaseStore[any]) (graphpkg.NodeFunc, error) {
+	nodeOpts := make([]agenttools.ToolNodeOption, 0, 2)
 	if wrap := composeToolCallWrapper(mws, logger); wrap != nil {
 		nodeOpts = append(nodeOpts, agenttools.WithToolCallWrapper(wrap))
+	}
+	if store != nil {
+		nodeOpts = append(nodeOpts, agenttools.WithToolNodeStore(store))
 	}
 	toolNode, err := agenttools.NewToolNode(toolList, nodeOpts...)
 	if err != nil {
@@ -1181,6 +1200,7 @@ func dispatchThroughMiddleware(
 			ToolCall: fromMiddlewareToolCall(r.ToolCall),
 			Tool:     r.Tool,
 			State:    r.State,
+			Store:    r.Store,
 		})
 	}
 	for i := len(hooks) - 1; i >= 0; i-- {
@@ -1194,6 +1214,7 @@ func dispatchThroughMiddleware(
 		ToolCall: toMiddlewareToolCall(req.ToolCall),
 		Tool:     req.Tool,
 		State:    req.State,
+		Store:    req.Store,
 	})
 }
 

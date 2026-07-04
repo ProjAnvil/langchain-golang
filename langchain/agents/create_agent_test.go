@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
+	"github.com/projanvil/langchain-golang/core/stores"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/checkpoint"
@@ -546,4 +548,70 @@ func TestCreateAgentInterruptThroughBeforeModelHook(t *testing.T) {
 	if len(out) == 0 || out[len(out)-1].Content != "done" {
 		t.Fatalf("expected run to complete after resume, got %#v", out)
 	}
+}
+
+// TestCreateAgent_StoreInjectedIntoTool verifies that a store configured via
+// WithAgentStore reaches each tool call as middleware.ToolCallRequest.Store,
+// mirroring Python's `create_agent(store=...)` (Go has no annotation-based
+// InjectedStore, so tools read the store explicitly off the request).
+func TestCreateAgent_StoreInjectedIntoTool(t *testing.T) {
+	store := stores.NewInMemoryStore[any]()
+	captured := make(chan stores.BaseStore[any], 1)
+
+	tool, err := coretools.NewFunc("reader", "reads the store",
+		schema.Object(map[string]schema.Schema{"k": schema.String("key")}, "k"),
+		func(ctx context.Context, in map[string]any) (coretools.Result, error) {
+			return coretools.Result{Content: "ok"}, nil
+		})
+	if err != nil {
+		t.Fatalf("NewFunc: %v", err)
+	}
+
+	// Wrapper that captures the store handed to each tool call.
+	wrap := func(ctx context.Context, req middleware.ToolCallRequest, next middleware.ToolHandler) (messages.Message, error) {
+		if req.Store == nil {
+			t.Errorf("expected Store injected, got nil")
+		}
+		captured <- req.Store
+		return next(ctx, req)
+	}
+
+	model := &sequenceModel{responses: []messages.Message{
+		{
+			Role: messages.RoleAI,
+			ToolCalls: []messages.ToolCall{
+				{ID: "call_1", Name: "reader", Args: map[string]any{"k": "user:1"}},
+			},
+		},
+		messages.AI("done"),
+	}}
+
+	agent, err := CreateAgent(
+		model,
+		[]coretools.Tool{tool},
+		WithAgentStore(store),
+		WithAgentMiddleware(storeCapturingMiddleware{fn: wrap}),
+	)
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("read")}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	select {
+	case s := <-captured:
+		if s == nil {
+			t.Fatalf("captured store was nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("tool never observed a store")
+	}
+}
+
+type storeCapturingMiddleware struct {
+	fn func(context.Context, middleware.ToolCallRequest, middleware.ToolHandler) (messages.Message, error)
+}
+
+func (m storeCapturingMiddleware) WrapToolCall(ctx context.Context, req middleware.ToolCallRequest, next middleware.ToolHandler) (messages.Message, error) {
+	return m.fn(ctx, req, next)
 }

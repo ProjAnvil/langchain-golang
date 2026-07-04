@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/stores"
 	"github.com/projanvil/langchain-golang/core/tools"
 )
 
@@ -59,6 +60,11 @@ type ToolCallRequest struct {
 	Tool     tools.Tool
 	State    map[string]any
 	Runtime  any
+	// Store is the agent's cross-thread KV store (Python's `InjectedStore`),
+	// populated when the agent is configured with WithAgentStore. Tools that
+	// need it read it explicitly (Go has no annotation-based injection). nil
+	// when no store is configured.
+	Store stores.BaseStore[any]
 }
 
 type ToolCallRequestOverride func(*toolCallRequestOverride)
@@ -72,6 +78,8 @@ type toolCallRequestOverride struct {
 	state       map[string]any
 	runtimeSet  bool
 	runtime     any
+	storeSet    bool
+	store       stores.BaseStore[any]
 }
 
 func WithToolCall(toolCall ToolCall) ToolCallRequestOverride {
@@ -102,6 +110,17 @@ func WithToolCallRuntime(runtime any) ToolCallRequestOverride {
 	}
 }
 
+// WithStore installs a cross-thread KV store into the overridden request,
+// mirroring the Store field set by CreateAgent when WithAgentStore is used.
+// Useful for middleware that wants to swap (or clear) the store for the
+// remainder of the tool-call chain.
+func WithStore(store stores.BaseStore[any]) ToolCallRequestOverride {
+	return func(override *toolCallRequestOverride) {
+		override.storeSet = true
+		override.store = store
+	}
+}
+
 func (r ToolCallRequest) Override(opts ...ToolCallRequestOverride) ToolCallRequest {
 	override := toolCallRequestOverride{}
 	for _, opt := range opts {
@@ -122,6 +141,9 @@ func (r ToolCallRequest) Override(opts ...ToolCallRequestOverride) ToolCallReque
 	}
 	if override.runtimeSet {
 		next.Runtime = override.runtime
+	}
+	if override.storeSet {
+		next.Store = override.store
 	}
 	return next
 }

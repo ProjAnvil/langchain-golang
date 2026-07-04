@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/stores"
 )
 
 // ToolCallRequest is passed to a ToolCallWrapper, mirroring Python's
@@ -40,6 +41,11 @@ type ToolCallRequest struct {
 	// State is optional read-only context (e.g. conversation state) threaded
 	// through from the caller of InvokeToolCalls/AppendToolResults.
 	State map[string]any
+	// Store is the agent's cross-thread KV store, populated when the ToolNode
+	// was built via WithToolNodeStore (i.e. the agent was configured with
+	// WithAgentStore). nil when no store is configured. Go has no
+	// annotation-based InjectedStore, so tools read it explicitly.
+	Store stores.BaseStore[any]
 }
 
 // ToolHandler executes a single tool call and returns the resulting message.
@@ -76,6 +82,7 @@ type ToolNode struct {
 	byName           map[string]Tool
 	handleToolErrors HandleToolErrors
 	wrap             ToolCallWrapper
+	store            stores.BaseStore[any]
 }
 
 // ToolNodeOption configures a ToolNode constructed by NewToolNode.
@@ -90,6 +97,14 @@ func WithHandleToolErrors(handler HandleToolErrors) ToolNodeOption {
 // call, mirroring Python's `wrap_tool_call` constructor argument.
 func WithToolCallWrapper(wrap ToolCallWrapper) ToolNodeOption {
 	return func(n *ToolNode) { n.wrap = wrap }
+}
+
+// WithToolNodeStore installs the agent's cross-thread KV store, mirroring
+// Python's `InjectedStore` plumbing (Go has no annotation-based injection, so
+// the store is surfaced explicitly on each ToolCallRequest.Store). When
+// non-nil, the ToolNode populates Store on every request it builds.
+func WithToolNodeStore(store stores.BaseStore[any]) ToolNodeOption {
+	return func(n *ToolNode) { n.store = store }
 }
 
 // NewToolNode builds a ToolNode over toolList. Tool names must be unique and
@@ -214,6 +229,9 @@ func (n *ToolNode) InvokeToolCalls(ctx context.Context, calls []messages.ToolCal
 
 func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map[string]any) (messages.Message, error) {
 	request := ToolCallRequest{ToolCall: call, Tool: n.byName[call.Name], State: state}
+	if n.store != nil {
+		request.Store = n.store
+	}
 	if n.wrap != nil {
 		return n.wrap(ctx, request, n.execute)
 	}
