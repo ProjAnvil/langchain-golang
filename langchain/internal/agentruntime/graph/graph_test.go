@@ -330,3 +330,183 @@ func TestInterruptOutsideGraphPanics(t *testing.T) {
 	}()
 	Interrupt(context.Background(), "value")
 }
+
+// TestCompiledGraph_InterruptBefore verifies that interrupt_before pauses the
+// graph before the named node runs, that prior nodes' updates are visible in
+// the paused Result, and that resuming (with Resume=nil, mirroring Python's
+// `invoke(None, config)`) runs the paused node to completion. The resume must
+// not re-run already-completed nodes (see TestInterruptBefore_ResumeDoesNotRerun).
+func TestCompiledGraph_InterruptBefore(t *testing.T) {
+	g := NewStateGraph()
+	aRuns := 0
+	bRuns := 0
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		aRuns++
+		return map[string]any{"a_ran": true}, nil
+	})
+	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+		bRuns++
+		return map[string]any{"b_ran": true}, nil
+	})
+	g.AddEdge(agentruntime.START, "a")
+	g.AddEdge("a", "b")
+	g.AddEdge("b", agentruntime.END)
+	saver := checkpoint.NewMemorySaver()
+	compiled, err := g.Compile(WithCheckpointer(saver), WithInterruptBefore("b"))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	res, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(res.Interrupts) == 0 {
+		t.Fatalf("expected run to pause before b")
+	}
+	if !res.Values["a_ran"].(bool) {
+		t.Fatalf("a should have run")
+	}
+	if _, ran := res.Values["b_ran"]; ran {
+		t.Fatalf("b should NOT have run yet")
+	}
+	if aRuns != 1 || bRuns != 0 {
+		t.Fatalf("expected a=1 b=0 invocations, got a=%d b=%d", aRuns, bRuns)
+	}
+
+	// Resume.
+	res2, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1", Resume: nil})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !res2.Values["b_ran"].(bool) {
+		t.Fatalf("b should run after resume")
+	}
+	// Critical correctness check: a must NOT re-run on resume.
+	if aRuns != 1 || bRuns != 1 {
+		t.Fatalf("after resume expected a=1 b=1 invocations, got a=%d b=%d", aRuns, bRuns)
+	}
+	if len(res2.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", res2.Interrupts)
+	}
+	// Checkpoint should be cleared after a completed run.
+	if _, ok := saver.Get("t1"); ok {
+		t.Fatal("expected checkpoint to be cleared after run completes")
+	}
+}
+
+// TestCompiledGraph_InterruptAfter verifies that interrupt_after pauses after
+// the named node runs (with its update visible) but before its successor, and
+// that resuming runs the successor without re-running the paused-from node.
+func TestCompiledGraph_InterruptAfter(t *testing.T) {
+	g := NewStateGraph()
+	aRuns := 0
+	bRuns := 0
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		aRuns++
+		return map[string]any{"a_ran": true}, nil
+	})
+	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+		bRuns++
+		return map[string]any{"b_ran": true}, nil
+	})
+	g.AddEdge(agentruntime.START, "a")
+	g.AddEdge("a", "b")
+	g.AddEdge("b", agentruntime.END)
+	saver := checkpoint.NewMemorySaver()
+	compiled, err := g.Compile(WithCheckpointer(saver), WithInterruptAfter("a"))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	res, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(res.Interrupts) == 0 {
+		t.Fatalf("expected run to pause after a")
+	}
+	if !res.Values["a_ran"].(bool) {
+		t.Fatalf("a should have run")
+	}
+	if _, ran := res.Values["b_ran"]; ran {
+		t.Fatalf("b should NOT have run yet")
+	}
+	if aRuns != 1 || bRuns != 0 {
+		t.Fatalf("expected a=1 b=0 invocations, got a=%d b=%d", aRuns, bRuns)
+	}
+
+	// Resume.
+	res2, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1", Resume: nil})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !res2.Values["b_ran"].(bool) {
+		t.Fatalf("b should run after resume")
+	}
+	// Critical correctness check: a must NOT re-run on resume.
+	if aRuns != 1 || bRuns != 1 {
+		t.Fatalf("after resume expected a=1 b=1 invocations, got a=%d b=%d", aRuns, bRuns)
+	}
+	if len(res2.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", res2.Interrupts)
+	}
+}
+
+// TestCompiledGraph_InterruptBeforeAndAfter verifies both options can be set
+// simultaneously and pause at each configured boundary, with each resume
+// advancing exactly one boundary.
+func TestCompiledGraph_InterruptBeforeAndAfter(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"a_ran": true}, nil
+	})
+	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"b_ran": true}, nil
+	})
+	g.AddEdge(agentruntime.START, "a")
+	g.AddEdge("a", "b")
+	g.AddEdge("b", agentruntime.END)
+	saver := checkpoint.NewMemorySaver()
+	compiled, err := g.Compile(WithCheckpointer(saver),
+		WithInterruptBefore("b"),
+		WithInterruptAfter("a"),
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	// First run: a runs, then interrupt_after("a") fires before b is scheduled.
+	res, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(res.Interrupts) == 0 {
+		t.Fatalf("expected pause after a (interrupt_after fires first since a runs before b)")
+	}
+	if !res.Values["a_ran"].(bool) {
+		t.Fatalf("a should have run")
+	}
+
+	// Resume: advances past interrupt_after("a"), then interrupt_before("b") fires.
+	res2, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1", Resume: nil})
+	if err != nil {
+		t.Fatalf("Resume 1: %v", err)
+	}
+	if len(res2.Interrupts) == 0 {
+		t.Fatalf("expected pause before b after first resume")
+	}
+	if _, ran := res2.Values["b_ran"]; ran {
+		t.Fatalf("b should NOT have run yet (interrupt_before)")
+	}
+
+	// Resume again: b runs to completion.
+	res3, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1", Resume: nil})
+	if err != nil {
+		t.Fatalf("Resume 2: %v", err)
+	}
+	if !res3.Values["b_ran"].(bool) {
+		t.Fatalf("b should run after second resume")
+	}
+	if len(res3.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after final resume, got %+v", res3.Interrupts)
+	}
+}

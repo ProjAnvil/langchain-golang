@@ -158,6 +158,16 @@ type AgentOptions struct {
 	Middleware            []any
 	Checkpointer          checkpoint.Saver
 	RecursionLimit        int
+	// InterruptBefore / InterruptAfter name graph nodes the compiled graph
+	// should pause before/after running, mirroring Python's
+	// `create_agent(interrupt_before=..., interrupt_after=...)`. The relevant
+	// node names are ModelNodeName ("model"), ToolsNodeName ("tools"),
+	// BeforeAgentNodeName, and AfterAgentNodeName. A checkpointer
+	// (WithAgentCheckpointer) is required for the pauses to be resumable; the
+	// run is resumed via Agent.Graph.InvokeWithOptions with the same ThreadID
+	// and a nil Resume (mirroring Python's `invoke(None, config)`).
+	InterruptBefore []string
+	InterruptAfter  []string
 	// Name is the agent's run name / tracing tag, mirroring Python's
 	// `create_agent(name=...)` (the `lc_agent_name` equivalent). It is stored
 	// on the Agent (see Agent.Name) and surfaced through the run-name context
@@ -314,6 +324,24 @@ func WithAgentRecursionLimit(limit int) AgentOption {
 	return func(o *AgentOptions) { o.RecursionLimit = limit }
 }
 
+// WithAgentInterruptBefore registers graph nodes the compiled agent pauses
+// before running, mirroring Python's `create_agent(interrupt_before=[...])`.
+// nodes are typically ModelNodeName ("model"), ToolsNodeName ("tools"),
+// BeforeAgentNodeName, or AfterAgentNodeName. Requires a checkpointer
+// (WithAgentCheckpointer) for the pauses to be resumable; resume via
+// Agent.Graph.InvokeWithOptions with the same ThreadID and a nil Resume.
+func WithAgentInterruptBefore(nodes ...string) AgentOption {
+	return func(o *AgentOptions) { o.InterruptBefore = append(o.InterruptBefore, nodes...) }
+}
+
+// WithAgentInterruptAfter registers graph nodes the compiled agent pauses
+// after running (and after their state update is merged), mirroring Python's
+// `create_agent(interrupt_after=[...])`. See WithAgentInterruptBefore for the
+// node names and resume semantics.
+func WithAgentInterruptAfter(nodes ...string) AgentOption {
+	return func(o *AgentOptions) { o.InterruptAfter = append(o.InterruptAfter, nodes...) }
+}
+
 // WithAgentResponseFormat configures structured output, mirroring Python's
 // `create_agent(response_format=...)`. format must be a ToolStrategy,
 // *ToolStrategy, ProviderStrategy, or *ProviderStrategy; CreateAgent returns
@@ -466,12 +494,18 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		g.AddEdge(ModelNodeName, finalNode)
 	}
 
-	compileOpts := make([]graphpkg.CompileOption, 0, 2)
+	compileOpts := make([]graphpkg.CompileOption, 0, 4)
 	if options.Checkpointer != nil {
 		compileOpts = append(compileOpts, graphpkg.WithCheckpointer(options.Checkpointer))
 	}
 	if options.RecursionLimit > 0 {
 		compileOpts = append(compileOpts, graphpkg.WithRecursionLimit(options.RecursionLimit))
+	}
+	if len(options.InterruptBefore) > 0 {
+		compileOpts = append(compileOpts, graphpkg.WithInterruptBefore(options.InterruptBefore...))
+	}
+	if len(options.InterruptAfter) > 0 {
+		compileOpts = append(compileOpts, graphpkg.WithInterruptAfter(options.InterruptAfter...))
 	}
 
 	compiled, err := g.Compile(compileOpts...)

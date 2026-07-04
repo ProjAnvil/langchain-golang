@@ -551,6 +551,85 @@ func TestCreateAgentInterruptThroughBeforeModelHook(t *testing.T) {
 	}
 }
 
+// TestCreateAgent_InterruptBeforeNode verifies that
+// WithAgentInterruptBefore(ToolsNodeName) pauses the agent run before the
+// tools node runs, that the model has run once (producing a tool call) at the
+// pause, and that resuming via Agent.Graph.InvokeWithOptions with the same
+// ThreadID and a nil Resume runs the tools node and the second model call to
+// completion. The model must NOT be re-invoked for the already-completed first
+// call on resume (the critical correctness property for interrupt_before).
+func TestCreateAgent_InterruptBeforeNode(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{
+		{
+			Role: messages.RoleAI,
+			ToolCalls: []messages.ToolCall{
+				{ID: "call_1", Name: "echo", Args: map[string]any{"tool_input": "hi"}},
+			},
+		},
+		messages.AI("done"),
+	}}
+	saver := checkpoint.NewMemorySaver()
+
+	agent, err := CreateAgent(model, []coretools.Tool{newEchoTool(t)},
+		WithAgentCheckpointer(saver),
+		WithAgentInterruptBefore(ToolsNodeName),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	// First invoke: model runs once and requests a tool call; the run pauses
+	// before the tools node dispatches.
+	first, err := agent.Graph.InvokeWithOptions(context.Background(),
+		map[string]any{"messages": []messages.Message{messages.Human("hi")}},
+		graphpkg.Options{ThreadID: "t1"},
+	)
+	if err != nil {
+		t.Fatalf("first invoke: %v", err)
+	}
+	if len(first.Interrupts) != 1 {
+		t.Fatalf("expected one pending interrupt before tools, got %+v", first.Interrupts)
+	}
+	if len(model.invocations) != 1 {
+		t.Fatalf("expected model invoked once at pause, got %d", len(model.invocations))
+	}
+	firstMsgs, _ := first.Values["messages"].([]messages.Message)
+	if len(firstMsgs) != 2 {
+		t.Fatalf("expected human+AI(tool_call) = 2 messages at pause, got %d", len(firstMsgs))
+	}
+	// No tool result message yet (tools node did not run).
+	for _, m := range firstMsgs {
+		if m.Role == messages.RoleTool {
+			t.Fatalf("unexpected tool message before tools node ran: %#v", m)
+		}
+	}
+
+	// Resume: tools node runs, model runs again and produces the final answer.
+	second, err := agent.Graph.InvokeWithOptions(context.Background(), nil,
+		graphpkg.Options{ThreadID: "t1"},
+	)
+	if err != nil {
+		t.Fatalf("resume invoke: %v", err)
+	}
+	if len(second.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
+	}
+	// Critical correctness check: the first model call is NOT re-run on resume.
+	if len(model.invocations) != 2 {
+		t.Fatalf("expected model invoked exactly twice total (once before pause, once after), got %d", len(model.invocations))
+	}
+	secondMsgs, _ := second.Values["messages"].([]messages.Message)
+	if len(secondMsgs) != 4 {
+		t.Fatalf("expected 4 final messages (human, AI(tool_call), tool, AI(done)), got %d", len(secondMsgs))
+	}
+	if secondMsgs[2].Role != messages.RoleTool || secondMsgs[2].Content != "echo:hi" {
+		t.Fatalf("expected tool result 'echo:hi' after resume, got %#v", secondMsgs[2])
+	}
+	if secondMsgs[3].Content != "done" {
+		t.Fatalf("expected final AI 'done', got %#v", secondMsgs[3])
+	}
+}
+
 // TestCreateAgent_StoreInjectedIntoTool verifies that a store configured via
 // WithAgentStore reaches each tool call as middleware.ToolCallRequest.Store,
 // mirroring Python's `create_agent(store=...)` (Go has no annotation-based

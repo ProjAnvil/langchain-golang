@@ -162,8 +162,10 @@ func (g *StateGraph) SetEntryPoint(name string) *StateGraph {
 type CompileOption func(*compileOptions)
 
 type compileOptions struct {
-	checkpointer   checkpoint.Saver
-	recursionLimit int
+	checkpointer    checkpoint.Saver
+	recursionLimit  int
+	interruptBefore map[string]bool
+	interruptAfter  map[string]bool
 }
 
 // WithCheckpointer installs a checkpoint.Saver, enabling Interrupt/Resume
@@ -177,6 +179,51 @@ func WithCheckpointer(saver checkpoint.Saver) CompileOption {
 // infinite loops in a graph's routing.
 func WithRecursionLimit(limit int) CompileOption {
 	return func(o *compileOptions) { o.recursionLimit = limit }
+}
+
+// WithInterruptBefore registers node names that the graph must pause before
+// dispatching, mirroring Python's `interrupt_before=` compile argument. When
+// the exec loop is about to run a superstep containing a registered node, it
+// checkpoints the current state (prior nodes' updates already merged) and
+// returns a paused Result whose Interrupts name the to-run node. The run is
+// resumable via the same Options.Resume / ThreadID path as an in-node
+// `agentruntime.Interrupt` (Options.Resume may be nil — mirroring Python's
+// `invoke(None, config)` — since there is no in-node interrupt to feed a value
+// back to). A checkpointer (WithCheckpointer) is required for the pause to be
+// resumable; without one, the boundary still surfaces as an interrupt Result
+// but is not checkpointed.
+//
+// Limitation: in supersteps with multiple active tasks the checkpoint records
+// only the first paused node, so sibling tasks are not re-scheduled on resume
+// (the executor's Checkpoint model holds a single Next node). This matches the
+// single-active-task shape `create_agent`'s model<->tools loop produces; fanout
+// graphs should avoid combining interrupt_before with multi-successor steps.
+func WithInterruptBefore(nodes ...string) CompileOption {
+	return func(o *compileOptions) {
+		if o.interruptBefore == nil {
+			o.interruptBefore = map[string]bool{}
+		}
+		for _, n := range nodes {
+			o.interruptBefore[n] = true
+		}
+	}
+}
+
+// WithInterruptAfter registers node names that the graph must pause after
+// running (and merging their state update), before dispatching their
+// successors, mirroring Python's `interrupt_after=` compile argument. The
+// checkpoint records the first successor as the resume point. See
+// WithInterruptBefore's doc comment for the resume semantics, the checkpointer
+// requirement, and the multi-active-task limitation.
+func WithInterruptAfter(nodes ...string) CompileOption {
+	return func(o *compileOptions) {
+		if o.interruptAfter == nil {
+			o.interruptAfter = map[string]bool{}
+		}
+		for _, n := range nodes {
+			o.interruptAfter[n] = true
+		}
+	}
 }
 
 const defaultRecursionLimit = 100
@@ -219,26 +266,30 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 	}
 
 	return &CompiledGraph{
-		nodes:          g.nodes,
-		reducers:       g.reducers,
-		edges:          g.edges,
-		conditional:    g.conditional,
-		entry:          g.entry,
-		checkpointer:   options.checkpointer,
-		recursionLimit: options.recursionLimit,
+		nodes:           g.nodes,
+		reducers:        g.reducers,
+		edges:           g.edges,
+		conditional:     g.conditional,
+		entry:           g.entry,
+		checkpointer:    options.checkpointer,
+		recursionLimit:  options.recursionLimit,
+		interruptBefore: options.interruptBefore,
+		interruptAfter:  options.interruptAfter,
 	}, nil
 }
 
 // CompiledGraph is an executable graph, mirroring Python's
 // `CompiledStateGraph`.
 type CompiledGraph struct {
-	nodes          map[string]NodeFunc
-	reducers       map[string]channels.Reducer
-	edges          map[string][]string
-	conditional    map[string]ConditionalEdge
-	entry          string
-	checkpointer   checkpoint.Saver
-	recursionLimit int
+	nodes           map[string]NodeFunc
+	reducers        map[string]channels.Reducer
+	edges           map[string][]string
+	conditional     map[string]ConditionalEdge
+	entry           string
+	checkpointer    checkpoint.Saver
+	recursionLimit  int
+	interruptBefore map[string]bool
+	interruptAfter  map[string]bool
 }
 
 // Options configures a single Invoke call.
@@ -250,6 +301,15 @@ type Options struct {
 	// Resume supplies the value(s) to resume a previously interrupted run
 	// with, mirroring Python's `Command(resume=...)`. When set, input is
 	// ignored and the run continues from the checkpointed state instead.
+	//
+	// Resume may also be left nil to resume a run paused by
+	// interrupt_before/interrupt_after (WithInterruptBefore /
+	// WithInterruptAfter): when a checkpoint already exists for ThreadID and
+	// Resume is nil, the run continues from that checkpoint with a nil resume
+	// value. This mirrors Python's `invoke(None, config)` resume semantic, and
+	// is the intended resume path for boundary interrupts (which have no
+	// in-node Interrupt() call to feed a value back to). An explicit non-nil
+	// Resume is still required to feed a value to a node's in-node Interrupt.
 	Resume any
 }
 
@@ -316,7 +376,18 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	var state map[string]any
 	var tasks []task
 	resumeValues := map[string][]any{}
+	// resumingNode is the single node name carried over from a checkpoint
+	// whose interrupt_before check must be skipped on the first superstep of
+	// a resume, so that resuming an interrupt_before(N) pause actually runs N
+	// instead of immediately re-pausing. It is cleared after the first
+	// superstep so subsequent arrivals at N (e.g. a loop) pause normally.
+	resumingNode := ""
 
+	// Resume trigger: an explicit Options.Resume value always resumes (the
+	// in-node Interrupt path), requiring a checkpointer + checkpoint. A nil
+	// Options.Resume also resumes when a checkpoint already exists for
+	// opts.ThreadID, mirroring Python's `invoke(None, config)` resume semantic
+	// used by interrupt_before/interrupt_after (no value to feed back).
 	if opts.Resume != nil {
 		if g.checkpointer == nil {
 			return Result{}, fmt.Errorf("graph: Options.Resume requires a checkpointer (see WithCheckpointer)")
@@ -331,6 +402,17 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		state = cloneState(cp.Values)
 		tasks = []task{{node: cp.Next}}
 		resumeValues[cp.Next] = resumeValuesFor(cp.PendingInterrupts, opts.Resume)
+		resumingNode = resumeSkipNode(cp)
+	} else if g.checkpointer != nil && opts.ThreadID != "" {
+		if cp, ok := g.checkpointer.Get(opts.ThreadID); ok {
+			state = cloneState(cp.Values)
+			tasks = []task{{node: cp.Next}}
+			resumeValues[cp.Next] = resumeValuesFor(cp.PendingInterrupts, opts.Resume)
+			resumingNode = resumeSkipNode(cp)
+		} else {
+			state = cloneState(input)
+			tasks = []task{{node: g.entry}}
+		}
 	} else {
 		state = cloneState(input)
 		tasks = []task{{node: g.entry}}
@@ -347,6 +429,28 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if len(active) == 0 {
 			break
 		}
+
+		// interrupt_before: if any active task's node is registered, pause
+		// before dispatching the superstep. resumingNode excludes the node
+		// being re-dispatched as part of a resume from a prior
+		// interrupt_before(N) pause (otherwise resuming would immediately
+		// re-pause). The checkpoint stores the to-run node as Next so resume
+		// runs it to completion.
+		if pausedBefore := g.findInterruptBefore(active, resumingNode); pausedBefore != "" {
+			interrupt := agentruntime.Interrupt{
+				Value: fmt.Sprintf("interrupt_before: %s", pausedBefore),
+				ID:    interruptBeforeID + pausedBefore,
+			}
+			if g.checkpointer != nil && opts.ThreadID != "" {
+				g.checkpointer.Put(opts.ThreadID, checkpoint.Checkpoint{
+					Values:            cloneState(state),
+					Next:              pausedBefore,
+					PendingInterrupts: []agentruntime.Interrupt{interrupt},
+				})
+			}
+			return Result{Values: state, Interrupts: []agentruntime.Interrupt{interrupt}}, nil
+		}
+		resumingNode = "" // resume-only skip applies solely to the first superstep
 
 		steps++
 		if steps > g.recursionLimit {
@@ -441,6 +545,32 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			}
 			nextTasks = append(nextTasks, dests...)
 		}
+
+		// interrupt_after: if any node that just ran is registered, pause
+		// before dispatching its successors. The checkpoint stores the first
+		// successor as Next so resume continues from there; the already-merged
+		// state update is preserved in Values (resume does not re-run the
+		// paused-from node). If the successor is END (or there are none), Next
+		// is END and resume is a no-op completion.
+		if pausedAfter := g.findInterruptAfter(active); pausedAfter != "" {
+			nextNode := agentruntime.END
+			if len(nextTasks) > 0 {
+				nextNode = nextTasks[0].node
+			}
+			interrupt := agentruntime.Interrupt{
+				Value: fmt.Sprintf("interrupt_after: %s", pausedAfter),
+				ID:    interruptAfterID + pausedAfter,
+			}
+			if g.checkpointer != nil && opts.ThreadID != "" {
+				g.checkpointer.Put(opts.ThreadID, checkpoint.Checkpoint{
+					Values:            cloneState(state),
+					Next:              nextNode,
+					PendingInterrupts: []agentruntime.Interrupt{interrupt},
+				})
+			}
+			return Result{Values: state, Interrupts: []agentruntime.Interrupt{interrupt}}, nil
+		}
+
 		tasks = nextTasks
 	}
 
@@ -548,6 +678,65 @@ func resumeValuesFor(pending []agentruntime.Interrupt, resume any) []any {
 	values := make([]any, len(pending))
 	values[0] = resume
 	return values
+}
+
+// interruptBeforeID / interruptAfterID prefix the IDs of boundary interrupts
+// so the resume path can recognize a checkpoint produced by interrupt_before
+// (and thus must skip that node's interrupt_before check on the first
+// superstep — see resumingNode) versus interrupt_after or an in-node
+// agentruntime.Interrupt (whose IDs are "<node>-<counter>", never matching
+// these prefixes).
+const (
+	interruptBeforeID = "interrupt-before-"
+	interruptAfterID  = "interrupt-after-"
+)
+
+// findInterruptBefore returns the first active task's node that is registered
+// in the graph's interrupt_before set, skipping skipNode (used to avoid
+// re-pausing on the node being resumed from a prior interrupt_before pause).
+// Returns "" if no active task matches.
+func (g *CompiledGraph) findInterruptBefore(active []task, skipNode string) string {
+	if len(g.interruptBefore) == 0 {
+		return ""
+	}
+	for _, t := range active {
+		if t.node == skipNode {
+			continue
+		}
+		if g.interruptBefore[t.node] {
+			return t.node
+		}
+	}
+	return ""
+}
+
+// findInterruptAfter returns the first active task's node that is registered
+// in the graph's interrupt_after set, or "" if none match.
+func (g *CompiledGraph) findInterruptAfter(active []task) string {
+	if len(g.interruptAfter) == 0 {
+		return ""
+	}
+	for _, t := range active {
+		if g.interruptAfter[t.node] {
+			return t.node
+		}
+	}
+	return ""
+}
+
+// resumeSkipNode returns the node whose interrupt_before check should be
+// skipped on the first superstep of a resume from cp, or "" if not applicable.
+// This is non-empty only for checkpoints produced by interrupt_before(N)
+// (whose single pending interrupt ID is interruptBeforeID+N and whose Next is
+// N); interrupt_after and in-node interrupts return "".
+func resumeSkipNode(cp checkpoint.Checkpoint) string {
+	if len(cp.PendingInterrupts) != 1 {
+		return ""
+	}
+	if cp.PendingInterrupts[0].ID != interruptBeforeID+cp.Next {
+		return ""
+	}
+	return cp.Next
 }
 
 func normalizeNodeResult(result any) (map[string]any, *agentruntime.Command, error) {
