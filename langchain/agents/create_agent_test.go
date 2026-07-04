@@ -383,6 +383,112 @@ func TestCreateAgentRejectsUnsupportedResponseFormat(t *testing.T) {
 	}
 }
 
+// TestCreateAgentAutoStrategyResolution proves the WithAgentResponseFormat
+// dispatch resolves an AutoStrategy eagerly at CreateAgent time against the
+// agent's bound model: ToolCalling models end up with a ToolStrategy-wired
+// agent (structured tool call surfaces as structured_response), StructuredOutput-
+// only models end up with a ProviderStrategy-wired agent (JSON text surfaces as
+// structured_response), and a model declaring neither capability yields a typed
+// *StructuredOutputUnsupportedError from CreateAgent itself.
+func TestCreateAgentAutoStrategyResolution(t *testing.T) {
+	t.Run("tool_calling_model_resolves_to_tool_strategy", func(t *testing.T) {
+		toolName := NewToolStrategy(answerSchema()).SchemaSpecs[0].Name
+		model := language.NewFakeChatModel(
+			language.WithCapabilities(language.ChatModelCapabilities{ToolCalling: true}),
+			language.WithResponses(messages.Message{
+				Role: messages.RoleAI,
+				ToolCalls: []messages.ToolCall{
+					{ID: "call_1", Name: toolName, Args: map[string]any{"text": "42"}},
+				},
+			}),
+		)
+
+		agent, err := CreateAgent(model, nil, WithAgentResponseFormat(NewAutoStrategy(answerSchema())))
+		if err != nil {
+			t.Fatalf("create agent: %v", err)
+		}
+
+		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		structured, ok := state["structured_response"].(map[string]any)
+		if !ok || structured["text"] != "42" {
+			t.Fatalf("expected ToolStrategy-resolved structured_response with text=42, got %#v", state["structured_response"])
+		}
+	})
+
+	t.Run("structured_output_only_model_resolves_to_provider_strategy", func(t *testing.T) {
+		model := language.NewFakeChatModel(
+			language.WithCapabilities(language.ChatModelCapabilities{StructuredOutput: true}),
+			language.WithResponses(messages.AI(`{"text": "42"}`)),
+		)
+
+		agent, err := CreateAgent(model, nil, WithAgentResponseFormat(NewAutoStrategy(answerSchema())))
+		if err != nil {
+			t.Fatalf("create agent: %v", err)
+		}
+
+		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		structured, ok := state["structured_response"].(map[string]any)
+		if !ok || structured["text"] != "42" {
+			t.Fatalf("expected ProviderStrategy-resolved structured_response with text=42, got %#v", state["structured_response"])
+		}
+	})
+
+	t.Run("neither_capability_returns_typed_error_from_create_agent", func(t *testing.T) {
+		model := language.NewFakeChatModel(
+			language.WithCapabilities(language.ChatModelCapabilities{}),
+		)
+		_, err := CreateAgent(model, nil, WithAgentResponseFormat(NewAutoStrategy(answerSchema())))
+		if err == nil {
+			t.Fatal("expected error from CreateAgent for model with neither capability")
+		}
+		var unsupported *StructuredOutputUnsupportedError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("expected *StructuredOutputUnsupportedError from CreateAgent, got %T (%v)", err, err)
+		}
+	})
+
+	t.Run("pointer_auto_strategy_supported", func(t *testing.T) {
+		auto := NewAutoStrategy(answerSchema())
+		model := language.NewFakeChatModel(
+			language.WithCapabilities(language.ChatModelCapabilities{ToolCalling: true}),
+			language.WithResponses(messages.Message{
+				Role: messages.RoleAI,
+				ToolCalls: []messages.ToolCall{
+					{ID: "call_1", Name: NewToolStrategy(answerSchema()).SchemaSpecs[0].Name, Args: map[string]any{"text": "42"}},
+				},
+			}),
+		)
+		if _, err := CreateAgent(model, nil, WithAgentResponseFormat(&auto)); err != nil {
+			t.Fatalf("create agent with *AutoStrategy: %v", err)
+		}
+	})
+
+	t.Run("nil_pointer_auto_strategy_is_no_op", func(t *testing.T) {
+		model := language.NewFakeChatModel(
+			language.WithCapabilities(language.ChatModelCapabilities{ToolCalling: true}),
+			language.WithResponses(messages.AI("done")),
+		)
+		var auto *AutoStrategy
+		agent, err := CreateAgent(model, nil, WithAgentResponseFormat(auto))
+		if err != nil {
+			t.Fatalf("create agent with nil *AutoStrategy: %v", err)
+		}
+		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if _, present := state["structured_response"]; present {
+			t.Fatalf("expected no structured_response for nil *AutoStrategy, got %#v", state["structured_response"])
+		}
+	})
+}
+
 // recordingAgentLifecycleMiddleware implements BeforeAgentHook/AfterAgentHook,
 // recording each call (and optionally contributing a BeforeAgent state
 // update / returning an AfterAgent error) for assertions.

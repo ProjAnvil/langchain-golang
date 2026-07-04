@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/tools"
@@ -222,12 +223,63 @@ func (b ProviderStrategyBinding) Parse(response messages.Message) (map[string]an
 	return data, nil
 }
 
+// StructuredOutputUnsupportedError is returned by AutoStrategy.Resolve when the
+// agent's model supports neither tool calling nor native structured output, so
+// no concrete strategy can be selected. It is a typed error so callers (and
+// CreateAgent's option-validation path) can distinguish "model can't do
+// structured output" from a generic configuration error via errors.As.
+type StructuredOutputUnsupportedError struct {
+	Model language.ChatModel
+}
+
+// NewStructuredOutputUnsupportedError constructs a *StructuredOutputUnsupportedError
+// for model. model may be nil when Resolve is called without a model.
+func NewStructuredOutputUnsupportedError(model language.ChatModel) *StructuredOutputUnsupportedError {
+	return &StructuredOutputUnsupportedError{Model: model}
+}
+
+func (e *StructuredOutputUnsupportedError) Error() string {
+	if e == nil || e.Model == nil {
+		return "agents: model supports neither tool calling nor structured output; cannot resolve AutoStrategy"
+	}
+	return fmt.Sprintf("agents: model %T supports neither tool calling nor structured output; cannot resolve AutoStrategy", e.Model)
+}
+
 type AutoStrategy struct {
 	Schema schema.Schema
 }
 
 func NewAutoStrategy(jsonSchema schema.Schema) AutoStrategy {
 	return AutoStrategy{Schema: jsonSchema}
+}
+
+// Resolve selects a concrete structured-output strategy based on the agent
+// model's declared capabilities, mirroring Python's auto-mode selection in
+// `_select_response_format`: ToolStrategy is selected when the model supports
+// tool calling (the more capable path, since it parses a structured tool-call
+// rather than free-form text); otherwise ProviderStrategy when the model
+// supports native structured output; otherwise a *StructuredOutputUnsupportedError.
+//
+// The returned value is always a non-nil ToolStrategy or ProviderStrategy value
+// (value, not pointer) of the same shape WithAgentResponseFormat accepts, so
+// the result re-enters CreateAgent's existing dispatch unchanged. Resolution is
+// deterministic and side-effect-free; CreateAgent calls it eagerly at build time
+// against the agent's bound model (see resolveResponseFormat).
+//
+// ToolCalling is preferred over StructuredOutput when both are present, matching
+// Python's preference order.
+func (s AutoStrategy) Resolve(model language.ChatModel) (any, error) {
+	if model == nil {
+		return nil, NewStructuredOutputUnsupportedError(nil)
+	}
+	caps := model.Capabilities()
+	if caps.ToolCalling {
+		return NewToolStrategy(s.Schema), nil
+	}
+	if caps.StructuredOutput {
+		return NewProviderStrategy(s.Schema), nil
+	}
+	return nil, NewStructuredOutputUnsupportedError(model)
 }
 
 func schemaSpecsFromSchema(jsonSchema schema.Schema) []SchemaSpec {

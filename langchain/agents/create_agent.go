@@ -344,8 +344,8 @@ func WithAgentInterruptAfter(nodes ...string) AgentOption {
 
 // WithAgentResponseFormat configures structured output, mirroring Python's
 // `create_agent(response_format=...)`. format must be a ToolStrategy,
-// *ToolStrategy, ProviderStrategy, or *ProviderStrategy; CreateAgent returns
-// an error for any other type.
+// *ToolStrategy, ProviderStrategy, *ProviderStrategy, AutoStrategy, or
+// *AutoStrategy; CreateAgent returns an error for any other type.
 //
 // ToolStrategy is fully wired into the model loop: each of its SchemaSpecs is
 // bound to the model as an extra callable tool, and a matching tool call in
@@ -362,6 +362,13 @@ func WithAgentInterruptAfter(nodes ...string) AgentOption {
 // to request schema-constrained output, since that call shape isn't exposed
 // generically by the language.ChatModel interface yet; the model must be
 // separately configured (or reliably prompted) to emit matching JSON.
+//
+// AutoStrategy is resolved eagerly at CreateAgent time against the agent's
+// bound model into a concrete ToolStrategy or ProviderStrategy via its
+// Resolve method (ToolStrategy when Capabilities().ToolCalling, else
+// ProviderStrategy when Capabilities().StructuredOutput, else a
+// *StructuredOutputUnsupportedError). The resolved strategy then behaves
+// exactly as if the caller had supplied it directly.
 func WithAgentResponseFormat(format any) AgentOption {
 	return func(o *AgentOptions) { o.ResponseFormat = format }
 }
@@ -423,7 +430,7 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		opt(&options)
 	}
 
-	toolStrategy, providerStrategy, err := resolveResponseFormat(options.ResponseFormat)
+	toolStrategy, providerStrategy, err := resolveResponseFormat(options.ResponseFormat, model)
 	if err != nil {
 		return nil, err
 	}
@@ -1002,7 +1009,15 @@ func buildModelNode(
 // resolveResponseFormat validates and unpacks an AgentOptions.ResponseFormat
 // value into (at most) one of a ToolStrategy or ProviderStrategy. See
 // WithAgentResponseFormat's doc comment for accepted types and behavior.
-func resolveResponseFormat(format any) (*ToolStrategy, *ProviderStrategy, error) {
+//
+// An AutoStrategy (or *AutoStrategy) is resolved eagerly at CreateAgent time
+// against model into a concrete ToolStrategy/ProviderStrategy via its Resolve
+// method, then re-dispatched; this keeps AutoStrategy a build-time selection
+// over the agent's bound model rather than a per-Invoke branch, matching how
+// the other strategies are unpacked once up front. model is the agent's bound
+// ChatModel (the positional first arg to CreateAgent); it is required only for
+// the AutoStrategy path and is otherwise ignored.
+func resolveResponseFormat(format any, model language.ChatModel) (*ToolStrategy, *ProviderStrategy, error) {
 	switch v := format.(type) {
 	case nil:
 		return nil, nil, nil
@@ -1014,8 +1029,23 @@ func resolveResponseFormat(format any) (*ToolStrategy, *ProviderStrategy, error)
 		return nil, &v, nil
 	case *ProviderStrategy:
 		return nil, v, nil
+	case AutoStrategy:
+		resolved, err := v.Resolve(model)
+		if err != nil {
+			return nil, nil, err
+		}
+		return resolveResponseFormat(resolved, model)
+	case *AutoStrategy:
+		if v == nil {
+			return nil, nil, nil
+		}
+		resolved, err := v.Resolve(model)
+		if err != nil {
+			return nil, nil, err
+		}
+		return resolveResponseFormat(resolved, model)
 	default:
-		return nil, nil, fmt.Errorf("agents: unsupported ResponseFormat type %T (expected ToolStrategy or ProviderStrategy)", format)
+		return nil, nil, fmt.Errorf("agents: unsupported ResponseFormat type %T (expected ToolStrategy, ProviderStrategy, or AutoStrategy)", format)
 	}
 }
 

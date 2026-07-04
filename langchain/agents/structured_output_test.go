@@ -1,10 +1,12 @@
 package agents
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
 )
@@ -139,6 +141,98 @@ func TestAutoStrategy(t *testing.T) {
 	if !reflect.DeepEqual(strategy.Schema, weatherSchema()) {
 		t.Fatalf("schema mismatch: got %#v", strategy.Schema)
 	}
+}
+
+// TestAutoStrategy_SelectsTool covers AutoStrategy.Resolve's capability-based
+// dispatch: ToolCalling models select ToolStrategy, StructuredOutput-only
+// models select ProviderStrategy, and models supporting neither surface a typed
+// *StructuredOutputUnsupportedError. Mirrors the brief's required test name.
+func TestAutoStrategy_SelectsTool(t *testing.T) {
+	schemaSpec := weatherSchema()
+
+	t.Run("tool_calling_model_selects_tool_strategy", func(t *testing.T) {
+		auto := NewAutoStrategy(schemaSpec)
+		model := language.NewFakeChatModel(language.WithCapabilities(language.ChatModelCapabilities{
+			ToolCalling:      true,
+			StructuredOutput: true,
+		}))
+		resolved, err := auto.Resolve(model)
+		if err != nil {
+			t.Fatalf("Resolve: unexpected error: %v", err)
+		}
+		toolStrategy, ok := resolved.(ToolStrategy)
+		if !ok {
+			t.Fatalf("expected ToolStrategy, got %T", resolved)
+		}
+		if !reflect.DeepEqual(toolStrategy.Schema, schemaSpec) {
+			t.Fatalf("ToolStrategy schema mismatch: got %#v", toolStrategy.Schema)
+		}
+	})
+
+	t.Run("tool_calling_takes_precedence_over_structured_output", func(t *testing.T) {
+		auto := NewAutoStrategy(schemaSpec)
+		model := language.NewFakeChatModel(language.WithCapabilities(language.ChatModelCapabilities{
+			ToolCalling:      true,
+			StructuredOutput: true,
+		}))
+		resolved, err := auto.Resolve(model)
+		if err != nil {
+			t.Fatalf("Resolve: unexpected error: %v", err)
+		}
+		if _, ok := resolved.(ToolStrategy); !ok {
+			t.Fatalf("expected ToolStrategy to win when both capabilities are set, got %T", resolved)
+		}
+	})
+
+	t.Run("structured_output_only_model_selects_provider_strategy", func(t *testing.T) {
+		auto := NewAutoStrategy(schemaSpec)
+		model := language.NewFakeChatModel(language.WithCapabilities(language.ChatModelCapabilities{
+			ToolCalling:      false,
+			StructuredOutput: true,
+		}))
+		resolved, err := auto.Resolve(model)
+		if err != nil {
+			t.Fatalf("Resolve: unexpected error: %v", err)
+		}
+		providerStrategy, ok := resolved.(ProviderStrategy)
+		if !ok {
+			t.Fatalf("expected ProviderStrategy, got %T", resolved)
+		}
+		if !reflect.DeepEqual(providerStrategy.Schema, schemaSpec) {
+			t.Fatalf("ProviderStrategy schema mismatch: got %#v", providerStrategy.Schema)
+		}
+	})
+
+	t.Run("neither_capability_returns_typed_error", func(t *testing.T) {
+		auto := NewAutoStrategy(schemaSpec)
+		model := language.NewFakeChatModel(language.WithCapabilities(language.ChatModelCapabilities{
+			ToolCalling:      false,
+			StructuredOutput: false,
+		}))
+		resolved, err := auto.Resolve(model)
+		if err == nil {
+			t.Fatalf("expected error, got resolved value %T", resolved)
+		}
+		var unsupported *StructuredOutputUnsupportedError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("expected *StructuredOutputUnsupportedError, got %T (%v)", err, err)
+		}
+		if resolved != nil {
+			t.Fatalf("expected nil resolved strategy on error, got %T", resolved)
+		}
+	})
+
+	t.Run("nil_model_returns_typed_error", func(t *testing.T) {
+		auto := NewAutoStrategy(schemaSpec)
+		resolved, err := auto.Resolve(nil)
+		if err == nil {
+			t.Fatalf("expected error, got resolved value %T", resolved)
+		}
+		var unsupported *StructuredOutputUnsupportedError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("expected *StructuredOutputUnsupportedError, got %T (%v)", err, err)
+		}
+	})
 }
 
 func TestOutputToolBindingFromSchemaSpec(t *testing.T) {
