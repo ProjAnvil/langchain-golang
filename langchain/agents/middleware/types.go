@@ -46,6 +46,39 @@ type ToolCall struct {
 	Type string
 }
 
+// DeltaTransform rewrites a single streaming model delta (the text carried in
+// a streamevents.Event content-block text-delta) and returns the replacement
+// text. Used by WrapModelStreamHook for streaming redaction (e.g. PII
+// lookback buffering — see Task 3.2): each delta flows through the composed
+// transform before the model node emits it as a model_delta event, and the
+// same transform is applied to the assembled model_end text so the two stay
+// consistent.
+//
+// This is a bounded middleware-facing streaming surface. It is NOT langgraph
+// stream modes (see the design spec Decision 3): the only streaming this port
+// exposes is Agent.StreamEvents + graph.InvokeStream, and this hook lets a
+// middleware observe/rewrite each model delta within that single path.
+type DeltaTransform func(text string) string
+
+// WrapModelStreamHook lets middleware observe/transform model deltas during a
+// streaming model call. The model node collects every middleware implementing
+// this hook (in WrapModelCall order — outermost-first) and composes them into a
+// single DeltaTransform applied to each text delta before it is emitted as a
+// model_delta event, and to the assembled final message text before model_end.
+//
+// The composition contract: TransformModelStream receives the inner transform
+// (composed from middleware earlier in the chain plus an identity seed) and
+// returns a new transform that wraps it. A middleware that wants to buffer
+// across deltas (e.g. PII lookback) can close over mutable state in the
+// returned func. When no middleware implements this hook, behavior is
+// identical to today (identity transform — the streaming path is unchanged).
+//
+// This is the Go equivalent of Python's `_PIIStreamTransformer` delta path,
+// scoped to the middleware streaming surface only.
+type WrapModelStreamHook interface {
+	TransformModelStream(transform DeltaTransform) DeltaTransform
+}
+
 func (c ToolCall) Clone() ToolCall {
 	return ToolCall{
 		Name: c.Name,

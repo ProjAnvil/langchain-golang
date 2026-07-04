@@ -869,7 +869,7 @@ func buildModelNode(
 			// emitting model_end. When no sink is active, the non-streaming
 			// Invoke path is used with zero added overhead (see invokeModel).
 			if sink := sinkFromContext(c); sink != nil {
-				return invokeModelStreaming(c, r, sink)
+				return invokeModelStreaming(c, r, sink, mws)
 			}
 			return invokeModel(c, r)
 		}
@@ -1237,7 +1237,14 @@ func hashToolsAndSettings(tools []any, settings map[string]any) string {
 // AfterModel hooks, state update) is identical between the streaming and
 // non-streaming paths — state semantics are unchanged (see the design spec's
 // Step 2).
-func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink *eventSink) (middleware.ModelResponse, error) {
+//
+// mws is the agent's full middleware list. Any middleware implementing
+// middleware.WrapModelStreamHook is composed (in WrapModelCall order,
+// outermost-first) into a DeltaTransform that rewrites each text delta before
+// it is emitted as a model_delta, and rewrites the assembled model_end text so
+// the two stay consistent. When no middleware implements the hook, transform
+// stays identity and this path is identical to the no-middleware behavior.
+func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink *eventSink, mws []any) (middleware.ModelResponse, error) {
 	model, ok := req.Model.(language.ChatModel)
 	if !ok || model == nil {
 		return middleware.ModelResponse{}, fmt.Errorf("agents: ModelRequest.Model must be a language.ChatModel, got %T", req.Model)
@@ -1265,13 +1272,37 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 	}
 	defer stream.Close()
 
+	// Compose any WrapModelStreamHook middleware into a single DeltaTransform
+	// applied to each text delta and to the assembled model_end text. Start
+	// from identity so the no-middleware path is a no-op (behavior unchanged).
+	// Composition runs at dispatch-construction time, before any delta flows,
+	// so each returned transform closes over a stable inner reference (the
+	// loop reassigns `transform` but each hook.TransformModelStream received
+	// the prior value as its argument, capturing it by value inside the
+	// returned closure).
+	transform := func(text string) string { return text }
+	for _, mw := range mws {
+		if hook, ok := mw.(middleware.WrapModelStreamHook); ok {
+			transform = hook.TransformModelStream(transform)
+		}
+	}
+
 	projection := streamevents.NewChatModelStream()
 	// Wrapper that both projects (into ChatModelStream) and emits a model_delta
 	// for every v3 event we observe, whether produced natively by the model
 	// (provider protocol events surfaced via callbacks — see
-	// language.StreamEvents) or bridged from legacy message chunks below.
+	// language.StreamEvents) or bridged from legacy message chunks below. The
+	// projection receives the untransformed event (so the assembled message
+	// text is the raw model output); the transform is applied only to the
+	// delta text the consumer sees, and separately to the assembled model_end
+	// text (see projection.Output() below).
 	dispatch := func(ev streamevents.Event) {
 		projection.Dispatch(ev)
+		if ev.Delta != nil && ev.Delta["type"] == "text-delta" {
+			if text, ok := ev.Delta["text"].(string); ok && text != "" {
+				ev.Delta["text"] = transform(text)
+			}
+		}
 		sink.emitModelDelta(ev)
 	}
 
@@ -1292,21 +1323,48 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 	}
 	bridge.finish()
 
+	// applyDeltaTransform rewrites the text carried on the assembled message
+	// (both Content and any "text" content blocks) via the composed delta
+	// transform, so the assembled model_end message — and the ModelResponse
+	// returned downstream into state / AfterModel hooks — stays consistent
+	// with the streamed (transformed) deltas. Non-text blocks (tool calls,
+	// reasoning) are left untouched. Re-running the per-delta transform on the
+	// assembled text is intentional: for the redaction use case it is
+	// idempotent, and it keeps model_end == concat(deltas) for consumers.
+	applyDeltaTransform := func(msg messages.Message) messages.Message {
+		if msg.Content != "" {
+			msg.Content = transform(msg.Content)
+		}
+		for i, block := range msg.ContentBlocks {
+			if block == nil || block["type"] != "text" {
+				continue
+			}
+			if text, ok := block["text"].(string); ok && text != "" {
+				msg.ContentBlocks[i]["text"] = transform(text)
+			}
+		}
+		return msg
+	}
+
 	if projection.Done() {
 		out, err := projection.Output()
 		if err != nil {
 			return middleware.ModelResponse{}, err
 		}
+		out = applyDeltaTransform(out)
 		sink.emitModelEnd(out)
 		return middleware.ModelResponse{Result: []messages.Message{out}}, nil
 	}
 	// Stream ended without an explicit message-finish (provider quirk): fall
 	// back to a non-streaming Invoke so the caller still gets a well-formed
-	// message. This keeps state semantics identical to the Invoke path.
+	// message. This keeps state semantics identical to the Invoke path. The
+	// transform is applied for parity with the streaming path so model_end /
+	// state stay consistent with any deltas already emitted.
 	result, err := model.Invoke(ctx, invokeMessages)
 	if err != nil {
 		return middleware.ModelResponse{}, err
 	}
+	result = applyDeltaTransform(result)
 	sink.emitModelEnd(result)
 	return middleware.ModelResponse{Result: []messages.Message{result}}, nil
 }

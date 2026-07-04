@@ -15,6 +15,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
+	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
 )
@@ -729,4 +730,81 @@ func appendStringReducer(existing any, next any) (any, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// --- Spec test: WrapModelStreamHook middleware observes/rewrites each delta ---
+
+// deltaSpy is a WrapModelStreamHook middleware that records every delta it sees
+// and rewrites the text via onDelta. It deliberately ignores the inner
+// transform (the redaction it performs is the terminal transform in this test).
+type deltaSpy struct {
+	onDelta func(string) string
+}
+
+// TransformModelStream implements middleware.WrapModelStreamHook.
+func (d deltaSpy) TransformModelStream(_ middleware.DeltaTransform) middleware.DeltaTransform {
+	return func(s string) string {
+		return d.onDelta(s)
+	}
+}
+
+// TestStreamEvents_MiddlewareTransformsDelta verifies that a middleware
+// implementing WrapModelStreamHook sees each streaming model delta and can
+// rewrite it — here, redacting a secret end-to-end so it never reaches the
+// consumer. This is the foundation for PII streaming-delta redaction. It also
+// asserts (per the task brief) that the assembled model_end text reflects the
+// same transform, so model_end is consistent with the streamed deltas.
+func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
+	model := language.NewFakeChatModel(language.WithStreamChunks(
+		messages.AI("secret-"),
+		messages.AI("1234"),
+	))
+	var saw []string
+	xform := deltaSpy{onDelta: func(s string) string {
+		saw = append(saw, s)
+		return strings.ReplaceAll(s, "secret", "REDACTED")
+	}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(xform))
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	defer stream.Close()
+
+	var deltaText string
+	var modelEndText string
+	for {
+		ev, ok, err := stream.Next(context.Background())
+		if err != nil || !ok {
+			break
+		}
+		switch ev.Type {
+		case StreamModelDelta:
+			deltaText += ev.Text
+		case StreamModelEnd:
+			if ev.Message != nil {
+				modelEndText = ev.Message.Content
+			}
+		}
+	}
+	if strings.Contains(deltaText, "secret") {
+		t.Errorf("delta text not redacted: %q", deltaText)
+	}
+	if got, want := deltaText, "REDACTED-1234"; got != want {
+		t.Errorf("delta text = %q, want %q", got, want)
+	}
+	if len(saw) == 0 {
+		t.Errorf("middleware never observed deltas")
+	}
+	// The assembled model_end message must reflect the same transform so
+	// downstream consumers (state, after_model hooks) see consistent text.
+	if strings.Contains(modelEndText, "secret") {
+		t.Errorf("model_end text not redacted: %q", modelEndText)
+	}
+	if got, want := modelEndText, "REDACTED-1234"; got != want {
+		t.Errorf("model_end text = %q, want %q", got, want)
+	}
 }
