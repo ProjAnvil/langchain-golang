@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/projanvil/langchain-golang/core/caches"
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/runnables"
@@ -614,4 +615,48 @@ type storeCapturingMiddleware struct {
 
 func (m storeCapturingMiddleware) WrapToolCall(ctx context.Context, req middleware.ToolCallRequest, next middleware.ToolHandler) (messages.Message, error) {
 	return m.fn(ctx, req, next)
+}
+
+// TestCreateAgent_CacheHitSkipsModel verifies that WithAgentCache wires
+// core/caches into the model-call path: the same input twice must invoke the
+// underlying model exactly once (the second response is served from cache),
+// mirroring Python's `create_agent(cache=...)`.
+func TestCreateAgent_CacheHitSkipsModel(t *testing.T) {
+	cache, err := caches.NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("NewInMemoryCache: %v", err)
+	}
+	calls := 0
+	model := language.NewFakeChatModel(language.WithResponses(
+		messages.AI("first"),
+		messages.AI("second"),
+	))
+	agent, err := CreateAgent(model, nil,
+		WithAgentCache(cache),
+		WithAgentMiddleware(countModelCalls{&calls}),
+	)
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	msgs := []messages.Message{messages.Human("hi")}
+	if _, err := agent.Invoke(context.Background(), msgs); err != nil {
+		t.Fatalf("invoke 1: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), msgs); err != nil {
+		t.Fatalf("invoke 2: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected model called once (second served from cache), got %d", calls)
+	}
+}
+
+// countModelCalls is a WrapModelCallHook middleware that counts how many times
+// the model-call chain is actually entered. Combined with WithAgentCache, a
+// cache hit short-circuits the chain before this middleware runs, so a cached
+// second call does not increment the counter.
+type countModelCalls struct{ n *int }
+
+func (m countModelCalls) WrapModelCall(ctx context.Context, req middleware.ModelRequest, next middleware.ModelHandler) (middleware.ModelResponse, error) {
+	*m.n++
+	return next(ctx, req)
 }

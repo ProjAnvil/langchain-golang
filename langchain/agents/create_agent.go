@@ -53,9 +53,14 @@ package agents
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
+	"github.com/projanvil/langchain-golang/core/caches"
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/prompts"
@@ -183,6 +188,12 @@ type AgentOptions struct {
 	// `create_agent(store=...)`. When non-nil, it is injected into every
 	// ToolCallRequest.Store (see middleware.ToolCallRequest).
 	Store stores.BaseStore[any]
+	// Cache caches model responses, mirroring Python's `create_agent(cache=...)`.
+	// When non-nil, the model node consults it before the model-call middleware
+	// chain (a hit short-circuits the chain, so WrapModelCall middleware is not
+	// invoked for a cached call) and writes misses back. Keyed by
+	// (promptString, llmString); see cacheKey in create_agent.go.
+	Cache caches.Cache
 }
 
 // AgentOption applies a functional option to AgentOptions.
@@ -259,6 +270,19 @@ func WithAgentCheckpointer(saver checkpoint.Saver) AgentOption {
 // annotation; tools read it explicitly).
 func WithAgentStore(store stores.BaseStore[any]) AgentOption {
 	return func(o *AgentOptions) { o.Store = store }
+}
+
+// WithAgentCache installs a model-response cache, mirroring Python's
+// `create_agent(cache=...)`. When non-nil, the model node looks up the cache
+// before entering the model-call middleware chain: a hit returns the cached
+// response without invoking the model (or any WrapModelCall middleware), and a
+// miss invokes the model as usual then writes the result back. The cache key
+// is (promptString, llmString) as derived by cacheKey (the rendered,
+// role-tagged message text, and the model type plus a stable hash of the bound
+// tools and model settings). Cache is scoped to the non-streaming Invoke path
+// (invokeModel); the streaming path is not cache-aware.
+func WithAgentCache(cache caches.Cache) AgentOption {
+	return func(o *AgentOptions) { o.Cache = cache }
 }
 
 // WithAgentRecursionLimit overrides the compiled graph's superstep limit.
@@ -391,7 +415,7 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		}
 		g.AddReducer(f.Name, r)
 	}
-	g.AddNode(ModelNodeName, buildModelNode(model, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, finalNode))
+	g.AddNode(ModelNodeName, buildModelNode(model, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, finalNode, options.Cache))
 
 	entryNode := ModelNodeName
 	if hasHook[BeforeAgentHook](options.Middleware) {
@@ -708,6 +732,7 @@ func buildModelNode(
 	toolStrategy *ToolStrategy,
 	providerStrategy *ProviderStrategy,
 	finalNode string,
+	cache caches.Cache,
 ) graphpkg.NodeFunc {
 	toolsAny := toolsToAny(toolList)
 
@@ -801,9 +826,47 @@ func buildModelNode(
 			}
 		}
 
-		resp, err := handler(ctx, req)
-		if err != nil {
-			return nil, err
+		// Cache lookup happens before the model-call middleware chain so that a
+		// hit short-circuits both model.Invoke and any WrapModelCall middleware
+		// (mirroring Python's create_agent(cache=...) semantics where a cached
+		// response never reaches the model). On a miss the chain runs as usual
+		// and the fresh response is written back below. cacheKey derives
+		// (promptString, llmString) per langchain_core's BaseCache contract.
+		var resp middleware.ModelResponse
+		cacheHit := false
+		if cache != nil {
+			promptString, llmString := cacheKey(req)
+			if gens, ok, lerr := cache.Lookup(ctx, promptString, llmString); lerr == nil && ok && len(gens) > 0 {
+				cached := make([]messages.Message, 0, len(gens))
+				for _, g := range gens {
+					cached = append(cached, messages.AI(g.Text))
+				}
+				resp = middleware.ModelResponse{Result: cached}
+				cacheHit = true
+				if logger != nil {
+					logger.Info("agents: model cache hit",
+						slog.Int("generations", len(gens)))
+				}
+			}
+		}
+		if !cacheHit {
+			resp, err = handler(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+			// Write the fresh model response back to the cache before
+			// structured-output detection / AfterModel hooks run, so the cached
+			// value is the raw model output (not post-hook additions). Errors
+			// from Update are non-fatal (cache is best-effort); logging them
+			// would be noisy, so they are silently ignored.
+			if cache != nil && len(resp.Result) > 0 {
+				promptString, llmString := cacheKey(req)
+				generations := make([]caches.Generation, 0, len(resp.Result))
+				for _, m := range resp.Result {
+					generations = append(generations, caches.Generation{Text: messages.Text(m)})
+				}
+				_ = cache.Update(ctx, promptString, llmString, generations)
+			}
 		}
 		newMessages := append([]messages.Message(nil), resp.Result...)
 		if logger != nil {
@@ -1018,6 +1081,59 @@ func invokeModel(ctx context.Context, req middleware.ModelRequest) (middleware.M
 		return middleware.ModelResponse{}, err
 	}
 	return middleware.ModelResponse{Result: []messages.Message{result}}, nil
+}
+
+// cacheKey derives (promptString, llmString) for a model request, mirroring
+// langchain_core's BaseCache contract. promptString is the role-tagged,
+// rendered message text (each message's role + messages.Text of its content);
+// llmString identifies the model and its configuration as the model type plus a
+// stable hash of the bound tool names and ModelSettings (so two requests that
+// differ only in tools or settings do not collide).
+func cacheKey(req middleware.ModelRequest) (string, string) {
+	var sb strings.Builder
+	for _, m := range req.Messages {
+		sb.WriteString(string(m.Role))
+		sb.WriteByte(':')
+		sb.WriteString(messages.Text(m))
+		sb.WriteByte('\n')
+	}
+	if req.SystemMessage != nil {
+		sb.WriteString(string(req.SystemMessage.Role))
+		sb.WriteByte(':')
+		sb.WriteString(messages.Text(*req.SystemMessage))
+		sb.WriteByte('\n')
+	}
+	promptString := sb.String()
+
+	modelID := fmt.Sprintf("%T", req.Model)
+	llmString := modelID + "|" + hashToolsAndSettings(req.Tools, req.ModelSettings)
+	return promptString, llmString
+}
+
+// hashToolsAndSettings returns a stable, 16-char hex digest of the bound tool
+// names and model settings. Tool names are collected in order; the names slice
+// and the settings map are JSON-encoded together (encoding/json sorts map keys,
+// so the encoding is deterministic) and sha256-hashed. An encode failure (which
+// would only occur for non-JSON-representable settings values) yields an empty
+// string, which collapses all such requests onto the same key rather than
+// panicking — the cache is best-effort.
+func hashToolsAndSettings(tools []any, settings map[string]any) string {
+	toolNames := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if tool, ok := t.(coretools.Tool); ok {
+			toolNames = append(toolNames, tool.Name())
+		}
+	}
+	payload := map[string]any{
+		"tools":    toolNames,
+		"settings": settings,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // invokeModelStreaming is the streaming counterpart of invokeModel, used when
