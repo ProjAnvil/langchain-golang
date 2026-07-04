@@ -885,3 +885,95 @@ func TestStreamEvents_MiddlewareTransformOrder(t *testing.T) {
 		t.Errorf("delta text = %q, want %q (mws[0] must be outermost, matching WrapModelCall)", got, want)
 	}
 }
+
+// TestStreamEvents_PIIStreamTransformer_BoundaryStraddle is the end-to-end
+// check for Task 3.2: a real CreateAgent wired with a PII stream transformer
+// (implementing WrapModelStreamHook) is driven through StreamEvents with a
+// FakeChatModel that splits a PII pattern across chunk boundaries. Asserts:
+//   - no StreamModelDelta event's Text contains the raw pattern (the per-delta
+//     lookback buffer must redact across the boundary);
+//   - the assembled model_end message is correctly redacted (contains the
+//     redaction token, NOT the raw pattern), AND is not corrupted (no
+//     duplicated leading fragment from the multi-call full-text path);
+//   - the raw content-block-finish Delta.Content["text"] (which emitModelDelta
+//     passes through verbatim) does not leak the raw pattern either.
+func TestStreamEvents_PIIStreamTransformer_BoundaryStraddle(t *testing.T) {
+	model := language.NewFakeChatModel(language.WithStreamChunks(
+		messages.AI("lead TOKEN-"),
+		messages.AI("ABCDEFGHIJKLMNOPQRST trail"),
+	))
+	xform := middleware.NewPIIStreamTransformer([]string{`TOKEN-[A-Z]{20}`})
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(xform))
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	defer stream.Close()
+
+	var deltaText string
+	var modelEndText string
+	var rawFinishTexts []string
+	const rawPat = "TOKEN-ABCDEFGHIJKLMNOPQRST"
+	for {
+		ev, ok, err := stream.Next(context.Background())
+		if err != nil || !ok {
+			break
+		}
+		switch ev.Type {
+		case StreamModelDelta:
+			if ev.Text != "" {
+				deltaText += ev.Text
+				if strings.Contains(ev.Text, rawPat) {
+					t.Errorf("delta leaked raw PII: %q", ev.Text)
+				}
+			}
+			if ev.Delta != nil && ev.Delta.Content != nil && ev.Delta.Content["type"] == "text" {
+				if text, ok := ev.Delta.Content["text"].(string); ok {
+					rawFinishTexts = append(rawFinishTexts, text)
+					if strings.Contains(text, rawPat) {
+						t.Errorf("raw Delta.Content[text] leaked PII: %q", text)
+					}
+				}
+			}
+		case StreamModelEnd:
+			if ev.Message != nil {
+				modelEndText = ev.Message.Content
+			}
+		}
+	}
+
+	// Delta stream: the per-delta lookback buffer must withhold the raw
+	// pattern. With the pattern source length as the lookback window, the
+	// redacted text typically surfaces incrementally; for small windows
+	// the entire redacted segment may stay in the held tail until the
+	// model_end full-text reset flushes it, so we only assert the raw
+	// pattern never leaks — not that a redaction token appears in deltas.
+	if strings.Contains(deltaText, rawPat) {
+		t.Errorf("delta stream leaked raw PII: %q", deltaText)
+	}
+
+	// model_end: must be redacted AND not corrupted. The full assembled text
+	// is "lead TOKEN-ABCDEFGHIJKLMNOPQRST trail" — redacted it becomes
+	// "lead [REDACTED] trail". A naive append-only buffer would corrupt this
+	// to something like "lead [REDACTED][REDACTED] trail" (held-tail from
+	// deltas appended to fresh full text) or "lead lead [REDACTED] trail"
+	// (prefix duplicated). Guards:
+	if strings.Contains(modelEndText, rawPat) {
+		t.Errorf("model_end leaked raw PII: %q", modelEndText)
+	}
+	if !strings.Contains(modelEndText, "[REDACTED") {
+		t.Errorf("model_end missing redaction token: %q", modelEndText)
+	}
+	if c := strings.Count(modelEndText, "lead"); c != 1 {
+		t.Errorf("model_end prefix corrupted (count(lead)=%d): %q", c, modelEndText)
+	}
+	if c := strings.Count(modelEndText, "[REDACTED"); c != 1 {
+		t.Errorf("model_end redaction token corrupted (count=%d): %q", c, modelEndText)
+	}
+	if !strings.HasSuffix(modelEndText, "trail") {
+		t.Errorf("model_end truncated: %q", modelEndText)
+	}
+}

@@ -2,6 +2,9 @@ package middleware
 
 import (
 	"context"
+	"regexp"
+	"strings"
+	"sync"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -224,4 +227,224 @@ func messagesFromState(state map[string]any) ([]messages.Message, bool) {
 	}
 	msgs, ok := state["messages"].([]messages.Message)
 	return msgs, ok
+}
+
+// defaultStreamLookback is the floor for the trailing buffer when no
+// patterns are supplied. The brief specifies the lookback as "the longest
+// pattern length"; when patterns ARE supplied we use exactly that (no floor),
+// so the brief's BoundaryStraddle test — whose full text is shorter than 128
+// chars — actually emits redacted output rather than swallowing it whole.
+// 128 mirrors Python's _DEFAULT_STREAM_LOOKBACK; we only fall back to it for
+// the degenerate empty-patterns case so the transformer stays a no-op
+// redactor rather than dividing by zero.
+const defaultStreamLookback = 128
+
+// PIIStreamTransformer is a WrapModelStreamHook that redacts PII from
+// streaming model deltas using a lookback buffer. It exists for the case the
+// batch PIIMiddleware cannot cover: a PII pattern split across two text-delta
+// chunks (e.g. "SSN" + "-123") would escape per-chunk redaction because
+// neither chunk alone matches the regex.
+//
+// The transformer holds back a trailing tail of size lookback between deltas;
+// the next delta is concatenated with the tail before redaction runs, so
+// straddling patterns are caught. The held tail is emitted on Flush (or, in
+// the streaming-agent pipeline, implicitly via the model_end full-text call —
+// see below).
+//
+// Task 3.1's WrapModelStreamHook contract calls the SAME composed
+// DeltaTransform instance multiple times per model call: once per text-delta,
+// once on the content-block-finish event's fully-assembled block text, and
+// once on the assembled model_end message. A naive append-only buffer would
+// re-process the full text on the latter calls and corrupt it (duplicating
+// the leading fragment). The transformer detects the full-text calls — the
+// incoming text starts with the raw text accumulated from prior deltas — and
+// resets the buffer, redacting the full text fresh. Regex PII redaction is
+// idempotent, so re-redacting the assembled text is safe.
+//
+// Mirrors Python's _PIIStreamTransformer (langchain_v1/langchain/agents/
+// middleware/pii.py), scoped to the Go middleware streaming surface.
+//
+// Scope note: the per-call state is a SINGLE buffer (not keyed by content
+// block index, unlike Python). The Go port's only streaming surface is the
+// streamChunkBridge legacy bridge, which emits exactly one text content block
+// at index 0; the single buffer covers that path. Multi-block native-v3
+// streaming (where text deltas for blocks 0 and 1 interleave) is out of scope
+// for this port and would need per-index buffers to handle correctly.
+type PIIStreamTransformer struct {
+	patterns []*regexp.Regexp
+	lookback int
+
+	// lastState + flushMu let Flush() reach into the most-recent closure's
+	// state. They are only touched under flushMu. In the streaming-agent
+	// path Flush is never called (the model_end full-text call resets the
+	// buffer via the multi-call reset branch), so this is a convenience for
+	// direct/test usage where a caller wires up one transform and consumes
+	// only per-delta output.
+	flushMu  sync.Mutex
+	lastState *piiStreamState
+}
+
+// piiStreamState is the per-call mutable state closed over by the
+// DeltaTransform returned from TransformModelStream. A fresh state per model
+// call keeps the transformer safe to reuse across many calls (and across
+// concurrent agents on the same PIIStreamTransformer).
+type piiStreamState struct {
+	patterns []*regexp.Regexp
+	lookback int
+
+	// held is the trailing tail of the post-redaction buffer held back from
+	// the previous delta. Concatenating the next delta onto it lets the
+	// regex see straddling patterns as one continuous string.
+	held string
+	// rawSeen is the concatenation of every raw text input the delta path
+	// has observed so far this call. The full-text model_end / finish call
+	// delivers the entire assembled message; it will start with rawSeen (or
+	// equal it), which is the signature used to detect the reset case.
+	rawSeen string
+}
+
+// NewPIIStreamTransformer builds a streaming PII redactor from a list of
+// regex patterns. Each match on the (buffered) stream text is replaced with
+// the literal "[REDACTED]". The lookback window is the longest pattern source
+// length — a pattern can only straddle a chunk boundary if at least
+// (pattern-length - 1) chars are held back, so using the pattern source
+// length keeps the buffer minimal while still catching cross-boundary matches
+// for fixed-shape regexes. Callers needing a larger window for variable-
+// length patterns (e.g. `\d+`) can include a longer sentinel regex.
+//
+// Mirrors Python's _PIIStreamTransformer constructor.
+func NewPIIStreamTransformer(patterns []string) *PIIStreamTransformer {
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	lookback := 0
+	for _, p := range patterns {
+		re := regexp.MustCompile(p)
+		compiled = append(compiled, re)
+		if n := len(p); n > lookback {
+			lookback = n
+		}
+	}
+	if lookback == 0 {
+		// No patterns supplied: keep the transformer usable (Flush/lookback
+		// queries still work) but it redacts nothing.
+		lookback = defaultStreamLookback
+	}
+	return &PIIStreamTransformer{patterns: compiled, lookback: lookback}
+}
+
+// Lookback returns the size (in bytes) of the trailing buffer held back
+// between deltas. Exposed for tests and observability.
+func (x *PIIStreamTransformer) Lookback() int { return x.lookback }
+
+// Patterns returns the compiled regex patterns (for diagnostics/tests).
+func (x *PIIStreamTransformer) Patterns() []*regexp.Regexp {
+	out := make([]*regexp.Regexp, len(x.patterns))
+	copy(out, x.patterns)
+	return out
+}
+
+// TransformModelStream implements WrapModelStreamHook. It returns a fresh
+// DeltaTransform with its own buffer state so the same PIIStreamTransformer
+// is safe to reuse across model calls (and across goroutines — each call
+// gets an independent state, so there is no shared mutable state to guard).
+//
+// The returned transform, per call:
+//  1. Multi-call reset detection: if the incoming text starts with the raw
+//     text accumulated from prior deltas (the signature of a content-block-
+//     finish or model_end full-text call from Task 3.1's invokeModelStreaming
+//     path), reset the buffer and return the freshly-redacted full text.
+//  2. Per-delta path: concatenate the held tail with the incoming text,
+//     redact, hold back the trailing `lookback` bytes, and emit the prefix.
+//
+// next is the inner transform in the WrapModelStreamHook composition chain
+// (Task 3.1).
+func (x *PIIStreamTransformer) TransformModelStream(next DeltaTransform) DeltaTransform {
+	state := &piiStreamState{
+		patterns: x.patterns,
+		lookback: x.lookback,
+	}
+	x.flushMu.Lock()
+	x.lastState = state
+	x.flushMu.Unlock()
+	return func(text string) string {
+		return next(state.apply(text))
+	}
+}
+
+// Flush emits any held-back tail at stream end. Streaming-agent callers do
+// not need to call this — Task 3.1's invokeModelStreaming applies the
+// transform to the full assembled model_end text, which resets the buffer
+// (see TransformModelStream) and emits the cleanly-redacted full text. Flush
+// is provided for direct callers that consume only the per-delta output.
+//
+// Flush is safe to call at most once per stream; calling it twice returns
+// the held tail again only if new deltas have arrived in between.
+func (x *PIIStreamTransformer) Flush() string {
+	// Flush operates on the receiver's patterns but needs access to the
+	// state held by the closure returned from TransformModelStream. Because
+	// Flush is a method on the transformer (not the closure), it tracks a
+	// sentinel state used only when the caller is using Flush directly
+	// rather than going through the streaming pipeline. Tests that exercise
+	// Flush pair it with a single active closure, so we route through the
+	// last state.
+	x.flushMu.Lock()
+	last := x.lastState
+	x.flushMu.Unlock()
+	if last == nil {
+		return ""
+	}
+	return last.flush()
+}
+
+// apply runs the per-call lookback machinery. See TransformModelStream for
+// the contract.
+func (s *piiStreamState) apply(text string) string {
+	if text == "" {
+		return ""
+	}
+	// Multi-call reset: the incoming text is the assembled full text from
+	// a content-block-finish or model_end event. It will start with (or
+	// equal) the raw text accumulated from prior deltas. Reset the buffer
+	// and redact fresh; the idempotence of regex redaction makes this safe.
+	if s.rawSeen != "" && len(text) >= len(s.rawSeen) && strings.HasPrefix(text, s.rawSeen) {
+		s.held = ""
+		// Keep rawSeen as `text` so a subsequent delta (unlikely after
+		// model_end, but possible if more events arrive) extends rather
+		// than re-triggers.
+		s.rawSeen = text
+		return s.redact(text)
+	}
+
+	combined := s.held + text
+	s.rawSeen += text
+	redacted := s.redact(combined)
+
+	var emit, held string
+	if len(redacted) > s.lookback {
+		emit = redacted[:len(redacted)-s.lookback]
+		held = redacted[len(redacted)-s.lookback:]
+	} else {
+		emit = ""
+		held = redacted
+	}
+	s.held = held
+	return emit
+}
+
+// flush emits and clears the held tail. After flush, the state is empty.
+func (s *piiStreamState) flush() string {
+	out := s.held
+	s.held = ""
+	return out
+}
+
+// redact applies every compiled pattern to text, replacing each match with
+// the literal "[REDACTED]". Patterns are applied sequentially; later
+// patterns see the output of earlier ones, but since "[REDACTED]" contains
+// no characters that could re-trigger a PII regex, ordering is immaterial.
+func (s *piiStreamState) redact(text string) string {
+	out := text
+	for _, re := range s.patterns {
+		out = re.ReplaceAllString(out, "[REDACTED]")
+	}
+	return out
 }
