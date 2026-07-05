@@ -10,12 +10,12 @@ import (
 )
 
 func TestLLMToolEmulatorEmulatesSelectedTool(t *testing.T) {
-	emulator := NewLLMToolEmulator([]string{"search"}, func(request ToolCallRequest, prompt string) (string, error) {
+	emulator := NewLLMToolEmulator([]string{"search"}, WithToolEmulatorFunc(func(request ToolCallRequest, prompt string) (string, error) {
 		if !strings.Contains(prompt, "Tool: search") || !strings.Contains(prompt, "Arguments: map[q:test]") {
 			t.Fatalf("prompt mismatch: %q", prompt)
 		}
 		return "emulated result", nil
-	})
+	}))
 	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{
 		ToolCall: ToolCall{Name: "search", ID: "1", Args: map[string]any{"q": "test"}},
 		Tool:     mustTool(t, "search"),
@@ -31,7 +31,7 @@ func TestLLMToolEmulatorEmulatesSelectedTool(t *testing.T) {
 }
 
 func TestLLMToolEmulatorPassesThroughUnselectedTool(t *testing.T) {
-	emulator := NewLLMToolEmulator([]string{"search"}, nil)
+	emulator := NewLLMToolEmulator([]string{"search"})
 	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "calc", ID: "2"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Tool("2", "real result"), nil
 	})
@@ -40,5 +40,43 @@ func TestLLMToolEmulatorPassesThroughUnselectedTool(t *testing.T) {
 	}
 	if response.Content != "real result" {
 		t.Fatalf("response mismatch: %#v", response)
+	}
+}
+
+// TestLLMToolEmulatorUsesStructuredOutput exercises the spec-mandated primary
+// path: when a real language.ChatModel is configured (via WithToolEmulatorModel)
+// the middleware routes through language.InvokeStructured instead of the
+// ToolEmulationFunc callback. ToolCallRequest has no model field, so the model
+// must be supplied explicitly via the option.
+func TestLLMToolEmulatorUsesStructuredOutput(t *testing.T) {
+	fake := newStructuredFakeChatModel(messages.AI(`{"output":"emulated"}`))
+	emulator := NewLLMToolEmulator(
+		[]string{"search"},
+		WithToolEmulatorModel(fake),
+		// Deliberately NO WithToolEmulatorFunc — the structured path must win
+		// and the callback (when set) is ignored.
+	)
+
+	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{
+		ToolCall: ToolCall{Name: "search", ID: "1", Args: map[string]any{"q": "test"}},
+		Tool:     mustTool(t, "search"),
+	}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+		return messages.Message{}, errors.New("should not call handler")
+	})
+	if err != nil {
+		t.Fatalf("wrap tool call: %v", err)
+	}
+
+	if fake.structuredCalls != 1 {
+		t.Fatalf("expected InvokeStructured called once, got %d", fake.structuredCalls)
+	}
+	if response.Content != "emulated" {
+		t.Fatalf("content mismatch: %#v", response)
+	}
+	if response.ToolCallID != "1" {
+		t.Fatalf("tool call id mismatch: %#v", response)
+	}
+	if response.Name != "search" {
+		t.Fatalf("name mismatch: %#v", response)
 	}
 }
