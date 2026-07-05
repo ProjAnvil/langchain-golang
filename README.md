@@ -4,7 +4,7 @@
 
 A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain) — the Python AI application framework. Build LLM agents and LLM applications in Go using LangChain's abstractions: chat models, tools, prompts, output parsers, messages, vector stores, retrievers, and the `create_agent` factory.
 
-> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality (`v0.3.0`); the public API may still change before `v1.0.0`.
+> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality (`v0.3.1`); the public API may still change before `v1.0.0`.
 
 ## What this is
 
@@ -94,7 +94,7 @@ The support / gap tables above are the canonical compatibility reference. Open a
 ## Installation
 
 ```bash
-go get github.com/projanvil/langchain-golang@v0.3.0
+go get github.com/projanvil/langchain-golang@v0.3.1
 ```
 
 Requires Go 1.23+.
@@ -151,6 +151,17 @@ func main() {
 ```
 
 For a real model, either construct a `language.ChatModel` from a partner package (e.g. `partners/openai`, `partners/anthropic`, `partners/ollama`) and pass it positionally, **or** resolve one from a bare name string: `agents.CreateAgent(nil, nil, agents.WithAgentModel("openai:gpt-4o"))` (configure via `OPENAI_API_KEY` / `OPENAI_BASE_URL` env vars).
+
+## Documentation
+
+Usage guides live under [`docs/`](docs/) — example-driven, with every snippet offline-friendly (using the in-tree fake model unless noted):
+
+- [Getting started](docs/usage/getting-started.md) — install, configure a provider, run your first agent.
+- [Composing runnables (LCEL)](docs/usage/composition.md) — `Pipe` / `Pipe3-6` / `Parallel` / `Branch` / `Fallbacks` / `Retry`, the Go equivalent of Python's `prompt | model | parser`.
+- [Agents — `CreateAgent`](docs/usage/agents.md) — system prompts, tools, the 15-module middleware chain, structured output, interrupts.
+- [Streaming](docs/usage/streaming.md) — `Agent.StreamEvents`: per-token model deltas + tool/node lifecycle events.
+
+For the full API reference, see the package docs at [pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang). Compile-checked examples also live in each package's `example_test.go`.
 
 ## Repository layout
 
