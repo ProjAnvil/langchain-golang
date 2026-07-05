@@ -6,7 +6,77 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/schema"
 )
+
+// TestLLMToolSelectorMiddlewareUsesStructuredOutput exercises the spec-mandated
+// primary path: when a real language.ChatModel is configured (via
+// WithToolSelectorModel) the middleware routes through language.InvokeStructured
+// instead of the ToolSelectionFunc callback. It also asserts that
+// processSelectionResponse still filters/preserves tools (selected + always
+// include) on the structured path exactly as it does on the callback path.
+func TestLLMToolSelectorMiddlewareUsesStructuredOutput(t *testing.T) {
+	search := mustTool(t, "search")
+	calc := mustTool(t, "calc")
+	weather := mustTool(t, "weather")
+
+	fake := newStructuredFakeChatModel(messages.AI(`{"tools":["calc","search"]}`))
+	selector := NewLLMToolSelectorMiddleware(
+		WithToolSelectorModel(fake),
+		WithToolSelectorAlwaysInclude("weather"),
+		// Deliberately NO WithToolSelectorFunc — the structured path must win
+		// and the callback (when set) is ignored.
+	)
+
+	request, err := NewModelRequest(ModelRequest{
+		Model:    "ignored-when-middleware-model-set",
+		Messages: []messages.Message{messages.Human("find things")},
+		Tools:    []any{search, calc, weather},
+	})
+	if err != nil {
+		t.Fatalf("new model request: %v", err)
+	}
+
+	var seenTools []any
+	_, err = selector.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+		seenTools = request.Tools
+		return ModelResponse{}, nil
+	})
+	if err != nil {
+		t.Fatalf("wrap model call: %v", err)
+	}
+
+	if fake.structuredCalls != 1 {
+		t.Fatalf("expected InvokeStructured called once, got %d", fake.structuredCalls)
+	}
+
+	// Schema must constrain the array to valid tool names (an enum).
+	if len(fake.capturedSchemas) != 1 {
+		t.Fatalf("captured schemas: %#v", fake.capturedSchemas)
+	}
+	props, _ := fake.capturedSchemas[0]["properties"].(map[string]any)
+	toolsProp, _ := props["tools"].(schema.Schema)
+	items, _ := toolsProp["items"].(schema.Schema)
+	enum, _ := items["enum"].([]string)
+	if len(enum) != 2 || enum[0] != "search" || enum[1] != "calc" {
+		t.Fatalf("schema enum should be valid tool names: %#v", enum)
+	}
+
+	if len(seenTools) != 3 {
+		t.Fatalf("tool count mismatch: %#v", seenTools)
+	}
+	// processSelectionResponse preserves availableTools order (search, calc)
+	// then appends always-include tools.
+	if seenTools[0].(interface{ Name() string }).Name() != "search" {
+		t.Fatalf("first selected tool mismatch: %#v", seenTools[0])
+	}
+	if seenTools[1].(interface{ Name() string }).Name() != "calc" {
+		t.Fatalf("second selected tool mismatch: %#v", seenTools[1])
+	}
+	if seenTools[2].(interface{ Name() string }).Name() != "weather" {
+		t.Fatalf("always-included tool mismatch: %#v", seenTools[2])
+	}
+}
 
 func TestLLMToolSelectorMiddlewareFiltersTools(t *testing.T) {
 	search := mustTool(t, "search")
