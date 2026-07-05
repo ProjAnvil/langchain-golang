@@ -4,7 +4,7 @@
 
 A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain) — the Python AI application framework. Build LLM agents and LLM applications in Go using LangChain's abstractions: chat models, tools, prompts, output parsers, messages, vector stores, retrievers, and the `create_agent` factory.
 
-> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality (`v0.1.0`); the public API may still change before `v1.0.0`.
+> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality (`v0.2.0`); the public API may still change before `v1.0.0`.
 
 ## What this is
 
@@ -18,7 +18,7 @@ A Go port of:
 
 It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — only the minimal graph runtime that `create_agent` depends on is internalized as a private package (see [Not supported](#not-supported--out-of-scope)).
 
-All tests green: `go test ./...` — 800+ tests across 51 packages.
+All tests green: `go test ./...` — 920+ tests across 51 packages.
 
 ---
 
@@ -43,7 +43,12 @@ A model ↔ tools agent loop built on an internal graph runtime, with:
 - **`system_prompt`** — plain string **and** templated `PromptTemplate` (with per-call variables).
 - **`state_schema`** — custom graph-state fields via `StateField` + reducers (`WithAgentStateFields`).
 - **`context_schema`** — read-only runtime context over Go `context.Context` (`WithContextValues` / `ContextValue`).
-- **`response_format`** — `ToolStrategy` (fully wired) and `ProviderStrategy` (best-effort JSON).
+- **`response_format`** — `ToolStrategy`, `ProviderStrategy` (provider-native via `language.StructuredCaller` when the model implements it), and `AutoStrategy` (auto-selects between the two from the model's capabilities).
+- **`store`** — cross-thread KV store, injected into each tool call (`WithAgentStore`).
+- **`cache`** — model-response cache wired into the model-call path (`WithAgentCache`).
+- **`interrupt_before` / `interrupt_after`** — pause at named graph nodes (`WithAgentInterruptBefore` / `WithAgentInterruptAfter`).
+- **`model`** — pass a constructed `language.ChatModel`, **or** a bare `provider:model` string resolved via `chatmodels.Resolve` (`WithAgentModel("openai:gpt-4o")`).
+- **`tools`** — explicit tools, **or** Go callables reflected into tools via `core/tools.FromFunc` (the `@tool` equivalent).
 - **`checkpointer`** — in-memory saver; **interrupt / resume** round trips.
 - `recursion_limit`, `name`, `debug`.
 - **Streaming** — `Agent.StreamEvents`: real per-token streaming (model deltas + tool/node lifecycle events) over `runnables.Stream[StreamEvent]`.
@@ -56,7 +61,7 @@ A model ↔ tools agent loop built on an internal graph runtime, with:
 
 ### Partner packages
 
-`partners/openai` · `partners/anthropic` · `partners/ollama` (chat models & embeddings) · `partners/chroma` (vector store). These are both usable integrations and validation aids for the conformance suites.
+`partners/openai` · `partners/anthropic` · `partners/ollama` (chat models & embeddings) · `partners/chroma` (vector store). `partners/openai` is a full integration — its `ChatModel` (Responses API: Invoke/Stream/tool-calling) implements `language.StructuredCaller` and self-registers into `chatmodels.Resolve`, so `WithAgentModel("openai:gpt-4o")` works out of the box. The others are usable integrations and validation aids; adapter slots for more partners.
 
 ---
 
@@ -66,18 +71,17 @@ A model ↔ tools agent loop built on an internal graph runtime, with:
 
 - **`langchain_classic`** — legacy chains, agents, memory, tools, retrievers, vectorstores, storage. The classic `AgentExecutor` is gone; use `agents.CreateAgent`.
 - **A full `langgraph` port**. Only the minimal subset `create_agent` depends on lives here, internalized at `langchain/internal/agentruntime/` (package `agentruntime`, **not exported**). Intentionally absent: subgraphs, streaming modes beyond `events`, time-travel / state history, caching/retry policies, the functional `@entrypoint`/`@task` API, persistent Postgres/SQLite checkpoint backends, and the langgraph CLI/SDK.
-- **Middleware-facing streaming** — middleware cannot observe model deltas mid-stream. As a consequence, **PII streaming-delta redaction** and the **subagent transformer** (`run.subagents`) are not ported (batch redaction works).
+- **Subagent transformer (`transformers` / `run.subagents`)** — not exposed. `transformers` is a langgraph stream-mode construct, and this port holds the `agentruntime` boundary (no stream modes). The motivating feature — **PII streaming-delta redaction** — IS delivered, via a bounded middleware delta layer (`WrapModelStreamHook` + `PIIStreamTransformer`'s lookback buffer); batch redaction also works.
 - **Functional `@entrypoint`/`@task` API**, **time-travel**, **subgraphs** — see above.
 
 ### Limited partner coverage
 
 - Only `openai`, `anthropic`, `ollama`, `chroma`. **No Google/Gemini, AWS, Azure, Pinecone, etc.** — community contributions welcome.
-- `langchain/chatmodels` can parse a model name to a `ChatModelSpec`, but **cannot construct a partner `ChatModel` from a bare name string** (no `create_agent("gpt-4o", ...)` — pass a constructed `language.ChatModel`).
+- `langchain/chatmodels` parses a model name to a `ChatModelSpec` **and** resolves it to a constructed partner `ChatModel` via the Go provider registry (`Resolve` + `RegisterProvider`); `WithAgentModel("openai:gpt-4o")` works end-to-end. (anthropic/ollama/chroma are not yet registered as real Go factories — pass a constructed `language.ChatModel` for those.)
 - `langchain/tools.ToolNode` does **not** support `Command`/`Send` returned from tools, or reflection-based `InjectedState` / `InjectedStore` / `ToolRuntime` argument injection.
 
 ### Other gaps
 
-- `core/tools` has **no callable→Tool schema inference** (no `@tool` equivalent) — construct tools explicitly with a schema.
 - `core/prompts` does not load YAML, Jinja templates, or `lc://` Hub prompts (string + local JSON only).
 - `core/runnables` PNG graph rendering is unsupported (JSON/ASCII/Mermaid are).
 - Python-style dynamic provider import / instance construction is unsupported — construct concrete models in Go.
@@ -90,7 +94,7 @@ The support / gap tables above are the canonical compatibility reference. Open a
 ## Installation
 
 ```bash
-go get github.com/projanvil/langchain-golang@v0.1.0
+go get github.com/projanvil/langchain-golang@v0.2.0
 ```
 
 Requires Go 1.23+.
@@ -146,7 +150,7 @@ func main() {
 }
 ```
 
-For a real model, construct a `language.ChatModel` from a partner package (e.g. `partners/openai`, `partners/anthropic`, `partners/ollama`) and pass it to `agents.CreateAgent`.
+For a real model, either construct a `language.ChatModel` from a partner package (e.g. `partners/openai`, `partners/anthropic`, `partners/ollama`) and pass it positionally, **or** resolve one from a bare name string: `agents.CreateAgent(nil, nil, agents.WithAgentModel("openai:gpt-4o"))` (configure via `OPENAI_API_KEY` / `OPENAI_BASE_URL` env vars).
 
 ## Repository layout
 
