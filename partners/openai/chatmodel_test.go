@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
+	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
@@ -954,4 +955,129 @@ func filterEvents(events []callbacks.Event, kinds ...callbacks.EventKind) []call
 		}
 	}
 	return out
+}
+
+// TestChatModelInvokeStructured drives the language.StructuredCaller native
+// path: InvokeStructured must configure the model for json_schema
+// response_format (deriving the format name from the schema's "title") and
+// delegate to Invoke. The response text is the model's JSON text, verbatim.
+func TestChatModelInvokeStructured(t *testing.T) {
+	var got requestPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"resp_struct",
+			"model":"gpt-test",
+			"output":[{
+				"type":"message",
+				"role":"assistant",
+				"content":[{"type":"output_text","text":"{\"answer\":\"yes\"}"}]
+			}],
+			"usage":{}
+		}`))
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithAPIKey("test-key"),
+		modelconfig.WithModel("gpt-test"),
+	)
+
+	// Compile-time guard: ChatModel (value receiver) must satisfy
+	// language.StructuredCaller so the agent's ProviderStrategy native path
+	// (agents.invokeModel → language.InvokeStructured) can use it. A future
+	// refactor that drops InvokeStructured fails here.
+	var _ language.StructuredCaller = ChatModel{}
+
+	sch := schema.Object(map[string]schema.Schema{
+		"answer": schema.String("yes/no answer"),
+	}, "answer")
+	sch["title"] = "answer_schema"
+
+	response, err := model.InvokeStructured(context.Background(), []messages.Message{
+		messages.Human("answer yes"),
+	}, sch)
+	if err != nil {
+		t.Fatalf("invoke structured: %v", err)
+	}
+
+	if response.Content != `{"answer":"yes"}` {
+		t.Fatalf("content: got %q want %q", response.Content, `{"answer":"yes"}`)
+	}
+	if got.Text == nil {
+		t.Fatal("expected text config")
+	}
+	if got.Text.Format.Type != "json_schema" {
+		t.Fatalf("format type: got %q want %q", got.Text.Format.Type, "json_schema")
+	}
+	if got.Text.Format.Name != "answer_schema" {
+		t.Fatalf("format name (must derive from schema \"title\"): got %q want %q",
+			got.Text.Format.Name, "answer_schema")
+	}
+	if !got.Text.Format.Strict {
+		t.Fatal("expected strict=true")
+	}
+	// Compare the schema as JSON because the request round-trips through JSON
+	// (so []string required-keys decode back as []any, breaking reflect.DeepEqual).
+	gotSchemaJSON, err := json.Marshal(got.Text.Format.Schema)
+	if err != nil {
+		t.Fatalf("marshal got schema: %v", err)
+	}
+	wantSchemaJSON, err := json.Marshal(sch)
+	if err != nil {
+		t.Fatalf("marshal want schema: %v", err)
+	}
+	if string(gotSchemaJSON) != string(wantSchemaJSON) {
+		t.Fatalf("format schema deep-equal:\n got: %s\nwant: %s",
+			gotSchemaJSON, wantSchemaJSON)
+	}
+}
+
+// TestChatModelInvokeStructuredDefaultName covers the fallback branch: when
+// the schema has no (or empty) "title", InvokeStructured must default the
+// response_format name to "response_format".
+func TestChatModelInvokeStructuredDefaultName(t *testing.T) {
+	var got requestPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"resp_struct",
+			"model":"gpt-test",
+			"output":[{
+				"type":"message",
+				"role":"assistant",
+				"content":[{"type":"output_text","text":"{}"}]
+			}],
+			"usage":{}
+		}`))
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	)
+
+	// No "title" key: name must default to "response_format".
+	sch := schema.Object(map[string]schema.Schema{
+		"answer": schema.String("yes/no answer"),
+	}, "answer")
+
+	if _, err := model.InvokeStructured(context.Background(), []messages.Message{
+		messages.Human("answer"),
+	}, sch); err != nil {
+		t.Fatalf("invoke structured: %v", err)
+	}
+	if got.Text == nil {
+		t.Fatal("expected text config")
+	}
+	if got.Text.Format.Name != "response_format" {
+		t.Fatalf("default name: got %q want %q",
+			got.Text.Format.Name, "response_format")
+	}
 }

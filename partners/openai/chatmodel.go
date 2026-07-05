@@ -129,6 +129,24 @@ func (m ChatModel) WithStructuredOutput(
 	return next
 }
 
+// InvokeStructured implements language.StructuredCaller, producing a message
+// whose text is JSON conforming to sch via OpenAI's native json_schema
+// response_format. Used by the agent's ProviderStrategy native path
+// (agents.invokeModel → language.InvokeStructured). It configures the model
+// for structured output (deriving a name from sch's "title" if present, else
+// "response_format"; strict=true) and delegates to Invoke.
+func (m ChatModel) InvokeStructured(
+	ctx context.Context,
+	input []messages.Message,
+	sch schema.Schema,
+) (messages.Message, error) {
+	name := "response_format"
+	if title, ok := sch["title"].(string); ok && title != "" {
+		name = title
+	}
+	return m.WithStructuredOutput(name, sch, true).Invoke(ctx, input)
+}
+
 // Capabilities returns the adapter capability declaration.
 func (m ChatModel) Capabilities() language.ChatModelCapabilities {
 	return language.ChatModelCapabilities{
