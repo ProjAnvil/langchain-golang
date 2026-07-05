@@ -186,6 +186,11 @@ func (m ChatModel) Capabilities() language.ChatModelCapabilities {
 	}
 }
 
+// LLMType reports the model's Python "_llm_type" identifier ("ollama-chat"),
+// mirroring Python's BaseChatModel._llm_type attribute. Used by middleware
+// (e.g. SummarizationMiddleware) for provider-aware behavior.
+func (m ChatModel) LLMType() string { return "ollama-chat" }
+
 func (m ChatModel) createChat(
 	ctx context.Context,
 	input []messages.Message,
