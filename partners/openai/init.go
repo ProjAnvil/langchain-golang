@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"os"
+
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/langchain/chatmodels"
@@ -21,10 +23,25 @@ func init() {
 }
 
 // openaiFactory adapts the chatmodels.ProviderFactory signature to NewChatModel.
-// It applies the model name; API key / base URL / other settings come from
-// modelconfig defaults or may be set on the returned ChatModel by the caller
-// (e.g. via WithAgentModel options plumbing in a later task). opts is reserved
-// for future expansion (YAGNI: not parsed today).
+//
+// It reads OPENAI_API_KEY and OPENAI_BASE_URL from the environment itself
+// (via os.LookupEnv, only applying when set and non-empty) and passes them as
+// modelconfig.WithAPIKey / modelconfig.WithBaseURL alongside WithModel(model).
+// This is the natural home for env->config mapping and matches the OpenAI SDK
+// convention: core/modelconfig deliberately does NOT read env vars (verified:
+// no os.Getenv in core/modelconfig), so without this the resolved model would
+// have no API key / base URL and 401 in production. NewChatModel's built-in
+// default BaseURL (https://api.openai.com/v1) still applies when the env var
+// is unset/empty.
+//
+// opts is reserved for future expansion (YAGNI: not parsed today).
 func openaiFactory(model string, opts map[string]any) (language.ChatModel, error) {
-	return NewChatModel(modelconfig.WithModel(model)), nil
+	configOpts := []modelconfig.Option{modelconfig.WithModel(model)}
+	if v, ok := os.LookupEnv("OPENAI_API_KEY"); ok && v != "" {
+		configOpts = append(configOpts, modelconfig.WithAPIKey(v))
+	}
+	if v, ok := os.LookupEnv("OPENAI_BASE_URL"); ok && v != "" {
+		configOpts = append(configOpts, modelconfig.WithBaseURL(v))
+	}
+	return NewChatModel(configOpts...), nil
 }
