@@ -310,6 +310,8 @@ type Options struct {
 	// is the intended resume path for boundary interrupts (which have no
 	// in-node Interrupt() call to feed a value back to). An explicit non-nil
 	// Resume is still required to feed a value to a node's in-node Interrupt.
+	// To force a fresh start instead of resuming, use a new ThreadID or ensure
+	// no checkpoint exists for the current ThreadID.
 	Resume any
 }
 

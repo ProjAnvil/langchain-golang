@@ -223,3 +223,42 @@ func TestLLMToolSelectorMiddlewareRequiresHumanMessage(t *testing.T) {
 		t.Fatalf("expected no user message error, got %v", err)
 	}
 }
+
+// TestLLMToolSelectorMiddlewareStructuredBeatsCallback locks the
+// structured-precedence-over-callback behavior: when BOTH a real ChatModel and
+// a ToolSelectionFunc are configured, the structured (InvokeStructured) path
+// runs and the callback is NEVER invoked. (The existing structured-path test
+// omits the callback; this closes that gap.)
+func TestLLMToolSelectorMiddlewareStructuredBeatsCallback(t *testing.T) {
+	search := mustTool(t, "search")
+	calc := mustTool(t, "calc")
+
+	fake := newStructuredFakeChatModel(messages.AI(`{"tools":["search"]}`))
+	selector := NewLLMToolSelectorMiddleware(
+		WithToolSelectorModel(fake),
+		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+			t.Fatalf("ToolSelectionFunc callback must not be invoked when structured path is available")
+			return nil, nil
+		}),
+	)
+
+	request, err := NewModelRequest(ModelRequest{
+		Model:    "ignored",
+		Messages: []messages.Message{messages.Human("find things")},
+		Tools:    []any{search, calc},
+	})
+	if err != nil {
+		t.Fatalf("new model request: %v", err)
+	}
+
+	_, err = selector.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+		return ModelResponse{}, nil
+	})
+	if err != nil {
+		t.Fatalf("wrap model call: %v", err)
+	}
+
+	if fake.structuredCalls != 1 {
+		t.Fatalf("expected InvokeStructured called once, got %d", fake.structuredCalls)
+	}
+}

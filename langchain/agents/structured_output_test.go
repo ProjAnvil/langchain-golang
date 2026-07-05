@@ -458,3 +458,39 @@ func TestProviderStrategyFallsBackWithoutStructuredCaller(t *testing.T) {
 		t.Fatalf("expected structured_response.condition=rainy, got %#v", state["structured_response"])
 	}
 }
+
+// TestProviderStrategyUsesStructuredCallerWithTools closes the 4.3 coverage
+// gap: with a NON-nil tool list, invokeModel still routes through
+// language.InvokeStructured (native path) for a ProviderStrategy + StructuredCaller
+// model. This proves the BindTools-then-StructuredCaller ordering in invokeModel
+// does not drop the native route when tools are bound.
+func TestProviderStrategyUsesStructuredCallerWithTools(t *testing.T) {
+	strategy := NewProviderStrategy(weatherSchema())
+
+	model := &nativeStructuredSequenceModel{
+		sequenceModel: &sequenceModel{responses: []messages.Message{
+			messages.AI(`{"temperature":72,"condition":"sunny"}`),
+		}},
+	}
+
+	agent, err := CreateAgent(model, []coretools.Tool{newEchoTool(t)}, WithAgentResponseFormat(strategy))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if !model.nativeCalled {
+		t.Fatal("expected InvokeStructured (native path) to be called even when tools are bound")
+	}
+	if len(model.sequenceModel.invocations) != 0 {
+		t.Fatalf("expected zero plain Invoke calls; got %d", len(model.sequenceModel.invocations))
+	}
+	structured, ok := state["structured_response"].(map[string]any)
+	if !ok || structured["condition"] != "sunny" {
+		t.Fatalf("expected structured_response.condition=sunny, got %#v", state["structured_response"])
+	}
+}

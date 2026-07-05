@@ -80,3 +80,36 @@ func TestLLMToolEmulatorUsesStructuredOutput(t *testing.T) {
 		t.Fatalf("name mismatch: %#v", response)
 	}
 }
+
+// TestLLMToolEmulatorStructuredBeatsCallback locks the
+// structured-precedence-over-callback behavior: when BOTH a real ChatModel and
+// a ToolEmulationFunc are configured, the structured (InvokeStructured) path
+// runs and the callback is NEVER invoked.
+func TestLLMToolEmulatorStructuredBeatsCallback(t *testing.T) {
+	fake := newStructuredFakeChatModel(messages.AI(`{"output":"emulated"}`))
+	emulator := NewLLMToolEmulator(
+		[]string{"search"},
+		WithToolEmulatorModel(fake),
+		WithToolEmulatorFunc(func(ToolCallRequest, string) (string, error) {
+			t.Fatalf("ToolEmulationFunc callback must not be invoked when structured path is available")
+			return "", nil
+		}),
+	)
+
+	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{
+		ToolCall: ToolCall{Name: "search", ID: "1", Args: map[string]any{"q": "test"}},
+		Tool:     mustTool(t, "search"),
+	}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+		return messages.Message{}, errors.New("should not call handler")
+	})
+	if err != nil {
+		t.Fatalf("wrap tool call: %v", err)
+	}
+
+	if fake.structuredCalls != 1 {
+		t.Fatalf("expected InvokeStructured called once, got %d", fake.structuredCalls)
+	}
+	if response.Content != "emulated" {
+		t.Fatalf("content mismatch: %#v", response)
+	}
+}
