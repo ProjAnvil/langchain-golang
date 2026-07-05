@@ -265,6 +265,15 @@ type modelRequestOverride struct {
 	systemMessage    *messages.Message
 	systemPromptSet  bool
 	systemPrompt     *string
+	// Task 6 additions (mirror Python's _ModelRequestOverrides, types.py:72-82):
+	toolChoiceSet     bool
+	toolChoice        any
+	responseFormatSet bool
+	responseFormat    any
+	modelSettingsSet  bool
+	modelSettings     map[string]any
+	stateSet          bool
+	state             map[string]any
 }
 
 func WithModel(model any) ModelRequestOverride {
@@ -309,6 +318,22 @@ func WithSystemPromptNone() ModelRequestOverride {
 	}
 }
 
+func WithToolChoice(choice any) ModelRequestOverride {
+	return func(o *modelRequestOverride) { o.toolChoiceSet = true; o.toolChoice = choice }
+}
+
+func WithResponseFormat(rf any) ModelRequestOverride {
+	return func(o *modelRequestOverride) { o.responseFormatSet = true; o.responseFormat = rf }
+}
+
+func WithModelSettings(settings map[string]any) ModelRequestOverride {
+	return func(o *modelRequestOverride) { o.modelSettingsSet = true; o.modelSettings = settings }
+}
+
+func WithState(state map[string]any) ModelRequestOverride {
+	return func(o *modelRequestOverride) { o.stateSet = true; o.state = state }
+}
+
 func (r ModelRequest) Override(opts ...ModelRequestOverride) (ModelRequest, error) {
 	override := modelRequestOverride{}
 	for _, opt := range opts {
@@ -345,6 +370,18 @@ func (r ModelRequest) Override(opts ...ModelRequestOverride) (ModelRequest, erro
 	if override.systemMessageSet {
 		next.SystemMessage = override.systemMessage
 		next.SystemPrompt = ""
+	}
+	if override.toolChoiceSet {
+		next.ToolChoice = override.toolChoice
+	}
+	if override.responseFormatSet {
+		next.ResponseFormat = override.responseFormat
+	}
+	if override.modelSettingsSet {
+		next.ModelSettings = cloneAnyMap(override.modelSettings)
+	}
+	if override.stateSet {
+		next.State = cloneAnyMap(override.state)
 	}
 
 	return next, nil
