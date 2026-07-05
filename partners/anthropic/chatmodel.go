@@ -182,6 +182,13 @@ func (m ChatModel) Capabilities() language.ChatModelCapabilities {
 	}
 }
 
+// LLMType reports the model's Python "_llm_type" identifier
+// ("anthropic-chat"), mirroring Python's BaseChatModel._llm_type attribute.
+// Used by middleware (e.g. SummarizationMiddleware) to tune provider-specific
+// behavior. Matches the prefix Python's _get_approximate_token_counter checks
+// (summarization.py:210).
+func (m ChatModel) LLMType() string { return "anthropic-chat" }
+
 // structuredTool adapts a JSON schema into a tools.Tool for anthropic's
 // function_calling structured-output path (InvokeStructured). Only the schema
 // surface (Name/Description/ArgsSchema) is used to build the request tool
@@ -504,8 +511,9 @@ func (r messagePayload) toMessage() messages.Message {
 	message.ContentBlocks = blocks
 	message.ToolCalls = toolCalls
 	message.ResponseMetadata = map[string]any{
-		"model":       r.Model,
-		"stop_reason": r.StopReason,
+		"model":          r.Model,
+		"model_provider": "anthropic",
+		"stop_reason":    r.StopReason,
 	}
 	message.UsageMetadata = r.Usage.toUsageMetadata()
 	return message
