@@ -1,7 +1,9 @@
 package agents
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
+	coretools "github.com/projanvil/langchain-golang/core/tools"
 )
 
 func weatherSchema() schema.Schema {
@@ -339,5 +342,119 @@ func TestProviderStrategyBindingParseContentBlocks(t *testing.T) {
 	want := map[string]any{"temperature": float64(75), "condition": "sunny"}
 	if !reflect.DeepEqual(parsed, want) {
 		t.Fatalf("parsed mismatch: got %#v want %#v", parsed, want)
+	}
+}
+
+// nativeStructuredSequenceModel embeds *sequenceModel to satisfy
+// language.ChatModel while also implementing language.StructuredCaller. It
+// records whether InvokeStructured was called (the native path) and shares the
+// response queue + invocations log with the embedded sequenceModel so the test
+// can detect whether plain Invoke was called instead (the fallback path).
+type nativeStructuredSequenceModel struct {
+	*sequenceModel
+	nativeCalled bool
+	nativeSchema schema.Schema
+}
+
+// InvokeStructured records the native call and dequeues the next response from
+// the embedded sequenceModel's queue. It deliberately does NOT call the
+// embedded Invoke, so len(sequenceModel.invocations) stays 0 when the native
+// path is used — the test asserts this to prove ProviderStrategy routes
+// through InvokeStructured instead of Invoke.
+func (m *nativeStructuredSequenceModel) InvokeStructured(
+	ctx context.Context,
+	input []messages.Message,
+	sch schema.Schema,
+) (messages.Message, error) {
+	m.nativeCalled = true
+	m.nativeSchema = sch
+	m.sequenceModel.mu.Lock()
+	defer m.sequenceModel.mu.Unlock()
+	if m.sequenceModel.idx >= len(m.sequenceModel.responses) {
+		return messages.Message{}, fmt.Errorf("nativeStructuredSequenceModel: no more responses (call %d)", m.sequenceModel.idx+1)
+	}
+	resp := m.sequenceModel.responses[m.sequenceModel.idx]
+	m.sequenceModel.idx++
+	return resp, nil
+}
+
+// BindTools forwards to the embedded sequenceModel but returns the wrapper so
+// the bound model still implements StructuredCaller (the bound value is what
+// invokeModel inspects against the StructuredCaller interface — see the brief's
+// "BindTools must run before the StructuredCaller check" constraint).
+func (m *nativeStructuredSequenceModel) BindTools(boundTools []coretools.Tool) (language.ChatModel, error) {
+	if _, err := m.sequenceModel.BindTools(boundTools); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// TestProviderStrategyUsesStructuredCaller proves Task 4.3: when the agent's
+// ResponseFormat is a ProviderStrategy and the bound model implements
+// language.StructuredCaller, the model call routes through
+// language.InvokeStructured (the native path) instead of plain model.Invoke.
+// The post-hoc detectStructuredOutput parse still extracts structured_response.
+func TestProviderStrategyUsesStructuredCaller(t *testing.T) {
+	strategy := NewProviderStrategy(weatherSchema())
+
+	model := &nativeStructuredSequenceModel{
+		sequenceModel: &sequenceModel{responses: []messages.Message{
+			messages.AI(`{"temperature":72,"condition":"sunny"}`),
+		}},
+	}
+
+	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(strategy))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if !model.nativeCalled {
+		t.Fatal("expected InvokeStructured (native path) to be called for ProviderStrategy + StructuredCaller model")
+	}
+	if len(model.sequenceModel.invocations) != 0 {
+		t.Fatalf("expected zero plain Invoke calls on the fallback path; got %d", len(model.sequenceModel.invocations))
+	}
+	if !reflect.DeepEqual(model.nativeSchema, weatherSchema()) {
+		t.Fatalf("native InvokeStructured schema mismatch: got %#v want %#v", model.nativeSchema, weatherSchema())
+	}
+	structured, ok := state["structured_response"].(map[string]any)
+	if !ok || structured["condition"] != "sunny" {
+		t.Fatalf("expected structured_response.condition=sunny, got %#v", state["structured_response"])
+	}
+}
+
+// TestProviderStrategyFallsBackWithoutStructuredCaller proves the fallback
+// path: when the bound model does NOT implement StructuredCaller, the existing
+// Invoke + post-hoc JSON-decode path still extracts structured_response. This
+// preserves backward compatibility for non-native models.
+func TestProviderStrategyFallsBackWithoutStructuredCaller(t *testing.T) {
+	strategy := NewProviderStrategy(weatherSchema())
+
+	// Plain sequenceModel does NOT implement StructuredCaller.
+	model := &sequenceModel{responses: []messages.Message{
+		messages.AI(`{"temperature":55,"condition":"rainy"}`),
+	}}
+
+	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(strategy))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in London?")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if len(model.invocations) != 1 {
+		t.Fatalf("expected exactly one plain Invoke call (fallback path); got %d", len(model.invocations))
+	}
+	structured, ok := state["structured_response"].(map[string]any)
+	if !ok || structured["condition"] != "rainy" {
+		t.Fatalf("expected structured_response.condition=rainy, got %#v", state["structured_response"])
 	}
 }

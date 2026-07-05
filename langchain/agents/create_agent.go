@@ -64,6 +64,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/prompts"
+	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/stores"
 	"github.com/projanvil/langchain-golang/core/streamevents"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
@@ -878,7 +879,7 @@ func buildModelNode(
 			if sink := sinkFromContext(c); sink != nil {
 				return invokeModelStreaming(c, r, sink, mws)
 			}
-			return invokeModel(c, r)
+			return invokeModel(c, r, providerStrategySchema(providerStrategy))
 		}
 		for i := len(mws) - 1; i >= 0; i-- {
 			hook, ok := mws[i].(WrapModelCallHook)
@@ -1158,9 +1159,39 @@ func detectStructuredOutput(
 	return nil, false, nil
 }
 
+// providerStrategySchema returns the JSON schema the model should enforce
+// natively when the agent's ResponseFormat is a ProviderStrategy, or nil when
+// no ProviderStrategy is in play (or no schema is available). A nil/empty
+// return tells invokeModel to skip the native StructuredCaller path and fall
+// through to plain model.Invoke.
+func providerStrategySchema(providerStrategy *ProviderStrategy) schema.Schema {
+	if providerStrategy == nil {
+		return nil
+	}
+	return providerStrategy.Schema
+}
+
 // invokeModel runs the actual chat model call for a (possibly
 // middleware-overridden) ModelRequest, binding req.Tools if present.
-func invokeModel(ctx context.Context, req middleware.ModelRequest) (middleware.ModelResponse, error) {
+//
+// When structuredSchema is non-empty AND the (possibly tool-bound) model
+// implements language.StructuredCaller, the call routes through
+// language.InvokeStructured — the provider-native structured-output path
+// (e.g. OpenAI's response_format). The native path produces JSON text that
+// detectStructuredOutput's post-hoc parse still handles, so the
+// structured_response plumbing is unchanged. Models that do NOT implement
+// StructuredCaller fall through to plain model.Invoke, preserving the existing
+// post-hoc JSON-decode behavior.
+//
+// Tool binding (if any) runs BEFORE the StructuredCaller check, so a model
+// whose bound form implements StructuredCaller still takes the native path —
+// the bound value (not the original) is what gets passed to InvokeStructured.
+//
+// The streaming path (invokeModelStreaming) is intentionally out of scope:
+// StructuredCaller only exposes a non-streaming InvokeStructured, so streaming
+// + ProviderStrategy continues to work via the existing post-hoc
+// detectStructuredOutput parse on the assembled message.
+func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSchema schema.Schema) (middleware.ModelResponse, error) {
 	model, ok := req.Model.(language.ChatModel)
 	if !ok || model == nil {
 		return middleware.ModelResponse{}, fmt.Errorf("agents: ModelRequest.Model must be a language.ChatModel, got %T", req.Model)
@@ -1181,6 +1212,25 @@ func invokeModel(ctx context.Context, req middleware.ModelRequest) (middleware.M
 	if req.SystemMessage != nil {
 		invokeMessages = append([]messages.Message{*req.SystemMessage}, req.Messages...)
 	}
+
+	// ProviderStrategy native path: when the caller supplied a schema and
+	// the (possibly bound) model implements StructuredCaller, route the call
+	// through language.InvokeStructured, which prefers the native path. The
+	// up-front interface check is intentional: language.InvokeStructured
+	// would otherwise fall back to its own Invoke + JSON-validate path for
+	// non-StructuredCaller models, which would surface schema-violation
+	// errors here rather than letting the existing detectStructuredOutput
+	// post-hoc parse own that behavior (preserving backward compatibility).
+	if len(structuredSchema) > 0 {
+		if _, ok := model.(language.StructuredCaller); ok {
+			result, err := language.InvokeStructured(ctx, model, invokeMessages, structuredSchema)
+			if err != nil {
+				return middleware.ModelResponse{}, err
+			}
+			return middleware.ModelResponse{Result: []messages.Message{result}}, nil
+		}
+	}
+
 	result, err := model.Invoke(ctx, invokeMessages)
 	if err != nil {
 		return middleware.ModelResponse{}, err
