@@ -4,7 +4,7 @@
 
 A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain) — the Python AI application framework. Build LLM agents and LLM applications in Go using LangChain's abstractions: chat models, tools, prompts, output parsers, messages, vector stores, retrievers, and the `create_agent` factory.
 
-> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality (`v0.2.0`); the public API may still change before `v1.0.0`.
+> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality (`v0.3.0`); the public API may still change before `v1.0.0`.
 
 ## What this is
 
@@ -94,7 +94,7 @@ The support / gap tables above are the canonical compatibility reference. Open a
 ## Installation
 
 ```bash
-go get github.com/projanvil/langchain-golang@v0.2.0
+go get github.com/projanvil/langchain-golang@v0.3.0
 ```
 
 Requires Go 1.23+.
