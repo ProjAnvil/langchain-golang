@@ -24,6 +24,11 @@ type ChatModel struct {
 	options    map[string]any
 }
 
+// Compile-time guard: ChatModel (value receiver) satisfies
+// language.StructuredCaller so the agent's ProviderStrategy native path can
+// use it.
+var _ language.StructuredCaller = ChatModel{}
+
 // NewChatModel creates an Ollama chat model adapter.
 func NewChatModel(opts ...modelconfig.Option) ChatModel {
 	cfg := modelconfig.New(opts...)
@@ -148,6 +153,25 @@ func (m ChatModel) WithStructuredOutput(
 	next := m
 	next.format = outputSchema
 	return next
+}
+
+// InvokeStructured implements language.StructuredCaller via Ollama's native
+// json_schema format — Python's DEFAULT for with_structured_output
+// (langchain_ollama/chat_models.py:1448,1751 `format=response_format`). It
+// configures the model for structured output (WithStructuredOutput sets the
+// request `format` field to the JSON schema; name/strict are unused by the
+// Ollama API) and delegates to Invoke. The model returns JSON text conforming
+// to sch, matching language.InvokeStructured's "returned text is JSON" contract.
+func (m ChatModel) InvokeStructured(
+	ctx context.Context,
+	input []messages.Message,
+	sch schema.Schema,
+) (messages.Message, error) {
+	name := "response_format"
+	if title, ok := sch["title"].(string); ok && title != "" {
+		name = title
+	}
+	return m.WithStructuredOutput(name, sch, true).Invoke(ctx, input)
 }
 
 // Capabilities returns the adapter capability declaration.
