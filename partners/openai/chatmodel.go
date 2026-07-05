@@ -166,6 +166,11 @@ func (m ChatModel) Capabilities() language.ChatModelCapabilities {
 	}
 }
 
+// LLMType reports the model's Python "_llm_type" identifier, used by
+// middleware (e.g. SummarizationMiddleware) to tune provider-specific
+// behavior. Mirrors Python's `BaseChatModel._llm_type` attribute.
+func (m ChatModel) LLMType() string { return "openai-chat" }
+
 func (m ChatModel) createResponse(
 	ctx context.Context,
 	input []messages.Message,
@@ -366,7 +371,8 @@ func (r responsePayload) toMessage() messages.Message {
 	message.ToolCalls = toolCalls
 	message.InvalidToolCalls = invalidToolCalls
 	message.ResponseMetadata = map[string]any{
-		"model": r.Model,
+		"model":          r.Model,
+		"model_provider": "openai",
 	}
 	message.UsageMetadata = messages.UsageMetadata{
 		InputTokens:  r.Usage.InputTokens,

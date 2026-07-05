@@ -79,6 +79,18 @@ type WrapModelStreamHook interface {
 	TransformModelStream(transform DeltaTransform) DeltaTransform
 }
 
+// LLMTypeProvider is implemented by language.ChatModel values that can report
+// their Python "_llm_type" identifier (e.g. "anthropic-chat", "ollama-chat",
+// "openai-chat"). SummarizationMiddleware duck-types it to tune the
+// approximate token counter per provider family, mirroring Python's
+// `_get_approximate_token_counter(model)` check on `model._llm_type`
+// (langchain_v1/langchain/agents/middleware/summarization.py:208-216). It is
+// optional: models that do not implement it fall back to the default counter,
+// just as Python falls through when `_llm_type` is unrecognized.
+type LLMTypeProvider interface {
+	LLMType() string
+}
+
 func (c ToolCall) Clone() ToolCall {
 	return ToolCall{
 		Name: c.Name,
