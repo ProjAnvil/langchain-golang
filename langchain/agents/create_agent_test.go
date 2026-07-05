@@ -4,20 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/caches"
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/stores"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
+	"github.com/projanvil/langchain-golang/langchain/chatmodels"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/checkpoint"
 	graphpkg "github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
+	"github.com/projanvil/langchain-golang/partners/openai"
 )
 
 // sequenceModel is a minimal test double implementing language.ChatModel. It
@@ -1006,4 +1012,156 @@ func TestStreamEvents_CacheDoesNotSuppressEvents(t *testing.T) {
 
 	runAndAssert("first StreamEvents")
 	runAndAssert("second StreamEvents (identical, would be a cache hit without the streaming guard)")
+}
+
+// TestCreateAgent_ModelString covers Task 5.7 Part B: WithAgentModel resolves
+// a "provider:model" string via chatmodels.ParseModelString + chatmodels.Resolve
+// into a real ChatModel, which then flows through the rest of CreateAgent as if
+// the caller had passed it positionally. The positional `model` arg may be nil
+// when WithAgentModel is used; ModelString OVERRIDES the positional arg when
+// both are supplied (documented precedence).
+//
+// To avoid real HTTP and avoid colliding with the real "openai" factory the
+// blank-import on create_agent.go brings into this binary, the test registers a
+// TEST-ONLY factory under a unique provider name. That factory wraps
+// openai.NewChatModel with a custom BaseURL pointing at a local httptest server
+// (mirroring partners/openai/chatmodel_test.go's canned Responses-API shape).
+func TestCreateAgent_ModelString(t *testing.T) {
+	const provider = "test-openai-5x7"
+	const wantContent = "Hello from test server"
+
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		if r.URL.Path != "/responses" {
+			t.Errorf("path: got %q want /responses", r.URL.Path)
+		}
+		_, _ = fmt.Fprintf(w, `{
+			"id":"resp_test",
+			"model":"gpt-test",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}],
+			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
+		}`, wantContent)
+	}))
+	defer server.Close()
+
+	chatmodels.RegisterProvider(provider, func(model string, opts map[string]any) (language.ChatModel, error) {
+		return openai.NewChatModel(
+			modelconfig.WithBaseURL(server.URL),
+			modelconfig.WithAPIKey("test-key"),
+			modelconfig.WithModel(model),
+		), nil
+	})
+
+	t.Run("nil positional model resolved from string", func(t *testing.T) {
+		atomic.StoreInt32(&requestCount, 0)
+		agent, err := CreateAgent(nil, nil, WithAgentModel(provider+":gpt-test"))
+		if err != nil {
+			t.Fatalf("CreateAgent: unexpected error: %v", err)
+		}
+		out, err := agent.Invoke(context.Background(), []messages.Message{
+			messages.Human("hello"),
+		})
+		if err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		if len(out) != 2 {
+			t.Fatalf("expected 2 messages (human+ai), got %d: %#v", len(out), out)
+		}
+		if out[1].Role != messages.RoleAI || out[1].Content != wantContent {
+			t.Fatalf("AI message: got role=%q content=%q want role=%q content=%q",
+				out[1].Role, out[1].Content, messages.RoleAI, wantContent)
+		}
+		if got := atomic.LoadInt32(&requestCount); got != 1 {
+			t.Fatalf("expected exactly 1 HTTP request to test server, got %d", got)
+		}
+	})
+
+	t.Run("ModelString overrides positional model", func(t *testing.T) {
+		// The positional fake would error if invoked. The resolved
+		// (string-derived) model wins; the fake is never consulted.
+		atomic.StoreInt32(&requestCount, 0)
+		fake := &erroringModel{}
+		agent, err := CreateAgent(fake, nil, WithAgentModel(provider+":gpt-test"))
+		if err != nil {
+			t.Fatalf("CreateAgent: unexpected error: %v", err)
+		}
+		out, err := agent.Invoke(context.Background(), []messages.Message{
+			messages.Human("hello"),
+		})
+		if err != nil {
+			t.Fatalf("Invoke: %v", err)
+		}
+		if len(out) != 2 || out[1].Content != wantContent {
+			t.Fatalf("unexpected output: %#v", out)
+		}
+		if got := atomic.LoadInt32(&requestCount); got != 1 {
+			t.Fatalf("expected exactly 1 HTTP request to test server (positional model should not be used), got %d", got)
+		}
+		if fake.invoked {
+			t.Fatal("positional fake model was invoked; ModelString should override the positional arg")
+		}
+	})
+
+	t.Run("invalid ModelString surfaces parse error", func(t *testing.T) {
+		// Malformed string (no colon) is rejected by ParseModelString; the
+		// positional nil never reaches the "model is required" check because
+		// resolution fails first.
+		_, err := CreateAgent(nil, nil, WithAgentModel("no-colon-here"))
+		if err == nil {
+			t.Fatal("expected parse error for malformed ModelString, got nil")
+		}
+	})
+
+	t.Run("unknown provider surfaces Resolve error", func(t *testing.T) {
+		_, err := CreateAgent(nil, nil, WithAgentModel("definitely-not-registered-xyz:m"))
+		if err == nil {
+			t.Fatal("expected Resolve error for unknown provider, got nil")
+		}
+	})
+
+	t.Run("nil positional model with no ModelString still errors", func(t *testing.T) {
+		// The reorder must not regress the existing "model is required"
+		// check: with neither positional model nor ModelString, CreateAgent
+		// returns the same error as before.
+		_, err := CreateAgent(nil, nil)
+		if err == nil {
+			t.Fatal("expected error for nil positional model and no ModelString, got nil")
+		}
+	})
+}
+
+// erroringModel is a minimal language.ChatModel whose Invoke always errors. It
+// is used by the ModelString-override subtest to assert the positional model is
+// NOT consulted when ModelString is set. invoked is set in Invoke/BindTools so
+// the test can fail loudly if the resolved model did NOT actually win.
+type erroringModel struct {
+	invoked bool
+}
+
+func (m *erroringModel) Invoke(context.Context, []messages.Message, ...runnables.Option) (messages.Message, error) {
+	m.invoked = true
+	return messages.Message{}, fmt.Errorf("erroringModel: Invoke should not be called when ModelString is set")
+}
+
+func (m *erroringModel) Batch(context.Context, [][]messages.Message, ...runnables.Option) ([]messages.Message, error) {
+	m.invoked = true
+	return nil, fmt.Errorf("erroringModel: Batch should not be called when ModelString is set")
+}
+
+func (m *erroringModel) Stream(context.Context, []messages.Message, ...runnables.Option) (runnables.Stream[messages.Message], error) {
+	m.invoked = true
+	return nil, fmt.Errorf("erroringModel: Stream should not be called when ModelString is set")
+}
+
+func (m *erroringModel) InputSchema() schema.Schema  { return schema.Object(map[string]schema.Schema{}) }
+func (m *erroringModel) OutputSchema() schema.Schema { return schema.Object(map[string]schema.Schema{}) }
+
+func (m *erroringModel) BindTools([]coretools.Tool) (language.ChatModel, error) {
+	m.invoked = true
+	return m, fmt.Errorf("erroringModel: BindTools should not be called when ModelString is set")
+}
+
+func (m *erroringModel) Capabilities() language.ChatModelCapabilities {
+	return language.ChatModelCapabilities{ToolCalling: true}
 }

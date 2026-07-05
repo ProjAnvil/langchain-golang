@@ -69,11 +69,21 @@ import (
 	"github.com/projanvil/langchain-golang/core/streamevents"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
+	"github.com/projanvil/langchain-golang/langchain/chatmodels"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/channels"
 	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/checkpoint"
 	graphpkg "github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
 	agenttools "github.com/projanvil/langchain-golang/langchain/tools"
+
+	// Blank-import partners/openai so "openai:..." resolves out-of-the-box via
+	// its init() self-registration with chatmodels. Importing partners/openai
+	// here is the Go equivalent of Python's "import langchain_openai" making
+	// `model="openai:..."` just work. There is no import cycle: neither
+	// partners/openai nor langchain/chatmodels imports langchain/agents
+	// (verified). Callers wanting a different provider must blank-import that
+	// provider's partner package themselves.
+	_ "github.com/projanvil/langchain-golang/partners/openai"
 )
 
 // Node names used by the compiled graph, mirroring Python's "model"/"tools"
@@ -215,6 +225,11 @@ type AgentOptions struct {
 	// model_delta/model_end events always fire. Keyed by (promptString,
 	// llmString); see cacheKey in create_agent.go.
 	Cache caches.Cache
+	// ModelString, when non-empty, is a "provider:model" string (e.g.
+	// "openai:gpt-4o") resolved at CreateAgent time via
+	// chatmodels.ParseModelString + chatmodels.Resolve into the ChatModel the
+	// agent uses. See WithAgentModel for the full precedence rule.
+	ModelString string
 }
 
 // AgentOption applies a functional option to AgentOptions.
@@ -374,6 +389,35 @@ func WithAgentResponseFormat(format any) AgentOption {
 	return func(o *AgentOptions) { o.ResponseFormat = format }
 }
 
+// WithAgentModel configures the agent's ChatModel from a "provider:model"
+// string (e.g. "openai:gpt-4o"), mirroring Python's
+// `create_agent(model="openai:gpt-4o")` bare-string overload. When set,
+// CreateAgent resolves the string via chatmodels.ParseModelString (strict
+// "provider:model" parser) + chatmodels.Resolve (registered ProviderFactory
+// lookup) into a language.ChatModel and uses it as the agent's model.
+//
+// Precedence: when both the positional `model` arg and WithAgentModel are
+// supplied, the ModelString wins (the positional arg is dropped). This
+// matches Python's `create_agent(model=...)` taking a single model value and
+// keeps the positional path (which remains the common case for callers with
+// an already-constructed ChatModel) backward compatible: WithAgentModel is
+// only set when the caller explicitly opts into the bare-string form.
+//
+// The positional `model` arg may be nil when WithAgentModel is set, so
+// `CreateAgent(nil, nil, WithAgentModel("openai:gpt-4o"))` works end-to-end.
+// When neither is supplied, CreateAgent returns its existing "model is
+// required" error. A malformed string or unknown provider surfaces the
+// underlying chatmodels parse/resolve error verbatim.
+//
+// Provider availability: a Go ProviderFactory must be registered for the
+// provider half via chatmodels.RegisterProvider. The blank-import of
+// partners/openai in this package makes "openai:..." resolve out-of-the-box;
+// other providers require the caller to blank-import the relevant partner
+// package.
+func WithAgentModel(spec string) AgentOption {
+	return func(o *AgentOptions) { o.ModelString = spec }
+}
+
 // Agent wraps a compiled model<->tools graph, mirroring Python's
 // `CompiledStateGraph` returned by `create_agent(...)`.
 type Agent struct {
@@ -422,13 +466,31 @@ func PromptVarsFromContext(ctx context.Context) (map[string]any, bool) {
 // CreateAgent builds a create_agent-equivalent Agent around model and
 // toolList. See the package doc comment for scope.
 func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...AgentOption) (*Agent, error) {
-	if model == nil {
-		return nil, fmt.Errorf("agents: model is required")
-	}
-
+	// Apply options BEFORE the nil-model check so WithAgentModel can supply
+	// the model: when ModelString is set, it resolves a ChatModel via the
+	// chatmodels registry (ParseModelString + Resolve) and overrides the
+	// positional `model` arg (see WithAgentModel's doc comment). When neither
+	// ModelString nor a positional model is supplied, the existing "model is
+	// required" error fires.
 	options := AgentOptions{}
 	for _, opt := range opts {
 		opt(&options)
+	}
+
+	if options.ModelString != "" {
+		spec, err := chatmodels.ParseModelString(options.ModelString)
+		if err != nil {
+			return nil, err
+		}
+		resolved, err := chatmodels.Resolve(spec)
+		if err != nil {
+			return nil, err
+		}
+		model = resolved
+	}
+
+	if model == nil {
+		return nil, fmt.Errorf("agents: model is required")
 	}
 
 	toolStrategy, providerStrategy, err := resolveResponseFormat(options.ResponseFormat, model)
