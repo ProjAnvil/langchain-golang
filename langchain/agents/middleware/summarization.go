@@ -92,7 +92,6 @@ func NewSummarizationMiddleware(summarize SummarizerFunc) *SummarizationMiddlewa
 	return &SummarizationMiddleware{
 		Trigger:               []TriggerClause{{Messages: 50}},
 		Keep:                  KeepPolicy{Messages: 20},
-		TokenCounter:          ApproximateTokenCount,
 		SummaryPrompt:         DefaultSummaryPrompt,
 		Summarize:             summarize,
 		TrimTokensToSummarize: DefaultTrimTokensToSummarize,
@@ -156,13 +155,15 @@ func (m *SummarizationMiddleware) shouldTrigger(msgs []messages.Message) bool {
 		if clause.Messages > 0 && len(msgs) < clause.Messages {
 			matches = false
 		}
-		if matches && clause.Tokens > 0 && tokens < clause.Tokens {
+		if matches && clause.Tokens > 0 && tokens < clause.Tokens &&
+			!m.shouldSummarizeBasedOnReportedTokens(msgs, float64(clause.Tokens)) {
 			matches = false
 		}
 		if matches && clause.Fraction > 0 {
 			if !hasMaxInputTokens {
 				matches = false
-			} else if tokens < fractionThreshold(maxInputTokens, clause.Fraction) {
+			} else if tokens < fractionThreshold(maxInputTokens, clause.Fraction) &&
+				!m.shouldSummarizeBasedOnReportedTokens(msgs, float64(fractionThreshold(maxInputTokens, clause.Fraction))) {
 				matches = false
 			}
 		}
@@ -251,12 +252,70 @@ func (m *SummarizationMiddleware) maxInputTokens() (int, bool) {
 	}
 }
 
-func (m *SummarizationMiddleware) countTokens(msgs []messages.Message) int {
-	counter := m.TokenCounter
-	if counter == nil {
-		counter = ApproximateTokenCount
+// resolveTokenCounter mirrors Python's _get_approximate_token_counter
+// (summarization.py:208-216): when the user did not override TokenCounter, an
+// anthropic-chat model (per LLMType) selects the 3.3 chars/token counter;
+// anything else uses the default ApproximateTokenCount. A nil model or one
+// without LLMType also uses the default (Python falls through the same way).
+func resolveTokenCounter(model any, userOverride TokenCounter) TokenCounter {
+	if userOverride != nil {
+		return userOverride
 	}
-	return counter(msgs)
+	if lt, ok := model.(LLMTypeProvider); ok && strings.HasPrefix(lt.LLMType(), "anthropic-chat") {
+		const anthropicCharsPerToken = 3.3
+		return func(msgs []messages.Message) int {
+			return ApproximateTokenCountCharsPerToken(msgs, anthropicCharsPerToken)
+		}
+	}
+	return ApproximateTokenCount
+}
+
+// shouldSummarizeBasedOnReportedTokens mirrors Python's
+// _should_summarize_based_on_reported_tokens (summarization.py:561-581): when
+// the last AI message carries usage_metadata.total_tokens at/above threshold
+// AND its response_metadata.model_provider matches the model's LLMType prefix,
+// summarization triggers even if the estimated count is under threshold.
+func (m *SummarizationMiddleware) shouldSummarizeBasedOnReportedTokens(msgs []messages.Message, threshold float64) bool {
+	var lastAI *messages.Message
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == messages.RoleAI {
+			lastAI = &msgs[i]
+			break
+		}
+	}
+	if lastAI == nil || lastAI.UsageMetadata.TotalTokens == 0 {
+		return false
+	}
+	if float64(lastAI.UsageMetadata.TotalTokens) < threshold {
+		return false
+	}
+	messageProvider, _ := lastAI.ResponseMetadata["model_provider"].(string)
+	if messageProvider == "" {
+		return false
+	}
+	modelLLMType := ""
+	if lt, ok := m.Model.(LLMTypeProvider); ok {
+		modelLLMType = lt.LLMType()
+	}
+	return providerMatches(messageProvider, modelLLMType)
+}
+
+// providerMatches mirrors Python's _provider_matches (summarization.py:103-109):
+// the message's model_provider must match the model's identity. Go LLMType
+// values are "<provider>-chat" (e.g. "anthropic-chat") while model_provider is
+// the bare provider ("anthropic"), so compare by prefix (and exact as a fallback).
+func providerMatches(messageProvider, modelLLMType string) bool {
+	if modelLLMType == "" {
+		return false
+	}
+	if strings.HasPrefix(modelLLMType, messageProvider) {
+		return true
+	}
+	return messageProvider == modelLLMType
+}
+
+func (m *SummarizationMiddleware) countTokens(msgs []messages.Message) int {
+	return resolveTokenCounter(m.Model, m.TokenCounter)(msgs)
 }
 
 func (m *SummarizationMiddleware) summaryPrompt() string {

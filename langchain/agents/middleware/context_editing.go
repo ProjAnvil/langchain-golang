@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"math"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -165,6 +166,41 @@ func approximateTextTokens(text string) int {
 		return 1
 	}
 	return len(fields)
+}
+
+// ApproximateTokenCountCharsPerToken mirrors Python's
+// `count_tokens_approximately(chars_per_token=...)` — it counts characters
+// across message text / content blocks / tool calls and divides by
+// charsPerToken (rounded up). Used by SummarizationMiddleware for anthropic
+// (3.3 chars/token) per Python's _get_approximate_token_counter
+// (summarization.py:208-216).
+func ApproximateTokenCountCharsPerToken(msgs []messages.Message, charsPerToken float64) int {
+	if charsPerToken <= 0 {
+		charsPerToken = 4
+	}
+	total := 0
+	for _, msg := range msgs {
+		total += len(msg.Content)
+		for _, block := range msg.ContentBlocks {
+			for _, value := range block {
+				if text, ok := value.(string); ok {
+					total += len(text)
+				}
+			}
+		}
+		for _, call := range msg.ToolCalls {
+			total += len(call.Name)
+			for _, value := range call.Args {
+				if text, ok := value.(string); ok {
+					total += len(text)
+				}
+			}
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return int(math.Ceil(float64(total) / charsPerToken))
 }
 
 func contextEditingCleared(message messages.Message) bool {
