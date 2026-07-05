@@ -2,6 +2,7 @@ package chatmodels
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/language"
@@ -71,7 +72,7 @@ func TestParseModelString(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error, got nil with spec=%#v", spec)
 				}
-				if tt.errSubstr != "" && !containsSubstring(err.Error(), tt.errSubstr) {
+				if tt.errSubstr != "" && !strings.Contains(err.Error(), tt.errSubstr) {
 					t.Fatalf("error %q does not contain %q", err.Error(), tt.errSubstr)
 				}
 				return
@@ -84,20 +85,6 @@ func TestParseModelString(t *testing.T) {
 			}
 		})
 	}
-}
-
-// containsSubstring is a tiny helper to avoid pulling strings into the test
-// file (keeps imports minimal); it returns true if needle appears in hay.
-func containsSubstring(hay, needle string) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	for i := 0; i+len(needle) <= len(hay); i++ {
-		if hay[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // TestResolve_RegisteredFactory registers a fake factory under a unique,
@@ -149,7 +136,7 @@ func TestResolve_NormalizesProvider(t *testing.T) {
 }
 
 // TestResolve_UnknownProvider asserts that an unregistered provider surfaces a
-// typed *UnknownProviderError so callers can errors.As / errors.Is it.
+// typed *UnknownProviderError so callers can errors.As it.
 func TestResolve_UnknownProvider(t *testing.T) {
 	_, err := Resolve(ChatModelSpec{Provider: "definitely-not-registered-xyz", Model: "x"})
 	if err == nil {

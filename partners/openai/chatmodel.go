@@ -26,6 +26,12 @@ type ChatModel struct {
 	structuredOutput *structuredoutput.JSONSchema
 }
 
+// Compile-time guard: ChatModel (value receiver) satisfies
+// language.StructuredCaller so the agent's ProviderStrategy native path
+// (agents.invokeModel → language.InvokeStructured) can use it. A future
+// refactor that drops InvokeStructured fails here.
+var _ language.StructuredCaller = ChatModel{}
+
 // NewChatModel creates an OpenAI chat model adapter.
 func NewChatModel(opts ...modelconfig.Option) ChatModel {
 	cfg := modelconfig.New(opts...)

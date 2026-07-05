@@ -126,9 +126,13 @@ func (m *LLMToolEmulator) emulateViaStructured(
 	if err := json.Unmarshal([]byte(messages.Text(response)), &data); err != nil {
 		return messages.Message{}, fmt.Errorf("tool emulator: parse structured response: %w", err)
 	}
-	content, ok := data["output"].(string)
+	rawOutput, ok := data["output"]
 	if !ok {
-		return messages.Message{}, fmt.Errorf("tool emulator: parse structured response: %w", fmt.Errorf("missing string %q key", "output"))
+		return messages.Message{}, fmt.Errorf("tool emulator: parse structured response: %w", fmt.Errorf("missing %q key", "output"))
+	}
+	content, ok := rawOutput.(string)
+	if !ok {
+		return messages.Message{}, fmt.Errorf("tool emulator: parse structured response: %w", fmt.Errorf("%q is not a string", "output"))
 	}
 	msg := messages.Tool(request.ToolCall.ID, content)
 	msg.Name = toolName

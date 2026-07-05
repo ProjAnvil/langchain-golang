@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
-	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
@@ -985,12 +984,6 @@ func TestChatModelInvokeStructured(t *testing.T) {
 		modelconfig.WithAPIKey("test-key"),
 		modelconfig.WithModel("gpt-test"),
 	)
-
-	// Compile-time guard: ChatModel (value receiver) must satisfy
-	// language.StructuredCaller so the agent's ProviderStrategy native path
-	// (agents.invokeModel → language.InvokeStructured) can use it. A future
-	// refactor that drops InvokeStructured fails here.
-	var _ language.StructuredCaller = ChatModel{}
 
 	sch := schema.Object(map[string]schema.Schema{
 		"answer": schema.String("yes/no answer"),

@@ -53,7 +53,7 @@ func lookupProviderFactory(normalizedName string) ProviderFactory {
 //
 // If no factory is registered for the provider, Resolve returns a
 // *UnknownProviderError so callers can distinguish "no Go implementation for
-// provider X" from a construction error using errors.As / errors.Is.
+// provider X" from a construction error using errors.As.
 func Resolve(spec ChatModelSpec) (language.ChatModel, error) {
 	normalized := NormalizeProvider(spec.Provider)
 
@@ -97,8 +97,8 @@ func ParseModelString(s string) (ChatModelSpec, error) {
 }
 
 // UnknownProviderError is returned by Resolve when no Go ProviderFactory is
-// registered for the requested provider. Callers can errors.As / errors.Is
-// against *UnknownProviderError to distinguish "no Go implementation for
+// registered for the requested provider. Callers can errors.As against
+// *UnknownProviderError to distinguish "no Go implementation for
 // provider X" from a construction error returned by the factory itself.
 type UnknownProviderError struct {
 	// Provider is the provider name as it appeared on the ChatModelSpec
