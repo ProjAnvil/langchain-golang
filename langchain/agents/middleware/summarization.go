@@ -180,7 +180,7 @@ func (m *SummarizationMiddleware) keepStart(msgs []messages.Message) int {
 		if start < 0 {
 			return 0
 		}
-		return start
+		return findSafeCutoffPoint(msgs, start)
 	}
 	if m.Keep.Tokens > 0 {
 		return m.tokenBudgetCutoff(msgs, m.Keep.Tokens)
@@ -200,16 +200,49 @@ func (m *SummarizationMiddleware) keepStart(msgs []messages.Message) int {
 }
 
 // tokenBudgetCutoff returns the smallest start index whose suffix (msgs[i:])
-// fits within budget tokens, counted message-by-message from the end.
+// fits within budget tokens, counted message-by-message from the end. The
+// returned index is snapped with findSafeCutoffPoint so the kept suffix never
+// starts with orphaned tool responses.
 func (m *SummarizationMiddleware) tokenBudgetCutoff(msgs []messages.Message, budget int) int {
 	total := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
 		total += m.countTokens([]messages.Message{msgs[i]})
 		if total > budget {
-			return i + 1
+			return findSafeCutoffPoint(msgs, i+1)
 		}
 	}
 	return 0
+}
+
+// findSafeCutoffPoint mirrors Python's _find_safe_cutoff_point
+// (summarization.py:762-796): if msgs[cutoff] is a ToolMessage, collect the
+// tool_call_ids of the consecutive ToolMessages at/after cutoff, search BACKWARD
+// for the AIMessage whose ToolCalls contain a matching id, and move cutoff back
+// to include it (so the kept suffix never starts with orphaned tool responses).
+// Fallback: if no matching AIMessage is found, advance past the ToolMessages.
+// If msgs[cutoff] is not a ToolMessage, return cutoff unchanged.
+func findSafeCutoffPoint(msgs []messages.Message, cutoff int) int {
+	if cutoff >= len(msgs) || msgs[cutoff].Role != messages.RoleTool {
+		return cutoff
+	}
+	toolCallIDs := map[string]bool{}
+	idx := cutoff
+	for idx < len(msgs) && msgs[idx].Role == messages.RoleTool {
+		if msgs[idx].ToolCallID != "" {
+			toolCallIDs[msgs[idx].ToolCallID] = true
+		}
+		idx++
+	}
+	for i := cutoff - 1; i >= 0; i-- {
+		if msgs[i].Role == messages.RoleAI && len(msgs[i].ToolCalls) > 0 {
+			for _, tc := range msgs[i].ToolCalls {
+				if tc.ID != "" && toolCallIDs[tc.ID] {
+					return i
+				}
+			}
+		}
+	}
+	return idx
 }
 
 // fractionThreshold converts a fraction of a model's max input tokens into an
