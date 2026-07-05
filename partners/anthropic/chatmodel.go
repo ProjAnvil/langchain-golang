@@ -29,6 +29,11 @@ type ChatModel struct {
 	inferenceGeo      string
 }
 
+// Compile-time guard: ChatModel (value receiver) satisfies
+// language.StructuredCaller so the agent's ProviderStrategy native path
+// (agents.invokeModel → language.InvokeStructured) can use it.
+var _ language.StructuredCaller = ChatModel{}
+
 // NewChatModel creates an Anthropic chat model adapter.
 func NewChatModel(opts ...modelconfig.Option) ChatModel {
 	cfg := modelconfig.New(opts...)
@@ -175,6 +180,74 @@ func (m ChatModel) Capabilities() language.ChatModelCapabilities {
 		UsageMetadata: true,
 		Streaming:     true,
 	}
+}
+
+// structuredTool adapts a JSON schema into a tools.Tool for anthropic's
+// function_calling structured-output path (InvokeStructured). Only the schema
+// surface (Name/Description/ArgsSchema) is used to build the request tool
+// definition; Invoke is never called because the model's tool_use response is
+// extracted directly, never executed. Mirrors Python's
+// `convert_to_anthropic_tool(schema)` (langchain_anthropic/chat_models.py:2035).
+type structuredTool struct {
+	name   string
+	desc   string
+	inputs schema.Schema
+}
+
+func (t structuredTool) Name() string              { return t.name }
+func (t structuredTool) Description() string       { return t.desc }
+func (t structuredTool) ArgsSchema() schema.Schema { return t.inputs }
+func (t structuredTool) Invoke(context.Context, map[string]any) (tools.Result, error) {
+	return tools.Result{}, fmt.Errorf("structured output tool %q is not invocable", t.name)
+}
+
+// InvokeStructured implements language.StructuredCaller via Anthropic's
+// function_calling method — Python's DEFAULT for with_structured_output
+// (langchain_anthropic/chat_models.py:1943,2050 `tool_choice=tool_name`).
+// It synthesizes one tool from sch, forces tool_choice to that tool, invokes,
+// and returns a message whose Content is the JSON of the tool_use input args
+// (matching language.InvokeStructured's "returned text is JSON" contract).
+func (m ChatModel) InvokeStructured(
+	ctx context.Context,
+	input []messages.Message,
+	sch schema.Schema,
+) (messages.Message, error) {
+	name := "response_format"
+	if title, ok := sch["title"].(string); ok && title != "" {
+		name = title
+	}
+	desc, _ := sch["description"].(string)
+	tool := structuredTool{name: name, desc: desc, inputs: sch}
+
+	boundAny, err := m.BindTools([]tools.Tool{tool})
+	if err != nil {
+		return messages.Message{}, fmt.Errorf("anthropic structured output: bind tool: %w", err)
+	}
+	bound, ok := boundAny.(ChatModel)
+	if !ok {
+		return messages.Message{}, fmt.Errorf("anthropic structured output: bound model is %T, not ChatModel", boundAny)
+	}
+	forced := bound.WithToolChoice(map[string]any{"type": "tool", "name": name})
+
+	response, err := forced.Invoke(ctx, input)
+	if err != nil {
+		return messages.Message{}, fmt.Errorf("anthropic structured output: invoke: %w", err)
+	}
+	if len(response.ToolCalls) == 0 {
+		return messages.Message{}, fmt.Errorf(
+			"anthropic structured output: model returned no tool_call (stop_reason=%v)",
+			response.ResponseMetadata["stop_reason"])
+	}
+
+	encoded, err := json.Marshal(response.ToolCalls[0].Args)
+	if err != nil {
+		return messages.Message{}, fmt.Errorf("anthropic structured output: encode tool input: %w", err)
+	}
+	out := messages.AI(string(encoded))
+	out.ID = response.ID
+	out.ResponseMetadata = response.ResponseMetadata
+	out.UsageMetadata = response.UsageMetadata
+	return out, nil
 }
 
 func (m ChatModel) createMessage(
