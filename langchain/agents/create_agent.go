@@ -680,6 +680,12 @@ func (a *Agent) InvokeWithState(ctx context.Context, msgs []messages.Message) (m
 // to InvokeWithState.
 func (a *Agent) InvokeWithStateAndVars(ctx context.Context, msgs []messages.Message, variables map[string]any) (map[string]any, error) {
 	runCtx := a.withRunTags(ctx)
+	// Mark this run non-streaming: InvokeWithState must never emit streaming
+	// events, even when ctx inherited an event sink from a streaming ancestor
+	// (e.g. a nested invoke called from a tool inside a StreamEvents parent).
+	// sinkFromContext honors suppressStreamSinkCtxKey and returns nil, so the
+	// model/tools nodes take the non-streaming path and the cache gate stays on.
+	runCtx = context.WithValue(runCtx, suppressStreamSinkCtxKey{}, true)
 	if variables != nil {
 		runCtx = context.WithValue(runCtx, promptVarsCtxKey{}, cloneStringAnyMap(variables))
 	}

@@ -301,11 +301,21 @@ func (s *eventSink) send(ev StreamEvent) {
 	}
 }
 
+// suppressStreamSinkCtxKey, when present in ctx, marks a non-streaming
+// invocation that must not emit streaming events even if an ancestor context
+// carried an event sink (e.g. a nested InvokeWithState called from a tool
+// running inside a StreamEvents parent). See Agent.InvokeWithStateAndVars.
+type suppressStreamSinkCtxKey struct{}
+
 // sinkFromContext returns the active *eventSink installed by StreamEvents, or
 // nil when streaming is not active. The model/tool node builders use this to
 // decide between the streaming and non-streaming code paths (nil → non-stream,
-// zero overhead).
+// zero overhead). It returns nil when suppressStreamSinkCtxKey is present, so a
+// non-streaming Invoke never emits streaming events even under a streaming parent.
 func sinkFromContext(ctx context.Context) *eventSink {
+	if ctx.Value(suppressStreamSinkCtxKey{}) != nil {
+		return nil
+	}
 	sink := graph.EventSinkFromContext(ctx)
 	if sink == nil {
 		return nil
