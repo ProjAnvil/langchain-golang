@@ -130,3 +130,201 @@ func TestCreateAgent_SubagentUnderStreamingParentNoLeak(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateAgent_SubagentViaTool is the Go counterpart of the invocation
+// pattern in Python's test_subagent_transformer.py: a supervisor delegates to
+// a named inner agent via a hand-rolled tool, and the inner agent's final
+// answer flows back as the tool result.
+func TestCreateAgent_SubagentViaTool(t *testing.T) {
+	ctx := context.Background()
+
+	innerAgent, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{messages.AI("sunny in SF")}},
+		nil, WithAgentName("weather_agent"),
+	)
+	if err != nil {
+		t.Fatalf("inner CreateAgent: %v", err)
+	}
+	weatherTool := newSubagentTool(innerAgent, "call_weather", "city")
+
+	supervisor, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{
+			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+				{ID: "call_w", Name: "call_weather", Args: map[string]any{"city": "SF"}},
+			}},
+			messages.AI("The weather is sunny in SF"),
+		}},
+		[]coretools.Tool{weatherTool}, WithAgentName("supervisor"),
+	)
+	if err != nil {
+		t.Fatalf("supervisor CreateAgent: %v", err)
+	}
+
+	out, err := supervisor.Invoke(ctx, []messages.Message{messages.Human("weather?")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	var foundToolResult bool
+	for _, m := range out {
+		if m.Role == messages.RoleTool && strings.Contains(messages.Text(m), "sunny in SF") {
+			foundToolResult = true
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("inner agent output did not surface as a tool result; messages: %v", out)
+	}
+	if last := out[len(out)-1]; last.Role != messages.RoleAI {
+		t.Fatalf("expected last message to be AI, got %v", last.Role)
+	}
+}
+
+// TestCreateAgent_SubagentNamePropagation asserts that inside a nested run,
+// NameFromContext returns the inner agent's name (not the supervisor's),
+// because InvokeWithState rebinds the run-name context tag. This is the
+// A1-level "distinguishable subagent" property.
+func TestCreateAgent_SubagentNamePropagation(t *testing.T) {
+	ctx := context.Background()
+
+	rec := &nameRecorder{}
+	innerAgent, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{messages.AI("ok")}},
+		nil, WithAgentName("weather_agent"), WithAgentMiddleware(rec),
+	)
+	if err != nil {
+		t.Fatalf("inner CreateAgent: %v", err)
+	}
+	weatherTool := newSubagentTool(innerAgent, "call_weather", "city")
+
+	supervisor, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{
+			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+				{ID: "call_w", Name: "call_weather", Args: map[string]any{"city": "SF"}},
+			}},
+			messages.AI("done"),
+		}},
+		[]coretools.Tool{weatherTool}, WithAgentName("supervisor"),
+	)
+	if err != nil {
+		t.Fatalf("supervisor CreateAgent: %v", err)
+	}
+
+	if _, err := supervisor.Invoke(ctx, []messages.Message{messages.Human("weather?")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.seen) == 0 {
+		t.Fatalf("inner agent's BeforeModel never ran; name not recorded")
+	}
+	for _, name := range rec.seen {
+		if name != "weather_agent" {
+			t.Fatalf("inner run observed name %q, want %q (all seen: %v)", name, "weather_agent", rec.seen)
+		}
+	}
+}
+
+// TestCreateAgent_SubagentErrorPropagation asserts that an error from the inner
+// agent surfaces through the tool into the supervisor's run as an error
+// ToolMessage (via ToolNode's default HandleToolErrors), not a panic, and the
+// supervisor run still completes.
+func TestCreateAgent_SubagentErrorPropagation(t *testing.T) {
+	ctx := context.Background()
+
+	// Inner model with no responses: its first (and only) Invoke errors.
+	innerAgent, err := CreateAgent(
+		&sequenceModel{responses: nil},
+		nil, WithAgentName("weather_agent"),
+	)
+	if err != nil {
+		t.Fatalf("inner CreateAgent: %v", err)
+	}
+	weatherTool := newSubagentTool(innerAgent, "call_weather", "city")
+
+	supervisor, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{
+			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+				{ID: "call_w", Name: "call_weather", Args: map[string]any{"city": "SF"}},
+			}},
+			messages.AI("recovered"),
+		}},
+		[]coretools.Tool{weatherTool}, WithAgentName("supervisor"),
+	)
+	if err != nil {
+		t.Fatalf("supervisor CreateAgent: %v", err)
+	}
+
+	out, err := supervisor.Invoke(ctx, []messages.Message{messages.Human("weather?")})
+	if err != nil {
+		t.Fatalf("supervisor invoke returned error (tool error should be handled): %v", err)
+	}
+
+	var foundErrToolMsg bool
+	for _, m := range out {
+		if m.Role == messages.RoleTool && strings.Contains(messages.Text(m), "Error:") {
+			foundErrToolMsg = true
+		}
+	}
+	if !foundErrToolMsg {
+		t.Fatalf("expected an error ToolMessage from the failed subagent; messages: %v", out)
+	}
+}
+
+// TestCreateAgent_SubagentNested asserts one level of nesting works: a
+// supervisor delegates to a subagent that itself delegates to a sub-subagent,
+// and the leaf actually runs (observed via its name during the supervisor's
+// single Invoke).
+func TestCreateAgent_SubagentNested(t *testing.T) {
+	ctx := context.Background()
+
+	leafRec := &nameRecorder{}
+	leaf, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{messages.AI("leaf-answer")}},
+		nil, WithAgentName("leaf"), WithAgentMiddleware(leafRec),
+	)
+	if err != nil {
+		t.Fatalf("leaf CreateAgent: %v", err)
+	}
+	leafTool := newSubagentTool(leaf, "call_leaf", "task")
+
+	middle, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{
+			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+				{ID: "call_l", Name: "call_leaf", Args: map[string]any{"task": "go"}},
+			}},
+			messages.AI("middle-done"),
+		}},
+		[]coretools.Tool{leafTool}, WithAgentName("middle"),
+	)
+	if err != nil {
+		t.Fatalf("middle CreateAgent: %v", err)
+	}
+	middleTool := newSubagentTool(middle, "call_middle", "task")
+
+	supervisor, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{
+			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+				{ID: "call_m", Name: "call_middle", Args: map[string]any{"task": "go"}},
+			}},
+			messages.AI("supervisor-done"),
+		}},
+		[]coretools.Tool{middleTool}, WithAgentName("supervisor"),
+	)
+	if err != nil {
+		t.Fatalf("supervisor CreateAgent: %v", err)
+	}
+
+	if _, err := supervisor.Invoke(ctx, []messages.Message{messages.Human("go")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	leafRec.mu.Lock()
+	defer leafRec.mu.Unlock()
+	if len(leafRec.seen) == 0 {
+		t.Fatalf("leaf never ran; nesting did not reach the sub-subagent")
+	}
+	if leafRec.seen[0] != "leaf" {
+		t.Fatalf("leaf observed wrong name %q, want %q", leafRec.seen[0], "leaf")
+	}
+}
