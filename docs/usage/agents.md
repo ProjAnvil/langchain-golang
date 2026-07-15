@@ -219,27 +219,27 @@ weather, err := agents.CreateAgent(model, nil, agents.WithAgentName("weather_age
 // Hand-rolled subagent tool (the Go equivalent of Python's
 //   @tool
 //   def call_weather(city): return weather.invoke(...)["messages"][-1].text).
-callWeather, err := tools.NewFunc(
+callWeather, err := coretools.NewFunc(
     "call_weather", "Call the weather agent.",
     schema.Object(map[string]schema.Schema{"city": schema.String("city")}, "city"),
-    func(ctx context.Context, input map[string]any) (tools.Result, error) {
+    func(ctx context.Context, input map[string]any) (coretools.Result, error) {
         city, _ := input["city"].(string)
         state, err := weather.InvokeWithState(ctx, []messages.Message{messages.Human("weather in " + city)})
         if err != nil {
-            return tools.Result{}, err
+            return coretools.Result{}, err
         }
         msgs, _ := state["messages"].([]messages.Message)
         for i := len(msgs) - 1; i >= 0; i-- {
             if msgs[i].Role == messages.RoleAI {
-                return tools.Result{Content: messages.Text(msgs[i])}, nil
+                return coretools.Result{Content: messages.Text(msgs[i])}, nil
             }
         }
-        return tools.Result{}, fmt.Errorf("weather agent produced no output")
+        return coretools.Result{}, fmt.Errorf("weather agent produced no output")
     },
 )
 
 // Supervisor delegates via the tool.
-supervisor, err := agents.CreateAgent(model, []tools.Tool{callWeather}, agents.WithAgentName("supervisor"))
+supervisor, err := agents.CreateAgent(model, []coretools.Tool{callWeather}, agents.WithAgentName("supervisor"))
 ```
 
 Inside the nested run, `agents.NameFromContext(ctx)` returns the inner agent's
