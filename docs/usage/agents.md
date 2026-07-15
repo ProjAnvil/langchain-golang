@@ -206,6 +206,59 @@ See the `agents` package godoc for the full `WithAgent*` option set
 For real-time output, use `agent.StreamEvents` — see the
 [streaming guide](streaming.md).
 
+## Subagents (agent-as-tool)
+
+A "subagent" is a named agent invoked from inside another agent's tool. There
+is no special API: mirror Python `langchain.agents` and write a tool whose body
+calls the inner agent's `InvokeWithState`, returning the final AI message text.
+
+```go
+// A named inner agent — the name is what makes it distinguishable.
+weather, err := agents.CreateAgent(model, nil, agents.WithAgentName("weather_agent"))
+
+// Hand-rolled subagent tool (the Go equivalent of Python's
+//   @tool
+//   def call_weather(city): return weather.invoke(...)["messages"][-1].text).
+callWeather, err := tools.NewFunc(
+    "call_weather", "Call the weather agent.",
+    schema.Object(map[string]schema.Schema{"city": schema.String("city")}, "city"),
+    func(ctx context.Context, input map[string]any) (tools.Result, error) {
+        city, _ := input["city"].(string)
+        state, err := weather.InvokeWithState(ctx, []messages.Message{messages.Human("weather in " + city)})
+        if err != nil {
+            return tools.Result{}, err
+        }
+        msgs, _ := state["messages"].([]messages.Message)
+        for i := len(msgs) - 1; i >= 0; i-- {
+            if msgs[i].Role == messages.RoleAI {
+                return tools.Result{Content: messages.Text(msgs[i])}, nil
+            }
+        }
+        return tools.Result{}, fmt.Errorf("weather agent produced no output")
+    },
+)
+
+// Supervisor delegates via the tool.
+supervisor, err := agents.CreateAgent(model, []tools.Tool{callWeather}, agents.WithAgentName("supervisor"))
+```
+
+Inside the nested run, `agents.NameFromContext(ctx)` returns the inner agent's
+name (`"weather_agent"`), not the supervisor's, because `InvokeWithState`
+rebinds the run-name context tag. Build the inner agent with `WithAgentName`
+so it is distinguishable to middleware, logging, and tracing.
+
+Errors from the inner agent propagate through the tool and surface as an error
+`ToolMessage` (via `ToolNode`'s default `HandleToolErrors`), so the supervisor
+run still completes and the model can react. Nesting works recursively: each
+`InvokeWithState` is an independent graph run with its own recursion limit.
+
+**Streaming limitation.** When the supervisor runs via `StreamEvents`, the
+nested agent runs non-streaming — only its final result surfaces as the tool
+result; the nested run does not emit `model_delta` events into the parent
+stream. Scoped surfacing of a subagent's live events under a separate handle
+(`run.subagents`) is not provided; it is part of the deferred stream-transformer
+work (Design Decision 4 in the v1-final-parity spec).
+
 ## What is intentionally absent
 
 Mirroring the scoped-port stance (the `agentruntime` boundary is private):

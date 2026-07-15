@@ -6,6 +6,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/schema"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/chatmodels"
 )
@@ -79,4 +80,89 @@ func ExampleCreateAgent_modelString() {
 	fmt.Println(messages.Text(out[len(out)-1]))
 	// Output:
 	// resolved model: gpt-x
+}
+
+// ExampleCreateAgent_subagent shows the canonical subagent (agent-as-tool)
+// pattern: a supervisor delegates to a named inner agent via a hand-rolled
+// tool whose body calls the inner agent's InvokeWithState. There is no
+// AgentAsTool helper — this user-authored tool mirrors Python's
+// langchain.agents pattern exactly.
+func ExampleCreateAgent_subagent() {
+	ctx := context.Background()
+
+	// Inner named agent. The name is what makes the nested run distinguishable:
+	// inside it, NameFromContext returns "weather_agent", not "supervisor".
+	inner := language.NewFakeChatModel(
+		language.WithCapabilities(language.ChatModelCapabilities{ToolCalling: true}),
+		language.WithResponses(messages.AI("sunny")),
+	)
+	weather, err := CreateAgent(inner, nil, WithAgentName("weather_agent"))
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	// The subagent tool: delegate, run the inner agent, return its final text.
+	// Go equivalent of Python's:
+	//   @tool
+	//   def call_weather(city):
+	//       return weather.invoke({"messages":[HumanMessage(...)]})["messages"][-1].text
+	callWeather, err := coretools.NewFunc(
+		"call_weather", "Call the weather agent.",
+		schema.Object(map[string]schema.Schema{"city": schema.String("city")}, "city"),
+		func(ctx context.Context, input map[string]any) (coretools.Result, error) {
+			city, _ := input["city"].(string)
+			state, err := weather.InvokeWithState(ctx, []messages.Message{messages.Human("weather in " + city)})
+			if err != nil {
+				return coretools.Result{}, err
+			}
+			msgs, _ := state["messages"].([]messages.Message)
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == messages.RoleAI {
+					return coretools.Result{Content: messages.Text(msgs[i])}, nil
+				}
+			}
+			return coretools.Result{}, fmt.Errorf("weather agent produced no output")
+		},
+	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	// Supervisor: one tool call delegating to the weather agent, then done.
+	// Uses sequenceModel (not FakeChatModel) here because CreateAgent re-binds
+	// tools on every model iteration and FakeChatModel.BindTools returns a fresh
+	// copy whose response index is copied from the original at its current (0)
+	// value — the copy's advances never write back, so a FakeChatModel supervisor
+	// would never advance past its first (tool-call) response and would loop to
+	// the recursion limit. sequenceModel.BindTools returns the same receiver, so
+	// its response cursor advances across iterations. (See the doc comment on
+	// ExampleCreateAgent_minimal for the same FakeChatModel limitation. The inner
+	// agent above is fine as a FakeChatModel: it has no tools, so it is never
+	// re-bound, and a single Invoke on the original advances its index normally.)
+	supModel := &sequenceModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			{ID: "c1", Name: "call_weather", Args: map[string]any{"city": "SF"}},
+		}},
+		messages.AI("The weather is sunny"),
+	}}
+	supervisor, err := CreateAgent(supModel, []coretools.Tool{callWeather}, WithAgentName("supervisor"))
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	out, err := supervisor.Invoke(ctx, []messages.Message{messages.Human("weather?")})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	for _, m := range out {
+		if m.Role == messages.RoleTool {
+			fmt.Println("subagent replied:", messages.Text(m))
+		}
+	}
+	// Output:
+	// subagent replied: sunny
 }
