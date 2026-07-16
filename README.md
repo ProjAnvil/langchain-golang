@@ -52,6 +52,7 @@ A model ↔ tools agent loop built on an internal graph runtime, with:
 - **`checkpointer`** — in-memory saver; **interrupt / resume** round trips.
 - `recursion_limit`, `name`, `debug`.
 - **Streaming** — `Agent.StreamEvents`: real per-token streaming (model deltas + tool/node lifecycle events) over `runnables.Stream[StreamEvent]`.
+- **Subagents (agent-as-tool)** — one agent delegates to a named inner agent via a hand-rolled tool whose body calls the inner agent's `InvokeWithState` (mirrors Python's `@tool` + `agent.invoke()`); the nested run is distinguishable by name via `NameFromContext`. A non-streaming nested invoke no longer leaks its events into a streaming parent's stream. See the [Subagents guide](docs/usage/agents.md).
 
 ### Text splitters, standard tests, model profiles
 
