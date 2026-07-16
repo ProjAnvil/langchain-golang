@@ -328,3 +328,52 @@ func TestCreateAgent_SubagentNested(t *testing.T) {
 		t.Fatalf("leaf observed wrong name %q, want %q", leafRec.seen[0], "leaf")
 	}
 }
+
+// TestCreateAgent_UnnamedSubagentInheritsParentName is the Go counterpart of
+// Python's test_subagent_transformer.py::test_unnamed_inner_agent_surfaces_with_inherited_name:
+// an inner agent built WITHOUT WithAgentName, run inside a named supervisor's
+// tool, observes the PARENT's name via NameFromContext. This follows from
+// withRunTags being a no-op when Agent.Name is empty — it leaves the parent's
+// run-name context tag in place rather than replacing it.
+func TestCreateAgent_UnnamedSubagentInheritsParentName(t *testing.T) {
+	ctx := context.Background()
+
+	rec := &nameRecorder{}
+	innerAgent, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{messages.AI("ok")}},
+		nil, WithAgentMiddleware(rec), // intentionally NO WithAgentName
+	)
+	if err != nil {
+		t.Fatalf("inner CreateAgent: %v", err)
+	}
+	innerTool := newSubagentTool(innerAgent, "call_inner", "task")
+
+	supervisor, err := CreateAgent(
+		&sequenceModel{responses: []messages.Message{
+			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+				{ID: "c1", Name: "call_inner", Args: map[string]any{"task": "go"}},
+			}},
+			messages.AI("done"),
+		}},
+		[]coretools.Tool{innerTool}, WithAgentName("supervisor"),
+	)
+	if err != nil {
+		t.Fatalf("supervisor CreateAgent: %v", err)
+	}
+
+	if _, err := supervisor.Invoke(ctx, []messages.Message{messages.Human("go")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.seen) == 0 {
+		t.Fatalf("inner agent's BeforeModel never ran; name not recorded")
+	}
+	for _, name := range rec.seen {
+		if name != "supervisor" {
+			t.Fatalf("unnamed inner run observed name %q, want inherited parent name %q (all seen: %v)",
+				name, "supervisor", rec.seen)
+		}
+	}
+}
