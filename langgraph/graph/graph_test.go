@@ -909,3 +909,319 @@ func TestNewTurnWithInputAfterCompletion(t *testing.T) {
 		t.Fatalf("latest checkpoint metadata = %+v, want step 1 source loop (step continues across turns)", latest.Metadata)
 	}
 }
+
+// TestResumeSkipsCompletedSibling verifies pending-writes resume fidelity: in
+// a superstep where sibling A completes and sibling B interrupts, resuming
+// re-executes only B. A is not re-run (side-effect counter) and A's state
+// update is applied exactly once, replayed from its persisted pending writes.
+func TestResumeSkipsCompletedSibling(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddReducer("log", channels.AppendSliceReducer)
+	var aRuns, bRuns int32
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&aRuns, 1)
+		return map[string]any{"log": []string{"a"}}, nil
+	})
+	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&bRuns, 1)
+		Interrupt(ctx, "pause-b")
+		return map[string]any{"log": []string{"b"}}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddEdge("start", "a")
+	g.AddEdge("start", "b")
+	g.AddEdge("a", types.END)
+	g.AddEdge("b", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].Value != "pause-b" {
+		t.Fatalf("expected one interrupt (pause-b), got %+v", first.Interrupts)
+	}
+	if aRuns != 1 || bRuns != 1 {
+		t.Fatalf("expected a=1 b=1 invocations at pause, got a=%d b=%d", aRuns, bRuns)
+	}
+	if _, ok := first.Values["log"]; ok {
+		t.Fatalf("a's update must not be committed at the pause, got %+v", first.Values)
+	}
+
+	// The pause checkpoint plans the interrupted superstep's FULL task set
+	// (both siblings), with distinct populated task IDs.
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 2 {
+		t.Fatalf("pause checkpoint Next = %+v, want both siblings planned", tup.Checkpoint.Next)
+	}
+	if tup.Checkpoint.Next[0].ID == "" || tup.Checkpoint.Next[0].ID == tup.Checkpoint.Next[1].ID {
+		t.Fatalf("planned task IDs must be populated and distinct, got %+v", tup.Checkpoint.Next)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "go"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
+	}
+	if aRuns != 1 {
+		t.Fatalf("completed sibling a must NOT re-run on resume, ran %d times", aRuns)
+	}
+	if bRuns != 2 {
+		t.Fatalf("interrupted sibling b must re-run exactly once, ran %d times", bRuns)
+	}
+	if got, want := second.Values["log"], []string{"a", "b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("log = %+v, want %+v (a's update applied exactly once)", got, want)
+	}
+}
+
+// TestResumeRestoresCompletedTaskRouting pins D4: a completed sibling's
+// Command.Goto destinations (a plain node name AND a *types.Send) persist as
+// ReservedTasks writes — plain names normalized to types.Send — and both are
+// dispatched on resume even though the completed sibling itself is not re-run.
+func TestResumeRestoresCompletedTaskRouting(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	var aRuns, cRuns, dRuns int32
+	var dSawX atomic.Bool
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&aRuns, 1)
+		return &types.Command{
+			Update: map[string]any{"from": "a"},
+			Goto:   []any{"c", &types.Send{Node: "d", Arg: map[string]any{"x": 1}}},
+		}, nil
+	})
+	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+		Interrupt(ctx, "pause-b")
+		return nil, nil
+	})
+	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&cRuns, 1)
+		return map[string]any{"c_ran": true}, nil
+	})
+	g.AddNode("d", func(_ context.Context, state map[string]any) (any, error) {
+		atomic.AddInt32(&dRuns, 1)
+		dSawX.Store(state["x"] == 1)
+		return nil, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddEdge("start", "a")
+	g.AddEdge("start", "b")
+	g.AddEdge("b", types.END)
+	g.AddEdge("c", types.END)
+	g.AddEdge("d", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 {
+		t.Fatalf("expected one interrupt, got %+v", first.Interrupts)
+	}
+
+	// The completed sibling's routing must persist as ReservedTasks pending
+	// writes, plain names normalized to types.Send (D4).
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	var sends []types.Send
+	for _, w := range tup.PendingWrites {
+		if w.Channel == checkpoint.ReservedTasks {
+			s, ok := w.Value.(types.Send)
+			if !ok {
+				t.Fatalf("ReservedTasks write value = %T, want types.Send", w.Value)
+			}
+			sends = append(sends, s)
+		}
+	}
+	wantSends := []types.Send{{Node: "c"}, {Node: "d", Arg: map[string]any{"x": 1}}}
+	if !reflect.DeepEqual(sends, wantSends) {
+		t.Fatalf("persisted ReservedTasks sends = %+v, want %+v", sends, wantSends)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "go"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
+	}
+	if aRuns != 1 {
+		t.Fatalf("completed sibling a must NOT re-run on resume, ran %d times", aRuns)
+	}
+	if cRuns != 1 || dRuns != 1 {
+		t.Fatalf("a's goto destinations must run on resume: c=%d d=%d, want 1 each", cRuns, dRuns)
+	}
+	if !dSawX.Load() {
+		t.Fatal("send-driven d invocation must receive its Send arg")
+	}
+	if second.Values["from"] != "a" || second.Values["c_ran"] != true {
+		t.Fatalf("final values = %+v, want from=a and c_ran=true", second.Values)
+	}
+}
+
+// TestInterruptBeforeResumesAllSiblings verifies that interrupt_before on a
+// multi-successor superstep checkpoints the FULL planned task set, so resuming
+// re-dispatches every sibling — not just the registered node.
+func TestInterruptBeforeResumesAllSiblings(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	var bRuns, cRuns int32
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&bRuns, 1)
+		return map[string]any{"b_ran": true}, nil
+	})
+	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&cRuns, 1)
+		return map[string]any{"c_ran": true}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddEdge("start", "b")
+	g.AddEdge("start", "c")
+	g.AddEdge("b", types.END)
+	g.AddEdge("c", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver), WithInterruptBefore("b"))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].ID != interruptBeforeID+"b" {
+		t.Fatalf("expected interrupt_before(b), got %+v", first.Interrupts)
+	}
+	if bRuns != 0 || cRuns != 0 {
+		t.Fatalf("neither sibling should have run at the pause, got b=%d c=%d", bRuns, cRuns)
+	}
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 2 {
+		t.Fatalf("pause checkpoint Next = %+v, want the full sibling set [b c]", tup.Checkpoint.Next)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
+	}
+	if bRuns != 1 || cRuns != 1 {
+		t.Fatalf("both siblings must run exactly once after resume, got b=%d c=%d", bRuns, cRuns)
+	}
+}
+
+// TestSameNodeFanOutInterruptsResumeByTaskID pins D5: two tasks of the SAME
+// node interrupting in one superstep are planned and resumed by task ID, not
+// node name — both re-execute with their own Send arg and resume queue.
+func TestSameNodeFanOutInterruptsResumeByTaskID(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	var workerRuns int32
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("worker", func(ctx context.Context, state map[string]any) (any, error) {
+		atomic.AddInt32(&workerRuns, 1)
+		k := state["k"].(string)
+		v := Interrupt(ctx, k)
+		return map[string]any{"out_" + k: v}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+		return []any{
+			&types.Send{Node: "worker", Arg: map[string]any{"k": "x"}},
+			&types.Send{Node: "worker", Arg: map[string]any{"k": "y"}},
+		}, nil
+	})
+	g.AddEdge("worker", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 2 {
+		t.Fatalf("expected 2 interrupts (one per fan-out task), got %+v", first.Interrupts)
+	}
+	if first.Interrupts[0].Value != "x" || first.Interrupts[1].Value != "y" {
+		t.Fatalf("interrupt values = %+v, want one per task (x then y)", first.Interrupts)
+	}
+
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 2 || tup.Checkpoint.Next[0].ID == tup.Checkpoint.Next[1].ID {
+		t.Fatalf("same-node tasks must be planned with distinct task IDs, got %+v", tup.Checkpoint.Next)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "done"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
+	}
+	if workerRuns != 4 {
+		t.Fatalf("worker must run 4 times total (2 initial + 2 resumed), got %d", workerRuns)
+	}
+	if second.Values["out_x"] != "done" || second.Values["out_y"] != "done" {
+		t.Fatalf("values = %+v, want out_x=out_y=done (each task resumed with its own arg)", second.Values)
+	}
+}
+
+// TestResumeByInterruptIDMap verifies resume values addressed by interrupt ID
+// (map resume) keep working through the task-ID-keyed resume machinery.
+func TestResumeByInterruptIDMap(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("ask", func(ctx context.Context, _ map[string]any) (any, error) {
+		answer := Interrupt(ctx, "pick a color")
+		return map[string]any{"answer": answer}, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].ID != "ask-1" {
+		t.Fatalf("expected interrupt ask-1, got %+v", first.Interrupts)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), nil,
+		Options{ThreadID: "t1", Resume: map[string]any{"ask-1": "blue"}})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if second.Values["answer"] != "blue" {
+		t.Fatalf("answer = %v, want blue (map resume by interrupt ID)", second.Values["answer"])
+	}
+}

@@ -2,19 +2,27 @@ package graph
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
-// Interrupt persistence helpers for the pause/resume paths.
+// Interrupt persistence and resume replay machinery for the pause/resume
+// paths.
 //
-// A paused run persists its pending interrupts as ReservedInterrupt pending
-// writes against the pause checkpoint (Saver.PutWrites); a resuming run
-// reconstructs them from the checkpoint tuple. This replaces the M1
-// single-checkpoint PendingInterrupts field. Full sibling-write replay
-// (persisting completed tasks' writes and skipping them on resume) is M2
-// Task 4; here a pause still re-runs only the recorded node(s).
+// A paused run persists, as pending writes against the pause checkpoint
+// (Saver.PutWrites), keyed by each task's planned ID (D5):
+//   - each interrupted task's interrupts as ReservedInterrupt writes;
+//   - each COMPLETED sibling task's state writes as plain channel writes,
+//     plus one ReservedTasks write per Command.Goto destination, plain node
+//     names normalized to types.Send (D4).
+//
+// A resuming run replays completed siblings' writes instead of re-running
+// them (their sends rejoin the task queue) and re-executes only interrupted
+// or never-run tasks, feeding interrupted tasks their resume queues.
 
 // interruptsFromWrites reconstructs the pending interrupts recorded against
 // a checkpoint from its ReservedInterrupt pending writes, in write order.
@@ -33,7 +41,8 @@ func interruptsFromWrites(writes []checkpoint.Write) []types.Interrupt {
 
 // persistInterrupts records each pending interrupt as a ReservedInterrupt
 // pending write against the checkpoint identified by cfg, stamped with
-// taskID (the node that raised them, or the boundary node).
+// taskID (the interrupted task's planned ID, or the boundary node name for
+// interrupt_before/interrupt_after pauses).
 func persistInterrupts(ctx context.Context, saver checkpoint.Saver, cfg checkpoint.Config, taskID string, interrupts []types.Interrupt) error {
 	if len(interrupts) == 0 {
 		return nil
@@ -45,10 +54,140 @@ func persistInterrupts(ctx context.Context, saver checkpoint.Saver, cfg checkpoi
 	return saver.PutWrites(ctx, cfg, writes, taskID)
 }
 
-// resumeValuesFor computes the resume queue for a re-run node from the
+// completedTaskWrites builds the pending writes persisting a completed
+// sibling task's work against an interrupted superstep's pause checkpoint:
+// one write per state-update key (sorted for determinism), plus one
+// ReservedTasks write per Command.Goto destination (normalized per D4).
+// Saver.PutWrites stamps each write with the task's planned ID.
+func completedTaskWrites(update map[string]any, cmd *types.Command) ([]checkpoint.Write, error) {
+	keys := make([]string, 0, len(update))
+	for k := range update {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	writes := make([]checkpoint.Write, 0, len(keys))
+	for _, k := range keys {
+		writes = append(writes, checkpoint.Write{Channel: k, Value: update[k]})
+	}
+	if cmd != nil && len(cmd.Goto) > 0 {
+		sends, err := gotoSends(cmd.Goto)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range sends {
+			writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedTasks, Value: s})
+		}
+	}
+	return writes, nil
+}
+
+// gotoSends normalizes routing destinations to types.Send values (D4): plain
+// node names become Send{Node: name} with a nil Arg.
+func gotoSends(dests []any) ([]types.Send, error) {
+	sends := make([]types.Send, 0, len(dests))
+	for _, d := range dests {
+		switch v := d.(type) {
+		case string:
+			sends = append(sends, types.Send{Node: v})
+		case *types.Send:
+			sends = append(sends, types.Send{Node: v.Node, Arg: v.Arg})
+		case types.Send:
+			sends = append(sends, v)
+		default:
+			return nil, fmt.Errorf("graph: unsupported routing destination %T (want string or *types.Send)", d)
+		}
+	}
+	return sends, nil
+}
+
+// resumePlan is everything a resuming run reconstructs from a checkpoint
+// tuple: the tasks to dispatch in the resumed superstep, the per-task resume
+// queues, the interrupt_before skip node, and completed siblings' state
+// writes to replay before dispatching.
+type resumePlan struct {
+	tasks        []task
+	resumeValues map[string][]any // keyed by PlannedTask.ID (D5)
+	skipNode     string
+	replayWrites []taskWrites
+}
+
+// resumeFromTuple restores rs from a paused (or completed) checkpoint and
+// derives the tasks to dispatch, the resume value queues, and the
+// interrupt_before skip node for the resumed run. Completed siblings' writes
+// are replayed into rs (without re-running their tasks) before the resumed
+// superstep starts.
+func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []task, resumeValues map[string][]any, skipNode string, err error) {
+	rs.restore(tup.Checkpoint)
+	rs.step = tup.Metadata.Step
+	plan := planResume(tup, resume)
+	if len(plan.replayWrites) > 0 {
+		if err := rs.applyWrites(plan.replayWrites); err != nil {
+			return nil, nil, "", err
+		}
+	}
+	return plan.tasks, plan.resumeValues, plan.skipNode, nil
+}
+
+// planResume classifies each planned task of a checkpoint's Next by its
+// pending writes, keyed by PlannedTask.ID (D5):
+//   - tasks carrying a ReservedInterrupt write re-execute with their resume
+//     queue;
+//   - tasks with completed-work writes (state keys and/or ReservedTasks) are
+//     NOT re-run: their state writes replay via applyWrites and their sends
+//     rejoin the resumed superstep's task queue;
+//   - tasks without pending writes never ran (e.g. an interrupt_before
+//     pause) and dispatch normally.
+func planResume(tup *checkpoint.Tuple, resume any) resumePlan {
+	byTask := map[string][]checkpoint.Write{}
+	for _, w := range tup.PendingWrites {
+		byTask[w.TaskID] = append(byTask[w.TaskID], w)
+	}
+
+	plan := resumePlan{resumeValues: map[string][]any{}}
+	var replaySends []task
+	for _, pt := range tup.Checkpoint.Next {
+		if pt.Node == types.END {
+			continue
+		}
+		var interrupts []types.Interrupt
+		var sends []types.Send
+		update := map[string]any{}
+		for _, w := range byTask[pt.ID] {
+			switch w.Channel {
+			case checkpoint.ReservedInterrupt:
+				if intr, ok := w.Value.(types.Interrupt); ok {
+					interrupts = append(interrupts, intr)
+				}
+			case checkpoint.ReservedTasks:
+				if send, ok := w.Value.(types.Send); ok {
+					sends = append(sends, send)
+				}
+			default:
+				update[w.Channel] = w.Value
+			}
+		}
+		switch {
+		case len(interrupts) > 0:
+			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg})
+			plan.resumeValues[pt.ID] = resumeValuesFor(interrupts, resume)
+		case len(update) > 0 || len(sends) > 0:
+			plan.replayWrites = append(plan.replayWrites, taskWrites{node: pt.Node, update: update})
+			for _, s := range sends {
+				replaySends = append(replaySends, task{node: s.Node, arg: s.Arg})
+			}
+		default:
+			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg})
+		}
+	}
+	plan.tasks = append(plan.tasks, replaySends...)
+	plan.skipNode = resumeSkipNode(interruptsFromWrites(tup.PendingWrites))
+	return plan
+}
+
+// resumeValuesFor computes the resume queue for a re-run task from its
 // pending interrupts and the caller-supplied resume value, mirroring Python:
-// a map[string]any resume addresses interrupts by ID; any other non-nil
-// resume feeds the first pending interrupt.
+// a map[string]any resume addresses interrupts by ID; any other resume
+// (including nil) feeds the first pending interrupt.
 func resumeValuesFor(pending []types.Interrupt, resume any) []any {
 	if len(pending) == 0 {
 		return nil
@@ -66,16 +205,15 @@ func resumeValuesFor(pending []types.Interrupt, resume any) []any {
 }
 
 // resumeSkipNode returns the node whose interrupt_before check should be
-// skipped on the first superstep of a resume, or "" if not applicable. This
-// is non-empty only for checkpoints produced by interrupt_before(N) (whose
-// single pending interrupt ID is interruptBeforeID+N and whose next node is
-// N); interrupt_after and in-node interrupts return "".
-func resumeSkipNode(next string, pending []types.Interrupt) string {
-	if len(pending) != 1 {
-		return ""
+// skipped on the first superstep of a resume, reconstructed from the
+// checkpoint's pending interrupts (D5): the node named by a pending
+// interrupt-before-<node> interrupt ID, or "" when the pause was produced by
+// interrupt_after or an in-node interrupt.
+func resumeSkipNode(pending []types.Interrupt) string {
+	for _, p := range pending {
+		if node, ok := strings.CutPrefix(p.ID, interruptBeforeID); ok {
+			return node
+		}
 	}
-	if pending[0].ID != interruptBeforeID+next {
-		return ""
-	}
-	return next
+	return ""
 }

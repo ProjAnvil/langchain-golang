@@ -218,13 +218,8 @@ func WithRecursionLimit(limit int) CompileOption {
 // `invoke(None, config)` — since there is no in-node interrupt to feed a value
 // back to). A checkpointer (WithCheckpointer) is required for the pause to be
 // resumable; without one, the boundary still surfaces as an interrupt Result
-// but is not checkpointed.
-//
-// Limitation: in supersteps with multiple active tasks the checkpoint records
-// only the first paused node, so sibling tasks are not re-scheduled on resume
-// (the executor's Checkpoint model holds a single Next node). This matches the
-// single-active-task shape `create_agent`'s model<->tools loop produces; fanout
-// graphs should avoid combining interrupt_before with multi-successor steps.
+// but is not checkpointed. In supersteps with multiple active tasks the
+// checkpoint plans the full task set, so resume re-dispatches every sibling.
 func WithInterruptBefore(nodes ...string) CompileOption {
 	return func(o *compileOptions) {
 		if o.interruptBefore == nil {
@@ -239,9 +234,9 @@ func WithInterruptBefore(nodes ...string) CompileOption {
 // WithInterruptAfter registers node names that the graph must pause after
 // running (and merging their state update), before dispatching their
 // successors, mirroring Python's `interrupt_after=` compile argument. The
-// checkpoint records the first successor as the resume point. See
-// WithInterruptBefore's doc comment for the resume semantics, the checkpointer
-// requirement, and the multi-active-task limitation.
+// checkpoint plans the full successor task set as the resume point. See
+// WithInterruptBefore's doc comment for the resume semantics and the
+// checkpointer requirement.
 func WithInterruptAfter(nodes ...string) CompileOption {
 	return func(o *compileOptions) {
 		if o.interruptAfter == nil {
@@ -359,6 +354,10 @@ type Result struct {
 }
 
 type task struct {
+	// id is the task's planned ID (PlannedTask.ID) when the task comes from a
+	// resumed checkpoint; resume value queues key on it (D5). Empty for tasks
+	// derived from input or routing within the current run.
+	id   string
 	node string
 	arg  map[string]any // nil means "use the shared graph state"
 }
@@ -450,6 +449,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// (no value to feed back). Fresh (non-empty) input with an existing
 	// checkpoint starts a NEW turn instead (D2): the input applies on top of
 	// the latest state and execution restarts from the entry point.
+	var err error
 	switch {
 	case opts.Resume != nil:
 		if g.checkpointer == nil {
@@ -461,9 +461,15 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode = resumeFromTuple(rs, tup, opts.Resume)
+		tasks, resumeValues, resumingNode, err = resumeFromTuple(rs, tup, opts.Resume)
+		if err != nil {
+			return Result{}, err
+		}
 	case tup != nil && len(input) == 0:
-		tasks, resumeValues, resumingNode = resumeFromTuple(rs, tup, nil)
+		tasks, resumeValues, resumingNode, err = resumeFromTuple(rs, tup, nil)
+		if err != nil {
+			return Result{}, err
+		}
 	case tup != nil:
 		// New turn (D2): restore the latest state, apply the input as a
 		// write batch, and start over from the entry point. The step counter
@@ -510,9 +516,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// before dispatching the superstep. resumingNode excludes the node
 		// being re-dispatched as part of a resume from a prior
 		// interrupt_before(N) pause (otherwise resuming would immediately
-		// re-pause). The checkpoint stores the to-run node as Next so resume
-		// runs it to completion; the superstep's writes are not committed, so
-		// the checkpoint keeps the pre-superstep channel state and step.
+		// re-pause). The checkpoint plans the superstep's full active task
+		// set so resume re-dispatches every sibling; the superstep's writes
+		// are not committed, so the checkpoint keeps the pre-superstep
+		// channel state and step.
 		if pausedBefore := g.findInterruptBefore(active, resumingNode); pausedBefore != "" {
 			interrupt := types.Interrupt{
 				Value: fmt.Sprintf("interrupt_before: %s", pausedBefore),
@@ -521,7 +528,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			if checkpointing {
 				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
 					checkpoint.Metadata{Source: "loop", Step: rs.step},
-					[]checkpoint.PlannedTask{{Node: pausedBefore}})
+					plannedTasks(active))
 				if err != nil {
 					return Result{}, err
 				}
@@ -556,7 +563,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if sink != nil {
 					sink.EmitRawEvent(RawEvent{Kind: RawNodeStart, Node: t.node})
 				}
-				result, interrupted, err := g.runNode(runCtx, t, state, resumeValues[t.node])
+				result, interrupted, err := g.runNode(runCtx, t, state, resumeValues[t.id])
 				if sink != nil {
 					// Always emit node_end so start/end pairs are balanced per
 					// invocation, even on the error/interrupt paths.
@@ -584,30 +591,44 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 
 		var interrupts []types.Interrupt
-		interruptedNode := ""
-		for i, o := range outcomes {
+		for _, o := range outcomes {
 			if o.interrupted != nil {
 				interrupts = append(interrupts, *o.interrupted)
-				if interruptedNode == "" {
-					interruptedNode = active[i].node
-				}
 			}
 		}
 		if len(interrupts) > 0 {
 			// In-node interrupt: the superstep is not committed. The pause
-			// checkpoint keeps the pre-superstep channel state and step,
-			// plans the (first) interrupted node for the resume, and records
-			// the pending interrupts as ReservedInterrupt pending writes.
+			// checkpoint keeps the pre-superstep channel state and step and
+			// plans the superstep's full active task set. Completed sibling
+			// tasks persist their writes (state updates + D4-normalized goto
+			// Sends) so resume replays them instead of re-running the tasks;
+			// interrupted tasks persist their ReservedInterrupt writes. All
+			// pending writes are keyed by the task's planned ID (D5).
 			if checkpointing {
+				next := plannedTasks(active)
 				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
-					checkpoint.Metadata{Source: "loop", Step: rs.step},
-					[]checkpoint.PlannedTask{{Node: interruptedNode}})
+					checkpoint.Metadata{Source: "loop", Step: rs.step}, next)
 				if err != nil {
 					return Result{}, err
 				}
 				currentCfg = cfg
-				if err := persistInterrupts(ctx, g.checkpointer, cfg, interruptedNode, interrupts); err != nil {
-					return Result{}, err
+				for i, o := range outcomes {
+					taskID := next[i].ID
+					if o.interrupted != nil {
+						if err := persistInterrupts(ctx, g.checkpointer, cfg, taskID, []types.Interrupt{*o.interrupted}); err != nil {
+							return Result{}, err
+						}
+						continue
+					}
+					writes, err := completedTaskWrites(o.update, o.cmd)
+					if err != nil {
+						return Result{}, err
+					}
+					if len(writes) > 0 {
+						if err := g.checkpointer.PutWrites(ctx, cfg, writes, taskID); err != nil {
+							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
+						}
+					}
 				}
 			}
 			return Result{Values: state, Interrupts: interrupts}, nil
@@ -643,19 +664,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 
 		// interrupt_after: if any node that just ran is registered, pause
-		// before dispatching its successors. The checkpoint stores the first
-		// successor as Next so resume continues from there; the already-merged
-		// state update is preserved in Values (resume does not re-run the
-		// paused-from node). If there is no successor, Next is empty and
-		// resume is a no-op completion.
+		// before dispatching its successors. The checkpoint plans the full
+		// successor task set as Next so resume continues from there; the
+		// already-merged state update is preserved in Values (resume does not
+		// re-run the paused-from node). If there is no successor, Next is
+		// empty and resume is a no-op completion.
 		if pausedAfter := g.findInterruptAfter(active); pausedAfter != "" {
-			var planned []checkpoint.PlannedTask
-			for _, t := range nextTasks {
-				if t.node != types.END {
-					planned = []checkpoint.PlannedTask{{Node: t.node, Arg: t.arg}}
-					break
-				}
-			}
+			planned := plannedTasks(nextTasks)
 			interrupt := types.Interrupt{
 				Value: fmt.Sprintf("interrupt_after: %s", pausedAfter),
 				ID:    interruptAfterID + pausedAfter,
@@ -688,28 +703,6 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// D1: checkpoints survive completion — the final loop checkpoint (with an
 	// empty Next) stays in the thread's history.
 	return Result{Values: rs.snapshot()}, nil
-}
-
-// resumeFromTuple restores rs from a paused (or completed) checkpoint and
-// derives the tasks to dispatch, the resume value queues, and the
-// interrupt_before skip node for the resumed run.
-func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []task, resumeValues map[string][]any, skipNode string) {
-	rs.restore(tup.Checkpoint)
-	rs.step = tup.Metadata.Step
-	pending := interruptsFromWrites(tup.PendingWrites)
-	resumeValues = map[string][]any{}
-	for _, pt := range tup.Checkpoint.Next {
-		if pt.Node == types.END {
-			continue
-		}
-		tasks = append(tasks, task{node: pt.Node, arg: pt.Arg})
-	}
-	if len(tasks) > 0 {
-		first := tup.Checkpoint.Next[0].Node
-		resumeValues[first] = resumeValuesFor(pending, resume)
-		skipNode = resumeSkipNode(first, pending)
-	}
-	return tasks, resumeValues, skipNode
 }
 
 // plannedTasks converts resolved next-step tasks into their checkpoint
@@ -896,18 +889,13 @@ func normalizeNodeResult(result any) (map[string]any, *types.Command, error) {
 }
 
 func resolveDestinations(raw []any) ([]task, error) {
-	tasks := make([]task, 0, len(raw))
-	for _, d := range raw {
-		switch v := d.(type) {
-		case string:
-			tasks = append(tasks, task{node: v})
-		case *types.Send:
-			tasks = append(tasks, task{node: v.Node, arg: v.Arg})
-		case types.Send:
-			tasks = append(tasks, task{node: v.Node, arg: v.Arg})
-		default:
-			return nil, fmt.Errorf("graph: unsupported routing destination %T (want string or *types.Send)", d)
-		}
+	sends, err := gotoSends(raw)
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]task, 0, len(sends))
+	for _, s := range sends {
+		tasks = append(tasks, task{node: s.Node, arg: s.Arg})
 	}
 	return tasks, nil
 }
