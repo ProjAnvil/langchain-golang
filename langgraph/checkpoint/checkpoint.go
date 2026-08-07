@@ -5,8 +5,10 @@
 //
 // Scope note: checkpoints are versioned and retained per thread (full
 // history, listable and addressable by ID, so time-travel/forking is
-// possible), but storage is in memory only; persistent backends and
-// pluggable serializers are later milestones.
+// possible), but storage is in memory only; persistent backends are a later
+// milestone. The Serializer interface is the serde contract those backends
+// persist through (see langgraph/checkpoint/serde for the JSON registry
+// implementation).
 package checkpoint
 
 import (
@@ -113,6 +115,21 @@ type Tuple struct {
 	// PendingWrites holds the writes recorded against this checkpoint via
 	// PutWrites, in insertion order.
 	PendingWrites []Write
+}
+
+// Serializer converts channel values, pending-write values, and checkpoint
+// metadata to and from bytes for persistent Saver backends, mirroring the
+// typed dumps/loads contract of Python's `SerializerProtocol`
+// (`langgraph.checkpoint.serde.base`). The `typ` tag identifies the encoding
+// so LoadsTyped can restore the original Go types that plain JSON would lose.
+type Serializer interface {
+	// DumpsTyped encodes v, returning a type tag and the encoded bytes.
+	// Implementations reject values they cannot round-trip losslessly
+	// rather than silently degrading them.
+	DumpsTyped(v any) (typ string, data []byte, err error)
+	// LoadsTyped decodes data previously produced by DumpsTyped with the
+	// same tag, restoring the original value.
+	LoadsTyped(typ string, data []byte) (any, error)
 }
 
 // ListOptions filters Saver.List results.
