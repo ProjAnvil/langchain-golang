@@ -21,8 +21,8 @@ import (
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langchain/chatmodels"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/checkpoint"
-	graphpkg "github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
+	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
 	"github.com/projanvil/langchain-golang/partners/openai"
 )
 

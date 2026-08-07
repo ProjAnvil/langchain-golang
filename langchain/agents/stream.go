@@ -18,7 +18,7 @@ package agents
 //     model/tool nodes emit their domain events directly through the same
 //     sink via the typed emit methods below. This keeps the graph package's
 //     public surface minimal and avoids any import cycle (graph is under
-//     internal/agentruntime and cannot reach back to agents).
+//     langgraph and cannot reach back to agents).
 //   - Final-result recovery: StreamEvents emits a single terminal event of
 //     Type==StreamEnd carrying the final state map (Event.State) and the
 //     final assembled AI message (Event.Message). It is always the last
@@ -32,7 +32,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/streamevents"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
+	"github.com/projanvil/langchain-golang/langgraph/graph"
 )
 
 // StreamEventType identifies the kind of a StreamEvent.

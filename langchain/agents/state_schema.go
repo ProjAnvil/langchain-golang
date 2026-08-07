@@ -23,7 +23,7 @@ package agents
 //     `v, ok := state[name]`).
 
 import (
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/channels"
+	"github.com/projanvil/langchain-golang/langgraph/channels"
 )
 
 // StateField describes one custom graph-state field. It mirrors one field of

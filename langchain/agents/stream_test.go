@@ -16,8 +16,8 @@ import (
 	"github.com/projanvil/langchain-golang/core/schema"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
+	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 // drainStream reads all events from s until it closes, asserting the stream
@@ -488,16 +488,16 @@ func TestStreamEventsConcurrentFanOutBalanced(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		return map[string]any{"out": []string{state["subject"].(string)}}, nil
 	})
-	g.AddEdge(agentruntime.START, "fanout")
+	g.AddEdge(types.START, "fanout")
 	g.AddConditionalEdges("fanout", func(_ context.Context, state map[string]any) ([]any, error) {
 		subjects := state["subjects"].([]string)
 		dests := make([]any, len(subjects))
 		for i, s := range subjects {
-			dests[i] = &agentruntime.Send{Node: "worker", Arg: map[string]any{"subject": s}}
+			dests[i] = &types.Send{Node: "worker", Arg: map[string]any{"subject": s}}
 		}
 		return dests, nil
 	})
-	g.AddEdge("worker", agentruntime.END)
+	g.AddEdge("worker", types.END)
 
 	cg, err := g.Compile()
 	if err != nil {

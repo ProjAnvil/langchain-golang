@@ -27,9 +27,9 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/messages"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/channels"
-	graphpkg "github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
+	"github.com/projanvil/langchain-golang/langgraph/channels"
+	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 // ===========================================================================
@@ -68,7 +68,7 @@ func TestStateSchema_LastValueAcrossSupersteps(t *testing.T) {
 	})
 	g.SetEntryPoint("writer")
 	g.AddEdge("writer", "reader")
-	g.AddEdge("reader", agentruntime.END)
+	g.AddEdge("reader", types.END)
 
 	// Register "counter" with LastValue (the default CreateAgent's loop picks
 	// when a StateField carries a nil Reducer). Calling g.AddReducer directly
@@ -112,7 +112,7 @@ func TestStateSchema_CustomReducerAccumulates(t *testing.T) {
 	})
 	g.SetEntryPoint("first")
 	g.AddEdge("first", "second")
-	g.AddEdge("second", agentruntime.END)
+	g.AddEdge("second", types.END)
 
 	// A user-supplied reducer, exactly as a caller would pass via
 	// WithAgentStateFields(StateField{Name: "docs", Reducer: channels.AppendSliceReducer}).

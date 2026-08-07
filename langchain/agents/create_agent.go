@@ -70,11 +70,11 @@ import (
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langchain/chatmodels"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/channels"
-	"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/checkpoint"
-	graphpkg "github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"
 	agenttools "github.com/projanvil/langchain-golang/langchain/tools"
+	"github.com/projanvil/langchain-golang/langgraph/channels"
+	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 
 	// Blank-import partners/openai so "openai:..." resolves out-of-the-box via
 	// its init() self-registration with chatmodels. Importing partners/openai
@@ -511,10 +511,10 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 
 	// finalNode is where every "run is over" routing decision (normal
 	// completion, a jump_to "end", or a matched structured-output response)
-	// goes: agentruntime.END directly, or through a dedicated "after_agent" node
+	// goes: types.END directly, or through a dedicated "after_agent" node
 	// first when at least one AfterAgentHook is configured (see the package
 	// doc comment).
-	finalNode := agentruntime.END
+	finalNode := types.END
 	hasAfterAgent := hasHook[AfterAgentHook](options.Middleware)
 	if hasAfterAgent {
 		finalNode = AfterAgentNodeName
@@ -545,11 +545,11 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		g.AddNode(BeforeAgentNodeName, buildBeforeAgentNode(options.Middleware, logger))
 		g.AddEdge(BeforeAgentNodeName, ModelNodeName)
 	}
-	g.AddEdge(agentruntime.START, entryNode)
+	g.AddEdge(types.START, entryNode)
 
 	if hasAfterAgent {
 		g.AddNode(AfterAgentNodeName, buildAfterAgentNode(options.Middleware, logger))
-		g.AddEdge(AfterAgentNodeName, agentruntime.END)
+		g.AddEdge(AfterAgentNodeName, types.END)
 	}
 
 	if len(toolList) > 0 {
@@ -886,7 +886,7 @@ func buildModelNode(
 					return nil, err
 				}
 				if cmd != nil {
-					return &agentruntime.Command{
+					return &types.Command{
 						Update: cmd.Update,
 						Goto:   graphpkg.To(resolveJumpTarget(cmd.Goto, finalNode)),
 					}, nil
@@ -905,7 +905,7 @@ func buildModelNode(
 				continue
 			}
 			if jumpTo, ok := popJumpTo(update); ok {
-				return &agentruntime.Command{Update: update, Goto: graphpkg.To(resolveJumpTarget(jumpTo, finalNode))}, nil
+				return &types.Command{Update: update, Goto: graphpkg.To(resolveJumpTarget(jumpTo, finalNode))}, nil
 			}
 			// See the package doc comment: "messages" updates from
 			// BeforeModel hooks only reshape the local model-call view, they
@@ -1069,7 +1069,7 @@ func buildModelNode(
 		}
 
 		if gotoOverride != "" {
-			return &agentruntime.Command{Update: update, Goto: graphpkg.To(gotoOverride)}, nil
+			return &types.Command{Update: update, Goto: graphpkg.To(gotoOverride)}, nil
 		}
 		return update, nil
 	}
@@ -1150,7 +1150,7 @@ func providerStrategyModelSettings(providerStrategy *ProviderStrategy) map[strin
 // detectStructuredOutput inspects the model's newMessages for a
 // ResponseFormat match: a tool call into structuredBindings (ToolStrategy),
 // or — absent any tool calls — a ProviderStrategy JSON-decodable text
-// response. A match returns a terminal *agentruntime.Command (handled=true)
+// response. A match returns a terminal *types.Command (handled=true)
 // carrying the parsed value under state key "structured_response", ending
 // the run without visiting the tools node or running AfterModel hooks.
 func detectStructuredOutput(
@@ -1159,7 +1159,7 @@ func detectStructuredOutput(
 	toolStrategy *ToolStrategy,
 	providerStrategy *ProviderStrategy,
 	finalNode string,
-) (*agentruntime.Command, bool, error) {
+) (*types.Command, bool, error) {
 	if len(newMessages) == 0 {
 		return nil, false, nil
 	}
@@ -1199,7 +1199,7 @@ func detectStructuredOutput(
 			toolMsg := messages.Tool(call.ID, content)
 			toolMsg.Name = call.Name
 			updatedMessages := append(append([]messages.Message(nil), newMessages...), toolMsg)
-			return &agentruntime.Command{
+			return &types.Command{
 				Update: map[string]any{
 					"messages":            updatedMessages,
 					"structured_response": parsed,
@@ -1215,7 +1215,7 @@ func detectStructuredOutput(
 		if err != nil {
 			return nil, false, err
 		}
-		return &agentruntime.Command{
+		return &types.Command{
 			Update: map[string]any{
 				"messages":            newMessages,
 				"structured_response": parsed,
