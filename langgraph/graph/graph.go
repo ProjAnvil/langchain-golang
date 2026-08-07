@@ -13,8 +13,11 @@
 //     (LastValue by default, BinaryOperator for reducer-registered keys, or
 //     an explicit prototype via StateGraph.AddChannel), standing in for
 //     Python's `Annotated[T, reducer]` state schema fields.
-//   - No subgraphs: Command.Graph must be empty (targeting "the current
-//     graph"); any other value is a compile/runtime error.
+//   - Subgraphs are supported via StateGraph.AddSubgraph: a compiled graph
+//     runs as a node of a parent graph, sharing state through shared keys,
+//     and a node inside it may return Command{Graph: types.ParentGraph} to
+//     have the parent apply the update and routing (see ParentCommandError).
+//     Any other non-empty Command.Graph value remains a runtime error.
 //   - No langgraph "stream modes" (values/updates/debug), caching, or retry
 //     policies. A minimal event-ified execution path (InvokeStream + the
 //     NodeEventSink in events.go) IS supported, so CreateAgent's StreamEvents
@@ -37,6 +40,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"sync"
@@ -56,7 +60,11 @@ import (
 //     key's channel (see StateGraph.AddReducer / StateGraph.AddChannel).
 //   - *types.Command: a state update (Command.Update) plus an optional
 //     routing override (Command.Goto) that bypasses the graph's static and
-//     conditional edges for this task.
+//     conditional edges for this task. Command.Graph selects the graph the
+//     command applies to: empty means the current graph, and
+//     types.ParentGraph targets the closest parent graph (only meaningful
+//     inside a subgraph; see StateGraph.AddSubgraph and ParentCommandError).
+//     Any other value is a runtime error.
 //
 // Any other return type is a runtime error. NodeFunc must not mutate the
 // state map it receives (see the package doc comment).
@@ -351,6 +359,12 @@ type Options struct {
 	// state and execution restarts from the entry point (Python parity —
 	// fresh input never silently resumes).
 	Resume any
+
+	// checkpointNS namespaces the run's checkpoints within the thread. It is
+	// set only internally, by the StateGraph.AddSubgraph node wrapper, to run
+	// a child graph under <parentNS>/<name> (see joinCheckpointNS); callers
+	// invoking a graph directly always use the root namespace.
+	checkpointNS string
 }
 
 // Result is returned by Invoke, mirroring the value/interrupt split of
@@ -387,7 +401,11 @@ func (g *CompiledGraph) Invoke(ctx context.Context, input map[string]any) (Resul
 // functions observe a nil sink from EventSinkFromContext and take their
 // non-streaming code path with zero added overhead.
 func (g *CompiledGraph) InvokeWithOptions(ctx context.Context, input map[string]any, opts Options) (Result, error) {
-	return g.run(ctx, input, opts, nil)
+	res, err := g.run(ctx, input, opts, nil)
+	if err != nil {
+		return Result{}, topLevelParentCommandError(err)
+	}
+	return res, nil
 }
 
 // InvokeStream runs the graph exactly like InvokeWithOptions, but additionally
@@ -405,7 +423,25 @@ func (g *CompiledGraph) InvokeWithOptions(ctx context.Context, input map[string]
 // superstep, their events interleave on sink. Consumers can disambiguate via
 // the RawEvent.Node field (mapped to agents.StreamEvent.Node by CreateAgent).
 func (g *CompiledGraph) InvokeStream(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink) (Result, error) {
-	return g.run(ctx, input, opts, sink)
+	res, err := g.run(ctx, input, opts, sink)
+	if err != nil {
+		return Result{}, topLevelParentCommandError(err)
+	}
+	return res, nil
+}
+
+// topLevelParentCommandError rewrites a *ParentCommandError surfacing from a
+// public entry point — meaning a node of THIS graph returned
+// Command{Graph: types.ParentGraph} but the graph has no parent to apply it
+// to — into a descriptive error. The *ParentCommandError stays in the wrap
+// chain so callers can still recover the command via errors.As. The
+// AddSubgraph wrapper bypasses this by calling run directly.
+func topLevelParentCommandError(err error) error {
+	var pce *ParentCommandError
+	if errors.As(err, &pce) {
+		return fmt.Errorf("graph: Command targeting the parent graph surfaced from the top-level graph, which has no parent: %w", err)
+	}
+	return err
 }
 
 // checkpointSeq supplies the clock sequence for executor-minted checkpoint
@@ -424,6 +460,16 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	}
 
 	checkpointing := g.checkpointer != nil && opts.ThreadID != ""
+	if checkpointing {
+		// Publish this run's checkpoint identity so subgraph nodes (see
+		// StateGraph.AddSubgraph) checkpoint into the same thread under
+		// <parentNS>/<name>; nested runs shadow it with their own namespace.
+		runCtx = context.WithValue(runCtx, subgraphCheckpointKey{}, subgraphCheckpoint{
+			saver:    g.checkpointer,
+			threadID: opts.ThreadID,
+			ns:       opts.checkpointNS,
+		})
+	}
 
 	rs := newRunState(g.channelProtos)
 	var tasks []task
@@ -438,7 +484,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	var tup *checkpoint.Tuple
 	if checkpointing {
 		var err error
-		tup, err = g.checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointID: opts.CheckpointID})
+		tup, err = g.checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: opts.CheckpointID})
 		if err != nil {
 			return Result{}, fmt.Errorf("graph: loading checkpoint for thread %q: %w", opts.ThreadID, err)
 		}
@@ -759,7 +805,7 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *ru
 		next[i].ID = TaskID(cp.ID, md.Step+1, next[i].Node, next[i].Arg)
 	}
 	cp.Next = next
-	cfg, err := g.checkpointer.Put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointID: parent.CheckpointID}, cp, md, nil)
+	cfg, err := g.checkpointer.Put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil)
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("graph: saving checkpoint for thread %q: %w", opts.ThreadID, err)
 	}
@@ -901,8 +947,13 @@ func normalizeNodeResult(result any) (map[string]any, *types.Command, error) {
 	case map[string]any:
 		return v, nil, nil
 	case *types.Command:
+		if v.Graph == types.ParentGraph {
+			// D6: a parent-targeted command aborts the run; the closest
+			// AddSubgraph wrapper recovers it (see ParentCommandError).
+			return nil, nil, &ParentCommandError{Command: v}
+		}
 		if v.Graph != "" {
-			return nil, nil, fmt.Errorf("graph: Command.Graph %q is not supported (subgraphs are out of scope for this port)", v.Graph)
+			return nil, nil, fmt.Errorf("graph: Command.Graph %q is not supported (only %q, targeting the parent graph)", v.Graph, types.ParentGraph)
 		}
 		return v.Update, v, nil
 	default:

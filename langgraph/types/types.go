@@ -18,9 +18,10 @@ const (
 
 // ParentGraph is the sentinel value for Command.Graph indicating the command
 // targets the closest parent graph rather than the current graph, matching
-// Python's `Command.PARENT`. Subgraphs are out of scope for this port, so
-// this is currently only useful as a documented sentinel; CompiledGraph
-// treats any non-empty Command.Graph as an error.
+// Python's `Command.PARENT`. It is meaningful inside a subgraph (see
+// graph.StateGraph.AddSubgraph): the parent graph applies the command's
+// update and goto at its own level. Surfacing from a top-level graph is an
+// error, as is any other non-empty Command.Graph value.
 const ParentGraph = "__parent__"
 
 // Send represents a message to dynamically invoke a node with custom input,
@@ -39,11 +40,10 @@ type Send struct {
 
 // Command carries state updates and/or routing decisions returned by a node,
 // matching (a scoped-down subset of) Python's `langgraph.types.Command`.
-// Subgraph targeting (Graph == ParentGraph) is accepted for structural parity
-// but not implemented; CompiledGraph returns an error if it is set.
 type Command struct {
 	// Graph selects which graph the command applies to. Empty means the
-	// current graph; ParentGraph is documented but unsupported.
+	// current graph; ParentGraph targets the closest parent graph (see
+	// graph.StateGraph.AddSubgraph); any other value is an error.
 	Graph string
 	// Update is a partial state update, merged into channel state via each
 	// key's Reducer exactly like a plain map[string]any node return value.
