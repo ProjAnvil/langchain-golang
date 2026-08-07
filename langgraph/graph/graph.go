@@ -434,6 +434,15 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 	}
 
+	// currentCfg tracks the executor's current checkpoint position (D3): every
+	// save passes its CheckpointID to Put so the new checkpoint's ParentConfig
+	// points at its actual predecessor. Resumed/restored runs start from the
+	// loaded checkpoint's position.
+	var currentCfg checkpoint.Config
+	if tup != nil {
+		currentCfg = tup.Config
+	}
+
 	// Run mode selection. An explicit Options.Resume always resumes (the
 	// in-node Interrupt path), requiring a checkpointer + checkpoint. Nil or
 	// empty input with an existing checkpoint resumes too, mirroring Python's
@@ -464,9 +473,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}}); err != nil {
 			return Result{}, err
 		}
-		if _, err := g.saveCheckpoint(ctx, opts, rs, checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
+		cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg, checkpoint.Metadata{Source: "input", Step: -1}, nil)
+		if err != nil {
 			return Result{}, err
 		}
+		currentCfg = cfg
 		tasks = []task{{node: g.entry}}
 	default:
 		// Fresh start: the input is the first write batch.
@@ -474,9 +485,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			return Result{}, err
 		}
 		if checkpointing {
-			if _, err := g.saveCheckpoint(ctx, opts, rs, checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
+			cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg, checkpoint.Metadata{Source: "input", Step: -1}, nil)
+			if err != nil {
 				return Result{}, err
 			}
+			currentCfg = cfg
 		}
 		tasks = []task{{node: g.entry}}
 	}
@@ -506,12 +519,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				ID:    interruptBeforeID + pausedBefore,
 			}
 			if checkpointing {
-				cfg, err := g.saveCheckpoint(ctx, opts, rs,
+				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
 					checkpoint.Metadata{Source: "loop", Step: rs.step},
 					[]checkpoint.PlannedTask{{Node: pausedBefore}})
 				if err != nil {
 					return Result{}, err
 				}
+				currentCfg = cfg
 				if err := persistInterrupts(ctx, g.checkpointer, cfg, pausedBefore, []types.Interrupt{interrupt}); err != nil {
 					return Result{}, err
 				}
@@ -585,12 +599,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// plans the (first) interrupted node for the resume, and records
 			// the pending interrupts as ReservedInterrupt pending writes.
 			if checkpointing {
-				cfg, err := g.saveCheckpoint(ctx, opts, rs,
+				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
 					checkpoint.Metadata{Source: "loop", Step: rs.step},
 					[]checkpoint.PlannedTask{{Node: interruptedNode}})
 				if err != nil {
 					return Result{}, err
 				}
+				currentCfg = cfg
 				if err := persistInterrupts(ctx, g.checkpointer, cfg, interruptedNode, interrupts); err != nil {
 					return Result{}, err
 				}
@@ -646,11 +661,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				ID:    interruptAfterID + pausedAfter,
 			}
 			if checkpointing {
-				cfg, err := g.saveCheckpoint(ctx, opts, rs,
+				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
 					checkpoint.Metadata{Source: "loop", Step: rs.step}, planned)
 				if err != nil {
 					return Result{}, err
 				}
+				currentCfg = cfg
 				if err := persistInterrupts(ctx, g.checkpointer, cfg, pausedAfter, []types.Interrupt{interrupt}); err != nil {
 					return Result{}, err
 				}
@@ -659,10 +675,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 
 		if checkpointing {
-			if _, err := g.saveCheckpoint(ctx, opts, rs,
-				checkpoint.Metadata{Source: "loop", Step: rs.step}, plannedTasks(nextTasks)); err != nil {
+			cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
+				checkpoint.Metadata{Source: "loop", Step: rs.step}, plannedTasks(nextTasks))
+			if err != nil {
 				return Result{}, err
 			}
+			currentCfg = cfg
 		}
 		tasks = nextTasks
 	}
@@ -709,9 +727,11 @@ func plannedTasks(tasks []task) []checkpoint.PlannedTask {
 
 // saveCheckpoint persists rs as a new checkpoint for opts.ThreadID with the
 // given metadata and planned next tasks, returning the new checkpoint's
-// Config. Planned task IDs bind to the new checkpoint's ID and the superstep
-// the tasks will run in (md.Step + 1).
-func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *runState, md checkpoint.Metadata, next []checkpoint.PlannedTask) (checkpoint.Config, error) {
+// Config. parent is the executor's current checkpoint position: its
+// CheckpointID is passed to Put so the new checkpoint's ParentConfig links to
+// its actual predecessor (D3). Planned task IDs bind to the new checkpoint's
+// ID and the superstep the tasks will run in (md.Step + 1).
+func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask) (checkpoint.Config, error) {
 	cp := checkpoint.Checkpoint{
 		V:               1,
 		ID:              checkpoint.NewID(int(checkpointSeq.Add(1))),
@@ -724,7 +744,7 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *ru
 		next[i].ID = TaskID(cp.ID, md.Step+1, next[i].Node, next[i].Arg)
 	}
 	cp.Next = next
-	cfg, err := g.checkpointer.Put(ctx, checkpoint.Config{ThreadID: opts.ThreadID}, cp, md, nil)
+	cfg, err := g.checkpointer.Put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointID: parent.CheckpointID}, cp, md, nil)
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("graph: saving checkpoint for thread %q: %w", opts.ThreadID, err)
 	}

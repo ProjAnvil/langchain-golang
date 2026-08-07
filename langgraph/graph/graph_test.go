@@ -606,6 +606,30 @@ func TestVersionedCheckpointBookkeeping(t *testing.T) {
 	if seen := step0.Checkpoint.VersionsSeen["n1"]; seen["k0"] != 1 {
 		t.Fatalf("VersionsSeen[n1] = %+v, want k0@1", seen)
 	}
+
+	// Parent chain (D3): walking newest-first, each checkpoint's ParentConfig
+	// must point at the previous checkpoint, and the first (input) checkpoint
+	// must have no parent.
+	for i, tup := range tuples {
+		if i == len(tuples)-1 {
+			if tup.ParentConfig != nil {
+				t.Fatalf("first checkpoint (step %d): ParentConfig = %+v, want nil", tup.Metadata.Step, tup.ParentConfig)
+			}
+			continue
+		}
+		prev := tuples[i+1]
+		if tup.ParentConfig == nil {
+			t.Fatalf("checkpoint %d (step %d): ParentConfig is nil, want predecessor %q", i, tup.Metadata.Step, prev.Checkpoint.ID)
+		}
+		if tup.ParentConfig.CheckpointID != prev.Checkpoint.ID {
+			t.Fatalf("checkpoint %d (step %d): ParentConfig.CheckpointID = %q, want %q",
+				i, tup.Metadata.Step, tup.ParentConfig.CheckpointID, prev.Checkpoint.ID)
+		}
+		if tup.ParentConfig.ThreadID != "t1" {
+			t.Fatalf("checkpoint %d (step %d): ParentConfig.ThreadID = %q, want %q",
+				i, tup.Metadata.Step, tup.ParentConfig.ThreadID, "t1")
+		}
+	}
 }
 
 // TestSingleGlobalVersionPerSuperstep verifies that all channels written in
