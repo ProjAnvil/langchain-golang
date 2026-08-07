@@ -237,3 +237,149 @@ func TestStreamMessagesCustomInert(t *testing.T) {
 		t.Errorf("StreamWriterFromContext() non-nil under Invoke, want nil")
 	}
 }
+
+// emitMessagesAndCustom is a node body that opts into both stream modes:
+// one messages chunk via the installed manager and one custom payload via
+// the installed StreamWriter. It records what the node observed so tests can
+// assert carrier visibility.
+func emitMessagesAndCustom(t *testing.T, observed *carriersObserved) func(ctx context.Context, _ map[string]any) (any, error) {
+	t.Helper()
+	return func(ctx context.Context, _ map[string]any) (any, error) {
+		manager, ok := callbacks.ManagerFromContext(ctx)
+		writer := StreamWriterFromContext(ctx)
+		*observed = carriersObserved{managerOK: ok, managerEmpty: manager.Empty(), writer: writer}
+		if ok {
+			if err := manager.Emit(ctx, callbacks.Event{Kind: callbacks.EventChatModelStream, Chunk: messages.AI("tok")}); err != nil {
+				t.Errorf("Emit() error = %v", err)
+			}
+		}
+		if writer != nil {
+			writer("custom payload")
+		}
+		return nil, nil
+	}
+}
+
+// carriersObserved records the stream carriers a node saw in its context.
+type carriersObserved struct {
+	managerOK    bool
+	managerEmpty bool
+	writer       StreamWriter
+}
+
+// TestStreamSubgraphCarriersStripped verifies that with Subgraphs:false the
+// subgraph's inner nodes see no live messages/custom carriers: the writer is
+// nil and the shadowing manager is empty, so their emissions are dropped
+// instead of leaking into the stream under the root namespace (S1).
+func TestStreamSubgraphCarriersStripped(t *testing.T) {
+	var innerObserved carriersObserved
+	child := NewStateGraph()
+	child.AddNode("inner", emitMessagesAndCustom(t, &innerObserved))
+	child.AddEdge(types.START, "inner")
+	child.AddEdge("inner", types.END)
+	compiledChild, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	var rootObserved carriersObserved
+	g := NewStateGraph()
+	g.AddNode("worker", emitMessagesAndCustom(t, &rootObserved))
+	g.AddSubgraph("sub", compiledChild)
+	g.AddEdge(types.START, "worker")
+	g.AddEdge("worker", "sub")
+	g.AddEdge("sub", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+		Modes:     []StreamMode{StreamMessages, StreamCustom},
+		Subgraphs: false,
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("len(chunks) = %d, want 2 (root messages + custom only; subgraph emissions dropped): %#v", len(chunks), chunks)
+	}
+	for i, c := range chunks {
+		if c.Namespace != "" {
+			t.Errorf("chunks[%d].Namespace = %q, want root %q", i, c.Namespace, "")
+		}
+	}
+	if chunks[0].Mode != StreamMessages || chunks[1].Mode != StreamCustom {
+		t.Errorf("modes = [%q %q], want [%q %q]", chunks[0].Mode, chunks[1].Mode, StreamMessages, StreamCustom)
+	}
+	if innerObserved.writer != nil {
+		t.Errorf("inner node StreamWriterFromContext() non-nil, want nil (stripped)")
+	}
+	if innerObserved.managerOK && !innerObserved.managerEmpty {
+		t.Errorf("inner node manager has handlers, want none (stripped)")
+	}
+	if !rootObserved.managerOK || rootObserved.managerEmpty || rootObserved.writer == nil {
+		t.Errorf("root node carriers = {managerOK: %v, managerEmpty: %v, writer nil: %v}, want a live manager and writer",
+			rootObserved.managerOK, rootObserved.managerEmpty, rootObserved.writer == nil)
+	}
+}
+
+// TestStreamMessagesInSubgraph verifies that with Subgraphs:true an inner
+// node's messages chunks are delivered under the child namespace, in both the
+// chunk Namespace and the metadata's langgraph_checkpoint_ns.
+func TestStreamMessagesInSubgraph(t *testing.T) {
+	child := NewStateGraph()
+	child.AddNode("inner", func(ctx context.Context, _ map[string]any) (any, error) {
+		manager, ok := callbacks.ManagerFromContext(ctx)
+		if !ok {
+			t.Errorf("ManagerFromContext() ok = false, want an installed manager under StreamMessages")
+			return nil, nil
+		}
+		if err := manager.Emit(ctx, callbacks.Event{Kind: callbacks.EventChatModelStream, Chunk: messages.AI("inner tok")}); err != nil {
+			t.Errorf("Emit() error = %v", err)
+		}
+		return nil, nil
+	})
+	child.AddEdge(types.START, "inner")
+	child.AddEdge("inner", types.END)
+	compiledChild, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	g := NewStateGraph()
+	g.AddSubgraph("sub", compiledChild)
+	g.AddEdge(types.START, "sub")
+	g.AddEdge("sub", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+		Modes:     []StreamMode{StreamMessages},
+		Subgraphs: true,
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1: %#v", len(chunks), chunks)
+	}
+	c := chunks[0]
+	if c.Mode != StreamMessages || c.Namespace != "sub" {
+		t.Errorf("chunk = {Mode: %q, Namespace: %q}, want {Mode: %q, Namespace: %q}", c.Mode, c.Namespace, StreamMessages, "sub")
+	}
+	mc := messageChunkPayload(t, c)
+	if mc.Message.Content != "inner tok" {
+		t.Errorf("message content = %q, want %q", mc.Message.Content, "inner tok")
+	}
+	wantMetadata := map[string]any{
+		"langgraph_node":          "inner",
+		"langgraph_step":          0,
+		"langgraph_checkpoint_ns": "sub",
+	}
+	if !reflect.DeepEqual(mc.Metadata, wantMetadata) {
+		t.Errorf("metadata = %v, want %v", mc.Metadata, wantMetadata)
+	}
+}

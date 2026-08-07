@@ -210,6 +210,15 @@ func (e *streamEmitter) emit(mode StreamMode, payload any) {
 // step is the superstep the task runs in (rs.step+1 at dispatch). When
 // neither mode is active — including every non-streaming run, where the
 // emitter itself is nil — ctx is returned unchanged (zero overhead).
+//
+// Manager interplay: the installed manager OVERWRITES any manager the caller
+// installed into the run's context (e.g. via callbacks.ContextWithManager
+// before Stream), because the bridge must own the handler set to attach the
+// node/step/namespace metadata. Such a caller-installed manager is still
+// visible to non-node code and to modes that do not install one; to compose
+// user handlers with messages mode, add them inside the node — derive from
+// the installed manager (callbacks.ManagerFromContext) and wrap it, e.g.
+// callbacks.NewManager(append([]callbacks.Handler{myHandler}, manager)...).
 func (e *streamEmitter) nodeContext(ctx context.Context, node string, step int) context.Context {
 	if e == nil {
 		return ctx
@@ -222,6 +231,23 @@ func (e *streamEmitter) nodeContext(ctx context.Context, node string, step int) 
 			e.emit(StreamCustom, payload)
 		})
 	}
+	return ctx
+}
+
+// stripStreamCarriers derives the child-run context for a subgraph the stream
+// did not request (StreamOptions.Subgraphs false): the emitter is removed and
+// the per-node carriers the PARENT's nodeContext installed for the subgraph
+// node — the messages-bridge manager and the StreamWriter — are shadowed with
+// inert values, so inner nodes see no live carrier and any messages/custom
+// emissions they attempt are dropped rather than delivered under the root
+// namespace. The zero manager satisfies ManagerFromContext's ok while having
+// no handlers (Emit drops events); the nil writer fails the nil-check nodes
+// must perform. Must not be used on the Subgraphs:true path, where
+// nodeContext re-installs live carriers with the child namespace.
+func stripStreamCarriers(ctx context.Context) context.Context {
+	ctx = contextWithEmitter(ctx, nil)
+	ctx = callbacks.ContextWithManager(ctx, callbacks.Manager{})
+	ctx = contextWithStreamWriter(ctx, nil)
 	return ctx
 }
 

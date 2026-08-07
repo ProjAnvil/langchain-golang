@@ -194,7 +194,7 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 		if em.subgraphs {
 			ctx = contextWithEmitter(ctx, em.child(name))
 		} else {
-			ctx = contextWithEmitter(ctx, nil)
+			ctx = stripStreamCarriers(ctx)
 		}
 	}
 
