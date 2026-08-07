@@ -1,0 +1,91 @@
+# LangGraph Go 移植设计
+
+日期：2026-08-07
+状态：已批准（用户于 2026-08-07 确认）
+上游基线：`langchain-ai/langgraph` main @ `ea5f9cc9f`（1.2.x 之后）
+
+## 目标
+
+将 Python `langgraph` 移植为本仓库（`langchain_golang`，module `github.com/projanvil/langchain-golang`）中的公开 Go 模块，使 Go 用户可以用与 Python 版一致的语义构建有状态、可中断、可恢复的图工作流，并与本仓库已移植的 `core`（messages/runnables/tools）体系集成。
+
+## 已否决的备选方案
+
+- **全保真逐文件重写（方案 B）**：严格镜像 Python 模块结构从头写。工作量最大且会废弃现有 `agentruntime` 的已测代码。不作为起点，但其语义（版本化 checkpoint、完整 channel 类型、Pregel 超步细节）是 M2 的演进目标。
+- **依赖第三方 Go 实现（方案 C，如 dshills/langgraph-go）**：alpha 阶段、API 与 Python 版不对齐、无法与本仓库 `core` 集成。否决。
+- **泛型强类型 state**：与 Python 动态语义和现有代码均不一致，否决。state 统一为 `map[string]any`，配合每 key reducer/channel。
+
+## 总体方案（方案 A）
+
+以现有 `langchain/internal/agentruntime` 为地基，晋升为仓库根部的公开 `langgraph/` 模块，然后按里程碑增量补全至全保真语义。
+
+### 包布局（镜像 Python monorepo 依赖图）
+
+```text
+langgraph/
+├── types/       # Command / Send / Interrupt / GraphInterrupt（平移自 agentruntime/types.go）
+├── channels/    # LastValue / Topic / BinaryOperatorAggregate 等 channel 抽象
+├── checkpoint/  # Saver 接口、版本化 Checkpoint、InMemorySaver
+├── graph/       # StateGraph builder + CompiledGraph
+├── pregel/      # 超步执行引擎（M2 起从 graph 内的 run 循环中抽出）
+└── prebuilt/    # ToolNode 等（M4）
+```
+
+依赖方向：`types` ← `channels` ← `checkpoint` ← `pregel` ← `graph` ← `prebuilt`，禁止反向依赖。
+
+### 状态模型
+
+- Graph state 为 `map[string]any`；节点函数不得修改传入的 state map（只读），通过返回值表达更新。
+- 每 key 的合并语义由 channel/reducer 决定；未注册的 key 默认 LastValue（last write wins）。
+- 现有 `MessagesReducer`（ID 感知合并）、`AppendSliceReducer`、`LastValueReducer` 逻辑复用。
+
+### 与现有 `agentruntime` 的关系
+
+每个里程碑完成后，`langchain/internal/agentruntime` 改为薄封装，委托到公开 `langgraph` 包；`langchain/agents.CreateAgent` 的对外行为与测试必须保持不变（全绿）。
+
+## 里程碑划分
+
+每个里程碑独立可交付、可验证。
+
+### M1 核心平移
+
+- 建立公开 `langgraph/` 包骨架（types/channels/checkpoint/graph）。
+- 平移现有能力：StateGraph builder、同步超步执行循环（超步内并行）、`Command`/`Send`/`Interrupt`、interrupt_before/after、单 checkpoint/thread 的 `MemorySaver`、事件 sink（现有 `InvokeStream` 能力）。
+- `agentruntime` 改为委托封装；`create_agent` 切换到新包，全部现有测试通过。
+- 显式不做：subgraphs、stream modes、时间旅行、持久化后端、函数式 API。
+
+### M2 全保真核心
+
+- 版本化 checkpoint：每 thread 多 checkpoint（checkpoint_id 单调）、state history（`List`/`GetStateHistory`）、时间旅行（从任意历史 checkpoint fork/恢复）。
+- checkpoint 结构对齐 Python：channel values + channel versions + versions_seen + pending writes。
+- channel 升级为对象抽象（对齐 `langgraph.channels`：`LastValue`、`Topic`、`BinaryOperatorAggregate`、`EphemeralValue`），内部复用 M1 reducer 逻辑。
+- 超步循环升级为 PULL 订阅模型（对齐 `pregel` 的 `prepare_next_tasks` 语义）。
+- subgraph 支持：`Command.Graph = ParentGraph`、子图作为节点。
+
+### M3 流式与持久化
+
+- Stream modes：`values` / `updates` / `debug` / `messages`（对齐 Python `stream_mode`）。
+- Checkpoint serde：`Serializer` 接口 + JSON 实现（对齐 `JsonPlusSerializer` 的可移植子集；不与 Python checkpoint 二进制兼容，明确记录）。
+- SQLite checkpoint 后端（对齐 `langgraph-checkpoint-sqlite`）。
+
+### M4（可选远景）
+
+- `prebuilt/`：`ToolNode`（迁移现有 `langchain/tools/tool_node.go`）、`create_react_agent` 等价物。
+- 节点 retry / cache 策略。
+- 明确不做：CLI、SDK（LangGraph Server 客户端）、部署相关功能。
+
+## 错误处理
+
+- 沿用仓库惯例：显式 `error` 返回，节点内 `Interrupt` 沿用 panic/recover 机制（`GraphInterrupt`），不支持的功能返回明确错误而非静默降级。
+- 图构建期错误（重复节点、悬空边等）在 `Compile` 时聚合报告，与现有实现一致。
+
+## 测试策略
+
+- 沿用仓库 table-driven 测试惯例。
+- 每个里程碑以 Python 侧对应测试文件为参照（如 `libs/langgraph/tests/test_pregel.py`、`libs/checkpoint/tests/test_memory.py`）挑选可移植用例写 Go 测试。
+- 回归底线：`langchain/agents` 与 `agentruntime` 现有测试在每个里程碑后全绿（`go test ./...`）。
+
+## 风险
+
+1. **Pregel 引擎细节**：`pregel/main.py` 数千行，超步/中断/恢复语义复杂；M2 是最重里程碑，需要逐节对照 Python 源码。
+2. **Serde 不兼容**：Go 版 checkpoint 无法与 Python 版互通，文档中明确声明。
+3. **动态类型摩擦**：`map[string]any` 下的类型断言错误只能在运行期暴露，靠测试覆盖弥补。
