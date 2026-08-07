@@ -205,9 +205,17 @@ func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
 // a map[string]any resume addresses interrupts by ID, and an interrupt whose
 // ID is absent from the map is NOT fed a value — its Interrupt() call finds
 // the queue exhausted and re-panics with the same interrupt (the run pauses
-// again); any other resume (including nil) feeds the first pending interrupt.
+// again); a nil resume likewise leaves the queue EMPTY, so the pending
+// interrupts re-fire (the run re-pauses with the same interrupts) instead of
+// being silently answered with nil; any other (scalar) resume feeds the first
+// pending interrupt.
+//
+// Boundary interrupts (interrupt_before/interrupt_after) never reach this
+// function: their pending writes are stamped with the node name, not a
+// PlannedTask.ID, so their resume path never consults resume queues and a
+// nil-resume boundary resume keeps working unchanged.
 func resumeValuesFor(pending []types.Interrupt, resume any) []any {
-	if len(pending) == 0 {
+	if len(pending) == 0 || resume == nil {
 		return nil
 	}
 	if byID, ok := resume.(map[string]any); ok {

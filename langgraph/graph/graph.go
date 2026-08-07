@@ -357,6 +357,13 @@ type Options struct {
 	// explicit non-nil Resume is still required to feed a value to a node's
 	// in-node Interrupt.
 	//
+	// Resuming an in-node interrupt with a nil Resume (or nil/empty input)
+	// does NOT answer it with nil: the interrupted node's resume queue is
+	// left empty, so its Interrupt() call re-fires and the run pauses
+	// again with the same interrupt (Python parity). Boundary interrupts
+	// are unaffected — they never consult resume queues, so they resume
+	// with nil exactly as before.
+	//
 	// Conversely, invoking with fresh (non-empty) input on a thread that
 	// already has a checkpoint starts a NEW turn rather than resuming: the
 	// input is applied as a write batch on top of the latest checkpointed

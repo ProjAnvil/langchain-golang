@@ -1304,3 +1304,56 @@ func TestResumeMapUnmatchedInterruptRepauses(t *testing.T) {
 		t.Fatalf("values = %+v, want outA=va outB=vb", third.Values)
 	}
 }
+
+// TestNilResumeInNodeInterruptRepauses verifies that resuming an in-node
+// interrupt with a nil Resume does NOT feed nil to the node's Interrupt()
+// call: the interrupt re-fires (the run pauses again with the same
+// interrupt), mirroring Python. A subsequent resume with a real value
+// completes the run.
+func TestNilResumeInNodeInterruptRepauses(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("ask", func(ctx context.Context, _ map[string]any) (any, error) {
+		answer := Interrupt(ctx, "pick a color")
+		return map[string]any{"answer": answer}, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	ctx := context.Background()
+
+	first, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].ID != "ask-1" || first.Interrupts[0].Value != "pick a color" {
+		t.Fatalf("expected interrupt ask-1, got %+v", first.Interrupts)
+	}
+
+	// Nil resume: the interrupt must re-fire, not be answered with nil.
+	second, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: nil})
+	if err != nil {
+		t.Fatalf("nil resume Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 1 || second.Interrupts[0].ID != "ask-1" || second.Interrupts[0].Value != "pick a color" {
+		t.Fatalf("expected re-pause with the same interrupt ask-1, got %+v", second.Interrupts)
+	}
+	if v, ok := second.Values["answer"]; ok {
+		t.Fatalf("answer must not be set by a nil resume, got %v", v)
+	}
+
+	// A real resume value then completes the run.
+	third, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: "blue"})
+	if err != nil {
+		t.Fatalf("final resume Invoke() error = %v", err)
+	}
+	if len(third.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after final resume, got %+v", third.Interrupts)
+	}
+	if third.Values["answer"] != "blue" {
+		t.Fatalf("answer = %v, want blue", third.Values["answer"])
+	}
+}
