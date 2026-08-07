@@ -58,8 +58,10 @@ langgraph/
 - 版本化 checkpoint：每 thread 多 checkpoint（checkpoint_id 单调）、state history（`List`/`GetStateHistory`）、时间旅行（从任意历史 checkpoint fork/恢复）。
 - checkpoint 结构对齐 Python：channel values + channel versions + versions_seen + pending writes。
 - channel 升级为对象抽象（对齐 `langgraph.channels`：`LastValue`、`Topic`、`BinaryOperatorAggregate`、`EphemeralValue`），内部复用 M1 reducer 逻辑。
-- 超步循环升级为 PULL 订阅模型（对齐 `pregel` 的 `prepare_next_tasks` 语义）。
-- subgraph 支持：`Command.Graph = ParentGraph`、子图作为节点。
+- ~~超步循环升级为 PULL 订阅模型~~ **设计决策（2026-08-08 修订）**：保留边驱动调度。调研证实对纯 StateGraph 构建的图，Python 的 PULL 触发器（`branch:to:<node>` channel）与边驱动调度在"哪些节点运行、顺序、输入"上可观测等价（`pregel/_algo.py:1260-1277` vs 边解析）；PULL 机器是 Python 实现细节而非语义。M2 改为在边驱动循环上叠加版本簿记（channel_versions/versions_seen/每超步单一全局版本递增），以获得同等的时间旅行与恢复语义，同时保持 Go 实现的简洁。
+- `checkpoint.Saver` 接口破坏性升级为版本化模型（GetTuple/List/Put/PutWrites/DeleteThread，key 为 thread_id+checkpoint_ns+checkpoint_id）；`langgraph` 尚处 pre-1.0，允许 break。`graph.CompiledGraph` 的 `Invoke/InvokeStream/Options{ThreadID,Resume}/Result` 外部 API 保持稳定，`langchain/agents` 零改动。
+- 多父节点 barrier join（Python `NamedBarrierValue`）不做：当前 Go builder 无多起点边 API，spec 未要求。
+- subgraph 支持：`Command.Graph = ParentGraph`、子图作为节点；子图 checkpoint 使用 namespace 前缀（与 Python 的 ns+task_id 方案存在文档化差异）。
 
 ### M3 流式与持久化
 
