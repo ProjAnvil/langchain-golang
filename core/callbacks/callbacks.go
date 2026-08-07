@@ -119,6 +119,27 @@ func (m Manager) HandleEvent(ctx context.Context, event Event) error {
 	return m.Emit(ctx, event)
 }
 
+// managerContextKey is the context-value key under which ContextWithManager
+// installs a Manager.
+type managerContextKey struct{}
+
+// ContextWithManager returns a derived ctx carrying manager, so code deeper
+// in the call stack (e.g. a graph node) can discover it via ManagerFromContext
+// and fan it into runnable configs (runnables.WithCallbacks). It is a plain
+// carrier: installing a manager changes no behavior by itself.
+func ContextWithManager(ctx context.Context, manager Manager) context.Context {
+	return context.WithValue(ctx, managerContextKey{}, manager)
+}
+
+// ManagerFromContext returns the Manager installed in ctx by
+// ContextWithManager, or the zero Manager and false when ctx carries none.
+// Callers should check the boolean: the zero Manager has no handlers, so
+// emitting through it silently drops events.
+func ManagerFromContext(ctx context.Context) (Manager, bool) {
+	manager, ok := ctx.Value(managerContextKey{}).(Manager)
+	return manager, ok
+}
+
 // Empty reports whether the manager has handlers.
 func (m Manager) Empty() bool {
 	return len(m.handlers) == 0

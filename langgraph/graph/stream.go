@@ -6,6 +6,7 @@ import (
 	"iter"
 	"time"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -17,8 +18,7 @@ import (
 // Stream coexists with InvokeStream/NodeEventSink: InvokeStream is the
 // event-ified node-lifecycle path used by langchain/agents' StreamEvents;
 // Stream is the general langgraph stream-modes surface (values/updates/
-// debug; messages/custom are added by a later milestone). Neither replaces
-// the other.
+// debug/messages/custom). Neither replaces the other.
 
 // StreamMode selects which chunk families Stream yields, mirroring Python's
 // `stream_mode` argument.
@@ -32,11 +32,14 @@ const (
 	StreamUpdates StreamMode = "updates"
 	// StreamDebug yields task dispatch/completion and checkpoint events.
 	StreamDebug StreamMode = "debug"
-	// StreamMessages yields per-token LLM message chunks. Reserved for the
-	// messages milestone; requesting it currently yields no chunks.
+	// StreamMessages yields per-token LLM message chunks (MessageChunk
+	// payloads). The executor installs a callbacks.Manager into each node's
+	// context; node code opts in by pulling it with
+	// callbacks.ManagerFromContext and fanning it into its model configs
+	// (runnables.WithCallbacks) — see stream_messages.go.
 	StreamMessages StreamMode = "messages"
-	// StreamCustom yields node-emitted custom payloads. Reserved for the
-	// custom milestone; requesting it currently yields no chunks.
+	// StreamCustom yields node-emitted custom payloads: whatever the node
+	// passes to the StreamWriter it obtained via StreamWriterFromContext.
 	StreamCustom StreamMode = "custom"
 )
 
@@ -63,6 +66,9 @@ type StreamChunk struct {
 	//   - debug: map[string]any{"step": int, "timestamp": string,
 	//     "type": "task"|"task_result"|"checkpoint", "payload": ...} (see
 	//     debugPayload).
+	//   - messages: MessageChunk — a streamed message chunk plus the node's
+	//     langgraph_node/langgraph_step/langgraph_checkpoint_ns metadata.
+	//   - custom: whatever payload the node passed to its StreamWriter.
 	Payload any
 }
 
@@ -91,9 +97,8 @@ type StreamOptions struct {
 // Chronology note: updates chunks are emitted post-superstep in deterministic
 // task order (Go applies writes only after all tasks of a superstep
 // complete), so in multi-mode streams they bunch after node-time events
-// instead of interleaving as in Python's as-they-finish timing — a
-// documented divergence. `messages`/`custom` modes are not emitted yet (see
-// the mode constants).
+// (messages/custom chunks) instead of interleaving as in Python's
+// as-they-finish timing — a documented divergence.
 func (g *CompiledGraph) Stream(ctx context.Context, input map[string]any, opts StreamOptions) iter.Seq2[StreamChunk, error] {
 	return func(yield func(StreamChunk, error) bool) {
 		if len(opts.Modes) == 0 {
@@ -195,6 +200,29 @@ func (e *streamEmitter) emit(mode StreamMode, payload any) {
 	case e.send <- StreamChunk{Namespace: e.ns, Mode: mode, Payload: payload}:
 	case <-e.ctx.Done():
 	}
+}
+
+// nodeContext derives the per-task context for one node invocation,
+// installing the affordances of the active stream modes: a callbacks.Manager
+// (discoverable via callbacks.ManagerFromContext) bridging model events to
+// messages chunks when StreamMessages is active, and a StreamWriter
+// (discoverable via StreamWriterFromContext) when StreamCustom is active.
+// step is the superstep the task runs in (rs.step+1 at dispatch). When
+// neither mode is active — including every non-streaming run, where the
+// emitter itself is nil — ctx is returned unchanged (zero overhead).
+func (e *streamEmitter) nodeContext(ctx context.Context, node string, step int) context.Context {
+	if e == nil {
+		return ctx
+	}
+	if e.modes[StreamMessages] {
+		ctx = callbacks.ContextWithManager(ctx, callbacks.NewManager(newMessagesBridge(e, node, step)))
+	}
+	if e.modes[StreamCustom] {
+		ctx = contextWithStreamWriter(ctx, func(payload any) {
+			e.emit(StreamCustom, payload)
+		})
+	}
+	return ctx
 }
 
 // emitValues delivers a values chunk with the given state snapshot.

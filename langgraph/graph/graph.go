@@ -18,8 +18,9 @@
 //     and a node inside it may return Command{Graph: types.ParentGraph} to
 //     have the parent apply the update and routing (see ParentCommandError).
 //     Any other non-empty Command.Graph value remains a runtime error.
-//   - Stream modes (values/updates/debug) ARE supported via CompiledGraph.Stream
-//     (see stream.go), a Go iterator over an emission layer in the run loop.
+//   - Stream modes (values/updates/debug/messages/custom) ARE supported via
+//     CompiledGraph.Stream (see stream.go), a Go iterator over an emission
+//     layer in the run loop.
 //     It coexists with the older event-ified path (InvokeStream + the
 //     NodeEventSink in events.go), which CreateAgent's StreamEvents uses to
 //     observe node/model/tool lifecycle; neither replaces the other.
@@ -731,7 +732,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if sink != nil {
 					sink.EmitRawEvent(RawEvent{Kind: RawNodeStart, Node: t.node})
 				}
-				result, interrupted, err := g.runNode(runCtx, t, state, resumeValues[t.id])
+				result, interrupted, err := g.runNode(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
 				if sink != nil {
 					// Always emit node_end so start/end pairs are balanced per
 					// invocation, even on the error/interrupt paths.
