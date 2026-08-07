@@ -15,16 +15,19 @@
 //     Python's `Annotated[T, reducer]` state schema fields.
 //   - No subgraphs: Command.Graph must be empty (targeting "the current
 //     graph"); any other value is a compile/runtime error.
-//   - No langgraph "stream modes" (values/updates/debug), time-travel/state
-//     history, caching, or retry policies. A minimal event-ified execution
-//     path (InvokeStream + the NodeEventSink in events.go) IS supported, so
-//     CreateAgent's StreamEvents can observe node/model/tool lifecycle; this
-//     is not a general streaming-modes surface.
+//   - No langgraph "stream modes" (values/updates/debug), caching, or retry
+//     policies. A minimal event-ified execution path (InvokeStream + the
+//     NodeEventSink in events.go) IS supported, so CreateAgent's StreamEvents
+//     can observe node/model/tool lifecycle; this is not a general
+//     streaming-modes surface.
 //   - Checkpointing (via the checkpoint package) keeps full versioned
 //     history per thread: one "input" checkpoint per turn plus one "loop"
 //     checkpoint per committed superstep, each carrying channel values,
 //     channel versions, versions-seen bookkeeping, and the tasks planned for
-//     the next superstep. Checkpoints are retained after a run completes.
+//     the next superstep. Checkpoints are retained after a run completes, so
+//     the state inspection APIs (GetState/GetStateHistory/UpdateState, see
+//     snapshot.go) and time travel (Options.CheckpointID) work on any
+//     recorded position.
 //   - Concurrent execution only happens *within* a superstep (multiple nodes
 //     active at once via Send or multi-destination edges); node functions
 //     must treat the state map they receive as read-only and communicate
@@ -320,6 +323,14 @@ type Options struct {
 	// (together with a checkpointer installed via WithCheckpointer) to use
 	// Resume, or for a node's Interrupt call to be resumable at all.
 	ThreadID string
+	// CheckpointID pins the checkpoint the run starts from, enabling time
+	// travel: instead of the thread's latest checkpoint, the run loads the
+	// pinned historical one and then follows the usual rules (Resume / nil
+	// input resumes from it; fresh input starts a new turn on top of its
+	// state, per D2). New checkpoints fork off the pinned one — their
+	// ParentConfig points at it (D3). Requires ThreadID and a checkpointer,
+	// and the pinned checkpoint must exist.
+	CheckpointID string
 	// Resume supplies the value(s) to resume a previously interrupted run
 	// with, mirroring Python's `Command(resume=...)`. When set, input is
 	// ignored and the run continues from the checkpointed state instead.
@@ -427,9 +438,20 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	var tup *checkpoint.Tuple
 	if checkpointing {
 		var err error
-		tup, err = g.checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID})
+		tup, err = g.checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointID: opts.CheckpointID})
 		if err != nil {
 			return Result{}, fmt.Errorf("graph: loading checkpoint for thread %q: %w", opts.ThreadID, err)
+		}
+	}
+	if opts.CheckpointID != "" {
+		if g.checkpointer == nil {
+			return Result{}, fmt.Errorf("graph: Options.CheckpointID requires a checkpointer (see WithCheckpointer)")
+		}
+		if opts.ThreadID == "" {
+			return Result{}, fmt.Errorf("graph: Options.CheckpointID requires ThreadID")
+		}
+		if tup == nil {
+			return Result{}, fmt.Errorf("graph: no checkpoint %q found for thread %q", opts.CheckpointID, opts.ThreadID)
 		}
 	}
 
