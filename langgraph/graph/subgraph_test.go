@@ -468,3 +468,139 @@ func TestSubgraphParentsPinTimeTravel(t *testing.T) {
 			forkBase, childPosT1, latestChild)
 	}
 }
+
+// TestSubgraphPinOncePerRun pins the documented pin-once-per-run behavior (see
+// StateGraph.AddSubgraph): when a parent run starts pinned to a checkpoint
+// whose Metadata.Parents names the subgraph's namespace, EVERY execution of
+// the subgraph node within that run re-pins to the same recorded child
+// checkpoint — the second execution forks from the pin, not from the first
+// execution's in-run result.
+func TestSubgraphPinOncePerRun(t *testing.T) {
+	ctx := context.Background()
+
+	var childRuns int32
+	child := compileChild(t, "child_step", func(_ context.Context, state map[string]any) (any, error) {
+		childRuns++
+		n, _ := state["child_n"].(int)
+		return map[string]any{"child_n": n + 1}, nil
+	})
+
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("pre", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddSubgraph("sub", child)
+	// again loops back to sub until visits reaches 2, so the subgraph node
+	// executes twice per run.
+	g.AddNode("again", func(_ context.Context, state map[string]any) (any, error) {
+		v, _ := state["visits"].(int)
+		return map[string]any{"visits": v + 1}, nil
+	})
+	g.AddEdge(types.START, "pre")
+	g.AddEdge("pre", "sub")
+	g.AddEdge("sub", "again")
+	g.AddConditionalEdges("again", func(_ context.Context, state map[string]any) ([]any, error) {
+		if state["visits"].(int) < 2 {
+			return To("sub"), nil
+		}
+		return To(types.END), nil
+	})
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	list := func(ns string) []checkpoint.Tuple {
+		t.Helper()
+		tups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: ns}, checkpoint.ListOptions{})
+		if err != nil {
+			t.Fatalf("List(ns=%q) error = %v", ns, err)
+		}
+		return tups
+	}
+
+	// Turn 1 (unpinned): sub executes twice; the second execution forks off
+	// the first's in-run result (the namespace's latest), so child_n advances
+	// 1 -> 2.
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{"value": 1}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("turn 1 Invoke() error = %v", err)
+	}
+	if res.Values["child_n"] != 2 {
+		t.Fatalf("turn 1 child_n = %v, want 2 (second execution forked off the first's result)", res.Values["child_n"])
+	}
+	parentT1 := list("")
+	childT1 := list("sub")
+	if len(childT1) != 4 {
+		t.Fatalf("child checkpoints after turn 1 = %d, want 4 (2 executions x input+loop)", len(childT1))
+	}
+	// Without a pin, the second execution's input checkpoint forks off the
+	// first execution's loop checkpoint (newest-first: [loop1, input0, loop0, input-1]).
+	if childT1[1].Metadata.Source != "input" || childT1[1].ParentConfig == nil ||
+		childT1[1].ParentConfig.CheckpointID != childT1[2].Config.CheckpointID {
+		t.Fatalf("unpinned second execution forked off %+v, want the first execution's loop checkpoint %q",
+			childT1[1].ParentConfig, childT1[2].Config.CheckpointID)
+	}
+	endOfTurn1 := parentT1[0]
+	recorded := endOfTurn1.Metadata.Parents["sub"]
+	if recorded == "" || recorded != childT1[0].Config.CheckpointID {
+		t.Fatalf("end-of-turn-1 Parents[\"sub\"] = %q, want the child's turn-1 position %q",
+			recorded, childT1[0].Config.CheckpointID)
+	}
+
+	// Turn 2: pin the parent to its end-of-turn-1 checkpoint and reset the
+	// loop counter via the input, so sub executes twice again. BOTH executions
+	// re-pin to the recorded child checkpoint: each forks its input checkpoint
+	// off `recorded` (with the recorded step, S6), the second NOT off the
+	// first execution's in-run result.
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"visits": 0},
+		Options{ThreadID: "t1", CheckpointID: endOfTurn1.Config.CheckpointID}); err != nil {
+		t.Fatalf("turn 2 Invoke() error = %v", err)
+	}
+	if childRuns != 4 {
+		t.Fatalf("child entry ran %d times total, want 4 (two executions per run)", childRuns)
+	}
+	childT2 := list("sub")
+	if len(childT2) != 8 {
+		t.Fatalf("child checkpoints after turn 2 = %d, want 8", len(childT2))
+	}
+	forks := 0
+	for _, tup := range childT2 {
+		if tup.Metadata.Source == "input" && tup.ParentConfig != nil &&
+			tup.ParentConfig.CheckpointID == recorded {
+			forks++
+			if tup.Metadata.Step != childT1[0].Metadata.Step {
+				t.Fatalf("pinned execution's input checkpoint Step = %d, want %d (recorded checkpoint's step, S6)",
+					tup.Metadata.Step, childT1[0].Metadata.Step)
+			}
+		}
+	}
+	if forks != 2 {
+		t.Fatalf("%d child input checkpoints fork off the recorded checkpoint, want 2 (pin holds for the whole run)", forks)
+	}
+}
+
+// TestSubgraphInterruptDescriptiveError verifies that a child graph that
+// interrupts surfaces a descriptive error from the subgraph node instead of
+// silently treating the paused child as complete (resuming interrupted
+// subgraphs is unsupported).
+func TestSubgraphInterruptDescriptiveError(t *testing.T) {
+	child := compileChild(t, "child_step", func(ctx context.Context, _ map[string]any) (any, error) {
+		Interrupt(ctx, "pause-inside-child")
+		return nil, nil
+	})
+	g := NewStateGraph()
+	g.AddSubgraph("sub", child)
+	g.AddEdge(types.START, "sub")
+	g.AddEdge("sub", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	_, err = cg.Invoke(context.Background(), nil)
+	if err == nil {
+		t.Fatal("Invoke() error = nil, want a descriptive error for an interrupted subgraph")
+	}
+	if !strings.Contains(err.Error(), `subgraph "sub"`) || !strings.Contains(err.Error(), "interrupt") {
+		t.Fatalf("error = %v, want it to name the subgraph and the interrupt", err)
+	}
+}

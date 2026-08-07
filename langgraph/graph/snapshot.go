@@ -126,8 +126,9 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	// Save into the SAME namespace the tuple was read from (a subgraph-
 	// namespace update must not leak into the root namespace), and carry
 	// Metadata.Parents forward so the update checkpoint keeps the cross-graph
-	// position links of the checkpoint it builds on.
-	md := checkpoint.Metadata{Source: "update", Step: tup.Metadata.Step, Parents: tup.Metadata.Parents}
+	// position links of the checkpoint it builds on. S6: the update checkpoint
+	// steps past the checkpoint it builds on (Python main.py:1734).
+	md := checkpoint.Metadata{Source: "update", Step: tup.Metadata.Step + 1, Parents: tup.Metadata.Parents}
 	return g.saveCheckpoint(ctx,
 		Options{ThreadID: cfg.ThreadID, checkpointNS: cfg.CheckpointNS}, rs, tup.Config,
 		md, plannedTasks(dests))

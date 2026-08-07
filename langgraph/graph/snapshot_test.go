@@ -253,8 +253,8 @@ func TestUpdateState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetState() of update checkpoint error = %v", err)
 	}
-	if snap.Metadata.Source != "update" || snap.Metadata.Step != 0 {
-		t.Fatalf("update checkpoint Metadata = %+v, want source update step 0", snap.Metadata)
+	if snap.Metadata.Source != "update" || snap.Metadata.Step != 1 {
+		t.Fatalf("update checkpoint Metadata = %+v, want source update step 1 (S6: base step 0 + 1)", snap.Metadata)
 	}
 	if snap.Values["route"] != "c" {
 		t.Fatalf("update checkpoint Values[route] = %v, want c", snap.Values["route"])
@@ -396,6 +396,73 @@ func TestTimeTravelCheckpointID(t *testing.T) {
 
 	if _, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", CheckpointID: "does-not-exist"}); err == nil {
 		t.Fatal("pinning a nonexistent checkpoint must error")
+	}
+}
+
+// TestNewTurnFromPinnedCheckpoint verifies D2 with Options.CheckpointID: a
+// non-empty input against a pinned historical checkpoint starts a NEW turn on
+// top of the pinned state (the entry node re-runs) instead of resuming, and
+// per S6 the turn's input checkpoint saves with Step = the pinned checkpoint's
+// step (only a thread's FIRST input checkpoint is -1), forking off the pinned
+// checkpoint (D3).
+func TestNewTurnFromPinnedCheckpoint(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	calls := map[string]int{}
+	cg := snapshotLinearGraph(t, saver, calls)
+	ctx := context.Background()
+
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
+		t.Fatalf("turn 1 Invoke() error = %v", err)
+	}
+	tuples, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil || len(tuples) != 4 {
+		t.Fatalf("expected 4 checkpoints, got %d (err=%v)", len(tuples), err)
+	}
+	pinned := tuples[2] // step 0: state as of n1, n2 planned next
+	if pinned.Metadata.Step != 0 {
+		t.Fatalf("tuples[2].Metadata.Step = %d, want 0", pinned.Metadata.Step)
+	}
+
+	// New turn from the pinned checkpoint: the input applies on top of the
+	// pinned state (k1 present, k2/k3 not yet) and execution restarts from
+	// the entry point.
+	result, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "w0"},
+		Options{ThreadID: "t1", CheckpointID: pinned.Checkpoint.ID})
+	if err != nil {
+		t.Fatalf("new-turn Invoke() error = %v", err)
+	}
+	if result.Values["k0"] != "w0" {
+		t.Fatalf("k0 = %v, want w0 (turn-2 input applied on top of the pinned state)", result.Values["k0"])
+	}
+	for _, k := range []string{"k1", "k2", "k3"} {
+		if _, ok := result.Values[k]; !ok {
+			t.Fatalf("new-turn result missing %q: %+v", k, result.Values)
+		}
+	}
+	if calls["n1"] != 2 || calls["n2"] != 2 || calls["n3"] != 2 {
+		t.Fatalf("calls = %+v, want each node run twice (a new turn re-runs from the entry point)", calls)
+	}
+
+	// S6: the new turn's input checkpoint continues the step counter from the
+	// pinned (restored) checkpoint — Step 0, not -1 — and forks off it.
+	tuples2, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	var forkedInput *checkpoint.Tuple
+	for i := range tuples2 {
+		tup := &tuples2[i]
+		if tup.Metadata.Source == "input" && tup.ParentConfig != nil &&
+			tup.ParentConfig.CheckpointID == pinned.Checkpoint.ID {
+			forkedInput = tup
+		}
+	}
+	if forkedInput == nil {
+		t.Fatal("no input checkpoint forks off the pinned checkpoint")
+	}
+	if forkedInput.Metadata.Step != pinned.Metadata.Step {
+		t.Fatalf("new-turn input checkpoint Step = %d, want %d (the pinned checkpoint's step, S6)",
+			forkedInput.Metadata.Step, pinned.Metadata.Step)
 	}
 }
 

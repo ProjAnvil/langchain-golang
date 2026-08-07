@@ -633,7 +633,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if changed {
 			em.emitValues(rs.snapshot())
 		}
-		if err := save(checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
+		// S6: the input checkpoint continues the step counter from the
+		// restored checkpoint (only a thread's FIRST input checkpoint is -1).
+		if err := save(checkpoint.Metadata{Source: "input", Step: tup.Metadata.Step}, nil); err != nil {
 			return Result{}, err
 		}
 		tasks = []task{{node: g.entry}}
