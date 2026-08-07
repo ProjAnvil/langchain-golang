@@ -112,7 +112,11 @@ func (rs *runState) channelValues() map[string]any {
 //     empty Update, which is how expiring channels (Ephemeral,
 //     non-accumulating Topic) clear themselves; channels that change are
 //     bumped to the shared next version as well.
-func (rs *runState) applyWrites(writes []taskWrites) error {
+//
+// The bool result reports whether at least one channel version was bumped;
+// the stream emission layer gates `values` chunks on it (mirroring Python's
+// `updated_channels ∩ output_keys` gate).
+func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 	for _, w := range writes {
 		if rs.seen[w.node] == nil {
 			rs.seen[w.node] = map[string]int64{}
@@ -149,14 +153,16 @@ func (rs *runState) applyWrites(writes []taskWrites) error {
 	}
 
 	written := make(map[string]bool, len(grouped))
+	anyChanged := false
 	for _, key := range writtenOrder {
 		changed, err := rs.channelFor(key).Update(grouped[key])
 		if err != nil {
-			return fmt.Errorf("graph: applying writes to key %q: %w", key, err)
+			return false, fmt.Errorf("graph: applying writes to key %q: %w", key, err)
 		}
 		written[key] = true
 		if changed {
 			rs.versions[key] = nextVersion
+			anyChanged = true
 		}
 	}
 
@@ -170,13 +176,14 @@ func (rs *runState) applyWrites(writes []taskWrites) error {
 	for _, key := range untouched {
 		changed, err := rs.channels[key].Update(nil)
 		if err != nil {
-			return fmt.Errorf("graph: step-boundary update for key %q: %w", key, err)
+			return false, fmt.Errorf("graph: step-boundary update for key %q: %w", key, err)
 		}
 		if changed {
 			rs.versions[key] = nextVersion
+			anyChanged = true
 		}
 	}
-	return nil
+	return anyChanged, nil
 }
 
 func cloneSeen(seen map[string]map[string]int64) map[string]map[string]int64 {

@@ -185,6 +185,19 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 		}
 	}
 
+	// Streaming: propagate the emission layer to the child run. The child's
+	// emission namespace derives from the node path (see StreamChunk), NOT
+	// from checkpoint config, so subgraph chunks are namespaced with or
+	// without a checkpointer. When the stream did not request subgraphs, the
+	// emitter is stripped so the child neither emits nor pays for hooks.
+	if em := emitterFromContext(ctx); em != nil {
+		if em.subgraphs {
+			ctx = contextWithEmitter(ctx, em.child(name))
+		} else {
+			ctx = contextWithEmitter(ctx, nil)
+		}
+	}
+
 	res, err := runner.run(ctx, state, opts, nil)
 	if err != nil {
 		var pce *ParentCommandError

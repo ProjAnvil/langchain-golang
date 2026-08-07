@@ -116,7 +116,7 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	rs := newRunState(g.channelProtos)
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
-	if err := rs.applyWrites([]taskWrites{{node: asNode, update: values}}); err != nil {
+	if _, err := rs.applyWrites([]taskWrites{{node: asNode, update: values}}); err != nil {
 		return checkpoint.Config{}, err
 	}
 	dests, err := g.staticNext(ctx, asNode, rs.snapshot())

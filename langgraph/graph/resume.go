@@ -115,20 +115,22 @@ type resumePlan struct {
 // derives the tasks to dispatch, the resume value queues, and the
 // interrupt_before skip node for the resumed run. Completed siblings' writes
 // are replayed into rs (without re-running their tasks) before the resumed
-// superstep starts.
-func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []task, resumeValues map[string][]any, skipNode string, err error) {
+// superstep starts; replay exposes those writes (nil when there are none) so
+// the stream emission layer can re-emit them as `updates` chunks (Python
+// parity: cached writes are re-streamed on resume, `_loop.py:676-679`).
+func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
 	plan, err := planResume(tup, resume)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	if len(plan.replayWrites) > 0 {
-		if err := rs.applyWrites(plan.replayWrites); err != nil {
-			return nil, nil, "", err
+		if _, err := rs.applyWrites(plan.replayWrites); err != nil {
+			return nil, nil, "", nil, err
 		}
 	}
-	return plan.tasks, plan.resumeValues, plan.skipNode, nil
+	return plan.tasks, plan.resumeValues, plan.skipNode, plan.replayWrites, nil
 }
 
 // planResume classifies each planned task of a checkpoint's Next by its

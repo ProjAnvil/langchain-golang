@@ -18,11 +18,11 @@
 //     and a node inside it may return Command{Graph: types.ParentGraph} to
 //     have the parent apply the update and routing (see ParentCommandError).
 //     Any other non-empty Command.Graph value remains a runtime error.
-//   - No langgraph "stream modes" (values/updates/debug), caching, or retry
-//     policies. A minimal event-ified execution path (InvokeStream + the
-//     NodeEventSink in events.go) IS supported, so CreateAgent's StreamEvents
-//     can observe node/model/tool lifecycle; this is not a general
-//     streaming-modes surface.
+//   - Stream modes (values/updates/debug) ARE supported via CompiledGraph.Stream
+//     (see stream.go), a Go iterator over an emission layer in the run loop.
+//     It coexists with the older event-ified path (InvokeStream + the
+//     NodeEventSink in events.go), which CreateAgent's StreamEvents uses to
+//     observe node/model/tool lifecycle; neither replaces the other.
 //   - Checkpointing (via the checkpoint package) keeps full versioned
 //     history per thread: one "input" checkpoint per turn plus one "loop"
 //     checkpoint per committed superstep, each carrying channel values,
@@ -476,7 +476,15 @@ var checkpointSeq atomic.Int64
 // run is the shared execution loop backing both InvokeWithOptions (sink==nil,
 // non-streaming, zero overhead) and InvokeStream (sink!=nil, event-ified). See
 // each public entry point's doc comment for the contract.
+//
+// Stream emission: when a *streamEmitter is installed in ctx (by Stream, or
+// by a parent run's invokeSubgraph), the loop calls its hooks at the input
+// batch, task dispatch/collection, superstep commit, pause, and checkpoint
+// save points, and observes context cancellation at superstep boundaries. A
+// nil emitter makes every hook a no-op, so Invoke/InvokeStream keep their
+// exact prior behavior.
 func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink) (Result, error) {
+	em := emitterFromContext(ctx)
 	runCtx := ctx
 	if sink != nil {
 		runCtx = ContextWithEventSink(ctx, sink)
@@ -563,7 +571,8 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 
 	// save persists a checkpoint (see saveCheckpoint) and advances currentCfg
 	// to it, stamping Metadata.Parents with the child namespaces used so far
-	// and — for a subgraph run — the parent's current position.
+	// and — for a subgraph run — the parent's current position. A successful
+	// save emits the stream layer's debug checkpoint chunk.
 	save := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
 		md.Parents = children.snapshot()
 		if isSubgraph && parentSC.current != nil && parentSC.current.CheckpointID != "" {
@@ -576,6 +585,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if err != nil {
 			return err
 		}
+		em.debugCheckpoint(md, cfg, *currentCfg, rs.channelValues(), next)
 		*currentCfg = cfg
 		return nil
 	}
@@ -588,6 +598,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// checkpoint starts a NEW turn instead (D2): the input applies on top of
 	// the latest state and execution restarts from the entry point.
 	var err error
+	var replayWrites []taskWrites
 	switch {
 	case opts.Resume != nil:
 		if g.checkpointer == nil {
@@ -599,12 +610,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode, err = resumeFromTuple(rs, tup, opts.Resume)
+		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, opts.Resume)
 		if err != nil {
 			return Result{}, err
 		}
 	case tup != nil && len(input) == 0:
-		tasks, resumeValues, resumingNode, err = resumeFromTuple(rs, tup, nil)
+		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, nil)
 		if err != nil {
 			return Result{}, err
 		}
@@ -614,8 +625,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// continues from the restored checkpoint.
 		rs.restore(tup.Checkpoint)
 		rs.step = tup.Metadata.Step
-		if err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}}); err != nil {
+		changed, err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}})
+		if err != nil {
 			return Result{}, err
+		}
+		if changed {
+			em.emitValues(rs.snapshot())
 		}
 		if err := save(checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
 			return Result{}, err
@@ -623,8 +638,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		tasks = []task{{node: g.entry}}
 	default:
 		// Fresh start: the input is the first write batch.
-		if err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}}); err != nil {
+		changed, err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}})
+		if err != nil {
 			return Result{}, err
+		}
+		if changed {
+			em.emitValues(rs.snapshot())
 		}
 		if checkpointing {
 			if err := save(checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
@@ -633,9 +652,22 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 		tasks = []task{{node: g.entry}}
 	}
+	// Cached/replayed writes are re-streamed as updates on resume (Python
+	// parity, `_loop.py:676-679`).
+	for _, w := range replayWrites {
+		em.emitUpdate(w.node, w.update)
+	}
 
 	steps := 0
 	for {
+		// A streaming run (emitter installed) observes cancellation — an
+		// early iterator break — at the superstep boundary, so the run
+		// goroutine always terminates. Non-streaming runs are unaffected.
+		if em != nil {
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+		}
 		active := make([]task, 0, len(tasks))
 		for _, t := range tasks {
 			if t.node != types.END {
@@ -668,6 +700,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					return Result{}, err
 				}
 			}
+			em.emitPause(rs.snapshot(), []types.Interrupt{interrupt})
 			return Result{Values: rs.snapshot(), Interrupts: []types.Interrupt{interrupt}}, nil
 		}
 		resumingNode = "" // resume-only skip applies solely to the first superstep
@@ -686,6 +719,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		outcomes := make([]outcome, len(active))
 
 		state := rs.snapshot()
+		// Debug task events fire at dispatch, in deterministic task order.
+		for _, t := range active {
+			em.debugTask(rs.step+1, t, state)
+		}
 		var wg sync.WaitGroup
 		for i, t := range active {
 			wg.Add(1)
@@ -715,16 +752,23 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		wg.Wait()
 		resumeValues = nil
 
+		// Collect outcomes in deterministic task order: debug task_result per
+		// task at completion, then the task's updates chunk. (Divergence from
+		// Python's as-they-finish timing: Go applies writes only after all
+		// tasks of the superstep complete, so updates bunch here.)
+		var interrupts []types.Interrupt
+		for i, o := range outcomes {
+			var taskInterrupts []types.Interrupt
+			if o.interrupted != nil {
+				taskInterrupts = []types.Interrupt{*o.interrupted}
+				interrupts = append(interrupts, *o.interrupted)
+			}
+			em.debugTaskResult(rs.step+1, active[i], o.update, o.err, taskInterrupts)
+			em.emitUpdate(active[i].node, o.update)
+		}
 		for _, o := range outcomes {
 			if o.err != nil {
 				return Result{}, o.err
-			}
-		}
-
-		var interrupts []types.Interrupt
-		for _, o := range outcomes {
-			if o.interrupted != nil {
-				interrupts = append(interrupts, *o.interrupted)
 			}
 		}
 		if len(interrupts) > 0 {
@@ -759,6 +803,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					}
 				}
 			}
+			em.emitPause(state, interrupts)
 			return Result{Values: state, Interrupts: interrupts}, nil
 		}
 
@@ -768,7 +813,8 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		for i, t := range active {
 			writes[i] = taskWrites{node: t.node, update: outcomes[i].update}
 		}
-		if err := rs.applyWrites(writes); err != nil {
+		changed, err := rs.applyWrites(writes)
+		if err != nil {
 			return Result{}, err
 		}
 		rs.step++
@@ -811,9 +857,15 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					return Result{}, err
 				}
 			}
+			em.emitPause(merged, []types.Interrupt{interrupt})
 			return Result{Values: merged, Interrupts: []types.Interrupt{interrupt}}, nil
 		}
 
+		// values chunk for the committed superstep, gated on at least one
+		// channel version having bumped (Python's updated-channels gate).
+		if changed {
+			em.emitValues(merged)
+		}
 		if checkpointing {
 			if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step}, plannedTasks(nextTasks)); err != nil {
 				return Result{}, err
