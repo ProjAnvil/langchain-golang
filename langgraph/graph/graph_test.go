@@ -222,7 +222,7 @@ func TestInterruptAndResume(t *testing.T) {
 	}
 
 	// Checkpoint should be cleared after a completed run.
-	if _, ok := saver.Get("t1"); ok {
+	if tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"}); err != nil || tup != nil {
 		t.Fatal("expected checkpoint to be cleared after run completes")
 	}
 }
@@ -389,7 +389,7 @@ func TestCompiledGraph_InterruptBefore(t *testing.T) {
 		t.Fatalf("expected no interrupts after resume, got %+v", res2.Interrupts)
 	}
 	// Checkpoint should be cleared after a completed run.
-	if _, ok := saver.Get("t1"); ok {
+	if tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"}); err != nil || tup != nil {
 		t.Fatal("expected checkpoint to be cleared after run completes")
 	}
 }

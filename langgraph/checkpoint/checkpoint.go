@@ -1,92 +1,152 @@
 // Package checkpoint implements the checkpoint persistence contract of the Go
-// port of Python's langgraph: the Checkpoint snapshot type, the Saver
-// read/write interface, and the in-memory MemorySaver.
+// port of Python's langgraph: the versioned Checkpoint snapshot type, the
+// Saver read/write interface, and the in-memory MemorySaver, mirroring
+// `langgraph.checkpoint.base` / `langgraph.checkpoint.memory`.
 //
-// Scope note: one checkpoint per thread, in memory only; versioned
-// checkpoints and persistent backends are later milestones.
+// Scope note: checkpoints are versioned and retained per thread (full
+// history, listable and addressable by ID, so time-travel/forking is
+// possible), but storage is in memory only; persistent backends and
+// pluggable serializers are later milestones.
 package checkpoint
 
 import (
-	"sync"
-
-	"github.com/projanvil/langchain-golang/langgraph/types"
+	"context"
+	"time"
 )
 
-// Checkpoint is a snapshot of a graph run's state, saved when execution
-// pauses on an Interrupt so it can later be resumed, mirroring (a small
-// subset of) Python's checkpoint concept from `langgraph.checkpoint.base`.
-//
-// Scope note: Python's checkpoints are versioned, support time-travel
-// (listing/forking historical checkpoints), and are persisted through
-// pluggable serializers to Postgres/SQLite/etc. This port keeps exactly one
-// checkpoint per thread ID (the most recent), in memory only, which is
-// sufficient for the "pause on interrupt, resume with Command.Resume"
-// human-in-the-loop pattern CompiledGraph.Invoke implements.
+// Config identifies a checkpoint position within a thread, mirroring the
+// checkpoint-relevant fields of Python's `RunnableConfig`
+// (`configurable.thread_id` / `checkpoint_ns` / `checkpoint_id`).
+type Config struct {
+	// ThreadID identifies the conversation/run the checkpoint belongs to.
+	ThreadID string
+	// CheckpointNS namespaces checkpoints within a thread: "" is the root
+	// graph; subgraph runs use "node" or "a/b"-style paths.
+	CheckpointNS string
+	// CheckpointID selects a specific checkpoint; empty means "the latest".
+	CheckpointID string
+}
+
+// Checkpoint is a versioned snapshot of a graph run's channel state at one
+// superstep boundary, mirroring Python's `langgraph.checkpoint.base.Checkpoint`.
 type Checkpoint struct {
-	// Values is the full channel state at the time of the pause.
-	Values map[string]any
-	// Next is the node scheduled to re-execute when resumed. Matching
-	// Python's `interrupt()` semantics, the node is re-executed from its
-	// start; it is not resumed mid-function.
-	Next string
-	// PendingInterrupts holds the interrupts raised the last time Next was
-	// executed, in call order, so a Command.Resume value can be routed to
-	// the correct interrupt() call when the node is re-executed.
-	PendingInterrupts []types.Interrupt
+	// V is the Go checkpoint format version, always 1.
+	V int
+	// ID identifies this checkpoint. NewID(step) produces IDs whose
+	// lexicographic order matches chronological order.
+	ID string
+	// TS is the wall-clock time the checkpoint was created.
+	TS time.Time
+	// ChannelValues is the value of each channel (state key) at this point.
+	ChannelValues map[string]any
+	// ChannelVersions is the last version written to each channel.
+	ChannelVersions map[string]int64
+	// VersionsSeen records, per node, the channel versions that node had
+	// observed when it last ran: node -> channel -> version.
+	VersionsSeen map[string]map[string]int64
+	// Next lists the tasks scheduled for the superstep after this checkpoint.
+	Next []PlannedTask
 }
 
-// Saver persists and retrieves the single most recent Checkpoint for a
-// thread, mirroring the essential read/write contract of Python's
-// `BaseCheckpointSaver` (minus versioning, listing, and pending-writes
-// tracking).
+// PlannedTask is a node invocation scheduled for a future superstep,
+// mirroring what Python persists in a checkpoint's `pending_sends` / Pregel
+// task descriptions.
+type PlannedTask struct {
+	// ID is the deterministic task identity, TaskID(cpID, step, node, arg)
+	// (assigned by the versioned executor in M2 Task 3).
+	ID string
+	// Node is the name of the node to invoke.
+	Node string
+	// Arg is the per-invocation input; non-nil only for Send-driven
+	// invocations (nil means "use the shared graph state").
+	Arg map[string]any
+}
+
+// Metadata describes how a checkpoint was produced, mirroring Python's
+// `CheckpointMetadata`.
+type Metadata struct {
+	// Source is one of "input" (initial/new-turn input), "loop" (a superstep
+	// boundary), "update" (a manual state update), or "fork" (a time-travel
+	// fork).
+	Source string
+	// Step is the superstep number: -1 for the "input" checkpoint, 0 for the
+	// first "loop" checkpoint.
+	Step int
+	// Parents maps checkpoint namespace -> parent checkpoint ID.
+	Parents map[string]string
+}
+
+// Reserved channel names used in Write.Channel for control-plane writes that
+// are not user state keys, mirroring Python's reserved channels
+// (`langgraph.constants.INTERRUPT` / `TASKS` / `ERROR`).
+const (
+	// ReservedInterrupt persists a raised interrupt; Value is types.Interrupt.
+	ReservedInterrupt = "__interrupt__"
+	// ReservedTasks persists a scheduled Send; Value is types.Send (plain
+	// node names are normalized to Send{Node: name}, per D4).
+	ReservedTasks = "__tasks__"
+	// ReservedError persists a task error; Value is a string.
+	ReservedError = "__error__"
+)
+
+// Write is a single pending write recorded against a checkpoint by a task,
+// mirroring Python's `PendingWrite` (task_id, channel, value).
+type Write struct {
+	// TaskID identifies the task that produced the write (stamped by
+	// Saver.PutWrites).
+	TaskID string
+	// Channel is the state key written, or one of the Reserved* constants.
+	Channel string
+	// Value is the written value.
+	Value any
+}
+
+// Tuple bundles a checkpoint with everything needed to resume from it,
+// mirroring Python's `CheckpointTuple`.
+type Tuple struct {
+	Config     Config
+	Checkpoint Checkpoint
+	Metadata   Metadata
+	// ParentConfig is the put-time position of the parent checkpoint (D3),
+	// nil for a thread's first checkpoint.
+	ParentConfig *Config
+	// PendingWrites holds the writes recorded against this checkpoint via
+	// PutWrites, in insertion order.
+	PendingWrites []Write
+}
+
+// ListOptions filters Saver.List results.
+type ListOptions struct {
+	// Before, when non-nil with a non-empty CheckpointID, restricts results
+	// to checkpoints strictly before that one (older IDs, same thread and
+	// namespace).
+	Before *Config
+	// Limit caps the number of returned tuples; 0 means no limit.
+	Limit int
+}
+
+// Saver persists versioned checkpoints and their pending writes, mirroring
+// the read/write contract of Python's `BaseCheckpointSaver`.
+//
+// This is a breaking redesign of the M1 Saver (single latest checkpoint per
+// thread, no context, no history): checkpoints are now immutable,
+// ID-addressable snapshots retained per thread until DeleteThread.
 type Saver interface {
-	// Get returns the most recent checkpoint for threadID, or ok=false if
-	// none exists.
-	Get(threadID string) (cp Checkpoint, ok bool)
-	// Put saves cp as the most recent checkpoint for threadID.
-	Put(threadID string, cp Checkpoint)
-	// Delete removes any saved checkpoint for threadID (e.g. once a run
-	// completes without pausing).
-	Delete(threadID string)
-}
-
-// MemorySaver is an in-memory Saver, the Go equivalent of Python's
-// `InMemorySaver` scoped to this port's single-checkpoint-per-thread model.
-// The zero value is ready to use.
-type MemorySaver struct {
-	mu          sync.Mutex
-	checkpoints map[string]Checkpoint
-}
-
-// NewMemorySaver constructs an empty MemorySaver.
-func NewMemorySaver() *MemorySaver {
-	return &MemorySaver{checkpoints: map[string]Checkpoint{}}
-}
-
-// Get implements Saver.
-func (s *MemorySaver) Get(threadID string) (Checkpoint, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.checkpoints == nil {
-		return Checkpoint{}, false
-	}
-	cp, ok := s.checkpoints[threadID]
-	return cp, ok
-}
-
-// Put implements Saver.
-func (s *MemorySaver) Put(threadID string, cp Checkpoint) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.checkpoints == nil {
-		s.checkpoints = map[string]Checkpoint{}
-	}
-	s.checkpoints[threadID] = cp
-}
-
-// Delete implements Saver.
-func (s *MemorySaver) Delete(threadID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.checkpoints, threadID)
+	// GetTuple returns the tuple for cfg — the checkpoint identified by
+	// cfg.CheckpointID, or the latest when it is empty — or (nil, nil) when
+	// no matching checkpoint exists.
+	GetTuple(ctx context.Context, cfg Config) (*Tuple, error)
+	// List returns the checkpoint history for cfg.ThreadID/cfg.CheckpointNS,
+	// newest first, filtered by opts.
+	List(ctx context.Context, cfg Config, opts ListOptions) ([]Tuple, error)
+	// Put stores cp as a new checkpoint and returns the Config identifying
+	// it. cfg carries the caller's current position: when cfg.CheckpointID
+	// is non-empty it is recorded as the new checkpoint's parent link (D3).
+	// newVersions, when non-nil, is merged into the stored ChannelVersions.
+	Put(ctx context.Context, cfg Config, cp Checkpoint, md Metadata, newVersions map[string]int64) (Config, error)
+	// PutWrites appends writes (each stamped with taskID) to the pending
+	// writes of the checkpoint identified by cfg.
+	PutWrites(ctx context.Context, cfg Config, writes []Write, taskID string) error
+	// DeleteThread removes all checkpoints and pending writes for threadID.
+	DeleteThread(ctx context.Context, threadID string) error
 }

@@ -32,6 +32,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -398,20 +400,20 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if opts.ThreadID == "" {
 			return Result{}, fmt.Errorf("graph: Options.Resume requires ThreadID")
 		}
-		cp, ok := g.checkpointer.Get(opts.ThreadID)
+		values, next, pending, ok := g.legacyGet(ctx, opts.ThreadID)
 		if !ok {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		state = cloneState(cp.Values)
-		tasks = []task{{node: cp.Next}}
-		resumeValues[cp.Next] = resumeValuesFor(cp.PendingInterrupts, opts.Resume)
-		resumingNode = resumeSkipNode(cp)
+		state = cloneState(values)
+		tasks = []task{{node: next}}
+		resumeValues[next] = resumeValuesFor(pending, opts.Resume)
+		resumingNode = resumeSkipNode(next, pending)
 	} else if g.checkpointer != nil && opts.ThreadID != "" {
-		if cp, ok := g.checkpointer.Get(opts.ThreadID); ok {
-			state = cloneState(cp.Values)
-			tasks = []task{{node: cp.Next}}
-			resumeValues[cp.Next] = resumeValuesFor(cp.PendingInterrupts, opts.Resume)
-			resumingNode = resumeSkipNode(cp)
+		if values, next, pending, ok := g.legacyGet(ctx, opts.ThreadID); ok {
+			state = cloneState(values)
+			tasks = []task{{node: next}}
+			resumeValues[next] = resumeValuesFor(pending, opts.Resume)
+			resumingNode = resumeSkipNode(next, pending)
 		} else {
 			state = cloneState(input)
 			tasks = []task{{node: g.entry}}
@@ -445,11 +447,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				ID:    interruptBeforeID + pausedBefore,
 			}
 			if g.checkpointer != nil && opts.ThreadID != "" {
-				g.checkpointer.Put(opts.ThreadID, checkpoint.Checkpoint{
-					Values:            cloneState(state),
-					Next:              pausedBefore,
-					PendingInterrupts: []types.Interrupt{interrupt},
-				})
+				g.legacyPut(ctx, opts.ThreadID, cloneState(state), pausedBefore, []types.Interrupt{interrupt})
 			}
 			return Result{Values: state, Interrupts: []types.Interrupt{interrupt}}, nil
 		}
@@ -515,11 +513,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 		if len(interrupts) > 0 {
 			if g.checkpointer != nil && opts.ThreadID != "" {
-				g.checkpointer.Put(opts.ThreadID, checkpoint.Checkpoint{
-					Values:            cloneState(state),
-					Next:              interruptedNode,
-					PendingInterrupts: interrupts,
-				})
+				g.legacyPut(ctx, opts.ThreadID, cloneState(state), interruptedNode, interrupts)
 			}
 			return Result{Values: state, Interrupts: interrupts}, nil
 		}
@@ -565,11 +559,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				ID:    interruptAfterID + pausedAfter,
 			}
 			if g.checkpointer != nil && opts.ThreadID != "" {
-				g.checkpointer.Put(opts.ThreadID, checkpoint.Checkpoint{
-					Values:            cloneState(state),
-					Next:              nextNode,
-					PendingInterrupts: []types.Interrupt{interrupt},
-				})
+				g.legacyPut(ctx, opts.ThreadID, cloneState(state), nextNode, []types.Interrupt{interrupt})
 			}
 			return Result{Values: state, Interrupts: []types.Interrupt{interrupt}}, nil
 		}
@@ -578,7 +568,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	}
 
 	if g.checkpointer != nil && opts.ThreadID != "" {
-		g.checkpointer.Delete(opts.ThreadID)
+		_ = g.checkpointer.DeleteThread(ctx, opts.ThreadID)
 	}
 	return Result{Values: state}, nil
 }
@@ -728,18 +718,18 @@ func (g *CompiledGraph) findInterruptAfter(active []task) string {
 }
 
 // resumeSkipNode returns the node whose interrupt_before check should be
-// skipped on the first superstep of a resume from cp, or "" if not applicable.
-// This is non-empty only for checkpoints produced by interrupt_before(N)
-// (whose single pending interrupt ID is interruptBeforeID+N and whose Next is
+// skipped on the first superstep of a resume, or "" if not applicable. This
+// is non-empty only for checkpoints produced by interrupt_before(N) (whose
+// single pending interrupt ID is interruptBeforeID+N and whose next node is
 // N); interrupt_after and in-node interrupts return "".
-func resumeSkipNode(cp checkpoint.Checkpoint) string {
-	if len(cp.PendingInterrupts) != 1 {
+func resumeSkipNode(next string, pending []types.Interrupt) string {
+	if len(pending) != 1 {
 		return ""
 	}
-	if cp.PendingInterrupts[0].ID != interruptBeforeID+cp.Next {
+	if pending[0].ID != interruptBeforeID+next {
 		return ""
 	}
-	return cp.Next
+	return next
 }
 
 func normalizeNodeResult(result any) (map[string]any, *types.Command, error) {
@@ -788,6 +778,68 @@ func mergeState(state map[string]any, update map[string]any, reducers map[string
 		state[k] = merged
 	}
 	return nil
+}
+
+// legacyCheckpointSeq supplies the clock sequence for interim checkpoint IDs
+// so that successive legacyPut IDs remain chronologically ordered even when
+// minted within the same millisecond.
+var legacyCheckpointSeq atomic.Int64
+
+// legacyGet reads the latest checkpoint for threadID through the versioned
+// checkpoint.Saver, projecting it back onto the M1 single-checkpoint shape
+// the current executor was written against: state values, a single next
+// node, and the pending interrupts (reconstructed from ReservedInterrupt
+// pending writes).
+//
+// TODO(M2 Task 3): replaced by the versioned executor
+func (g *CompiledGraph) legacyGet(ctx context.Context, threadID string) (values map[string]any, next string, pending []types.Interrupt, ok bool) {
+	tup, err := g.checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: threadID})
+	if err != nil || tup == nil {
+		return nil, "", nil, false
+	}
+	values = tup.Checkpoint.ChannelValues
+	if len(tup.Checkpoint.Next) > 0 {
+		next = tup.Checkpoint.Next[0].Node
+	}
+	for _, w := range tup.PendingWrites {
+		if w.Channel != checkpoint.ReservedInterrupt {
+			continue
+		}
+		if intr, isInterrupt := w.Value.(types.Interrupt); isInterrupt {
+			pending = append(pending, intr)
+		}
+	}
+	return values, next, pending, true
+}
+
+// legacyPut saves a pause checkpoint for threadID through the versioned
+// checkpoint.Saver, encoding the M1 single-checkpoint fields as ChannelValues,
+// a single-element Next, and one ReservedInterrupt pending write per pending
+// interrupt.
+//
+// TODO(M2 Task 3): replaced by the versioned executor
+func (g *CompiledGraph) legacyPut(ctx context.Context, threadID string, values map[string]any, next string, pending []types.Interrupt) {
+	cp := checkpoint.Checkpoint{
+		V:             1,
+		ID:            checkpoint.NewID(int(legacyCheckpointSeq.Add(1))),
+		TS:            time.Now(),
+		ChannelValues: values,
+	}
+	if next != "" {
+		cp.Next = []checkpoint.PlannedTask{{Node: next}}
+	}
+	// The interim adapter only runs against MemorySaver, whose Put/PutWrites
+	// are infallible for these call patterns; errors are dropped to preserve
+	// the old infallible Get/Put call sites.
+	cfg, _ := g.checkpointer.Put(ctx, checkpoint.Config{ThreadID: threadID}, cp, checkpoint.Metadata{Source: "loop"}, nil)
+	if len(pending) == 0 {
+		return
+	}
+	writes := make([]checkpoint.Write, len(pending))
+	for i, intr := range pending {
+		writes[i] = checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: intr}
+	}
+	_ = g.checkpointer.PutWrites(ctx, cfg, writes, "legacy")
 }
 
 func cloneState(state map[string]any) map[string]any {
