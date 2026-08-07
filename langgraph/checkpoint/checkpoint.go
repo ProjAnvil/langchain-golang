@@ -1,3 +1,9 @@
+// Package checkpoint implements the checkpoint persistence contract of the Go
+// port of Python's langgraph: the Checkpoint snapshot type, the Saver
+// read/write interface, and the in-memory MemorySaver.
+//
+// Scope note: one checkpoint per thread, in memory only; versioned
+// checkpoints and persistent backends are later milestones.
 package checkpoint
 
 import (

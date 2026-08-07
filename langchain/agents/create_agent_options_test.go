@@ -28,7 +28,7 @@ func TestWithAgentNameStoresNameOnAgent(t *testing.T) {
 
 // nameReadingMiddleware records the run name it observes via NameFromContext
 // inside BeforeModel, proving the Name is surfaced through the run context to
-// middleware (since agentruntime/graph has no native run-metadata injection
+// middleware (since langgraph/graph has no native run-metadata injection
 // point, this context value is the surfaced channel).
 type nameReadingMiddleware struct {
 	got string

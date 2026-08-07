@@ -16,7 +16,7 @@ A Go port of:
 - **`langchain-tests`** → `standardtests/` — shared conformance suites.
 - **`model-profiles`** → `modelprofiles/` + the `cmd/langchain-profiles` CLI.
 
-It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — only the minimal graph runtime that `create_agent` depends on is ported, now living in the public top-level `langgraph/` module (see [Not supported](#not-supported--out-of-scope)).
+It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — only the minimal graph runtime that `create_agent` depends on is ported, now living in the public top-level `langgraph/` packages (see [Not supported](#not-supported--out-of-scope)).
 
 All tests green: `go test ./...` — 920+ tests across 55 packages.
 
@@ -71,8 +71,8 @@ A model ↔ tools agent loop built on the public `langgraph/` graph runtime, wit
 ### Deliberately not ported
 
 - **`langchain_classic`** — legacy chains, agents, memory, tools, retrievers, vectorstores, storage. The classic `AgentExecutor` is gone; use `agents.CreateAgent`.
-- **A full `langgraph` port**. Only the minimal subset `create_agent` depends on is ported, as the public top-level `langgraph/` module (`langgraph/{types,channels,checkpoint,graph}`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: subgraphs, streaming modes beyond `events`, time-travel / state history, caching/retry policies, the functional `@entrypoint`/`@task` API, persistent Postgres/SQLite checkpoint backends, and the langgraph CLI/SDK.
-- **Subagent transformer (`transformers` / `run.subagents`)** — not exposed. `transformers` is a langgraph stream-mode construct, and this port holds the `agentruntime` boundary (no stream modes). The motivating feature — **PII streaming-delta redaction** — IS delivered, via a bounded middleware delta layer (`WrapModelStreamHook` + `PIIStreamTransformer`'s lookback buffer); batch redaction also works.
+- **A full `langgraph` port**. Only the minimal subset `create_agent` depends on is ported, as the public top-level `langgraph/` packages (`langgraph/{types,channels,checkpoint,graph}`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: subgraphs, streaming modes beyond `events`, time-travel / state history, caching/retry policies, the functional `@entrypoint`/`@task` API, persistent Postgres/SQLite checkpoint backends, and the langgraph CLI/SDK.
+- **Subagent transformer (`transformers` / `run.subagents`)** — not exposed. `transformers` is a langgraph stream-mode construct, and this port holds the `langgraph` boundary (no stream modes). The motivating feature — **PII streaming-delta redaction** — IS delivered, via a bounded middleware delta layer (`WrapModelStreamHook` + `PIIStreamTransformer`'s lookback buffer); batch redaction also works.
 - **Functional `@entrypoint`/`@task` API**, **time-travel**, **subgraphs** — see above.
 
 ### Limited partner coverage

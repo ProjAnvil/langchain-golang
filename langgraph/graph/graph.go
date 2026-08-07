@@ -1,5 +1,3 @@
-package graph
-
 // Package graph implements a deliberately scoped Go port of Python's
 // `langgraph.graph.StateGraph` builder plus a synchronous, in-process
 // Pregel-style executor (see `langgraph.pregel`), sufficient to run the fixed
@@ -28,6 +26,7 @@ package graph
 //     must treat the state map they receive as read-only and communicate
 //     changes only through their return value, since it may be read
 //     concurrently by sibling tasks in the same superstep.
+package graph
 
 import (
 	"context"

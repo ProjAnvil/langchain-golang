@@ -2,7 +2,7 @@ package agents
 
 // CreateAgent builds a scoped Go equivalent of Python's
 // `langchain.agents.create_agent(...)`: a model node <-> tools node loop
-// wired on top of `agentruntime/graph`, with middleware hooks composed around
+// wired on top of `langgraph/graph`, with middleware hooks composed around
 // the model call and each tool call.
 //
 // Scope note (see migration_plan/core-v1-migration-todo.md P5
@@ -45,7 +45,7 @@ package agents
 // update["messages"], if present, reshapes only the *local* view of the
 // conversation used to build this model call (e.g. `SummarizationMiddleware`
 // collapsing older messages into a summary); it is intentionally NOT
-// persisted into the graph's committed state, since agentruntime/channels'
+// persisted into the graph's committed state, since langgraph/channels'
 // MessagesReducer (unlike Python's `add_messages`) has no
 // RemoveMessage/REMOVE_ALL_MESSAGES support to express "replace history."
 // AfterModel "messages" updates are additive (new tool/AI messages) and are
@@ -182,7 +182,7 @@ type AgentOptions struct {
 	// Name is the agent's run name / tracing tag, mirroring Python's
 	// `create_agent(name=...)` (the `lc_agent_name` equivalent). It is stored
 	// on the Agent (see Agent.Name) and surfaced through the run-name context
-	// on each Invoke, since agentruntime/graph has no native run-metadata
+	// on each Invoke, since langgraph/graph has no native run-metadata
 	// injection point.
 	Name string
 	// Debug toggles verbose structured logging of the graph execution path
@@ -273,7 +273,7 @@ func WithAgentSystemPromptTemplate(template *prompts.PromptTemplate, variables m
 // WithAgentName sets the agent's run name / tracing tag, mirroring Python's
 // `create_agent(name=...)` (the `lc_agent_name` equivalent). The name is stored
 // on the Agent (see Agent.Name) and surfaced as a run-name tag through the
-// context on each Invoke, since agentruntime/graph exposes no native
+// context on each Invoke, since langgraph/graph exposes no native
 // run-metadata injection point.
 func WithAgentName(name string) AgentOption {
 	return func(o *AgentOptions) { o.Name = name }
@@ -435,7 +435,7 @@ type Agent struct {
 }
 
 // runNameCtxKey carries the agent's Name through a run as a run-name /
-// tracing tag, mirroring Python's `lc_agent_name`. agentruntime/graph has no
+// tracing tag, mirroring Python's `lc_agent_name`. langgraph/graph has no
 // native run-metadata injection point, so this is the lowest-friction place to
 // surface the name to middleware/nodes that want to read it.
 type runNameCtxKey struct{}
@@ -712,7 +712,7 @@ func (a *Agent) InvokeWithStateAndVars(ctx context.Context, msgs []messages.Mess
 
 // withRunTags returns ctx annotated with this Agent's run-name tag, so
 // middleware/nodes can read it via NameFromContext (the lc_agent_name
-// equivalent). agentruntime/graph has no native run-metadata injection point,
+// equivalent). langgraph/graph has no native run-metadata injection point,
 // so this context value is the surfaced channel.
 func (a *Agent) withRunTags(ctx context.Context) context.Context {
 	if a.Name == "" {

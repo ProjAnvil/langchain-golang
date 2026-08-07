@@ -5,7 +5,7 @@ package agents
 // context_schema half lives alongside it in context_schema.go.
 //
 // Design (per spec, confirmed 2026-07-02): a schema *registry* on top of the
-// existing agentruntime/graph map[string]any state. Custom state fields are
+// existing langgraph/graph map[string]any state. Custom state fields are
 // declared at agent-build time via WithAgentStateFields; each carries the
 // channels.Reducer that merges successive writes to its key. Nodes still
 // access state the same way they always have (type assertion on the state
@@ -37,7 +37,7 @@ import (
 //
 // Reducer may be nil: CreateAgent defaults it to
 // channels.LastValueReducer (Python's LastValue "last write wins" channel),
-// which is also the implicit reducer agentruntime/graph applies to any
+// which is also the implicit reducer langgraph/graph applies to any
 // unregistered key, so passing nil and omitting the field are equivalent.
 //
 // There is deliberately no Initial seed value (see the file doc comment).
