@@ -16,9 +16,9 @@ A Go port of:
 - **`langchain-tests`** → `standardtests/` — shared conformance suites.
 - **`model-profiles`** → `modelprofiles/` + the `cmd/langchain-profiles` CLI.
 
-It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — only the minimal graph runtime that `create_agent` depends on is internalized as a private package (see [Not supported](#not-supported--out-of-scope)).
+It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — only the minimal graph runtime that `create_agent` depends on is ported, now living in the public top-level `langgraph/` module (see [Not supported](#not-supported--out-of-scope)).
 
-All tests green: `go test ./...` — 920+ tests across 51 packages.
+All tests green: `go test ./...` — 920+ tests across 55 packages.
 
 ---
 
@@ -36,7 +36,7 @@ All tests green: `go test ./...` — 920+ tests across 51 packages.
 
 #### `agents.CreateAgent` — the Go equivalent of Python's `create_agent`
 
-A model ↔ tools agent loop built on an internal graph runtime, with:
+A model ↔ tools agent loop built on the public `langgraph/` graph runtime, with:
 
 - **Middleware chain** — `WrapModelCall` / `WrapToolCall` (outermost-first), `BeforeModel` / `AfterModel` / `BeforeAgent` / `AfterAgent` hooks, `jump_to` short-circuit convention, `context.Context` on every hook (for interrupt).
 - **15 middleware modules**: human-in-the-loop, model-call-limit, model-fallback, model/tool-retry, tool-call-limit, context-editing, file-search (ripgrep fast path), pii/redaction, provider-tool-search, shell, summarization, todo, tool-emulator, tool-selection.
@@ -71,7 +71,7 @@ A model ↔ tools agent loop built on an internal graph runtime, with:
 ### Deliberately not ported
 
 - **`langchain_classic`** — legacy chains, agents, memory, tools, retrievers, vectorstores, storage. The classic `AgentExecutor` is gone; use `agents.CreateAgent`.
-- **A full `langgraph` port**. Only the minimal subset `create_agent` depends on lives here, internalized at `langchain/internal/agentruntime/` (package `agentruntime`, **not exported**). Intentionally absent: subgraphs, streaming modes beyond `events`, time-travel / state history, caching/retry policies, the functional `@entrypoint`/`@task` API, persistent Postgres/SQLite checkpoint backends, and the langgraph CLI/SDK.
+- **A full `langgraph` port**. Only the minimal subset `create_agent` depends on is ported, as the public top-level `langgraph/` module (`langgraph/{types,channels,checkpoint,graph}`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: subgraphs, streaming modes beyond `events`, time-travel / state history, caching/retry policies, the functional `@entrypoint`/`@task` API, persistent Postgres/SQLite checkpoint backends, and the langgraph CLI/SDK.
 - **Subagent transformer (`transformers` / `run.subagents`)** — not exposed. `transformers` is a langgraph stream-mode construct, and this port holds the `agentruntime` boundary (no stream modes). The motivating feature — **PII streaming-delta redaction** — IS delivered, via a bounded middleware delta layer (`WrapModelStreamHook` + `PIIStreamTransformer`'s lookback buffer); batch redaction also works.
 - **Functional `@entrypoint`/`@task` API**, **time-travel**, **subgraphs** — see above.
 
@@ -169,10 +169,11 @@ For the full API reference, see the package docs at [pkg.go.dev](https://pkg.go.
 ```
 langchain-golang/
 ├── core/                  # langchain_core port
+├── langgraph/             # langgraph port: StateGraph builder, Pregel executor, channels, checkpointing (M1 scope)
 ├── langchain/             # langchain (v1) port
 │   ├── agents/            # CreateAgent + 15 middleware
 │   ├── chatmodels/ embeddings/ messages/ tools/ ratelimiters/
-│   └── internal/agentruntime/   # internal graph runtime (not exported)
+│   └── internal/agentruntime/   # deprecated alias shim over langgraph/
 ├── textsplitters/         # langchain_text_splitters port
 ├── standardtests/         # langchain-tests conformance port
 ├── modelprofiles/         # model-profiles port

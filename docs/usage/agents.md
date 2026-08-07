@@ -1,9 +1,9 @@
 # Agents — `CreateAgent`
 
 `agents.CreateAgent` is the Go equivalent of Python's
-`langchain.agents.create_agent`. It builds a model↔tools loop on top of an
-internal graph runtime, with composable middleware hooks around each model call
-and each tool call.
+`langchain.agents.create_agent`. It builds a model↔tools loop on top of the
+public `langgraph/` graph runtime, with composable middleware hooks around each
+model call and each tool call.
 
 ## Signature
 
@@ -176,17 +176,17 @@ result, _ := agent.Graph.InvokeWithOptions(ctx,
 )
 ```
 
-> **API note:** the checkpointer type (`checkpoint.Saver`, `checkpoint.MemorySaver`)
-> currently lives in the internal package
-> `langchain/internal/agentruntime/checkpoint`. Code outside this module cannot
-> import it directly. To wire a custom saver today, implement the `Get` / `Put`
-> / `Delete` methods the interface requires on your own type; see
+> **API note:** the checkpointer types (`checkpoint.Saver`,
+> `checkpoint.NewMemorySaver`) live in the public package
+> `github.com/projanvil/langchain-golang/langgraph/checkpoint`. To wire a
+> custom saver, implement the `Get` / `Put` / `Delete` methods the interface
+> requires on your own type; see
 > `langchain/agents/create_agent_test.go` (`TestCreateAgent_InterruptThroughModelHook`)
-> for the round-trip shape. A public checkpointer API is on the v1 roadmap.
+> for the round-trip shape.
 
-The related `agentruntime.Interrupt(ctx, value)` primitive — pause *inside* a
+The related `graph.Interrupt(ctx, value)` primitive — pause *inside* a
 node and feed a value back on resume — is available to middleware/node authors
-within the module via the internal `graph` package.
+via the public `github.com/projanvil/langchain-golang/langgraph/graph` package.
 
 ## State and context schema
 
@@ -261,10 +261,8 @@ work (Design Decision 4 in the v1-final-parity spec).
 
 ## What is intentionally absent
 
-Mirroring the scoped-port stance (the `agentruntime` boundary is private):
+Mirroring the scoped-port stance (only the M1 subset of `langgraph` is ported):
 
 - **`transformers` / `run.subagents`** — not exposed; streaming PII redaction is
   delivered via the `WrapModelStreamHook` middleware delta layer instead.
 - **`Command` / `Send` returned directly from tools** — out of scope.
-- **Public checkpointer / graph-runtime API** — the runtime lives under
-  `langchain/internal/agentruntime` and is not exported.

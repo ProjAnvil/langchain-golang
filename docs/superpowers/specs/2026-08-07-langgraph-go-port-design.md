@@ -46,7 +46,7 @@ langgraph/
 
 每个里程碑独立可交付、可验证。
 
-### M1 核心平移
+### M1 核心平移（已完成 2026-08-08）
 
 - 建立公开 `langgraph/` 包骨架（types/channels/checkpoint/graph）。
 - 平移现有能力：StateGraph builder、同步超步执行循环（超步内并行）、`Command`/`Send`/`Interrupt`、interrupt_before/after、单 checkpoint/thread 的 `MemorySaver`、事件 sink（现有 `InvokeStream` 能力）。
