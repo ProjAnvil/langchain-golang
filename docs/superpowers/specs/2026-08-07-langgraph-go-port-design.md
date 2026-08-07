@@ -53,7 +53,7 @@ langgraph/
 - `agentruntime` 改为委托封装；`create_agent` 切换到新包，全部现有测试通过。
 - 显式不做：subgraphs、stream modes、时间旅行、持久化后端、函数式 API。
 
-### M2 全保真核心
+### M2 全保真核心（已完成 2026-08-08）
 
 - 版本化 checkpoint：每 thread 多 checkpoint（checkpoint_id 单调）、state history（`List`/`GetStateHistory`）、时间旅行（从任意历史 checkpoint fork/恢复）。
 - checkpoint 结构对齐 Python：channel values + channel versions + versions_seen + pending writes。

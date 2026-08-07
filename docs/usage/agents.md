@@ -179,10 +179,28 @@ result, _ := agent.Graph.InvokeWithOptions(ctx,
 > **API note:** the checkpointer types (`checkpoint.Saver`,
 > `checkpoint.NewMemorySaver`) live in the public package
 > `github.com/projanvil/langchain-golang/langgraph/checkpoint`. To wire a
-> custom saver, implement the `Get` / `Put` / `Delete` methods the interface
-> requires on your own type; see
+> custom saver, implement the versioned `Saver` interface —
+> `GetTuple` / `List` / `Put` / `PutWrites` / `DeleteThread`, keyed by
+> `checkpoint.Config` (thread ID + checkpoint namespace + checkpoint ID); see
 > `langchain/agents/create_agent_test.go` (`TestCreateAgent_InterruptThroughModelHook`)
-> for the round-trip shape.
+> for the round-trip shape. (This replaced the M1 `Get` / `Put` / `Delete`
+> interface in a sanctioned pre-1.0 break.)
+
+### Checkpoint history and time travel
+
+With a checkpointer installed, every super-step writes an immutable,
+ID-addressable checkpoint, so a thread accumulates a full history. The
+compiled graph (`Agent.Graph`) exposes it directly:
+
+- `GetState(ctx, checkpoint.Config{ThreadID: ...})` — a `StateSnapshot` of
+  the latest (or pinned) checkpoint: channel values, next nodes, config,
+  pending interrupts.
+- `GetStateHistory(ctx, cfg, opts)` — the thread's snapshots, newest first.
+- `UpdateState(ctx, cfg, values, asNode)` — apply a write batch attributed to
+  a node and save it as a new checkpoint (human-in-the-loop state edits).
+- Time travel: pass `graphpkg.Options{ThreadID: ..., CheckpointID: ...}` to
+  `InvokeWithOptions` to pin a historical checkpoint — the run forks from it
+  instead of the thread's latest.
 
 The related `graph.Interrupt(ctx, value)` primitive — pause *inside* a
 node and feed a value back on resume — is available to middleware/node authors
@@ -261,7 +279,7 @@ work (Design Decision 4 in the v1-final-parity spec).
 
 ## What is intentionally absent
 
-Mirroring the scoped-port stance (only the M1 subset of `langgraph` is ported):
+Mirroring the scoped-port stance (only a subset of `langgraph` is ported):
 
 - **`transformers` / `run.subagents`** — not exposed; streaming PII redaction is
   delivered via the `WrapModelStreamHook` middleware delta layer instead.

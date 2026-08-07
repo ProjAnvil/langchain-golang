@@ -16,7 +16,7 @@ A Go port of:
 - **`langchain-tests`** → `standardtests/` — shared conformance suites.
 - **`model-profiles`** → `modelprofiles/` + the `cmd/langchain-profiles` CLI.
 
-It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — only the minimal graph runtime that `create_agent` depends on is ported, now living in the public top-level `langgraph/` packages (see [Not supported](#not-supported--out-of-scope)).
+It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — the ported graph runtime (M2 scope: channel objects, versioned checkpoints with history, time travel, subgraphs) lives in the public top-level `langgraph/` packages (see [Not supported](#not-supported--out-of-scope)).
 
 All tests green: `go test ./...` — 920+ tests across 55 packages.
 
@@ -49,7 +49,7 @@ A model ↔ tools agent loop built on the public `langgraph/` graph runtime, wit
 - **`interrupt_before` / `interrupt_after`** — pause at named graph nodes (`WithAgentInterruptBefore` / `WithAgentInterruptAfter`).
 - **`model`** — pass a constructed `language.ChatModel`, **or** a bare `provider:model` string resolved via `chatmodels.Resolve` (`WithAgentModel("openai:gpt-4o")`).
 - **`tools`** — explicit tools, **or** Go callables reflected into tools via `core/tools.FromFunc` (the `@tool` equivalent).
-- **`checkpointer`** — in-memory saver; **interrupt / resume** round trips.
+- **`checkpointer`** — in-memory saver with versioned checkpoints + history; **interrupt / resume** round trips, plus `GetState` / `GetStateHistory` / `UpdateState` and time travel via `Options.CheckpointID` on `Agent.Graph`.
 - `recursion_limit`, `name`, `debug`.
 - **Streaming** — `Agent.StreamEvents`: real per-token streaming (model deltas + tool/node lifecycle events) over `runnables.Stream[StreamEvent]`.
 - **Subagents (agent-as-tool)** — one agent delegates to a named inner agent via a hand-rolled tool whose body calls the inner agent's `InvokeWithState` (mirrors Python's `@tool` + `agent.invoke()`); the nested run is distinguishable by name via `NameFromContext`. A non-streaming nested invoke no longer leaks its events into a streaming parent's stream. See the [Subagents guide](docs/usage/agents.md).
@@ -71,9 +71,9 @@ A model ↔ tools agent loop built on the public `langgraph/` graph runtime, wit
 ### Deliberately not ported
 
 - **`langchain_classic`** — legacy chains, agents, memory, tools, retrievers, vectorstores, storage. The classic `AgentExecutor` is gone; use `agents.CreateAgent`.
-- **A full `langgraph` port**. Only the minimal subset `create_agent` depends on is ported, as the public top-level `langgraph/` packages (`langgraph/{types,channels,checkpoint,graph}`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: subgraphs, streaming modes beyond `events`, time-travel / state history, caching/retry policies, the functional `@entrypoint`/`@task` API, persistent Postgres/SQLite checkpoint backends, and the langgraph CLI/SDK.
+- **A full `langgraph` port**. The ported surface lives in the public top-level `langgraph/` packages (`langgraph/{types,channels,checkpoint,graph}`) and covers the `create_agent` runtime plus the M2 additions: channel objects (`LastValue` / `Topic` / `BinaryOperator` / `Ephemeral` via `AddChannel`), versioned checkpoints with history (`GetState` / `GetStateHistory` / `UpdateState`), time travel (`Options.CheckpointID`), and subgraphs (`AddSubgraph`, parent-targeted `Command{Graph: types.ParentGraph}`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: streaming modes beyond `events`, caching/retry policies, the functional `@entrypoint`/`@task` API, persistent Postgres/SQLite checkpoint backends, and the langgraph CLI/SDK.
 - **Subagent transformer (`transformers` / `run.subagents`)** — not exposed. `transformers` is a langgraph stream-mode construct, and this port holds the `langgraph` boundary (no stream modes). The motivating feature — **PII streaming-delta redaction** — IS delivered, via a bounded middleware delta layer (`WrapModelStreamHook` + `PIIStreamTransformer`'s lookback buffer); batch redaction also works.
-- **Functional `@entrypoint`/`@task` API**, **time-travel**, **subgraphs** — see above.
+- **Functional `@entrypoint`/`@task` API** — see above.
 
 ### Limited partner coverage
 
@@ -169,7 +169,7 @@ For the full API reference, see the package docs at [pkg.go.dev](https://pkg.go.
 ```
 langchain-golang/
 ├── core/                  # langchain_core port
-├── langgraph/             # langgraph port: StateGraph builder, Pregel executor, channels, checkpointing (M1 scope)
+├── langgraph/             # langgraph port: StateGraph builder, Pregel executor, channel objects, versioned checkpoints + history, time travel, subgraphs (M2 scope)
 ├── langchain/             # langchain (v1) port
 │   ├── agents/            # CreateAgent + 15 middleware
 │   ├── chatmodels/ embeddings/ messages/ tools/ ratelimiters/
