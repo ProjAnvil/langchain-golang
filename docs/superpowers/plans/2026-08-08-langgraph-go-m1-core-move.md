@@ -4,7 +4,7 @@
 
 **Goal:** Promote the internal `langchain/internal/agentruntime` graph runtime to a public top-level `langgraph/` package tree in `langchain_golang`, leaving `agentruntime` as a thin alias shim so `langchain/agents.CreateAgent` and all existing tests keep passing unchanged.
 
-**Architecture:** Copy-then-shim. Tasks 1–4 create the new public packages by copying files out of `langchain/internal/agentruntime` (the old tree stays intact, so the module builds and tests green after every task). Task 5 replaces the old tree's contents with type-alias/var shims delegating to the new packages and deletes the duplicated old test files. Task 6 updates docs and runs the final full-module verification.
+**Architecture:** Copy-then-shim. Tasks 1–4 create the new public packages by copying files out of `langchain/internal/agentruntime` (the old tree stays intact, so the module builds and tests green after every task). Task 5 replaces the old tree's contents with type-alias/var shims delegating to the new packages and deletes the duplicated old test files. Task 6 switches `langchain/agents` to import the public `langgraph/*` packages directly (dogfooding the new API; the shim remains as a safety net). Task 7 updates docs and runs the final full-module verification.
 
 **Tech Stack:** Go 1.23, module `github.com/projanvil/langchain-golang`, standard library only (no new third-party dependencies).
 
@@ -16,7 +16,7 @@
 - State model is `map[string]any` + per-key reducers — do not introduce generics-based state.
 - Comment style: match the existing extensive doc comments; use single backticks for inline code in comments (never Sphinx-style double backticks).
 - Commit style: conventional commits as in repo history, e.g. `feat(langgraph): ...`, `refactor(agentruntime): ...`.
-- The public API surface of `langchain/agents` must not change; its tests must pass without modification.
+- `langchain/agents` switches its imports to the public `langgraph/*` packages (Task 6); its public API and behavior must not change, and its test assertions must pass unmodified (only import lines and package qualifiers change in the six files listed in Task 6).
 - After every task: `go build ./... && go test ./...` from `langchain_golang/` must pass before committing.
 
 ### Source files being moved (current locations)
@@ -70,7 +70,7 @@ package types
 import "fmt"
 ```
 
-The remainder of the file (the constants and type declarations) is unchanged.
+The remainder of the file (the constants and type declarations) is unchanged, with one exception: in `GraphInterrupt.Error()`, change the error string prefix `"agentruntime: interrupted with value %v (id=%s)"` to `"types: interrupted with value %v (id=%s)"`. No test asserts this string.
 
 - [ ] **Step 3: Build and test**
 
@@ -244,7 +244,9 @@ import (
 )
 ```
 
-Then replace every `agentruntime.` identifier prefix with `types.` throughout `graph.go` (occurrences include `agentruntime.START`, `agentruntime.END`, `agentruntime.Command`, `agentruntime.Send`, `agentruntime.Interrupt`, `agentruntime.GraphInterrupt`, `agentruntime.ParentGraph` in doc comments).
+Then replace every `agentruntime.` identifier prefix with `types.` throughout `graph.go` (occurrences include `agentruntime.START`, `agentruntime.END`, `agentruntime.Command`, `agentruntime.Send`, `agentruntime.Interrupt`, `agentruntime.GraphInterrupt`, `agentruntime.ParentGraph` in doc comments; this rewrite also intentionally updates doc-comment/error text containing `agentruntime.`, e.g. `AddEdge(agentruntime.START, node)`).
+
+Separately, in the `Interrupt` function, change the panic string `"agentruntime: Interrupt called outside of a graph node execution"` to `"graph: Interrupt called outside of a graph node execution"` (note the colon — the prefix rewrite above does not cover it). No test asserts this string.
 
 Also update the package doc comment at the top of `graph.go`: the sentence "sufficient to run the fixed \"model node <-> tools node\" shape `langchain`'s v1 agent factory needs" stays, but add one sentence after the first paragraph:
 
@@ -313,7 +315,7 @@ with
 	"github.com/projanvil/langchain-golang/langgraph/types"
 ```
 
-and replace every `agentruntime.` prefix with `types.` throughout the file (`graph.` and `channels.` prefixes stay valid). The `langchain/tools` import is unchanged — `langchain/tools` does not import `langgraph`, so there is no import cycle.
+and replace every `agentruntime.` prefix with `types.` throughout the file (`graph.` and `channels.` prefixes stay valid). Keep the untouched import entries (`core/messages`, `core/schema`, `langchain/tools`) in place — only the three `internal/agentruntime*` entries change. The `langchain/tools` import is unchanged — `langchain/tools` does not import `langgraph`, so there is no import cycle.
 
 - [ ] **Step 6: Build and test**
 
@@ -490,31 +492,91 @@ git commit -m "refactor(agentruntime): replace implementation with aliases over 
 
 ---
 
-### Task 6: Documentation and final verification
+### Task 6: Switch `langchain/agents` to the public `langgraph` packages
 
 **Files:**
-- Modify: `langchain_golang/README.md` (project layout / package listing section)
+- Modify: `langchain/agents/create_agent.go` (agentruntime imports around lines 73–76)
+- Modify: `langchain/agents/state_schema.go` (import around line 26)
+- Modify: `langchain/agents/stream.go` (import around line 35)
+- Modify: `langchain/agents/create_agent_test.go`, `state_schema_test.go`, `stream_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 1–5 (the public `langgraph/*` packages and the proven-transparent shim).
+- Produces: `langchain/agents` depends on `langgraph/*` directly; behavior and public API unchanged.
+
+- [ ] **Step 1: Rewrite imports in the six files**
+
+In each of the six files, apply these exact replacements:
+
+- `"github.com/projanvil/langchain-golang/langchain/internal/agentruntime"` → `"github.com/projanvil/langchain-golang/langgraph/types"`, and every `agentruntime.` identifier prefix → `types.`
+- `"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/channels"` → `"github.com/projanvil/langchain-golang/langgraph/channels"` (the `channels.` prefix stays)
+- `"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/checkpoint"` → `"github.com/projanvil/langchain-golang/langgraph/checkpoint"` (the `checkpoint.` prefix stays)
+- `"github.com/projanvil/langchain-golang/langchain/internal/agentruntime/graph"` → `"github.com/projanvil/langchain-golang/langgraph/graph"` (the `graph.` prefix stays)
+
+Keep all other import entries untouched. Note the new `langgraph/*` paths sort after the `langchain/*` paths within the same import group — let `gofmt` confirm ordering.
+
+- [ ] **Step 2: Verify no stale references remain**
+
+```bash
+grep -rn "internal/agentruntime" langchain/agents/
+gofmt -l langchain/
+```
+
+Expected: both produce no output (no agentruntime references in agents; no formatting drift).
+
+- [ ] **Step 3: Build, vet, and run the full test suite**
+
+```bash
+go build ./... && go vet ./... && go test ./...
+```
+
+Expected: PASS across the whole module. All `langchain/agents` tests (create_agent, state_schema, stream) must pass with no assertion changes — only imports and qualifiers were rewritten.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add langchain/agents/
+git commit -m "refactor(agents): import public langgraph packages instead of internal agentruntime"
+```
+
+---
+
+### Task 7: Documentation and final verification
+
+**Files:**
+- Modify: `langchain_golang/README.md` (lines ~19, ~21, ~74 and the layout listing)
+- Modify: `langchain_golang/docs/usage/agents.md` (lines ~179–189, ~269–270)
 - Modify: `langchain_golang/docs/superpowers/specs/2026-08-07-langgraph-go-port-design.md` (mark M1 done)
 
 **Interfaces:**
-- Consumes: Tasks 1–5.
+- Consumes: Tasks 1–6.
 - Produces: up-to-date docs; no code changes.
 
-- [ ] **Step 1: Update README**
+- [ ] **Step 1: Fix README prose made false by M1**
 
-Find the section of `README.md` that lists the repository's top-level Go packages (it currently mentions `langgraph` in prose). Add `langgraph/` to the layout listing with a one-line description, e.g.:
+In `README.md`:
+
+- The sentence near line 19 saying the graph runtime "is internalized as a private package" — rewrite to state the runtime now lives in the public top-level `langgraph/` module.
+- The sentence near line 74 saying the runtime is "internalized at `langchain/internal/agentruntime/` (package `agentruntime`, not exported)" — rewrite to point at `langgraph/` and note that `agentruntime` remains only as a deprecated alias shim.
+- The test/package count near line 21 ("920+ tests across 51 packages") — update the package count after running `go list ./... | wc -l` and use the real number.
+- Add `langgraph/` to the layout listing (if present) with a one-line description, e.g.:
 
 ```markdown
 - `langgraph/` — Go port of Python's LangGraph: StateGraph builder, Pregel-style executor, channels/reducers, and checkpointing (M1 scope; see docs/superpowers/specs/2026-08-07-langgraph-go-port-design.md).
 ```
 
-Match the exact formatting of the surrounding entries. If the README has no such listing, add the bullet to the most relevant existing section instead of creating a new section.
+Match the exact formatting of the surrounding entries.
 
-- [ ] **Step 2: Mark M1 complete in the spec**
+- [ ] **Step 2: Fix `docs/usage/agents.md`**
+
+- The passage near lines 179–189 saying `checkpoint.Saver` "currently lives in the internal package" and "code outside this module cannot import it directly" — rewrite to point readers at the public `github.com/projanvil/langchain-golang/langgraph/checkpoint` package (`Saver`, `NewMemorySaver`).
+- The roadmap bullet near lines 269–270 ("Public checkpointer / graph-runtime API — the runtime lives under `langchain/internal/agentruntime` and is not exported") — remove it or rewrite it as done, pointing at `langgraph/`.
+
+- [ ] **Step 3: Mark M1 complete in the spec**
 
 In `docs/superpowers/specs/2026-08-07-langgraph-go-port-design.md`, change the M1 heading from `### M1 核心平移` to `### M1 核心平移（已完成 2026-08-08）`.
 
-- [ ] **Step 3: Final full verification**
+- [ ] **Step 4: Final full verification**
 
 ```bash
 go build ./... && go vet ./... && go test ./...
@@ -522,10 +584,10 @@ go build ./... && go vet ./... && go test ./...
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add README.md docs/superpowers/specs/2026-08-07-langgraph-go-port-design.md
+git add README.md docs/usage/agents.md docs/superpowers/specs/2026-08-07-langgraph-go-port-design.md
 git commit -m "docs: document public langgraph module and mark M1 complete"
 ```
 
@@ -533,6 +595,7 @@ git commit -m "docs: document public langgraph module and mark M1 complete"
 
 ## Self-Review Notes
 
-- Spec coverage: M1 scope items from the spec (public package skeleton, move of builder/executor/Command/Send/Interrupt/memory checkpoint/event sink, agentruntime as delegating shim, create_agent green) map to Tasks 1–5; docs map to Task 6. Out-of-scope items (subgraphs, stream modes, time travel, persistent backends, functional API) are correctly untouched.
-- Type consistency: shim aliases in Task 5 reference exactly the identifiers produced by Tasks 1–4 (`types.*`, `channels.*`, `checkpoint.*`, `graph.*` public surfaces were enumerated from the current source files).
-- Risk: if a consumer uses an identifier missed by the Task 5 shim, Step 5's full-module build fails loudly — fix by adding the missing alias, not by editing consumers.
+- Spec coverage: M1 scope items from the spec map as follows — public package skeleton and move of builder/executor/Command/Send/Interrupt/memory checkpoint/event sink → Tasks 1–4; agentruntime as delegating shim → Task 5; `create_agent` switching to the new packages with all tests green → Task 6; docs → Task 7. Out-of-scope items (subgraphs, stream modes, time travel, persistent backends, functional API) are correctly untouched.
+- Type consistency: shim aliases in Task 5 reference exactly the identifiers produced by Tasks 1–4 (`types.*`, `channels.*`, `checkpoint.*`, `graph.*` public surfaces were enumerated from the current source files). Task 6's qualifier rewrite (`agentruntime.` → `types.`) targets the same `types` package surface.
+- Risk: if a consumer uses an identifier missed by the Task 5 shim, Task 5 Step 5's full-module build fails loudly — fix by adding the missing alias, not by editing consumers.
+- Review history: this plan passed an adversarial subagent review; the two FIX-FIRST findings (spec deviation on `create_agent` switching packages; stale README/usage-doc prose) were resolved by adding Task 6 and expanding Task 7. Cosmetic findings adopted: `agentruntime:`/`agentruntime.` prefixes in error strings are updated in Tasks 1 and 4.
