@@ -119,7 +119,10 @@ type resumePlan struct {
 func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []task, resumeValues map[string][]any, skipNode string, err error) {
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
-	plan := planResume(tup, resume)
+	plan, err := planResume(tup, resume)
+	if err != nil {
+		return nil, nil, "", err
+	}
 	if len(plan.replayWrites) > 0 {
 		if err := rs.applyWrites(plan.replayWrites); err != nil {
 			return nil, nil, "", err
@@ -137,7 +140,20 @@ func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []t
 //     rejoin the resumed superstep's task queue;
 //   - tasks without pending writes never ran (e.g. an interrupt_before
 //     pause) and dispatch normally.
-func planResume(tup *checkpoint.Tuple, resume any) resumePlan {
+//
+// A non-map resume value with more than one pending interrupt across the
+// checkpoint is an error, mirroring Python's requirement that multiple
+// pending interrupts be resumed with an interrupt-ID map.
+func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
+	pending := interruptsFromWrites(tup.PendingWrites)
+	if resume != nil {
+		if _, isMap := resume.(map[string]any); !isMap && len(pending) > 1 {
+			return resumePlan{}, fmt.Errorf(
+				"graph: resume with %d pending interrupts requires a map[string]any keyed by interrupt ID (a scalar resume only supports a single pending interrupt)",
+				len(pending))
+		}
+	}
+
 	byTask := map[string][]checkpoint.Write{}
 	for _, w := range tup.PendingWrites {
 		byTask[w.TaskID] = append(byTask[w.TaskID], w)
@@ -180,22 +196,26 @@ func planResume(tup *checkpoint.Tuple, resume any) resumePlan {
 		}
 	}
 	plan.tasks = append(plan.tasks, replaySends...)
-	plan.skipNode = resumeSkipNode(interruptsFromWrites(tup.PendingWrites))
-	return plan
+	plan.skipNode = resumeSkipNode(pending)
+	return plan, nil
 }
 
 // resumeValuesFor computes the resume queue for a re-run task from its
 // pending interrupts and the caller-supplied resume value, mirroring Python:
-// a map[string]any resume addresses interrupts by ID; any other resume
-// (including nil) feeds the first pending interrupt.
+// a map[string]any resume addresses interrupts by ID, and an interrupt whose
+// ID is absent from the map is NOT fed a value — its Interrupt() call finds
+// the queue exhausted and re-panics with the same interrupt (the run pauses
+// again); any other resume (including nil) feeds the first pending interrupt.
 func resumeValuesFor(pending []types.Interrupt, resume any) []any {
 	if len(pending) == 0 {
 		return nil
 	}
 	if byID, ok := resume.(map[string]any); ok {
-		values := make([]any, len(pending))
-		for i, p := range pending {
-			values[i] = byID[p.ID]
+		values := make([]any, 0, len(pending))
+		for _, p := range pending {
+			if v, ok := byID[p.ID]; ok {
+				values = append(values, v)
+			}
 		}
 		return values
 	}

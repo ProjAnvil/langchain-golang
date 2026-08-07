@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -1177,7 +1178,17 @@ func TestSameNodeFanOutInterruptsResumeByTaskID(t *testing.T) {
 		t.Fatalf("same-node tasks must be planned with distinct task IDs, got %+v", tup.Checkpoint.Next)
 	}
 
-	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "done"})
+	// A scalar resume with two pending interrupts is an error (Python parity):
+	// resume with an interrupt-ID map instead. Both fan-out tasks interrupt
+	// with the same ID ("worker-1": <node>-<counter>), so one map entry feeds
+	// both.
+	if _, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "done"}); err == nil ||
+		!strings.Contains(err.Error(), "interrupt ID") {
+		t.Fatalf("scalar resume with 2 pending interrupts error = %v, want one requiring an interrupt-ID map", err)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), nil,
+		Options{ThreadID: "t1", Resume: map[string]any{"worker-1": "done"}})
 	if err != nil {
 		t.Fatalf("resume Invoke() error = %v", err)
 	}
@@ -1223,5 +1234,73 @@ func TestResumeByInterruptIDMap(t *testing.T) {
 	}
 	if second.Values["answer"] != "blue" {
 		t.Fatalf("answer = %v, want blue (map resume by interrupt ID)", second.Values["answer"])
+	}
+}
+
+// TestResumeMapUnmatchedInterruptRepauses verifies that a map resume that
+// addresses only some of the pending interrupts does NOT feed the unmatched
+// ones a nil value: the unmatched interrupt re-fires (the run pauses again
+// with the same interrupt), mirroring Python.
+func TestResumeMapUnmatchedInterruptRepauses(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("askA", func(ctx context.Context, _ map[string]any) (any, error) {
+		v := Interrupt(ctx, "a?")
+		return map[string]any{"outA": v}, nil
+	})
+	g.AddNode("askB", func(ctx context.Context, _ map[string]any) (any, error) {
+		v := Interrupt(ctx, "b?")
+		return map[string]any{"outB": v}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddEdge("start", "askA")
+	g.AddEdge("start", "askB")
+	g.AddEdge("askA", types.END)
+	g.AddEdge("askB", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	ctx := context.Background()
+
+	first, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	ids := map[string]bool{}
+	for _, intr := range first.Interrupts {
+		ids[intr.ID] = true
+	}
+	if len(first.Interrupts) != 2 || !ids["askA-1"] || !ids["askB-1"] {
+		t.Fatalf("expected interrupts askA-1 and askB-1, got %+v", first.Interrupts)
+	}
+
+	// Resume addressing only askA-1: askB must re-pause with the SAME
+	// interrupt (not continue with a nil resume value).
+	second, err := cg.InvokeWithOptions(ctx, nil,
+		Options{ThreadID: "t1", Resume: map[string]any{"askA-1": "va"}})
+	if err != nil {
+		t.Fatalf("partial resume Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 1 || second.Interrupts[0].ID != "askB-1" || second.Interrupts[0].Value != "b?" {
+		t.Fatalf("expected re-pause with interrupt askB-1, got %+v", second.Interrupts)
+	}
+	if _, ok := second.Values["outB"]; ok {
+		t.Fatalf("outB must not be set while askB is still interrupted: %+v", second.Values)
+	}
+
+	// Resuming the remaining interrupt completes the run; the completed
+	// sibling's write is replayed, not re-run.
+	third, err := cg.InvokeWithOptions(ctx, nil,
+		Options{ThreadID: "t1", Resume: map[string]any{"askB-1": "vb"}})
+	if err != nil {
+		t.Fatalf("final resume Invoke() error = %v", err)
+	}
+	if len(third.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after final resume, got %+v", third.Interrupts)
+	}
+	if third.Values["outA"] != "va" || third.Values["outB"] != "vb" {
+		t.Fatalf("values = %+v, want outA=va outB=vb", third.Values)
 	}
 }

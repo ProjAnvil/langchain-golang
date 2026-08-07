@@ -137,7 +137,11 @@ func joinCheckpointNS(parentNS, name string) string {
 // the child's position. When the parent run was pinned to or resumed from a
 // checkpoint whose Metadata.Parents names the child's namespace (parent
 // time-travel via Options.CheckpointID), the re-entered child resumes from
-// that recorded checkpoint instead of the namespace's latest.
+// that recorded checkpoint instead of the namespace's latest. The pin holds
+// for the whole parent run: a subgraph node executed twice within one
+// pinned/resumed parent run re-pins to the same historical child checkpoint
+// both times — the second invocation forks from the pin, not from the first
+// invocation's in-run result.
 //
 // A child that interrupts (in-node Interrupt or interrupt boundaries) is out
 // of scope: the wrapper surfaces a descriptive error rather than silently

@@ -147,7 +147,8 @@ func (g *StateGraph) AddReducer(key string, reducer channels.Reducer) *StateGrap
 // access to Python's channel semantics (e.g. channels.NewEphemeral or
 // channels.NewTopic for values that expire at a superstep boundary). The
 // prototype itself is never mutated; each run clones it via FromCheckpoint.
-// AddChannel takes precedence over AddReducer for the same key.
+// Registration is last-call-wins: whichever of AddChannel/AddReducer is
+// called last for a key determines that key's channel.
 func (g *StateGraph) AddChannel(key string, prototype channels.Channel) *StateGraph {
 	if prototype == nil {
 		g.setErr(fmt.Errorf("graph: channel prototype for key %q must not be nil", key))
@@ -361,6 +362,18 @@ type Options struct {
 	// input is applied as a write batch on top of the latest checkpointed
 	// state and execution restarts from the entry point (Python parity —
 	// fresh input never silently resumes).
+	//
+	// Resume values are matched to pending interrupts by two rules,
+	// mirroring Python:
+	//
+	//   - A map[string]any Resume addresses interrupts by ID. An interrupt
+	//     whose ID is absent from the map is NOT fed a value: its Interrupt
+	//     call re-pauses the run with the same interrupt, so partially
+	//     addressed resumes pause again with the unmatched interrupts.
+	//   - Any non-map (scalar) Resume value is fed to a single pending
+	//     interrupt. When the checkpoint has more than one pending
+	//     interrupt, a scalar Resume is an error — resume with an
+	//     interrupt-ID map instead.
 	Resume any
 
 	// checkpointNS namespaces the run's checkpoints within the thread. It is

@@ -45,6 +45,9 @@ func (g *CompiledGraph) GetState(ctx context.Context, cfg checkpoint.Config) (St
 		return StateSnapshot{}, fmt.Errorf("graph: GetState: %w", err)
 	}
 	if tup == nil {
+		if cfg.CheckpointID != "" {
+			return StateSnapshot{}, fmt.Errorf("graph: no checkpoint %q found for thread %q", cfg.CheckpointID, cfg.ThreadID)
+		}
 		return StateSnapshot{}, fmt.Errorf("graph: no checkpoint found for thread %q", cfg.ThreadID)
 	}
 	return snapshotFromTuple(tup), nil
@@ -104,6 +107,9 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 		return checkpoint.Config{}, fmt.Errorf("graph: UpdateState: %w", err)
 	}
 	if tup == nil {
+		if cfg.CheckpointID != "" {
+			return checkpoint.Config{}, fmt.Errorf("graph: no checkpoint %q found for thread %q", cfg.CheckpointID, cfg.ThreadID)
+		}
 		return checkpoint.Config{}, fmt.Errorf("graph: no checkpoint found for thread %q", cfg.ThreadID)
 	}
 
@@ -117,8 +123,14 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	if err != nil {
 		return checkpoint.Config{}, err
 	}
-	return g.saveCheckpoint(ctx, Options{ThreadID: cfg.ThreadID}, rs, tup.Config,
-		checkpoint.Metadata{Source: "update", Step: tup.Metadata.Step}, plannedTasks(dests))
+	// Save into the SAME namespace the tuple was read from (a subgraph-
+	// namespace update must not leak into the root namespace), and carry
+	// Metadata.Parents forward so the update checkpoint keeps the cross-graph
+	// position links of the checkpoint it builds on.
+	md := checkpoint.Metadata{Source: "update", Step: tup.Metadata.Step, Parents: tup.Metadata.Parents}
+	return g.saveCheckpoint(ctx,
+		Options{ThreadID: cfg.ThreadID, checkpointNS: cfg.CheckpointNS}, rs, tup.Config,
+		md, plannedTasks(dests))
 }
 
 // snapshotFromTuple projects a checkpoint tuple into its StateSnapshot view:

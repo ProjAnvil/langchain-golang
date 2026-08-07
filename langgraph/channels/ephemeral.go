@@ -17,7 +17,10 @@ type ephemeral struct {
 // Known divergence from Python: Python also clears ephemeral channels via
 // `finish()` when the graph run ends (`pregel/_algo.py`); this Go `Channel`
 // interface has no Finish hook, so a value written in the FINAL superstep
-// lingers in the run's last checkpoint instead of being cleared.
+// lingers in the run's last checkpoint instead of being cleared. A related
+// divergence: a new-turn input batch clears ephemeral (and other
+// non-accumulating topic) channels one superstep earlier than Python,
+// because the boundary update is not gated on bump_step.
 func NewEphemeral(guard bool) Channel {
 	return &ephemeral{guard: guard}
 }
