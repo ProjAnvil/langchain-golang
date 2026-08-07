@@ -352,3 +352,119 @@ func TestTopLevelParentCommandDescriptiveError(t *testing.T) {
 		t.Fatalf("ParentCommandError.Command = %v, want the original command %v", pce.Command, cmd)
 	}
 }
+
+// TestSubgraphParentsPinTimeTravel verifies the Metadata.Parents wiring
+// between a checkpointing parent and its subgraph: child checkpoints name the
+// parent's position when the child ran (Parents[""]), parent checkpoints saved
+// after the subgraph ran name the child's position (Parents["sub"]), and
+// time-traveling the parent to such a checkpoint (Options.CheckpointID with
+// fresh input) re-enters the child pinned to that recorded child checkpoint
+// instead of the namespace's latest.
+func TestSubgraphParentsPinTimeTravel(t *testing.T) {
+	ctx := context.Background()
+
+	child := compileChild(t, "child_step", func(_ context.Context, state map[string]any) (any, error) {
+		n, _ := state["child_n"].(int)
+		return map[string]any{"child_n": n + 1}, nil
+	})
+
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("pre", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddSubgraph("sub", child)
+	g.AddNode("post", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddEdge(types.START, "pre")
+	g.AddEdge("pre", "sub")
+	g.AddEdge("sub", "post")
+	g.AddEdge("post", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	list := func(ns string) []checkpoint.Tuple {
+		t.Helper()
+		tups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: ns}, checkpoint.ListOptions{})
+		if err != nil {
+			t.Fatalf("List(ns=%q) error = %v", ns, err)
+		}
+		return tups
+	}
+
+	// Turn 1: a full run. Parent checkpoints (newest first): after post,
+	// after sub, after pre, input; child checkpoints: loop, input.
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"value": 1}, Options{ThreadID: "t1"}); err != nil {
+		t.Fatalf("turn 1 Invoke() error = %v", err)
+	}
+	parentT1 := list("")
+	childT1 := list("sub")
+	if len(parentT1) != 4 {
+		t.Fatalf("parent checkpoints after turn 1 = %d, want 4", len(parentT1))
+	}
+	if len(childT1) != 2 {
+		t.Fatalf("child checkpoints after turn 1 = %d, want 2", len(childT1))
+	}
+
+	// Child checkpoints name the parent's position when the child ran: the
+	// checkpoint saved after "pre" (parent step 0), the position the parent
+	// held while the subgraph node executed.
+	afterPreID := parentT1[2].Config.CheckpointID
+	for _, tup := range childT1 {
+		if got := tup.Metadata.Parents[""]; got != afterPreID {
+			t.Fatalf("child checkpoint %q Parents[\"\"] = %q, want parent's pre-sub checkpoint %q",
+				tup.Config.CheckpointID, got, afterPreID)
+		}
+	}
+	// Parent checkpoints saved after the subgraph ran name the child's
+	// position; the earlier ones have no Parents.
+	childPosT1 := childT1[0].Config.CheckpointID
+	for i, want := range []string{childPosT1, childPosT1, "", ""} {
+		got := parentT1[i].Metadata.Parents["sub"]
+		if got != want {
+			t.Fatalf("parent checkpoint %q (step %d) Parents[\"sub\"] = %q, want %q",
+				parentT1[i].Config.CheckpointID, parentT1[i].Metadata.Step, got, want)
+		}
+	}
+
+	// Turn 2: a new turn forks the child off its turn-1 position, advancing
+	// child_n to 2; the child namespace's latest is now past the position
+	// recorded at the end of turn 1.
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{"value": 2}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("turn 2 Invoke() error = %v", err)
+	}
+	if res.Values["child_n"] != 2 {
+		t.Fatalf("turn 2 child_n = %v, want 2", res.Values["child_n"])
+	}
+	childT2 := list("sub")
+	if len(childT2) != 4 {
+		t.Fatalf("child checkpoints after turn 2 = %d, want 4", len(childT2))
+	}
+	latestChild := childT2[0].Config.CheckpointID
+	if latestChild == childPosT1 {
+		t.Fatal("child latest checkpoint did not advance in turn 2")
+	}
+
+	// Time travel: pin the parent to its end-of-turn-1 checkpoint (whose
+	// Metadata.Parents names the child's turn-1 position) with fresh input,
+	// re-entering the subgraph. The child must resume from the recorded
+	// checkpoint, NOT its namespace's latest: child_n replays 1 -> 2 and the
+	// new child checkpoints fork off the recorded position.
+	endOfTurn1 := parentT1[0].Config.CheckpointID
+	res, err = cg.InvokeWithOptions(ctx, map[string]any{"value": 3}, Options{ThreadID: "t1", CheckpointID: endOfTurn1})
+	if err != nil {
+		t.Fatalf("time-travel Invoke() error = %v", err)
+	}
+	if res.Values["child_n"] != 2 {
+		t.Fatalf("time-travel child_n = %v, want 2 (re-entered child resumed from the recorded checkpoint, not latest)", res.Values["child_n"])
+	}
+	childTT := list("sub")
+	if len(childTT) != 6 {
+		t.Fatalf("child checkpoints after time travel = %d, want 6", len(childTT))
+	}
+	forkBase := childTT[1].ParentConfig // the forked turn's input checkpoint
+	if forkBase == nil || forkBase.CheckpointID != childPosT1 {
+		t.Fatalf("re-entered child forked off %v, want recorded checkpoint %q (not latest %q)",
+			forkBase, childPosT1, latestChild)
+	}
+}

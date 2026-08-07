@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"sync"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/types"
@@ -43,9 +45,52 @@ type subgraphCheckpoint struct {
 	saver    checkpoint.Saver
 	threadID string
 	ns       string
+	// parents is the Metadata.Parents of the checkpoint the run started
+	// from (nil for a fresh run): on re-entry, a subgraph node whose
+	// namespace it names pins the child's GetTuple to that recorded
+	// checkpoint ID instead of the namespace's latest (Python pins via
+	// CONFIG_KEY_CHECKPOINT_MAP in PregelLoop init).
+	parents map[string]string
+	// current tracks the run's own checkpoint position, shared with child
+	// runs so their checkpoints record Parents[ns] = the parent's position
+	// at the time the child ran. It is advanced only between supersteps —
+	// never while node tasks execute — and read by subgraph nodes during a
+	// superstep.
+	current *checkpoint.Config
+	// children accumulates the latest checkpoint of each child namespace
+	// used during the run, so the run's own checkpoints name each child's
+	// position in Metadata.Parents.
+	children *childCheckpoints
 }
 
 type subgraphCheckpointKey struct{}
+
+// childCheckpoints records, per child checkpoint namespace, the latest
+// checkpoint ID produced by subgraph runs of the current run, so the run's
+// checkpoints can name each child's position in Metadata.Parents. Safe for
+// concurrent use by sibling subgraph nodes in the same superstep.
+type childCheckpoints struct {
+	mu     sync.Mutex
+	latest map[string]string
+}
+
+func (c *childCheckpoints) set(ns, id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.latest == nil {
+		c.latest = map[string]string{}
+	}
+	c.latest[ns] = id
+}
+
+func (c *childCheckpoints) snapshot() map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.latest) == 0 {
+		return nil
+	}
+	return maps.Clone(c.latest)
+}
 
 // joinCheckpointNS composes a subgraph's checkpoint namespace from the parent
 // graph's namespace and the subgraph's node name.
@@ -86,6 +131,14 @@ func joinCheckpointNS(parentNS, name string) string {
 // child simply runs uncheckpointed (its own checkpointer, if any, is not
 // consulted because no ThreadID is available).
 //
+// Parent and child checkpoints cross-record their positions in
+// Metadata.Parents: child checkpoints name the parent's checkpoint position
+// when the child ran, and parent checkpoints saved after the child ran name
+// the child's position. When the parent run was pinned to or resumed from a
+// checkpoint whose Metadata.Parents names the child's namespace (parent
+// time-travel via Options.CheckpointID), the re-entered child resumes from
+// that recorded checkpoint instead of the namespace's latest.
+//
 // A child that interrupts (in-node Interrupt or interrupt boundaries) is out
 // of scope: the wrapper surfaces a descriptive error rather than silently
 // treating the paused child as complete.
@@ -106,14 +159,26 @@ func (g *StateGraph) AddSubgraph(name string, child *CompiledGraph) *StateGraph 
 func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, state map[string]any) (any, error) {
 	runner := child
 	var opts Options
-	if sc, ok := ctx.Value(subgraphCheckpointKey{}).(subgraphCheckpoint); ok {
+	var sc subgraphCheckpoint
+	checkpointing := false
+	if v, ok := ctx.Value(subgraphCheckpointKey{}).(subgraphCheckpoint); ok {
+		sc = v
+		checkpointing = true
 		// Checkpoint the child into the parent run's thread, namespaced under
 		// <parentNS>/<name>. The copy only swaps the checkpointer; the maps
 		// shared with child are read-only during a run.
 		cp := *child
 		cp.checkpointer = sc.saver
 		runner = &cp
-		opts = Options{ThreadID: sc.threadID, checkpointNS: joinCheckpointNS(sc.ns, name)}
+		childNS := joinCheckpointNS(sc.ns, name)
+		opts = Options{ThreadID: sc.threadID, checkpointNS: childNS}
+		// Time-travel pin: when the parent run started from a checkpoint whose
+		// Metadata.Parents names this child's namespace (a pinned or resumed
+		// parent), the child resumes from that recorded position instead of
+		// the namespace's latest checkpoint.
+		if pinned := sc.parents[childNS]; pinned != "" {
+			opts.CheckpointID = pinned
+		}
 	}
 
 	res, err := runner.run(ctx, state, opts, nil)
@@ -128,6 +193,17 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 	}
 	if len(res.Interrupts) > 0 {
 		return nil, fmt.Errorf("graph: subgraph %q interrupted (%v); resuming interrupted subgraphs is not supported", name, res.Interrupts)
+	}
+	if checkpointing && sc.children != nil {
+		// Record the child's final position so the parent's subsequent
+		// checkpoints name this namespace in Metadata.Parents.
+		tup, terr := sc.saver.GetTuple(ctx, checkpoint.Config{ThreadID: sc.threadID, CheckpointNS: opts.checkpointNS})
+		if terr != nil {
+			return nil, fmt.Errorf("graph: subgraph %q: loading child checkpoint: %w", name, terr)
+		}
+		if tup != nil {
+			sc.children.set(opts.checkpointNS, tup.Config.CheckpointID)
+		}
 	}
 	return res.Values, nil
 }

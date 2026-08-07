@@ -337,7 +337,10 @@ type Options struct {
 	// input resumes from it; fresh input starts a new turn on top of its
 	// state, per D2). New checkpoints fork off the pinned one — their
 	// ParentConfig points at it (D3). Requires ThreadID and a checkpointer,
-	// and the pinned checkpoint must exist.
+	// and the pinned checkpoint must exist. When the pinned checkpoint's
+	// Metadata.Parents names a subgraph's namespace, a re-entered subgraph
+	// resumes from that recorded child checkpoint instead of its namespace's
+	// latest (see StateGraph.AddSubgraph).
 	CheckpointID string
 	// Resume supplies the value(s) to resume a previously interrupted run
 	// with, mirroring Python's `Command(resume=...)`. When set, input is
@@ -460,15 +463,14 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	}
 
 	checkpointing := g.checkpointer != nil && opts.ThreadID != ""
-	if checkpointing {
-		// Publish this run's checkpoint identity so subgraph nodes (see
-		// StateGraph.AddSubgraph) checkpoint into the same thread under
-		// <parentNS>/<name>; nested runs shadow it with their own namespace.
-		runCtx = context.WithValue(runCtx, subgraphCheckpointKey{}, subgraphCheckpoint{
-			saver:    g.checkpointer,
-			threadID: opts.ThreadID,
-			ns:       opts.checkpointNS,
-		})
+	// parentSC links a subgraph run back to the checkpointing parent that
+	// dispatched it (published via the context by the parent's run): this
+	// run's checkpoints record Metadata.Parents[parentSC.ns] = the parent's
+	// checkpoint position at the time the child ran.
+	var parentSC subgraphCheckpoint
+	isSubgraph := checkpointing && opts.checkpointNS != ""
+	if isSubgraph {
+		parentSC, _ = ctx.Value(subgraphCheckpointKey{}).(subgraphCheckpoint)
 	}
 
 	rs := newRunState(g.channelProtos)
@@ -504,10 +506,58 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// currentCfg tracks the executor's current checkpoint position (D3): every
 	// save passes its CheckpointID to Put so the new checkpoint's ParentConfig
 	// points at its actual predecessor. Resumed/restored runs start from the
-	// loaded checkpoint's position.
-	var currentCfg checkpoint.Config
+	// loaded checkpoint's position. It is shared with child runs via the
+	// published subgraphCheckpoint — read by subgraph nodes during a
+	// superstep, advanced only between supersteps — so child checkpoints can
+	// record the parent's position in Metadata.Parents.
+	currentCfg := &checkpoint.Config{}
 	if tup != nil {
-		currentCfg = tup.Config
+		*currentCfg = tup.Config
+	}
+
+	// children accumulates the latest checkpoint of each child namespace used
+	// during the run (recorded by the AddSubgraph wrapper), so this run's
+	// checkpoints name each child's position in Metadata.Parents — the link a
+	// later time-travel re-entry pins the child to.
+	children := &childCheckpoints{}
+	if checkpointing {
+		// Publish this run's checkpoint identity so subgraph nodes (see
+		// StateGraph.AddSubgraph) checkpoint into the same thread under
+		// <parentNS>/<name>; nested runs shadow it with their own namespace.
+		// parents carries the loaded checkpoint's Metadata.Parents so a
+		// re-entered subgraph resumes from the position recorded at the
+		// pinned/resumed parent checkpoint instead of its namespace's latest.
+		var parents map[string]string
+		if tup != nil {
+			parents = tup.Metadata.Parents
+		}
+		runCtx = context.WithValue(runCtx, subgraphCheckpointKey{}, subgraphCheckpoint{
+			saver:    g.checkpointer,
+			threadID: opts.ThreadID,
+			ns:       opts.checkpointNS,
+			parents:  parents,
+			current:  currentCfg,
+			children: children,
+		})
+	}
+
+	// save persists a checkpoint (see saveCheckpoint) and advances currentCfg
+	// to it, stamping Metadata.Parents with the child namespaces used so far
+	// and — for a subgraph run — the parent's current position.
+	save := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
+		md.Parents = children.snapshot()
+		if isSubgraph && parentSC.current != nil && parentSC.current.CheckpointID != "" {
+			if md.Parents == nil {
+				md.Parents = map[string]string{}
+			}
+			md.Parents[parentSC.ns] = parentSC.current.CheckpointID
+		}
+		cfg, err := g.saveCheckpoint(ctx, opts, rs, *currentCfg, md, next)
+		if err != nil {
+			return err
+		}
+		*currentCfg = cfg
+		return nil
 	}
 
 	// Run mode selection. An explicit Options.Resume always resumes (the
@@ -547,11 +597,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}}); err != nil {
 			return Result{}, err
 		}
-		cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg, checkpoint.Metadata{Source: "input", Step: -1}, nil)
-		if err != nil {
+		if err := save(checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
 			return Result{}, err
 		}
-		currentCfg = cfg
 		tasks = []task{{node: g.entry}}
 	default:
 		// Fresh start: the input is the first write batch.
@@ -559,11 +607,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			return Result{}, err
 		}
 		if checkpointing {
-			cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg, checkpoint.Metadata{Source: "input", Step: -1}, nil)
-			if err != nil {
+			if err := save(checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
 				return Result{}, err
 			}
-			currentCfg = cfg
 		}
 		tasks = []task{{node: g.entry}}
 	}
@@ -594,14 +640,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				ID:    interruptBeforeID + pausedBefore,
 			}
 			if checkpointing {
-				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
-					checkpoint.Metadata{Source: "loop", Step: rs.step},
-					plannedTasks(active))
-				if err != nil {
+				if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step},
+					plannedTasks(active)); err != nil {
 					return Result{}, err
 				}
-				currentCfg = cfg
-				if err := persistInterrupts(ctx, g.checkpointer, cfg, pausedBefore, []types.Interrupt{interrupt}); err != nil {
+				if err := persistInterrupts(ctx, g.checkpointer, *currentCfg, pausedBefore, []types.Interrupt{interrupt}); err != nil {
 					return Result{}, err
 				}
 			}
@@ -674,16 +717,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// pending writes are keyed by the task's planned ID (D5).
 			if checkpointing {
 				next := plannedTasks(active)
-				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
-					checkpoint.Metadata{Source: "loop", Step: rs.step}, next)
-				if err != nil {
+				if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step}, next); err != nil {
 					return Result{}, err
 				}
-				currentCfg = cfg
 				for i, o := range outcomes {
 					taskID := next[i].ID
 					if o.interrupted != nil {
-						if err := persistInterrupts(ctx, g.checkpointer, cfg, taskID, []types.Interrupt{*o.interrupted}); err != nil {
+						if err := persistInterrupts(ctx, g.checkpointer, *currentCfg, taskID, []types.Interrupt{*o.interrupted}); err != nil {
 							return Result{}, err
 						}
 						continue
@@ -693,7 +733,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						return Result{}, err
 					}
 					if len(writes) > 0 {
-						if err := g.checkpointer.PutWrites(ctx, cfg, writes, taskID); err != nil {
+						if err := g.checkpointer.PutWrites(ctx, *currentCfg, writes, taskID); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
 						}
 					}
@@ -744,13 +784,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				ID:    interruptAfterID + pausedAfter,
 			}
 			if checkpointing {
-				cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
-					checkpoint.Metadata{Source: "loop", Step: rs.step}, planned)
-				if err != nil {
+				if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step}, planned); err != nil {
 					return Result{}, err
 				}
-				currentCfg = cfg
-				if err := persistInterrupts(ctx, g.checkpointer, cfg, pausedAfter, []types.Interrupt{interrupt}); err != nil {
+				if err := persistInterrupts(ctx, g.checkpointer, *currentCfg, pausedAfter, []types.Interrupt{interrupt}); err != nil {
 					return Result{}, err
 				}
 			}
@@ -758,12 +795,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 
 		if checkpointing {
-			cfg, err := g.saveCheckpoint(ctx, opts, rs, currentCfg,
-				checkpoint.Metadata{Source: "loop", Step: rs.step}, plannedTasks(nextTasks))
-			if err != nil {
+			if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step}, plannedTasks(nextTasks)); err != nil {
 				return Result{}, err
 			}
-			currentCfg = cfg
 		}
 		tasks = nextTasks
 	}
