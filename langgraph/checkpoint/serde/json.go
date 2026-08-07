@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -164,9 +165,11 @@ func encodeRegistered(v any) (name string, payload any, ok bool, err error) {
 	case []byte:
 		return nameBytes, base64.StdEncoding.EncodeToString(t), true, nil
 	case int64:
-		return nameInt64, t, true, nil
+		// Decimal-string payloads keep the full 64-bit range exact; a JSON
+		// number would decode as float64 and lose precision above 2^53.
+		return nameInt64, strconv.FormatInt(t, 10), true, nil
 	case int:
-		return nameInt, t, true, nil
+		return nameInt, strconv.FormatInt(int64(t), 10), true, nil
 	case []string:
 		return nameStrings, t, true, nil
 	}
@@ -209,12 +212,18 @@ func decodeValue(v any) (any, error) {
 func decodeEnvelope(name string, payload any) (any, error) {
 	switch name {
 	case nameMessage:
+		if payload == nil {
+			return nil, fmt.Errorf("serde: decode %s: missing data payload", name)
+		}
 		var m messages.Message
 		if err := remarshal(payload, &m); err != nil {
 			return nil, fmt.Errorf("serde: decode %s: %w", name, err)
 		}
 		return m, nil
 	case nameMessages:
+		if payload == nil {
+			return nil, fmt.Errorf("serde: decode %s: missing data payload", name)
+		}
 		var ms []messages.Message
 		if err := remarshal(payload, &ms); err != nil {
 			return nil, fmt.Errorf("serde: decode %s: %w", name, err)
@@ -277,17 +286,17 @@ func decodeEnvelope(name string, payload any) (any, error) {
 		}
 		return b, nil
 	case nameInt64:
-		f, err := expectNumber(name, payload)
+		n, err := expectInt(name, payload, 64)
 		if err != nil {
 			return nil, err
 		}
-		return int64(f), nil
+		return n, nil
 	case nameInt:
-		f, err := expectNumber(name, payload)
+		n, err := expectInt(name, payload, 0)
 		if err != nil {
 			return nil, err
 		}
-		return int(f), nil
+		return int(n), nil
 	case nameStrings:
 		items, ok := payload.([]any)
 		if !ok {
@@ -315,13 +324,21 @@ func expectMap(name string, payload any) (map[string]any, error) {
 	return m, nil
 }
 
-// expectNumber asserts that a decoded envelope payload is a JSON number.
-func expectNumber(name string, payload any) (float64, error) {
-	f, ok := payload.(float64)
+// expectInt asserts that a decoded envelope payload is a decimal integer
+// string and parses it with the given bit size (0 means int width). int and
+// int64 payloads are encoded as decimal strings so the full 64-bit range
+// round-trips exactly; a JSON number would decode as float64 and lose
+// precision above 2^53.
+func expectInt(name string, payload any, bitSize int) (int64, error) {
+	s, ok := payload.(string)
 	if !ok {
-		return 0, fmt.Errorf("serde: decode %s: payload is %T, want a number", name, payload)
+		return 0, fmt.Errorf("serde: decode %s: payload is %T, want a decimal string", name, payload)
 	}
-	return f, nil
+	n, err := strconv.ParseInt(s, 10, bitSize)
+	if err != nil {
+		return 0, fmt.Errorf("serde: decode %s: %w", name, err)
+	}
+	return n, nil
 }
 
 // remarshal converts a JSON-decoded value back into a typed struct by

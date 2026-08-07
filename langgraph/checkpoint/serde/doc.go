@@ -21,6 +21,17 @@
 // msgpack serde): encoding an unregistered concrete type is an error, as is
 // decoding an envelope with an unknown "__type__" name. Checkpointed channel
 // values must therefore be JSON-native or registry members; custom structs
-// belong in the registry (extend it) or the saver rejects them. The
-// "__type__" key is reserved inside encoded maps.
+// belong in the registry (extend it) or the saver rejects them.
+//
+// The "__type__" key is reserved inside encoded maps. A user map containing
+// a string "__type__" key is treated as an envelope on decode: with a known
+// registry name it silently decodes as that registered type (losing the
+// original map), and with an unknown name decode fails. Do not use
+// "__type__" as an ordinary map key.
+//
+// Nil values follow JSON's inherent asymmetry: []byte(nil) and
+// map[string]any(nil) encode as empty values and decode to their empty
+// (non-nil) forms, while []string(nil) and []messages.Message(nil) encode a
+// null envelope payload and fail to decode. Prefer empty non-nil values at
+// checkpoint boundaries.
 package serde

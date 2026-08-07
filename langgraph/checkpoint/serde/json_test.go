@@ -2,6 +2,7 @@ package serde
 
 import (
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -180,5 +181,79 @@ func TestJSONSerializerDecodeUnknownEnvelope(t *testing.T) {
 	}
 	if _, err := s.LoadsTyped("bogus-tag", []byte(`"x"`)); err == nil {
 		t.Fatal("LoadsTyped with unknown tag succeeded, want error")
+	}
+}
+
+func TestJSONSerializerInt64Precision(t *testing.T) {
+	s := NewJSONSerializer()
+
+	// Values above 2^53 must round-trip exactly, not via float64.
+	big64 := int64(1<<60 + 12345)
+	if _, got := roundTrip(t, s, big64); got != big64 {
+		t.Fatalf("int64 round trip = %v, want %v", got, big64)
+	}
+	bigNeg := int(-(1 << 60))
+	if _, got := roundTrip(t, s, bigNeg); got != bigNeg {
+		t.Fatalf("int round trip = %v, want %v", got, bigNeg)
+	}
+	if _, got := roundTrip(t, s, int64(-9223372036854775808)); got != int64(-9223372036854775808) {
+		t.Fatalf("int64 min round trip = %v, want %v", got, int64(-9223372036854775808))
+	}
+}
+
+func TestJSONSerializerMalformedEnvelopes(t *testing.T) {
+	s := NewJSONSerializer()
+
+	names := []string{
+		"messages.Message",
+		"[]messages.Message",
+		"types.Send",
+		"types.Interrupt",
+		"time.Time",
+		"[]byte",
+		"int64",
+		"int",
+		"[]string",
+	}
+
+	// Missing or null data is an error for every registry type.
+	for _, name := range names {
+		for _, doc := range []string{
+			`{"__type__":` + strconv.Quote(name) + `}`,
+			`{"__type__":` + strconv.Quote(name) + `,"data":null}`,
+		} {
+			if _, err := s.LoadsTyped("json+envelope", []byte(doc)); err == nil {
+				t.Fatalf("LoadsTyped(%s) succeeded, want error", doc)
+			}
+		}
+	}
+
+	// Wrongly shaped payloads are an error for every registry type.
+	wrongShape := map[string]string{
+		"messages.Message":   `{"__type__":"messages.Message","data":[]}`,
+		"[]messages.Message": `{"__type__":"[]messages.Message","data":{}}`,
+		"types.Send":         `{"__type__":"types.Send","data":"x"}`,
+		"types.Interrupt":    `{"__type__":"types.Interrupt","data":"x"}`,
+		"time.Time":          `{"__type__":"time.Time","data":123}`,
+		"[]byte":             `{"__type__":"[]byte","data":123}`,
+		"int64":              `{"__type__":"int64","data":1.5}`,
+		"int":                `{"__type__":"int","data":"abc"}`,
+		"[]string":           `{"__type__":"[]string","data":[1]}`,
+	}
+	for name, doc := range wrongShape {
+		if _, err := s.LoadsTyped("json+envelope", []byte(doc)); err == nil {
+			t.Fatalf("LoadsTyped(%s) succeeded, want error for %s", doc, name)
+		}
+	}
+
+	// Unknown __type__ names are an error, nested or top-level.
+	for _, doc := range []string{
+		`{"__type__":"no.Such","data":1}`,
+		`{"__type__":123,"data":1}`,
+		`[1,2]`,
+	} {
+		if _, err := s.LoadsTyped("json+envelope", []byte(doc)); err == nil {
+			t.Fatalf("LoadsTyped(%s) succeeded, want error", doc)
+		}
 	}
 }
