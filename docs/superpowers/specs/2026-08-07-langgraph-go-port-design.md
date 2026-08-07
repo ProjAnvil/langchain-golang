@@ -65,9 +65,10 @@ langgraph/
 
 ### M3 流式与持久化
 
-- Stream modes：`values` / `updates` / `debug` / `messages`（对齐 Python `stream_mode`）。
-- Checkpoint serde：`Serializer` 接口 + JSON 实现（对齐 `JsonPlusSerializer` 的可移植子集；不与 Python checkpoint 二进制兼容，明确记录）。
-- SQLite checkpoint 后端（对齐 `langgraph-checkpoint-sqlite`）。
+- Stream modes：`values` / `updates` / `debug` / `messages` / `custom`（对齐 Python `stream_mode`；多模式复用、子图 namespace 前缀）。**设计决策（2026-08-08）**：Go API 形态为 `Stream(ctx, input, StreamOptions) iter.Seq2[StreamChunk, error]`（Go 1.23 range-over-func，惯用且背压友好），区别于 Python 的生成器+元组；`InvokeStream`/`NodeEventSink` 保留不动（agents 依赖），未来可再统一。`messages` 模式通过 `core/callbacks` Handler 桥接 `core/language` 的 `EventChatModelStream` 事件 + 执行器按节点注入元数据（节点名/ns/step）实现，节点需自行接线 callbacks（文档化）。
+- Checkpoint serde：`Serializer` 接口 + JSON 实现（对齐 `JsonPlusSerializer` 的可移植子集；Go 用 JSON + 封闭类型注册表信封代替 Python 的 msgpack+import-by-name，不与 Python checkpoint 二进制兼容，明确记录）。
+- SQLite checkpoint 后端（对齐 `langgraph-checkpoint-sqlite` 的 schema：checkpoints/writes 两表、type+value 双列）。**设计决策（2026-08-08）**：Go stdlib 无 SQLite 驱动；为保持根 module 零第三方依赖，SQLite saver 放在**独立嵌套 module** `langgraph/checkpoint/sqlite/`（自己的 go.mod，`require` 根 module + 纯 Go 驱动 `modernc.org/sqlite`），镜像 Python 的 `langgraph-checkpoint-sqlite` 分包。这是整个移植引入的第一个第三方依赖。
+- M2 遗留技术债清理：`Metadata.Step` 与 Python 对齐（update checkpoint step+1、new-turn input 延续计数）；补齐 M2 终审遗留测试（goto-only sibling replay、CheckpointID+非空 input、interrupt→update_state→resume、子图双重进入、子图内 interrupt 报错路径）。
 
 ### M4（可选远景）
 
