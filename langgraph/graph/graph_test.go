@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync/atomic"
 	"testing"
@@ -221,9 +222,14 @@ func TestInterruptAndResume(t *testing.T) {
 		t.Fatalf("name = %v, want Ada", second.Values["name"])
 	}
 
-	// Checkpoint should be cleared after a completed run.
-	if tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"}); err != nil || tup != nil {
-		t.Fatal("expected checkpoint to be cleared after run completes")
+	// D1: checkpoints survive completion — the final checkpoint is retained
+	// with no scheduled tasks (empty Next).
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected final checkpoint to be retained, got tup=%+v err=%v", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 0 {
+		t.Fatalf("expected empty Next in final checkpoint, got %+v", tup.Checkpoint.Next)
 	}
 }
 
@@ -388,9 +394,14 @@ func TestCompiledGraph_InterruptBefore(t *testing.T) {
 	if len(res2.Interrupts) != 0 {
 		t.Fatalf("expected no interrupts after resume, got %+v", res2.Interrupts)
 	}
-	// Checkpoint should be cleared after a completed run.
-	if tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"}); err != nil || tup != nil {
-		t.Fatal("expected checkpoint to be cleared after run completes")
+	// D1: checkpoints survive completion — the final checkpoint is retained
+	// with no scheduled tasks (empty Next).
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected final checkpoint to be retained, got tup=%+v err=%v", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 0 {
+		t.Fatalf("expected empty Next in final checkpoint, got %+v", tup.Checkpoint.Next)
 	}
 }
 
@@ -508,5 +519,369 @@ func TestCompiledGraph_InterruptBeforeAndAfter(t *testing.T) {
 	}
 	if len(res3.Interrupts) != 0 {
 		t.Fatalf("expected no interrupts after final resume, got %+v", res3.Interrupts)
+	}
+}
+
+// TestVersionedCheckpointBookkeeping verifies the versioned executor's
+// checkpoint history for a 3-superstep linear graph: one "input" checkpoint
+// (step -1) plus one "loop" checkpoint per superstep, each carrying the
+// channel versions written so far, the per-node versions-seen bookkeeping,
+// and the planned tasks for the next superstep.
+func TestVersionedCheckpointBookkeeping(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("n1", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"k1": "v1"}, nil
+	})
+	g.AddNode("n2", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"k2": "v2"}, nil
+	})
+	g.AddNode("n3", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"k3": "v3"}, nil
+	})
+	g.AddEdge(types.START, "n1")
+	g.AddEdge("n1", "n2")
+	g.AddEdge("n2", "n3")
+	g.AddEdge("n3", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+
+	tuples, err := saver.List(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(tuples) != 4 {
+		t.Fatalf("expected 4 checkpoints (input + 3 supersteps), got %d", len(tuples))
+	}
+	// List is newest-first: steps 2, 1, 0, -1.
+	wantSteps := []int{2, 1, 0, -1}
+	wantSources := []string{"loop", "loop", "loop", "input"}
+	for i, tup := range tuples {
+		if tup.Metadata.Step != wantSteps[i] || tup.Metadata.Source != wantSources[i] {
+			t.Fatalf("checkpoint %d: metadata = %+v, want step %d source %q", i, tup.Metadata, wantSteps[i], wantSources[i])
+		}
+	}
+	final := tuples[0]
+	if len(final.Checkpoint.Next) != 0 {
+		t.Fatalf("final checkpoint Next = %+v, want empty", final.Checkpoint.Next)
+	}
+	for _, k := range []string{"k0", "k1", "k2", "k3"} {
+		if _, ok := final.Checkpoint.ChannelValues[k]; !ok {
+			t.Fatalf("final checkpoint missing channel value %q: %+v", k, final.Checkpoint.ChannelValues)
+		}
+	}
+
+	// Version bookkeeping: the input batch bumps the global version to 1
+	// (k0@1); each superstep applies a single global bump, so the key written
+	// in superstep i sits at version i+1 and earlier keys keep their version.
+	wantVersions := []map[string]int64{
+		{"k0": 1, "k1": 2, "k2": 3, "k3": 4},
+		{"k0": 1, "k1": 2, "k2": 3},
+		{"k0": 1, "k1": 2},
+		{"k0": 1},
+	}
+	for i, tup := range tuples {
+		if !reflect.DeepEqual(tup.Checkpoint.ChannelVersions, wantVersions[i]) {
+			t.Fatalf("checkpoint %d (step %d): ChannelVersions = %+v, want %+v",
+				i, tup.Metadata.Step, tup.Checkpoint.ChannelVersions, wantVersions[i])
+		}
+	}
+
+	// The step-0 checkpoint plans n2 for the next superstep, with a populated
+	// deterministic task ID.
+	step0 := tuples[2]
+	if len(step0.Checkpoint.Next) != 1 || step0.Checkpoint.Next[0].Node != "n2" {
+		t.Fatalf("step-0 checkpoint Next = %+v, want a single n2 task", step0.Checkpoint.Next)
+	}
+	if step0.Checkpoint.Next[0].ID == "" {
+		t.Fatal("planned task ID must be populated")
+	}
+	// VersionsSeen records n1's pre-write view at the step-0 boundary.
+	if seen := step0.Checkpoint.VersionsSeen["n1"]; seen["k0"] != 1 {
+		t.Fatalf("VersionsSeen[n1] = %+v, want k0@1", seen)
+	}
+}
+
+// TestSingleGlobalVersionPerSuperstep verifies that all channels written in
+// the same superstep are bumped to one shared version, even when written by
+// different concurrent tasks.
+func TestSingleGlobalVersionPerSuperstep(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddReducer("ra", channels.AppendSliceReducer)
+	g.AddReducer("rb", channels.AppendSliceReducer)
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("writer", func(_ context.Context, state map[string]any) (any, error) {
+		key := state["key"].(string)
+		return map[string]any{key: []string{"x"}}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+		return []any{
+			&types.Send{Node: "writer", Arg: map[string]any{"key": "ra"}},
+			&types.Send{Node: "writer", Arg: map[string]any{"key": "rb"}},
+		}, nil
+	})
+	g.AddEdge("writer", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"}); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+
+	latest, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || latest == nil {
+		t.Fatalf("expected a final checkpoint, got tup=%+v err=%v", latest, err)
+	}
+	va, oka := latest.Checkpoint.ChannelVersions["ra"]
+	vb, okb := latest.Checkpoint.ChannelVersions["rb"]
+	if !oka || !okb {
+		t.Fatalf("expected versions for ra and rb, got %+v", latest.Checkpoint.ChannelVersions)
+	}
+	if va != vb {
+		t.Fatalf("channels written in one superstep must share a version: ra@%d rb@%d", va, vb)
+	}
+}
+
+// TestLastValueDoubleWriteInOneSuperstepErrors verifies that two tasks
+// writing the same unregistered (LastValue) key in one superstep surface an
+// *channels.InvalidUpdateError instead of silently picking a winner.
+func TestLastValueDoubleWriteInOneSuperstepErrors(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("worker", func(_ context.Context, state map[string]any) (any, error) {
+		return map[string]any{"out": state["subject"]}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+		return []any{
+			&types.Send{Node: "worker", Arg: map[string]any{"subject": "a"}},
+			&types.Send{Node: "worker", Arg: map[string]any{"subject": "b"}},
+		}, nil
+	})
+	g.AddEdge("worker", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	_, err = cg.Invoke(context.Background(), map[string]any{})
+	if err == nil {
+		t.Fatal("expected an error for two writes to one LastValue key in a single superstep")
+	}
+	var iu *channels.InvalidUpdateError
+	if !errors.As(err, &iu) {
+		t.Fatalf("expected *channels.InvalidUpdateError, got %v", err)
+	}
+}
+
+// TestReducerFoldOrderDeterministic verifies that concurrent fan-out writes
+// to a reducer key fold in deterministic active-task order across runs.
+func TestReducerFoldOrderDeterministic(t *testing.T) {
+	g := NewStateGraph()
+	g.AddReducer("jokes", channels.AppendSliceReducer)
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("generate_joke", func(_ context.Context, state map[string]any) (any, error) {
+		return map[string]any{"jokes": []string{"joke about " + state["subject"].(string)}}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+		dests := make([]any, 0, 4)
+		for _, s := range []string{"a", "b", "c", "d"} {
+			dests = append(dests, &types.Send{Node: "generate_joke", Arg: map[string]any{"subject": s}})
+		}
+		return dests, nil
+	})
+	g.AddEdge("generate_joke", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	want := []string{"joke about a", "joke about b", "joke about c", "joke about d"}
+	for run := 0; run < 5; run++ {
+		result, err := cg.Invoke(context.Background(), map[string]any{})
+		if err != nil {
+			t.Fatalf("run %d: Invoke() error = %v", run, err)
+		}
+		if got := result.Values["jokes"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d: jokes = %+v, want %+v", run, got, want)
+		}
+	}
+}
+
+// TestAddChannelExpiryBetweenSupersteps verifies that channels registered via
+// AddChannel with expiring semantics (Ephemeral, non-accumulating Topic) keep
+// their value for exactly the following superstep and are then cleared by the
+// step-boundary empty Update — disappearing from both the node-visible state
+// and the saved checkpoints.
+func TestAddChannelExpiryBetweenSupersteps(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddChannel("tmp", channels.NewEphemeral(false))
+	g.AddChannel("feed", channels.NewTopic(false))
+	g.AddNode("n1", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"tmp": "t", "feed": "f", "keep": 1}, nil
+	})
+	n2Saw := map[string]bool{}
+	g.AddNode("n2", func(_ context.Context, state map[string]any) (any, error) {
+		_, n2Saw["tmp"] = state["tmp"]
+		_, n2Saw["feed"] = state["feed"]
+		return nil, nil
+	})
+	n3Saw := map[string]bool{}
+	g.AddNode("n3", func(_ context.Context, state map[string]any) (any, error) {
+		_, n3Saw["tmp"] = state["tmp"]
+		_, n3Saw["feed"] = state["feed"]
+		_, n3Saw["keep"] = state["keep"]
+		return nil, nil
+	})
+	g.AddEdge(types.START, "n1")
+	g.AddEdge("n1", "n2")
+	g.AddEdge("n2", "n3")
+	g.AddEdge("n3", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	result, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	// The superstep right after the write still sees the values...
+	if !n2Saw["tmp"] || !n2Saw["feed"] {
+		t.Fatalf("n2 should see tmp and feed (written one superstep earlier), got %+v", n2Saw)
+	}
+	// ...and the one after that must not.
+	if n3Saw["tmp"] || n3Saw["feed"] {
+		t.Fatalf("n3 should NOT see expired tmp/feed, got %+v", n3Saw)
+	}
+	if !n3Saw["keep"] {
+		t.Fatalf("n3 should still see the plain LastValue key, got %+v", n3Saw)
+	}
+	if _, ok := result.Values["tmp"]; ok {
+		t.Fatalf("final state should not contain expired tmp, got %+v", result.Values)
+	}
+
+	// The step-0 checkpoint (after n1) carries the live ephemeral/topic
+	// values; the step-1 checkpoint omits them.
+	tuples, err := saver.List(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(tuples) != 4 {
+		t.Fatalf("expected 4 checkpoints, got %d", len(tuples))
+	}
+	if _, ok := tuples[2].Checkpoint.ChannelValues["tmp"]; !ok {
+		t.Fatalf("step-0 checkpoint should carry live tmp, got %+v", tuples[2].Checkpoint.ChannelValues)
+	}
+	if _, ok := tuples[1].Checkpoint.ChannelValues["tmp"]; ok {
+		t.Fatalf("step-1 checkpoint should omit expired tmp, got %+v", tuples[1].Checkpoint.ChannelValues)
+	}
+	if _, ok := tuples[1].Checkpoint.ChannelValues["feed"]; ok {
+		t.Fatalf("step-1 checkpoint should omit expired feed, got %+v", tuples[1].Checkpoint.ChannelValues)
+	}
+}
+
+// TestCheckpointRetainedAfterCompletion pins D1: a completed run no longer
+// deletes its thread's checkpoints; the final checkpoint is retained with an
+// empty Next.
+func TestCheckpointRetainedAfterCompletion(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"done": true}, nil
+	})
+	g.AddEdge(types.START, "a")
+	g.AddEdge("a", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"}); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected final checkpoint to be retained, got tup=%+v err=%v", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 0 {
+		t.Fatalf("expected empty Next in final checkpoint, got %+v", tup.Checkpoint.Next)
+	}
+	if tup.Metadata.Source != "loop" {
+		t.Fatalf("final checkpoint Source = %q, want %q", tup.Metadata.Source, "loop")
+	}
+	if tup.Checkpoint.ChannelValues["done"] != true {
+		t.Fatalf("final checkpoint values = %+v, want done=true", tup.Checkpoint.ChannelValues)
+	}
+}
+
+// TestNewTurnWithInputAfterCompletion pins D2: invoking with fresh (non-empty)
+// input on a thread that already has checkpoints starts a NEW turn — the input
+// is applied on top of the latest state and execution restarts from the entry
+// point — rather than silently resuming.
+func TestNewTurnWithInputAfterCompletion(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	aRuns := 0
+	g.AddNode("a", func(_ context.Context, state map[string]any) (any, error) {
+		aRuns++
+		return map[string]any{"y": state["x"].(int) + 1}, nil
+	})
+	g.AddEdge(types.START, "a")
+	g.AddEdge("a", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("turn 1 Invoke() error = %v", err)
+	}
+	if first.Values["y"] != 2 || aRuns != 1 {
+		t.Fatalf("turn 1: y = %v, aRuns = %d; want y=2, aRuns=1", first.Values["y"], aRuns)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 10}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("turn 2 Invoke() error = %v", err)
+	}
+	// A resume would not re-run a; a new turn must.
+	if aRuns != 2 {
+		t.Fatalf("expected entry node to re-run on new turn, aRuns = %d", aRuns)
+	}
+	if second.Values["x"] != 10 || second.Values["y"] != 11 {
+		t.Fatalf("turn 2 values = %+v, want x=10 y=11", second.Values)
+	}
+
+	// History keeps both turns: two "input" checkpoints, and the second
+	// turn's loop checkpoint continues the step counter (restored step 0 -> 1).
+	tuples, err := saver.List(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	inputCheckpoints := 0
+	for _, tup := range tuples {
+		if tup.Metadata.Source == "input" {
+			inputCheckpoints++
+		}
+	}
+	if inputCheckpoints != 2 {
+		t.Fatalf("expected 2 input checkpoints (one per turn), got %d", inputCheckpoints)
+	}
+	if latest := tuples[0]; latest.Metadata.Step != 1 || latest.Metadata.Source != "loop" {
+		t.Fatalf("latest checkpoint metadata = %+v, want step 1 source loop (step continues across turns)", latest.Metadata)
 	}
 }
