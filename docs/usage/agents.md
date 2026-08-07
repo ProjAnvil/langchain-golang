@@ -182,7 +182,7 @@ result, _ := agent.Graph.InvokeWithOptions(ctx,
 > custom saver, implement the versioned `Saver` interface —
 > `GetTuple` / `List` / `Put` / `PutWrites` / `DeleteThread`, keyed by
 > `checkpoint.Config` (thread ID + checkpoint namespace + checkpoint ID); see
-> `langchain/agents/create_agent_test.go` (`TestCreateAgent_InterruptThroughModelHook`)
+> `langchain/agents/create_agent_test.go` (`TestCreateAgent_InterruptBeforeNode`)
 > for the round-trip shape. (This replaced the M1 `Get` / `Put` / `Delete`
 > interface in a sanctioned pre-1.0 break.)
 

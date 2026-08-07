@@ -16,7 +16,7 @@ package agents
 // AfterModelHook/WrapModelCallHook/WrapToolCallHook), not just
 // BeforeAgentHook/AfterAgentHook, receives a context.Context a middleware can
 // pass to graphpkg.Interrupt to pause the run (see
-// create_agent_test.go's TestCreateAgent_InterruptThroughModelHook for a
+// create_agent_test.go's TestCreateAgent_InterruptBeforeNode for a
 // round-trip example using WithAgentCheckpointer + Agent.Graph.
 // InvokeWithOptions to resume). Structured output (`ToolStrategy`/
 // `ProviderStrategy`) IS wired via WithAgentResponseFormat — see its doc
