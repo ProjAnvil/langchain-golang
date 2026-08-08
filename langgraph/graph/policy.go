@@ -107,6 +107,14 @@ func (p RetryPolicy) backoff(attempt int) time.Duration {
 	return delay
 }
 
+// Resolved returns a copy of p with every unset field replaced by its
+// default (see withDefaults). Exported for the fn package's task retry loop.
+func (p RetryPolicy) Resolved() RetryPolicy { return p.withDefaults() }
+
+// BackoffDelay returns the delay before re-executing after the given
+// (1-based) failed attempt (see backoff). Exported for the fn package.
+func (p RetryPolicy) BackoffDelay(attempt int) time.Duration { return p.backoff(attempt) }
+
 // DefaultRetryOn is the default RetryPolicy.RetryOn. It retries:
 //
 //   - net.Error (and anything wrapping one): transient network failures.

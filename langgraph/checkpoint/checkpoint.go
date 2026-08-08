@@ -89,6 +89,9 @@ const (
 	ReservedTasks = "__tasks__"
 	// ReservedError persists a task error; Value is a string.
 	ReservedError = "__error__"
+	// ReservedReturn persists a functional-API task's return value (fn package),
+	// mirroring Python's `__return__` (`_internal/_constants.py:22`).
+	ReservedReturn = "__return__"
 )
 
 // Write is a single pending write recorded against a checkpoint by a task,
