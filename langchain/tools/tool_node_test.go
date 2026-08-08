@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 func echoTool(t *testing.T, name string, fn func(context.Context, map[string]any) (Result, error)) Tool {
@@ -195,6 +197,9 @@ func TestToolNodeInvokeParallelPreservesOrder(t *testing.T) {
 			}
 		}
 		defer atomic.AddInt32(&concurrent, -1)
+		// Hold the slot briefly so concurrently dispatched calls actually
+		// overlap; without this the assertion depends on scheduler luck.
+		time.Sleep(10 * time.Millisecond)
 		return Result{Content: fmt.Sprintf("%v", input["i"])}, nil
 	})
 	node, err := NewToolNode([]Tool{slow})
@@ -338,5 +343,89 @@ func TestToolNodeToolsByName(t *testing.T) {
 	delete(byName, "echo")
 	if _, ok := node.ToolsByName()["echo"]; !ok {
 		t.Fatal("expected ToolsByName() to return a defensive copy")
+	}
+}
+
+func TestInvokeToolCallsFullSurfacesCommandArtifact(t *testing.T) {
+	cmd := &types.Command{Update: map[string]any{"routed": true}, Goto: []any{"done"}}
+	navigator := echoTool(t, "navigate", func(context.Context, map[string]any) (Result, error) {
+		return Result{Content: "navigated", Artifact: cmd}, nil
+	})
+	plain := echoTool(t, "plain", func(context.Context, map[string]any) (Result, error) {
+		// A non-Command artifact is ignored, matching InvokeToolCalls.
+		return Result{Content: "plain", Artifact: 42}, nil
+	})
+	node, err := NewToolNode([]Tool{navigator, plain})
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	calls := []messages.ToolCall{
+		{ID: "1", Name: "navigate", Args: map[string]any{}},
+		{ID: "2", Name: "plain", Args: map[string]any{}},
+	}
+	outcomes, err := node.InvokeToolCallsFull(context.Background(), calls, nil)
+	if err != nil {
+		t.Fatalf("InvokeToolCallsFull() error = %v", err)
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("expected 2 outcomes, got %d", len(outcomes))
+	}
+	if outcomes[0].Message.Content != "navigated" || outcomes[0].Command != cmd {
+		t.Fatalf("outcomes[0] = %+v, want the navigated message with its command", outcomes[0])
+	}
+	if outcomes[1].Message.Content != "plain" || outcomes[1].Command != nil {
+		t.Fatalf("outcomes[1] = %+v, want the plain message with no command", outcomes[1])
+	}
+
+	// InvokeToolCalls discards commands but returns the same messages.
+	msgs, err := node.InvokeToolCalls(context.Background(), calls, nil)
+	if err != nil {
+		t.Fatalf("InvokeToolCalls() error = %v", err)
+	}
+	if len(msgs) != 2 || msgs[0].Content != "navigated" || msgs[1].Content != "plain" {
+		t.Fatalf("InvokeToolCalls() = %+v", msgs)
+	}
+}
+
+func TestInvokeToolCallsFullWithWrapper(t *testing.T) {
+	cmd := &types.Command{Goto: []any{"done"}}
+	navigator := echoTool(t, "navigate", func(context.Context, map[string]any) (Result, error) {
+		return Result{Content: "navigated", Artifact: cmd}, nil
+	})
+
+	// A wrapper that delegates to next still surfaces the tool's command.
+	node, err := NewToolNode([]Tool{navigator}, WithToolCallWrapper(
+		func(ctx context.Context, req ToolCallRequest, next ToolHandler) (messages.Message, error) {
+			return next(ctx, req)
+		},
+	))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+	calls := []messages.ToolCall{{ID: "1", Name: "navigate", Args: map[string]any{}}}
+	outcomes, err := node.InvokeToolCallsFull(context.Background(), calls, nil)
+	if err != nil {
+		t.Fatalf("InvokeToolCallsFull() error = %v", err)
+	}
+	if outcomes[0].Command != cmd {
+		t.Fatalf("outcomes[0].Command = %v, want the command captured through the wrapper", outcomes[0].Command)
+	}
+
+	// A wrapper that short-circuits without calling next yields no command.
+	node, err = NewToolNode([]Tool{navigator}, WithToolCallWrapper(
+		func(_ context.Context, req ToolCallRequest, _ ToolHandler) (messages.Message, error) {
+			return messages.Tool(req.ToolCall.ID, "short-circuited"), nil
+		},
+	))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+	outcomes, err = node.InvokeToolCallsFull(context.Background(), calls, nil)
+	if err != nil {
+		t.Fatalf("InvokeToolCallsFull() error = %v", err)
+	}
+	if outcomes[0].Message.Content != "short-circuited" || outcomes[0].Command != nil {
+		t.Fatalf("outcomes[0] = %+v, want the short-circuit message with no command", outcomes[0])
 	}
 }

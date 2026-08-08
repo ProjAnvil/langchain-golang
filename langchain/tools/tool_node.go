@@ -11,10 +11,13 @@
 // so this ToolNode instead operates directly on a `[]messages.Message` slice:
 // it finds the tool calls attached to the most recent AI message, executes
 // them (concurrently, matching Python's default parallel execution), and
-// returns the resulting tool messages. It does not support Command-based
-// control flow, Send-based dispatch, or reflection-based state/store
-// injection; tools that need read-only access to conversation state can
-// receive it explicitly via ToolCallRequest.State.
+// returns the resulting tool messages. It does not support Send-based
+// dispatch or reflection-based state/store injection; tools that need
+// read-only access to conversation state can receive it explicitly via
+// ToolCallRequest.State. Command-based control flow is surfaced (but not
+// acted on) via InvokeToolCallsFull: a tool places a *types.Command in its
+// Result.Artifact and the caller — e.g. langgraph/prebuilt.ToolNode — applies
+// it to graph state.
 package tools
 
 import (
@@ -26,6 +29,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/stores"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 // ToolCallRequest is passed to a ToolCallWrapper, mirroring Python's
@@ -73,6 +77,19 @@ type HandleToolErrors func(error) (string, bool)
 // HandleToolErrors via WithHandleToolErrors.
 func DefaultHandleToolErrors(err error) (string, bool) {
 	return fmt.Sprintf("Error: %v\n Please fix your mistakes.", err), true
+}
+
+// ToolCallOutcome is the full result of executing a single tool call: the
+// resulting message plus, when the tool signaled graph control flow by
+// placing a *types.Command in its Result.Artifact, that command. It is
+// returned by InvokeToolCallsFull; InvokeToolCalls discards the Command half.
+type ToolCallOutcome struct {
+	// Message is the ToolMessage produced for the call (including handled
+	// error messages).
+	Message messages.Message
+	// Command is the graph command the tool returned via Result.Artifact, or
+	// nil if the tool returned no command.
+	Command *types.Command
 }
 
 // ToolNode executes tool calls requested by a model, mirroring the core
@@ -205,8 +222,34 @@ func (n *ToolNode) AppendToolResults(ctx context.Context, msgs []messages.Messag
 // handled=false), InvokeToolCalls returns that error; results for other,
 // still-running calls are discarded, matching the "let it propagate" contract
 // Python uses when `handle_tool_errors` does not cover the raised exception.
+//
+// Commands a tool signals via Result.Artifact (see InvokeToolCallsFull) are
+// discarded here; use InvokeToolCallsFull to observe them.
 func (n *ToolNode) InvokeToolCalls(ctx context.Context, calls []messages.ToolCall, state map[string]any) ([]messages.Message, error) {
-	results := make([]messages.Message, len(calls))
+	outcomes, err := n.InvokeToolCallsFull(ctx, calls, state)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]messages.Message, len(outcomes))
+	for i, outcome := range outcomes {
+		results[i] = outcome.Message
+	}
+	return results, nil
+}
+
+// InvokeToolCallsFull is InvokeToolCalls with the full per-call outcome: in
+// addition to the result message, it surfaces the *types.Command a tool
+// placed in its Result.Artifact (the Go port's convention for a tool
+// signaling graph control flow, used by langgraph/prebuilt.ToolNode). An
+// Artifact of any other type is ignored, matching InvokeToolCalls.
+//
+// Execution, error handling, wrappers, and store plumbing are exactly those
+// of InvokeToolCalls. Two wrapper interactions are worth noting: a
+// ToolCallWrapper that short-circuits a call without invoking `next` yields
+// no Command (the tool never ran), and a wrapper that invokes `next` more
+// than once (e.g. retries) keeps the Command of the last invocation.
+func (n *ToolNode) InvokeToolCallsFull(ctx context.Context, calls []messages.ToolCall, state map[string]any) ([]ToolCallOutcome, error) {
+	outcomes := make([]ToolCallOutcome, len(calls))
 	errs := make([]error, len(calls))
 
 	var wg sync.WaitGroup
@@ -214,7 +257,7 @@ func (n *ToolNode) InvokeToolCalls(ctx context.Context, calls []messages.ToolCal
 		wg.Add(1)
 		go func(i int, call messages.ToolCall) {
 			defer wg.Done()
-			results[i], errs[i] = n.runOne(ctx, call, state)
+			outcomes[i], errs[i] = n.runOne(ctx, call, state)
 		}(i, call)
 	}
 	wg.Wait()
@@ -224,38 +267,57 @@ func (n *ToolNode) InvokeToolCalls(ctx context.Context, calls []messages.ToolCal
 			return nil, err
 		}
 	}
-	return results, nil
+	return outcomes, nil
 }
 
-func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map[string]any) (messages.Message, error) {
+func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map[string]any) (ToolCallOutcome, error) {
 	request := ToolCallRequest{ToolCall: call, Tool: n.byName[call.Name], State: state}
 	if n.store != nil {
 		request.Store = n.store
 	}
 	if n.wrap != nil {
-		return n.wrap(ctx, request, n.execute)
+		// The wrapper contract is message-only, so the Command is captured
+		// from the innermost execute call(s) the wrapper delegates to.
+		var cmd *types.Command
+		next := func(ctx context.Context, req ToolCallRequest) (messages.Message, error) {
+			outcome, err := n.execute(ctx, req)
+			if err == nil {
+				cmd = outcome.Command
+			}
+			return outcome.Message, err
+		}
+		msg, err := n.wrap(ctx, request, next)
+		return ToolCallOutcome{Message: msg, Command: cmd}, err
 	}
 	return n.execute(ctx, request)
 }
 
-func (n *ToolNode) execute(ctx context.Context, req ToolCallRequest) (messages.Message, error) {
+func (n *ToolNode) execute(ctx context.Context, req ToolCallRequest) (ToolCallOutcome, error) {
 	call := req.ToolCall
 	if req.Tool == nil {
-		return n.invalidToolMessage(call), nil
+		return ToolCallOutcome{Message: n.invalidToolMessage(call)}, nil
 	}
 
 	result, err := req.Tool.Invoke(ctx, call.Args)
 	if err != nil {
 		content, handled := n.handleToolErrors(err)
 		if !handled {
-			return messages.Message{}, err
+			return ToolCallOutcome{}, err
 		}
-		return errorToolMessage(call.ID, call.Name, content), nil
+		return ToolCallOutcome{Message: errorToolMessage(call.ID, call.Name, content)}, nil
 	}
 
 	msg := messages.Tool(call.ID, result.Content)
 	msg.Name = call.Name
-	return msg, nil
+	return ToolCallOutcome{Message: msg, Command: commandFromArtifact(result.Artifact)}, nil
+}
+
+// commandFromArtifact extracts the *types.Command a tool placed in its
+// Result.Artifact to signal graph control flow, or nil if the artifact is
+// absent or of any other type.
+func commandFromArtifact(artifact any) *types.Command {
+	cmd, _ := artifact.(*types.Command)
+	return cmd
 }
 
 func (n *ToolNode) invalidToolMessage(call messages.ToolCall) messages.Message {
