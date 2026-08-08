@@ -72,8 +72,8 @@ langgraph/
 
 ### M4（可选远景）
 
-- `prebuilt/`：`ToolNode`（迁移现有 `langchain/tools/tool_node.go`）、`create_react_agent` 等价物。
-- 节点 retry / cache 策略。
+- `prebuilt/`：`ToolNode` 图节点适配器（包装现有 `langchain/tools.ToolNode` 为可直接 `AddNode` 的图节点，补 `messages_key` 选项与工具返回 `Command` 的透传）。~~`create_react_agent` 等价物~~ **设计决策（2026-08-08）**：不做。Python 的 `create_react_agent` 自 v1.0 起已 deprecated（`chat_agent_executor.py:274-278`），其能力（model↔tools 循环）是本仓库 `langchain/agents.CreateAgent` 的真子集，重复建设违背 YAGNI；文档中说明等价关系即可。
+- 节点 retry / cache 策略：`RetryPolicy`（initial_interval/backoff_factor/max_interval/max_attempts/jitter/retry_on，执行器层级逐节点重试，对齐 `pregel/_retry.py`）；`CachePolicy` + `Cache` 接口 + `InMemoryCache`（缓存的是任务 writes 而非返回值，key 为节点输入的哈希，对齐 `pregel/_algo.py:668-687`/`_loop.py:1549-1625`）。
 - 明确不做：CLI、SDK（LangGraph Server 客户端）、部署相关功能。
 
 ## 错误处理
