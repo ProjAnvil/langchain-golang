@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -27,7 +28,7 @@ func fastRetryPolicy(maxAttempts int) *RetryPolicy {
 		BackoffFactor:   2,
 		MaxInterval:     10 * time.Millisecond,
 		MaxAttempts:     maxAttempts,
-		Jitter:          false,
+		NoJitter:        true,
 		RetryOn:         alwaysRetry,
 	}
 }
@@ -72,7 +73,7 @@ func TestRetryPolicyNonRetryableFailsImmediately(t *testing.T) {
 	cg := compileRetryGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
 		attempts.Add(1)
 		return nil, errFlaky
-	}, NodePolicies{Retry: &RetryPolicy{InitialInterval: time.Millisecond, MaxAttempts: 5, Jitter: false}})
+	}, NodePolicies{Retry: &RetryPolicy{InitialInterval: time.Millisecond, MaxAttempts: 5, NoJitter: true}})
 
 	_, err := cg.Invoke(context.Background(), nil)
 	if !errors.Is(err, errFlaky) {
@@ -112,7 +113,7 @@ func TestRetryPolicyBackoffIncreases(t *testing.T) {
 		BackoffFactor:   2,
 		MaxInterval:     time.Minute,
 		MaxAttempts:     3,
-		Jitter:          false, // jitter off: intervals are deterministic
+		NoJitter:        true, // jitter off: intervals are deterministic
 		RetryOn:         alwaysRetry,
 	}})
 
@@ -173,7 +174,7 @@ func TestRetryPolicyContextCancelDuringBackoff(t *testing.T) {
 	}, NodePolicies{Retry: &RetryPolicy{
 		InitialInterval: 30 * time.Second, // long backoff: cancel must interrupt it
 		MaxAttempts:     3,
-		Jitter:          false,
+		NoJitter:        true,
 		RetryOn:         alwaysRetry,
 	}})
 
@@ -247,6 +248,8 @@ func TestCompileValidatesRetryPolicy(t *testing.T) {
 	cases := map[string]*RetryPolicy{
 		"negative InitialInterval": {InitialInterval: -time.Second},
 		"negative MaxInterval":     {MaxInterval: -time.Second},
+		"negative BackoffFactor":   {BackoffFactor: -1},
+		"NaN BackoffFactor":        {BackoffFactor: math.NaN()},
 		"MaxAttempts below 1":      {MaxAttempts: -1},
 	}
 	for name, policy := range cases {
@@ -257,10 +260,37 @@ func TestCompileValidatesRetryPolicy(t *testing.T) {
 			}, NodePolicies{Retry: policy})
 			g.AddEdge(types.START, "node")
 			g.AddEdge("node", types.END)
-			if _, err := g.Compile(); err == nil {
+			_, err := g.Compile()
+			if err == nil {
 				t.Fatalf("Compile() error = nil, want a policy validation error")
 			}
+			if !strings.Contains(err.Error(), `"node"`) {
+				t.Fatalf("Compile() error = %v, want it to name the node", err)
+			}
 		})
+	}
+}
+
+func TestRetryPolicyBackoffJitterEnabled(t *testing.T) {
+	// Jitter on (the zero-value default): each delay is the clamped base plus
+	// a uniform random [0, 1s), so it must never fall below the base.
+	p := RetryPolicy{
+		InitialInterval: 10 * time.Millisecond,
+		BackoffFactor:   2,
+		MaxInterval:     40 * time.Millisecond,
+	}
+	for attempt := 1; attempt <= 20; attempt++ {
+		base := time.Duration(float64(p.InitialInterval) * math.Pow(p.BackoffFactor, float64(attempt-1)))
+		if base > p.MaxInterval {
+			base = p.MaxInterval
+		}
+		got := p.backoff(attempt)
+		if got < base {
+			t.Fatalf("backoff(%d) = %v, want >= clamped base %v", attempt, got, base)
+		}
+		if got > base+time.Second {
+			t.Fatalf("backoff(%d) = %v, want <= base %v + 1s of jitter", attempt, got, base)
+		}
 	}
 }
 

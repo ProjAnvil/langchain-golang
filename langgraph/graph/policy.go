@@ -32,12 +32,11 @@ type RetryPolicy struct {
 	// MaxAttempts bounds the total number of node executions, including the
 	// first attempt. Default 3.
 	MaxAttempts int
-	// Jitter adds a uniform random [0, 1s) to each backoff interval, applied
-	// after the MaxInterval clamp (Python parity: `random.uniform(0, 1)`).
-	// Divergence from Python: Python defaults jitter on; here the zero value
-	// false means OFF, because a plain bool cannot distinguish "unset" from
-	// "explicitly disabled" — opt in with Jitter: true.
-	Jitter bool
+	// NoJitter disables the jitter added to each backoff interval. Jitter is
+	// a uniform random [0, 1s) applied after the MaxInterval clamp (Python
+	// parity: `random.uniform(0, 1)`); it is enabled by default — matching
+	// Python — unless NoJitter is true.
+	NoJitter bool
 	// RetryOn decides whether a failed attempt's error is retryable. Nil
 	// means DefaultRetryOn.
 	RetryOn func(err error) bool
@@ -52,7 +51,8 @@ const (
 )
 
 // withDefaults returns a copy of p with every unset (zero) field replaced by
-// its default. Jitter is left untouched (see its field doc).
+// its default. NoJitter is left untouched: its zero value means jitter on,
+// which is the Python-parity default.
 func (p RetryPolicy) withDefaults() RetryPolicy {
 	if p.InitialInterval == 0 {
 		p.InitialInterval = defaultInitialInterval
@@ -82,6 +82,9 @@ func (p RetryPolicy) validate() error {
 	if eff.MaxInterval < 0 {
 		return errors.New("MaxInterval must be >= 0")
 	}
+	if eff.BackoffFactor < 0 || math.IsNaN(eff.BackoffFactor) {
+		return errors.New("BackoffFactor must be >= 0 and not NaN")
+	}
 	if eff.MaxAttempts < 1 {
 		return errors.New("MaxAttempts must be >= 1")
 	}
@@ -90,12 +93,12 @@ func (p RetryPolicy) validate() error {
 
 // backoff returns the delay before re-executing after the given (1-based)
 // failed attempt: min(MaxInterval, InitialInterval * BackoffFactor^(attempt-1))
-// plus, when Jitter is enabled, a uniform random [0, 1s) — Python parity
+// plus, unless NoJitter is set, a uniform random [0, 1s) — Python parity
 // (`pregel/_retry.py`: the clamp applies before jitter is added).
 func (p RetryPolicy) backoff(attempt int) time.Duration {
 	interval := float64(p.InitialInterval) * math.Pow(p.BackoffFactor, float64(attempt-1))
 	delay := time.Duration(math.Min(interval, float64(p.MaxInterval)))
-	if p.Jitter {
+	if !p.NoJitter {
 		delay += time.Duration(rand.Float64() * float64(time.Second))
 	}
 	return delay
