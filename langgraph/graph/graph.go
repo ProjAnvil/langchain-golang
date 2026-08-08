@@ -44,6 +44,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,8 +96,33 @@ type StateGraph struct {
 	channelProtos map[string]channels.Channel
 	edges         map[string][]string
 	conditional   map[string]ConditionalEdge
-	entry         string
-	err           error
+	// joinEdges holds the waiting edges registered via AddJoinEdge, in
+	// registration order (Compile turns each into a joinMeta + barrier
+	// channel prototype).
+	joinEdges []joinEdge
+	entry     string
+	err       error
+}
+
+// joinEdge is one AddJoinEdge waiting edge: the child triggers once ALL
+// parents have committed.
+type joinEdge struct {
+	parents []string
+	child   string
+}
+
+// joinMeta is a compiled waiting edge (see StateGraph.AddJoinEdge).
+type joinMeta struct {
+	key     string   // barrier channel key ("join:a+b:c")
+	parents []string // parent node names, in AddJoinEdge order
+	child   string   // node dispatched once the barrier fills
+}
+
+// joinKey is the barrier channel key for a waiting edge, mirroring Python's
+// `join:a+b:c` naming (langgraph/graph/state.py:1547): parent names in
+// AddJoinEdge order, joined with "+".
+func joinKey(parents []string, child string) string {
+	return "join:" + strings.Join(parents, "+") + ":" + child
 }
 
 // NewStateGraph constructs an empty StateGraph builder.
@@ -182,6 +209,48 @@ func (g *StateGraph) AddEdge(from, to string) *StateGraph {
 		return g.SetEntryPoint(to)
 	}
 	g.edges[from] = append(g.edges[from], to)
+	return g
+}
+
+// AddJoinEdge adds a waiting edge: the child node is triggered exactly once
+// after ALL parents have committed (Python's `add_edge((a, b), c)`, backed by
+// a `NamedBarrierValue` channel). The parents' arrivals accumulate in a
+// barrier channel named `join:a+b:c` registered at Compile time; the barrier
+// is control-plane state and never appears in node inputs, snapshots, or
+// stream output.
+//
+// WARNING (Python parity, OR semantics): a plain edge, conditional edge,
+// types.Send, or Command.Goto targeting the join child BYPASSES the barrier
+// and triggers the child directly. Mixing both edge kinds into one child can
+// run it multiple times — that is Python's documented behavior, not a bug.
+//
+// Documented divergences from Python (state.py:956-966): Go requires at
+// least 2 parents (Python accepts a single-element tuple as a degenerate
+// waiting edge), rejects duplicate parents (Python silently set-dedups), and
+// rejects types.END as the child (Python allows `add_edge((a, b), END)`).
+// Node-existence is validated at Compile time, consistent with AddEdge.
+func (g *StateGraph) AddJoinEdge(from []string, to string) *StateGraph {
+	if len(from) < 2 {
+		g.setErr(fmt.Errorf("graph: join edge into %q requires at least 2 parents, got %d", to, len(from)))
+		return g
+	}
+	seen := make(map[string]bool, len(from))
+	for _, name := range from {
+		if name == "" || name == types.START || name == types.END {
+			g.setErr(fmt.Errorf("graph: invalid join parent name %q", name))
+			return g
+		}
+		if seen[name] {
+			g.setErr(fmt.Errorf("graph: duplicate join parent %q", name))
+			return g
+		}
+		seen[name] = true
+	}
+	if to == "" || to == types.START || to == types.END {
+		g.setErr(fmt.Errorf("graph: invalid join child name %q", to))
+		return g
+	}
+	g.joinEdges = append(g.joinEdges, joinEdge{parents: slices.Clone(from), child: to})
 	return g
 }
 
@@ -324,18 +393,48 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 			}
 		}
 	}
+	for _, je := range g.joinEdges {
+		for _, p := range je.parents {
+			if _, ok := g.nodes[p]; !ok {
+				return nil, fmt.Errorf("graph: join edge parent %q is not a registered node", p)
+			}
+		}
+		if _, ok := g.nodes[je.child]; !ok {
+			return nil, fmt.Errorf("graph: join edge child %q is not a registered node", je.child)
+		}
+	}
 
 	options := compileOptions{recursionLimit: defaultRecursionLimit}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
+	// Register one barrier channel prototype per waiting edge (Python's
+	// attach_edge, state.py:1546-1561). The clone keeps the builder's own
+	// channelProtos untouched so Compile stays re-entrant.
+	channelProtos := maps.Clone(g.channelProtos)
+	joins := make([]joinMeta, 0, len(g.joinEdges))
+	joinsByParent := map[string][]string{}
+	for _, je := range g.joinEdges {
+		key := joinKey(je.parents, je.child)
+		if _, exists := channelProtos[key]; exists {
+			return nil, fmt.Errorf("graph: duplicate join channel %q (identical AddJoinEdge calls, or a user-registered AddChannel/AddReducer collision)", key)
+		}
+		channelProtos[key] = channels.NewBarrier(je.parents...)
+		joins = append(joins, joinMeta{key: key, parents: je.parents, child: je.child})
+		for _, p := range je.parents {
+			joinsByParent[p] = append(joinsByParent[p], key)
+		}
+	}
+
 	return &CompiledGraph{
 		nodes:           g.nodes,
 		policies:        g.policies,
-		channelProtos:   g.channelProtos,
+		channelProtos:   channelProtos,
 		edges:           g.edges,
 		conditional:     g.conditional,
+		joins:           joins,
+		joinsByParent:   joinsByParent,
 		entry:           g.entry,
 		checkpointer:    options.checkpointer,
 		cache:           options.cache,
@@ -348,11 +447,17 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 // CompiledGraph is an executable graph, mirroring Python's
 // `CompiledStateGraph`.
 type CompiledGraph struct {
-	nodes           map[string]NodeFunc
-	policies        map[string]NodePolicies
-	channelProtos   map[string]channels.Channel
-	edges           map[string][]string
-	conditional     map[string]ConditionalEdge
+	nodes         map[string]NodeFunc
+	policies      map[string]NodePolicies
+	channelProtos map[string]channels.Channel
+	edges         map[string][]string
+	conditional   map[string]ConditionalEdge
+	// joins/joinsByParent are the compiled waiting edges (empty for graphs
+	// without AddJoinEdge): the executor appends an implicit barrier write to
+	// each parent task's commit batch and dispatches join children from the
+	// commit path (see run).
+	joins           []joinMeta
+	joinsByParent   map[string][]string
 	entry           string
 	checkpointer    checkpoint.Saver
 	cache           checkpoint.Cache
