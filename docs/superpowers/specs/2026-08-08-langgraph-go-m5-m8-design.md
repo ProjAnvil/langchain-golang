@@ -35,7 +35,7 @@
 
 ---
 
-## M5 Postgres checkpoint saver
+## M5 Postgres checkpoint saver（已完成 2026-08-08）
 
 ### Python 侧语义（移植基线）
 
