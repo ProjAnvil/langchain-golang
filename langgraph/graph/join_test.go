@@ -93,3 +93,51 @@ func TestCompileJoinRegistersBarrierChannel(t *testing.T) {
 		t.Fatalf("second Compile() error = %v (join registration must be re-entrant)", err)
 	}
 }
+
+// TestJoinBasicTrigger: two parents in the same superstep fill the barrier;
+// the child runs exactly once; no join key leaks into the result.
+func TestJoinBasicTrigger(t *testing.T) {
+	var childCalls int
+	g := NewStateGraph()
+	g.AddNode("entry", joinNoop)
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"a_done": true}, nil
+	})
+	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"b_done": true}, nil
+	})
+	g.AddNode("c", func(_ context.Context, state map[string]any) (any, error) {
+		childCalls++
+		if _, leaked := state["join:a+b:c"]; leaked {
+			t.Error("join key leaked into node input")
+		}
+		return map[string]any{"c_done": true}, nil
+	})
+	g.AddEdge(types.START, "entry")
+	g.AddEdge("entry", "a")
+	g.AddEdge("entry", "b")
+	g.AddJoinEdge([]string{"a", "b"}, "c")
+	g.AddEdge("c", types.END)
+
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	res, err := cg.Invoke(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if childCalls != 1 {
+		t.Fatalf("childCalls = %d, want 1 (barrier triggers exactly once)", childCalls)
+	}
+	for _, k := range []string{"a_done", "b_done", "c_done"} {
+		if res.Values[k] != true {
+			t.Fatalf("Values[%q] = %v, want true (Values = %v)", k, res.Values[k], res.Values)
+		}
+	}
+	for k := range res.Values {
+		if strings.HasPrefix(k, "join:") {
+			t.Fatalf("join key %q leaked into Result.Values", k)
+		}
+	}
+}

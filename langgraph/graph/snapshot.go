@@ -50,7 +50,7 @@ func (g *CompiledGraph) GetState(ctx context.Context, cfg checkpoint.Config) (St
 		}
 		return StateSnapshot{}, fmt.Errorf("graph: no checkpoint found for thread %q", cfg.ThreadID)
 	}
-	return snapshotFromTuple(tup), nil
+	return g.snapshotFromTuple(tup), nil
 }
 
 // GetStateHistory returns the thread's checkpoint history as snapshots,
@@ -70,7 +70,7 @@ func (g *CompiledGraph) GetStateHistory(ctx context.Context, cfg checkpoint.Conf
 	}
 	snaps := make([]StateSnapshot, len(tuples))
 	for i := range tuples {
-		snaps[i] = snapshotFromTuple(&tuples[i])
+		snaps[i] = g.snapshotFromTuple(&tuples[i])
 	}
 	return snaps, nil
 }
@@ -135,15 +135,22 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 }
 
 // snapshotFromTuple projects a checkpoint tuple into its StateSnapshot view:
-// the channel values, the planned next nodes, and any pending interrupts
-// (reconstructed from ReservedInterrupt pending writes).
-func snapshotFromTuple(tup *checkpoint.Tuple) StateSnapshot {
+// the channel values (minus join barrier channels — control plane, excluded
+// from Python's output_keys as well), the planned next nodes, and any pending
+// interrupts (reconstructed from ReservedInterrupt pending writes).
+func (g *CompiledGraph) snapshotFromTuple(tup *checkpoint.Tuple) StateSnapshot {
+	values := maps.Clone(tup.Checkpoint.ChannelValues)
+	for key := range values {
+		if isJoinKey(g.channelProtos, key) {
+			delete(values, key)
+		}
+	}
 	next := make([]string, 0, len(tup.Checkpoint.Next))
 	for _, pt := range tup.Checkpoint.Next {
 		next = append(next, pt.Node)
 	}
 	return StateSnapshot{
-		Values:       maps.Clone(tup.Checkpoint.ChannelValues),
+		Values:       values,
 		Next:         next,
 		Config:       tup.Config,
 		Metadata:     tup.Metadata,

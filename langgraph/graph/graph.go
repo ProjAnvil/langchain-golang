@@ -741,7 +741,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if err != nil {
 			return err
 		}
-		em.debugCheckpoint(md, cfg, *currentCfg, rs.channelValues(), next)
+		em.debugCheckpoint(md, cfg, *currentCfg, g.dropJoinKeys(rs.channelValues()), next)
 		*currentCfg = cfg
 		return nil
 	}
@@ -813,7 +813,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// Cached/replayed writes are re-streamed as updates on resume (Python
 	// parity, `_loop.py:676-679`).
 	for _, w := range replayWrites {
-		em.emitUpdate(w.node, w.update)
+		em.emitUpdate(w.node, g.dropJoinKeys(w.update))
 	}
 
 	steps := 0
@@ -986,6 +986,30 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			}
 		}
 
+		// Join barrier arrivals: each completed parent task implicitly
+		// writes its own name to every waiting-edge barrier it feeds
+		// (Python attaches a ChannelWrite per parent at compile time,
+		// state.py:1558-1561). Injecting into the task's update batch
+		// (rather than a side channel) gives the write the same
+		// applyWrites version bump AND the interrupt path's
+		// completedTaskWrites persistence below — the "parent A arrived,
+		// parent B interrupted, resume replays A's arrival" closure.
+		// Interrupted/errored tasks write nothing (Python: the parent's
+		// ChannelWrite never executes). Cache entries were stored BEFORE
+		// this pass, so they stay free of control-plane keys; a cache-hit
+		// parent still records its arrival here.
+		for i, t := range active {
+			if len(g.joinsByParent[t.node]) == 0 || outcomes[i].err != nil || outcomes[i].interrupted != nil {
+				continue
+			}
+			if outcomes[i].update == nil {
+				outcomes[i].update = map[string]any{}
+			}
+			for _, key := range g.joinsByParent[t.node] {
+				outcomes[i].update[key] = t.node
+			}
+		}
+
 		// Collect outcomes in deterministic task order: debug task_result per
 		// task at completion, then the task's updates chunk. (Divergence from
 		// Python's as-they-finish timing: Go applies writes only after all
@@ -997,8 +1021,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				taskInterrupts = []types.Interrupt{*o.interrupted}
 				interrupts = append(interrupts, *o.interrupted)
 			}
-			em.debugTaskResult(rs.step+1, active[i], o.update, o.err, taskInterrupts)
-			em.emitUpdate(active[i].node, o.update)
+			pub := g.dropJoinKeys(o.update)
+			em.debugTaskResult(rs.step+1, active[i], pub, o.err, taskInterrupts)
+			em.emitUpdate(active[i].node, pub)
 		}
 		for _, o := range outcomes {
 			if o.err != nil {
@@ -1053,6 +1078,42 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 		rs.step++
 
+		// Join children that CONSUMED their barrier this superstep reset it
+		// (Python calls NamedBarrierValue.consume only for channels the
+		// task was actually triggered by). The seen>=versions check is
+		// exactly that: a barrier-dispatched child carries the barrier's
+		// current version in versions-seen (applyWrites re-records the
+		// pre-write view at commit), while a child that ran via a Send/
+		// plain edge in the superstep that FILLED the barrier holds an
+		// older mark — its barrier stays armed so the trigger scan below
+		// still dispatches the barrier task (OR semantics;
+		// TestJoinSendBypassesBarrier locks this in). Consume itself is a
+		// no-op on a non-full barrier. Must run BEFORE the trigger scan,
+		// or a consumed barrier would re-dispatch its child. Documented
+		// divergence: Python consumes read channels at the apply_writes
+		// head, before applying the superstep's writes
+		// (pregel/_algo.py:285-292); Go consumes after applyWrites, which
+		// differs only when a join child co-runs with its own parent in
+		// one superstep (the parent's idempotent re-arrival is consumed
+		// away here, kept as a new partial arrival in Python).
+		if len(g.joins) > 0 {
+			ran := make(map[string]bool, len(active))
+			for _, t := range active {
+				ran[t.node] = true
+			}
+			for _, jm := range g.joins {
+				if !ran[jm.child] {
+					continue
+				}
+				if rs.seen[jm.child][jm.key] < rs.versions[jm.key] {
+					continue // child ran via Send/edge, not via this barrier
+				}
+				if b, ok := rs.channels[jm.key].(interface{ Consume() bool }); ok {
+					b.Consume()
+				}
+			}
+		}
+
 		merged := rs.snapshot()
 		var nextTasks []task
 		for i, t := range active {
@@ -1069,6 +1130,32 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				return Result{}, err
 			}
 			nextTasks = append(nextTasks, dests...)
+		}
+
+		// Waiting-edge triggers: a barrier filled by this superstep's
+		// writes dispatches its child EXACTLY once. Versions-seen is the
+		// dedup ledger: a barrier version the child already saw never
+		// re-dispatches it (same-superstep multi-parent commits fold into
+		// one channel update = one version bump = one dispatch). The mark
+		// is recorded at dispatch time so a pause checkpoint's
+		// VersionsSeen stays consistent with its planned Next. Send/
+		// Command.Goto/normal-edge tasks for the same child are separate
+		// entries in nextTasks on purpose (Python's OR semantics) — they
+		// must NOT be deduped against this barrier task.
+		for _, jm := range g.joins {
+			ch, ok := rs.channels[jm.key]
+			if !ok || !ch.IsAvailable() {
+				continue
+			}
+			v := rs.versions[jm.key]
+			if rs.seen[jm.child][jm.key] >= v {
+				continue
+			}
+			if rs.seen[jm.child] == nil {
+				rs.seen[jm.child] = map[string]int64{}
+			}
+			rs.seen[jm.child][jm.key] = v
+			nextTasks = append(nextTasks, task{node: jm.child})
 		}
 
 		// interrupt_after: if any node that just ran is registered, pause
@@ -1152,6 +1239,24 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *ru
 	return cfg, nil
 }
 
+// dropJoinKeys strips join barrier channels from a task update or
+// channel-value map destined for user-visible emission (updates chunks,
+// debug task_result/checkpoint payloads). Internal paths — applyWrites,
+// completedTaskWrites, checkpoint saves — always keep the full map. Returns
+// the input unchanged when the graph has no join edges.
+func (g *CompiledGraph) dropJoinKeys(m map[string]any) map[string]any {
+	if len(g.joins) == 0 || len(m) == 0 {
+		return m
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if !isJoinKey(g.channelProtos, k) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state map[string]any) ([]task, error) {
 	if router, ok := g.conditional[nodeName]; ok {
 		dests, err := router(ctx, state)
@@ -1162,6 +1267,11 @@ func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state m
 	}
 	if edges, ok := g.edges[nodeName]; ok && len(edges) > 0 {
 		return resolveDestinations(To(edges...))
+	}
+	if len(g.joinsByParent[nodeName]) > 0 {
+		// Waiting-edge-only parent: its successors are dispatched by the
+		// barrier trigger in the commit path, not per-parent edges.
+		return nil, nil
 	}
 	return nil, fmt.Errorf("graph: node %q has no outgoing edge (add AddEdge/AddConditionalEdges, or return a *types.Command with Goto)", nodeName)
 }

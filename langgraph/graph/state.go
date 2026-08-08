@@ -75,11 +75,15 @@ func (rs *runState) restore(cp checkpoint.Checkpoint) {
 }
 
 // snapshot returns the externally visible graph state: the current value of
-// every available channel. Keys whose channel is empty (never written, or
-// expired) are absent.
+// every available channel, minus join barrier channels (control plane; Python
+// likewise excludes them from output_keys). Keys whose channel is empty
+// (never written, or expired) are absent.
 func (rs *runState) snapshot() map[string]any {
 	out := make(map[string]any, len(rs.channels))
 	for key, ch := range rs.channels {
+		if isJoinKey(rs.protos, key) {
+			continue
+		}
 		if v, err := ch.Get(); err == nil {
 			out[key] = v
 		}
@@ -113,9 +117,11 @@ func (rs *runState) channelValues() map[string]any {
 //     non-accumulating Topic) clear themselves; channels that change are
 //     bumped to the shared next version as well.
 //
-// The bool result reports whether at least one channel version was bumped;
-// the stream emission layer gates `values` chunks on it (mirroring Python's
-// `updated_channels ∩ output_keys` gate).
+// The bool result reports whether at least one NON-JOIN channel version was
+// bumped; the stream emission layer gates `values` chunks on it (mirroring
+// Python's `updated_channels ∩ output_keys` gate — join barrier channels are
+// not in output_keys, so a superstep that only moved a barrier emits no
+// values chunk). Join channels still get their version bump.
 func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 	for _, w := range writes {
 		if rs.seen[w.node] == nil {
@@ -162,7 +168,9 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 		written[key] = true
 		if changed {
 			rs.versions[key] = nextVersion
-			anyChanged = true
+			if !isJoinKey(rs.protos, key) {
+				anyChanged = true
+			}
 		}
 	}
 
@@ -180,10 +188,21 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 		}
 		if changed {
 			rs.versions[key] = nextVersion
-			anyChanged = true
+			if !isJoinKey(rs.protos, key) {
+				anyChanged = true
+			}
 		}
 	}
 	return anyChanged, nil
+}
+
+// isJoinKey reports whether key's registered channel prototype is a join
+// *channels.Barrier — control-plane state hidden from every user-visible
+// state view (snapshots, node inputs, stream chunks). Checkpoint persistence
+// (channelValues) deliberately does NOT consult it.
+func isJoinKey(protos map[string]channels.Channel, key string) bool {
+	_, ok := protos[key].(*channels.Barrier)
+	return ok
 }
 
 func cloneSeen(seen map[string]map[string]int64) map[string]map[string]int64 {
