@@ -1,32 +1,18 @@
-# Graph runtime (`langgraph/`) — stream modes, serde, SQLite checkpoints, retry/cache policies, prebuilt ToolNode
+# Graph runtime (`langgraph/`) — stream modes, serde, SQLite/Postgres checkpoints, retry/cache policies, ToolNode, join edges, functional API
+
+**Languages:** English | [简体中文](langgraph.zh-CN.md)
 
 The public top-level `langgraph/` packages hold the ported graph runtime:
 `langgraph/graph` (StateGraph builder + Pregel executor),
-`langgraph/channels`, `langgraph/checkpoint` (+ `checkpoint/serde`),
-`langgraph/types`, `langgraph/prebuilt`. `agents.CreateAgent` is built on it;
-this guide covers the M3 additions (the `Stream` API, checkpoint
-serialization, the durable SQLite checkpoint saver), the M4 additions
-(per-node retry/cache policies and `prebuilt.ToolNode`), and the M6 addition
-(multi-parent join edges).
-
-## Join edges (multi-parent barrier)
-
-`AddJoinEdge([]string{"a", "b"}, "c")` mirrors Python's
-`add_edge(("a", "b"), "c")`: `c` runs exactly once after ALL parents have
-committed, whether they finish in the same superstep or several apart, and
-re-arms on each loop round. Arrivals are checkpointed, so an interrupted
-parent that resumes later still completes the barrier.
-
-> **Warning (OR semantics, Python parity):** a plain edge, conditional edge,
-> `types.Send`, or `Command.Goto` into the join child bypasses the barrier and
-> triggers the child directly. Mixing both edge kinds into one child can run
-> it multiple times.
-
-Divergences from Python: Go requires >= 2 distinct parents (Python accepts a
-single-element tuple and silently dedups) and rejects `types.END` as a join
-child. `defer=True` / `NamedBarrierValueAfterFinish` are not supported. The
-`join:a+b:c` barrier channel is control-plane state: it never appears in node
-inputs, snapshots, or stream output.
+`langgraph/channels`, `langgraph/checkpoint` (+ `checkpoint/serde`, with the
+durable savers in the nested `checkpoint/sqlite` and `checkpoint/postgres`
+modules), `langgraph/types`, `langgraph/prebuilt`, and `langgraph/fn` (the
+functional API). `agents.CreateAgent` is built on it; this guide covers the
+full M1–M7 surface: the `Stream` API, checkpoint serialization, the SQLite
+and Postgres checkpoint savers, per-node retry/cache policies,
+`prebuilt.ToolNode`, multi-parent join edges (`AddJoinEdge`), the functional
+API (`NewEntrypoint` / `NewTask`), and the M5 saver-interface breaking
+changes.
 
 ## Stream API (`CompiledGraph.Stream`)
 
@@ -252,6 +238,345 @@ g.AddEdge("tools", "model")
 > within one node) and **no reflection-based argument injection**
 > (`InjectedState` / `InjectedStore` / `ToolRuntime`) — `ToolCallRequest.State`
 > is explicit.
+
+## Join edges (`AddJoinEdge`)
+
+`AddJoinEdge([]string{"a", "b"}, "c")` mirrors Python's
+`add_edge(("a", "b"), "c")` — a *waiting edge* backed by a barrier channel
+equivalent to `NamedBarrierValue`
+(`libs/langgraph/langgraph/graph/state.py:956-966`,
+`libs/langgraph/langgraph/channels/named_barrier_value.py`). The child runs
+exactly once after ALL parents have committed, whether they finish in the
+same superstep or several apart:
+
+```go
+g := graph.NewStateGraph()
+g.AddNode("a", nodeA) // nodeA/nodeB/nodeC: graph.NodeFunc
+g.AddNode("b", nodeB)
+g.AddNode("c", nodeC)
+g.AddEdge(types.START, "a")
+g.AddEdge(types.START, "b")
+g.AddJoinEdge([]string{"a", "b"}, "c") // c runs once, after BOTH a and b commit
+g.AddEdge("c", types.END)
+```
+
+- Several parents finishing in the same superstep still trigger the child
+  only once, in the following superstep.
+- Arrivals are checkpointed: if parent `a` has arrived and parent `b` is
+  interrupted, resuming `b` later still completes the barrier — the partial
+  arrival set survives in the checkpoint.
+- In a looping graph the barrier resets (`Consume`) after the child commits,
+  so it re-arms and can fire again on the next round.
+- The `join:a+b:c` barrier channel is control-plane state: it never appears
+  in node inputs, snapshots, or stream output.
+
+`AddJoinEdge` returns `*StateGraph` for chaining. Validation failures
+accumulate via `setErr` and surface at `Compile`: at least 2 distinct
+parents (duplicates are an error), parents must be registered nodes
+(checked at Compile time, consistent with `AddEdge`), and neither a parent
+nor the child may be `types.START` or `types.END`.
+
+> **Warning (OR semantics, Python parity):** a plain edge, conditional edge,
+> `types.Send`, or `Command.Goto` into the join child bypasses the barrier and
+> triggers the child directly. Mixing both edge kinds into one child can run
+> it multiple times — this is Python's documented behavior, faithfully
+> replicated; it is not a bug.
+
+Divergences from Python: Go requires >= 2 distinct parents (Python accepts a
+single-element tuple and silently dedups), and Go rejects `types.END` as a
+join child while Python allows it (the `state.py:963-964` validation only
+rejects `START` as the target and `END` as a source).
+
+> **Not supported:** `defer=True` / `NamedBarrierValueAfterFinish` — the
+> edge-driven executor model has no equivalent.
+
+## Postgres checkpoint saver (`langgraph/checkpoint/postgres/`)
+
+A durable `checkpoint.Saver` backed by PostgreSQL — the port of Python's
+`langgraph-checkpoint-postgres` (`BasePostgresSaver`). It mirrors Python's
+schema — four tables (`checkpoints` / `checkpoint_blobs` /
+`checkpoint_writes` / `checkpoint_migrations`) with per-version channel
+blobs — and applies pending migrations v0–v9 from `Setup`.
+
+> **Dependency notice:** this is the port's **second third-party
+> dependency** — the pure-Go driver `github.com/jackc/pgx/v5`. Like the
+> SQLite saver it lives in its own nested Go module
+> (`langgraph/checkpoint/postgres/go.mod`, with a `replace` directive back
+> to the root), so the root module stays zero-dependency.
+
+```go
+import (
+	"github.com/projanvil/langchain-golang/langgraph/checkpoint/serde"
+	postgres "github.com/projanvil/langchain-golang/langgraph/checkpoint/postgres"
+)
+
+saver, err := postgres.NewFromConnString(ctx,
+	"postgres://user:pass@localhost:5432/dbname", serde.NewJSONSerializer())
+if err != nil {
+	return err
+}
+defer saver.Close()
+// Setup applies the schema and must be called explicitly once before first
+// use. It does NOT run inside a transaction — migrations v6–v8 are
+// CREATE INDEX CONCURRENTLY, which Postgres forbids in a transaction block.
+if err := saver.Setup(ctx); err != nil {
+	return err
+}
+// Use like any checkpoint.Saver: agents.WithAgentCheckpointer(saver), etc.
+```
+
+`postgres.New(pool, serde)` takes an existing `*pgxpool.Pool` instead of
+opening one. Both savers run the same shared `savertest` contract suite
+(`savertest.Run`), so behavior identical across backends is pinned by one
+test set.
+
+Because it is a nested module, the root `go test ./...` does **not** cross
+into it. Its tests spin up a real in-process database via
+`github.com/fergusstrange/embedded-postgres` (the first run downloads ~30MB
+of Postgres binaries; `-short` skips these tests):
+
+```bash
+make test-postgres
+```
+
+> **No cross-language database sharing:** the Go serde is JSON + a closed
+> type registry (not Python's msgpack), and the `checkpoint_blobs.version`
+> column is `BIGINT` where Python stores TEXT holding decimal strings. A
+> database written by one language cannot be read by the other — point each
+> language at its own database.
+
+> **Divergence notes:** only the JSON primitives `nil` / `string` / `bool` /
+> `float64` inline into the checkpoint JSONB document; `int` / `int64` /
+> `map[string]any` / `[]any` and every registry type are versioned into
+> `checkpoint_blobs` (Python inlines int/float and sends dict/list to blobs).
+> There is no Shallow saver variant and no delta channel-history fast path.
+> Smaller divergences — null bytes in metadata strings fail loudly instead
+> of being stripped, and `Put` preserves versionless composite channel
+> values that Python silently drops — are documented in the package godoc.
+
+## Functional API (`langgraph/fn`)
+
+The functional API — the port of Python's `langgraph.func` (`@entrypoint` /
+`@task`) — builds a checkpointed workflow out of plain Go control flow
+instead of an explicit graph: loops, branches, and concurrency are ordinary
+Go code, while each task's result is checkpointed so an interrupted run
+resumes without re-executing finished work. An `Entrypoint` compiles to a
+single-node `StateGraph` (three reserved channels `__start__` / `__end__` /
+`__previous__`), so interrupt/resume, streaming, and time travel all come
+from the existing executor. Reach for the functional API when the control
+flow is dynamic and data-dependent; reach for `StateGraph` when the topology
+should be explicit, inspectable, and statically validated.
+
+### Entrypoints
+
+`NewEntrypoint` wraps a function as an invokable workflow:
+
+```go
+import (
+	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/fn"
+	"github.com/projanvil/langchain-golang/langgraph/graph"
+)
+
+entry := fn.NewEntrypoint(fn.EntrypointOpts{
+	Checkpointer: checkpoint.NewMemorySaver(),
+}, func(ctx context.Context, in string, prev int, hasPrev bool) (int, error) {
+	total := len(in)
+	if hasPrev {
+		total += prev
+	}
+	return total, nil // also saved as the next invocation's `previous`
+})
+
+n, err := entry.Invoke(ctx, "hello", graph.Options{ThreadID: "t-1"}) // n == 5
+n, err = entry.Invoke(ctx, "hi", graph.Options{ThreadID: "t-1"})     // n == 7
+```
+
+`graph.Options.ThreadID` (together with a checkpointer) ties invocations
+into a thread; without a checkpointer every run is stateless.
+`EntrypointOpts` also accepts a `checkpoint.Cache` backend (for task cache
+policies) and a `graph.RetryPolicy` (retries the entrypoint function as a
+whole).
+
+### State across runs: `previous`
+
+`prev` is the save value of the previous completed invocation on the same
+thread; `hasPrev` is false — and `prev` the zero value — when there is no
+checkpointer, no ThreadID, or no prior completed invocation.
+
+> **Divergence note:** Python passes `previous=None` when nothing is saved;
+> Go uses the explicit `hasPrev bool` so a legitimately saved zero value is
+> never misread as "nothing saved".
+
+### Decoupling return and save: `Final`
+
+With plain `NewEntrypoint` the returned value doubles as the save value, so
+the output type must be assignable to the save type. `NewEntrypointFinal`
+returns a `Final[O, S]` to decouple the two (Python's
+`entrypoint.final(value=, save=)`):
+
+```go
+entry := fn.NewEntrypointFinal(fn.EntrypointOpts{Checkpointer: saver},
+	func(ctx context.Context, in string, prev []string, hasPrev bool) (fn.Final[string, []string], error) {
+		history := append(slices.Clone(prev), in)
+		return fn.Final[string, []string]{
+			Value: "ack: " + in, // returned to the caller
+			Save:  history,      // threaded into the next run's `prev`
+		}, nil
+	})
+```
+
+### Tasks
+
+`NewTask` wraps a function as a named, checkpoint-replayable unit of work.
+`Call` starts it in its own goroutine immediately — there is no Python-style
+"next tick" scheduling, because the Go executor is edge-driven and has no
+tick concept — and returns a `Future`; `Get` waits for the result.
+`AwaitAll` collects a batch of futures:
+
+```go
+fetch := fn.NewTask("fetch", func(ctx context.Context, url string) (string, error) {
+	return httpGet(ctx, url)
+}, fn.TaskOpts{})
+
+entry := fn.NewEntrypoint(fn.EntrypointOpts{Checkpointer: saver},
+	func(ctx context.Context, urls []string, prev int, hasPrev bool) ([]string, error) {
+		futs := make([]*fn.Future[string], len(urls))
+		for i, u := range urls {
+			futs[i] = fetch.Call(ctx, u) // concurrent: each Call starts at once
+		}
+		return fn.AwaitAll(ctx, futs...)
+	})
+```
+
+`Call` may only be reached from within an entrypoint function, from within
+another task, or from a StateGraph node via an `Entrypoint.Invoke` inside
+that node (the run dispatcher travels through the context); anywhere else it
+panics. The task name must be unique within an entrypoint's call graph — it
+identifies the task in deterministic task IDs and in the cache namespace.
+
+> **Divergence note:** there is no bare task-inside-a-StateGraph-node form —
+> Python's `@task` called directly in a node relies on Pregel config
+> injection with no Go equivalent. The Go shape is invoking an `Entrypoint`
+> inside the node (`add.Invoke(ctx, ...)` within the `NodeFunc`).
+
+### Task policies: retry, cache, timeout
+
+`TaskOpts` mirrors the `@task(retry_policy=..., cache_policy=...,
+timeout=...)` decorator arguments:
+
+- **Retry** — a `graph.RetryPolicy` with the same semantics as per-node
+  retry; nil means never retry.
+- **Cache** — a `graph.CachePolicy`, inert unless the enclosing entrypoint
+  has a `checkpoint.Cache` backend installed (`EntrypointOpts.Cache`) — the
+  same "policy without backend is inert" rule as node caching. Only
+  successful results are cached. The key is a hash of the call arguments and
+  the namespace is `__fn_writes/<task-name>`; a custom `KeyFunc` receives
+  the arguments packed as `map[string]any{"input": in}` (Python's
+  `key_func` receives `*args/**kwargs` — documented divergence).
+- **Timeout** — caps each attempt. A goroutine cannot be force-killed, so a
+  timeout can only cancel the attempt's context and stop waiting for it;
+  the abandoned attempt keeps running in the background, so task functions
+  should honor their context. (Python likewise does not support timeout for
+  sync task functions.)
+
+### Interrupt and resume
+
+An entrypoint — or a task inside it — calls `graph.Interrupt(ctx, value)` to
+pause the run for external input. `Invoke` then returns the zero output and
+a `*fn.InterruptError` carrying the pending interrupts (recover with
+`errors.As`). Resume by invoking again on the same thread with
+`graph.Options{ThreadID: ..., Resume: ...}`: the resume value becomes the
+return value of the paused `Interrupt` call, and multiple interrupts match
+resume values by index order:
+
+```go
+entry := fn.NewEntrypoint(fn.EntrypointOpts{Checkpointer: saver},
+	func(ctx context.Context, in string, prev int, hasPrev bool) (string, error) {
+		approved, _ := graph.Interrupt(ctx, map[string]any{"draft": in}).(bool)
+		if !approved {
+			return "rejected", nil
+		}
+		return publish(ctx, in)
+	})
+
+_, err := entry.Invoke(ctx, "draft text", graph.Options{ThreadID: "t-1"})
+var ierr *fn.InterruptError
+if errors.As(err, &ierr) {
+	// ierr.Interrupts[0].Value == map[string]any{"draft": "draft text"}
+	out, err := entry.Invoke(ctx, "", graph.Options{ThreadID: "t-1", Resume: true})
+	// input is ignored on resume; out is whatever publish returned
+	_ = out
+}
+```
+
+`Entrypoint.Stream` runs like `Invoke` and yields chunks, but the mode is
+fixed to `updates` (Python's entrypoint default `stream_mode="updates"`).
+
+> **Divergence note:** individual task calls produce no stream chunks —
+> tasks execute inside the entrypoint node and are not graph tasks (Python's
+> PUSH tasks stream per-task updates).
+
+### Checkpoint replay and determinism
+
+On resume the entrypoint function **re-runs from the beginning**; each
+`Call` whose deterministic task ID — a hash of the recovery checkpoint ID,
+step, task name, and per-run call index — matches a pending write in the
+checkpoint is filled from the persisted result **without re-executing**
+(errors are persisted the same way and re-thrown from `Get`). The pattern is
+correct exactly when replays are deterministic:
+
+- The task call order must be deterministic across replays of the same
+  entrypoint (the per-run call counter restarts from zero) — put
+  non-deterministic logic (time, randomness, network) inside tasks, never
+  in the entrypoint's control flow. Interrupts must likewise surface in a
+  deterministic `Get` order.
+- When a run pauses on an interrupt, tasks that started but did not finish
+  are canceled; results that already completed land in the checkpoint's
+  pending writes before the pause.
+- `I` / `O` / `S` and task inputs/outputs must round-trip through the
+  checkpoint serde (JSON-native values or the closed type registry); with a
+  persistent saver an unregistered type is a descriptive error, never a
+  silent downgrade.
+
+> **Not ported:** Python's `@entrypoint(checkpointer=..., store=...)`
+> cross-thread `BaseStore` — `EntrypointOpts` has no store field. The full
+> 15-item divergence list (replayed errors lose their concrete type, a
+> failed run poisons its thread, cache + interrupt-in-task is an unsupported
+> combination, ...) lives in the `langgraph/fn` package godoc.
+
+## Breaking changes (M5 saver interface)
+
+M5 evolved the `checkpoint.Saver` contract for functional-API task tracking
+and metadata filtering — a sanctioned pre-1.0 break. Custom `Saver`
+implementations must be updated:
+
+```go
+// before
+type ListOptions struct { Before *Config; Limit int }
+PutWrites(ctx context.Context, cfg Config, writes []Write, taskID string) error
+type Write struct { TaskID string; Channel string; Value any }
+// after
+type ListOptions struct { Before *Config; Limit int; Filter map[string]any }
+PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error
+type Write struct { TaskID string; Channel string; Value any; TaskPath string }
+```
+
+Migration notes for custom savers:
+
+- **`PutWrites`** — persist the new `taskPath` argument alongside each write
+  (it identifies the task's position within the run, e.g. `a@0/b@0`), or
+  ignore it and store `""`.
+- **`ListOptions.Filter`** — map-containment semantics over checkpoint
+  metadata: a checkpoint matches when its metadata contains every filter
+  key/value (`checkpoint.MetadataMatchesFilter`). The Postgres saver
+  evaluates it server-side with `@>`; the memory and SQLite savers do the
+  equivalent in-process comparison. Filter keys are closed to `source` /
+  `step` / `parents` — the fields of `checkpoint.Metadata`.
+- **SQLite databases created before M5** keep working: `sqlite.New` detects
+  a `writes` table without the `task_path` column at startup and adds it
+  with `ALTER TABLE ... ADD COLUMN` (Python added the same column in its own
+  migration v9).
 
 ## `create_react_agent` ≡ `agents.CreateAgent`
 
