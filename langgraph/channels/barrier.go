@@ -85,6 +85,9 @@ func (c *Barrier) IsAvailable() bool {
 // Checkpoint persists the partial arrival set as a sorted []string (the serde
 // registry's "[]string" entry round-trips it); an empty barrier is omitted
 // from the checkpoint, matching the other channels' empty-omit contract.
+// Divergence from Python: NamedBarrierValue.checkpoint() persists the empty
+// set, but the omission is recovery-equivalent — FromCheckpoint(nil) already
+// restores an empty arrival set, so no state is lost either way.
 func (c *Barrier) Checkpoint() (any, bool) {
 	if len(c.seen) == 0 {
 		return nil, false

@@ -199,10 +199,11 @@ var joinWantValues = map[string]any{
 	"answer": "doc1,doc2,doc3,doc4",
 }
 
-// TestJoinSameSuperstepExactlyOnce ports test_simple_multi_edge
-// (test_pregel.py:3059): up and side complete in the same superstep; down
+// TestJoinExactlyOnceAcrossSupersteps ports test_simple_multi_edge
+// (test_pregel.py:3059): the join parents up and side complete in DIFFERENT
+// supersteps (up first, side one step later via the up→side edge); down
 // (join child of [up, side]) still runs exactly once.
-func TestJoinSameSuperstepExactlyOnce(t *testing.T) {
+func TestJoinExactlyOnceAcrossSupersteps(t *testing.T) {
 	var downCalls int
 	g := NewStateGraph()
 	g.AddReducer("my_key", func(existing, update any) (any, error) {
@@ -221,9 +222,10 @@ func TestJoinSameSuperstepExactlyOnce(t *testing.T) {
 	})
 	g.AddEdge(types.START, "up")
 	g.AddEdge("up", "side")
-	// Python's `other` is an implicit finish point (test_pregel.py:3077);
-	// Go's staticNext requires an explicit outgoing edge, so wire it to END
-	// (its write still lands in the final state, as Python asserts).
+	// Python's `other` has no outgoing edge — only `down` is an explicit
+	// finish point (test_pregel.py:3086). Go's staticNext requires an
+	// explicit outgoing edge, so wire it to END (its write still lands in
+	// the final state, as Python asserts).
 	g.AddEdge("up", "other")
 	g.AddEdge("other", types.END)
 	g.AddJoinEdge([]string{"up", "side"}, "down")
@@ -241,7 +243,7 @@ func TestJoinSameSuperstepExactlyOnce(t *testing.T) {
 		t.Fatalf("my_key = %v, want %q", res.Values["my_key"], "hello_more")
 	}
 	if downCalls != 1 {
-		t.Fatalf("downCalls = %d, want 1 (same-superstep parents trigger once)", downCalls)
+		t.Fatalf("downCalls = %d, want 1 (cross-superstep parents trigger once)", downCalls)
 	}
 }
 

@@ -91,4 +91,18 @@
 //     upper-bound clamp; the normal path is kept correct by the
 //     persistence invariant (a persisted consumed count never exceeds the
 //     resume queue).
+//
+//  16. Default retry predicate is narrower: graph.DefaultRetryOn does NOT
+//     retry errors outside its listed categories (net.Error,
+//     context.DeadlineExceeded, 5xx HTTPStatus), while Python's
+//     `default_retry_on` retries everything except its exclusions. Task
+//     retries reuse the graph policy, so fn.Task inherits this divergence
+//     (declared at graph/policy.go: DefaultRetryOn); supply RetryOn for
+//     domain errors.
+//
+//  17. Single retry policy only: TaskOpts.Retry takes ONE *graph.RetryPolicy,
+//     while Python's `@task(retry_policy=...)` accepts a SEQUENCE of policies
+//     (tried in order per attempt). Modeling per-attempt policy switching has
+//     no Go equivalent — a functional narrowing, not a behavior difference
+//     for the single-policy case.
 package fn
