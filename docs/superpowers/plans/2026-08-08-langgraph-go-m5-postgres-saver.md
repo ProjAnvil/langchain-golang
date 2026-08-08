@@ -52,7 +52,7 @@ type Saver interface {
     PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error
 }
 ```
-- **D2. 进程内 Filter 实现**（memory/sqlite 共用，根 module `checkpoint` 包导出）：`checkpoint.MetadataMatchesFilter(md Metadata, filter map[string]any) bool`，JSON 归一化后做顶层键包含比较（完整代码见 Task 1 Step 3）。
+- **D2. 进程内 Filter 实现**（memory/sqlite 共用，根 module `checkpoint` 包导出）：`checkpoint.MetadataMatchesFilter(md Metadata, filter map[string]any) bool`，JSON 归一化后做**递归包含比较**（对象子集递归、数组逐元素、标量相等——与 Postgres `@>` 严格对齐；完整代码见 Task 1 Step 3）。
 - **D3. sqlite schema 演进**：`writes` 表加 `task_path TEXT NOT NULL DEFAULT ''`；`New` 启动时用 `PRAGMA table_info(writes)` 检测列缺失则 `ALTER TABLE writes ADD COLUMN task_path TEXT NOT NULL DEFAULT ''`，兼容旧库（完整代码见 Task 1 Step 4）。
 - **D4. savertest 套件**：根 module 新包 `langgraph/checkpoint/savertest`，导出 `func Run(t *testing.T, newSaver func(t *testing.T) checkpoint.Saver)`；`newSaver` 必须返回**空存储**的 saver（postgres 工厂内部 TRUNCATE 四表）。套件对 MemorySaver（根 module 内）与 sqlite（嵌套 module）运行；Task 4 对 postgres 运行。
 - **D5. postgres schema**：MIGRATIONS v0–v9 逐条照搬 Python（`libs/checkpoint-postgres/langgraph/checkpoint/postgres/base.py:43-91`），唯一改动是 v2 的 `version TEXT NOT NULL` → `version BIGINT NOT NULL`（spec 文档化分歧）。Setup 不在事务内执行（v6–v8 为 `CREATE INDEX CONCURRENTLY`）。
@@ -64,7 +64,7 @@ type Saver interface {
 - **写入路径**（`__init__.py:263-345`）：`put` 把 `channel_values` 拆两类——`v is None or isinstance(v, (str, int, float, bool))` 内联留在 checkpoint JSONB（:316-317），其余 pop 进 `blob_values`（:319）；blobs 行只覆盖 `new_versions` 中出现的 channel（:322-324），经 `_dump_blobs`（`base.py:549-572`）按 `(channel, cast(str, version))` 编码为 `(type, blob)`；blobs 用 `ON CONFLICT DO NOTHING`（不可变版本化行，`base.py:131-135`），checkpoints 用 `ON CONFLICT DO UPDATE`（`base.py:137-144`）。
 - **writes**：`put_writes`（`__init__.py:347-379`）批次级选择 UPSERT vs INSERT...DO NOTHING——`all(w[0] in WRITES_IDX_MAP for w in writes)` 时 UPSERT；idx 经 `WRITES_IDX_MAP.get(channel, idx)`（`{ERROR:-1, SCHEDULED:-2, INTERRUPT:-3, RESUME:-4}`，`libs/checkpoint/langgraph/checkpoint/base/__init__.py:795`）；SQL 见 `base.py:146-159`（含 `task_path` 列）。Go sqlite 已实现同语义（`checkpoint/sqlite/sqlite.go:215-258`），postgres 照搬。
 - **读取路径**：inline values 与 blobs 合并组装（`_load_checkpoint_tuple` 合并 `value["checkpoint"]["channel_values"]` 与 `_load_blobs`，`__init__.py:581-583`）；blob 行 `type == "empty"` 跳过（`base.py:375-384`）；metadata 过滤用 `metadata @> %s`（`base.py:653-656`）。
-- **测试移植基线**：`libs/checkpoint-postgres/tests/test_sync.py` 的 `test_data`（:141-175）、`test_search`（:214-260，filter 单键/多键/空/无匹配四组查询）、`test_null_chars`（:262，JSONB 拒绝 `\u0000`）、`test_nonnull_migrations`（:277，migration 后约束检查）。`test_combined_metadata`（:189-211）依赖 Python config 任意 metadata 键（`run_id` 合并），**Go 无对应概念，不移植**（Go Metadata 封闭结构体，文档化分歧）。
+- **测试移植基线**：`libs/checkpoint-postgres/tests/test_sync.py` 的 `test_data`（:141-175）、`test_search`（:214-260，filter 单键/多键/空/无匹配四组查询）、`test_null_chars`（:262——**Python 并非报错**：`get_checkpoint_metadata` 在写入前把 metadata 字符串中的 `\u0000` 静默剥离（`libs/checkpoint/langgraph/checkpoint/base/__init__.py:762,772`），用例断言剥离后往返成功；Go 有意分歧为 fail-loud，见 Task 4 `TestNullCharsRejectedDivergence`）、`test_nonnull_migrations`（:277——是对 MIGRATIONS 列表的**静态 lint**：每条 migration 去掉前导注释后首个 token 非空，不触碰数据库；Go 侧对应为 Task 3 的 `TestMigrations` 静态断言，而非 Task 4 的幂等用例）。`test_combined_metadata`（:189-211）依赖 Python config 任意 metadata 键（`run_id` 合并），**Go 无对应概念，不移植**（Go Metadata 封闭结构体，文档化分歧）。
 
 ---
 
@@ -79,6 +79,7 @@ type Saver interface {
 - Test: `langgraph/checkpoint/sqlite/sqlite_test.go` — 全部 `PutWrites` 调用点（:242,:249,:254,:259,:296,:313,:361）加 `""` 实参；新增旧库迁移用例
 - Modify: `langgraph/graph/resume.go` — :54 的 `saver.PutWrites(ctx, cfg, writes, taskID)` 改为 `saver.PutWrites(ctx, cfg, writes, taskID, "")`（`persistInterrupts` 服务 graph.go:752/:919/:985 三处边界/in-node 中断路径，签名不动）
 - Modify: `langgraph/graph/graph.go` — :929 的 `PutWrites(ctx, *currentCfg, writes, taskID)` 追加 `""` 实参
+- Modify: `langchain/internal/agentruntime/checkpoint/checkpoint.go` — 刷新过时 doc comment（当前只记录 M2 的 Saver break，补记 M5 的 Filter/TaskPath/PutWrites 变更）
 
 **Interfaces:**
 - Consumes: 现有 `checkpoint.Saver`（checkpoint.go:174-192）、`MemorySaver`（memory.go:24）、sqlite `Saver`（sqlite.go:70）。
@@ -89,26 +90,25 @@ type Saver interface {
   - `TestPutWritesTaskPathRoundTrip`：Put 一个 checkpoint 后 `PutWrites(ctx, cfg, []Write{{Channel: "c", Value: "v"}}, "task-1", "path/a")`，断言 `GetTuple` 的 `PendingWrites[0].TaskPath == "path/a"`；再断言默认 `""` 实参时 `TaskPath == ""`。
   - 同步把 :166 的现有调用改为四实参形式（加 `""`）。
 - [ ] **Step 2: 写失败测试（filter.go 单元测试 + sqlite 侧）** — `checkpoint/filter_test.go`：
-  - 表驱动：`Metadata{Source:"loop", Step:1, Parents:map[string]string{"": "p1"}}` 对 `nil`、`{}`、`{"source":"loop"}`、`{"step":1}`（注意 filter 值写 `1` 即 int——归一化后必须匹配）、`{"step":1.0}`（float64 同样匹配，对齐 JSONB 数字相等语义）、`{"parents":map[string]string{"":"p1"}}` 返回 true；对 `{"source":"input"}`、`{"step":2}`、`{"missing":"x"}`、`{"parents":map[string]string{"":"other"}}` 返回 false。
+  - 表驱动：`Metadata{Source:"loop", Step:1, Parents:map[string]string{"": "p1", "sub": "p2"}}` 对 `nil`、`{}`、`{"source":"loop"}`、`{"step":1}`（注意 filter 值写 `1` 即 int——归一化后必须匹配）、`{"step":1.0}`（float64 同样匹配，对齐 JSONB 数字相等语义）、`{"parents":map[string]string{"":"p1"}}`（**子集包含即 true**，对齐 `@>` 的对象递归包含语义——reflect.DeepEqual 在此会误判 false）、`{"parents":map[string]string{"":"p1","sub":"p2"}}` 返回 true；对 `{"source":"input"}`、`{"step":2}`、`{"missing":"x"}`、`{"parents":map[string]string{"":"other"}}`、`{"parents":map[string]string{"extra":"x"}}`（doc 中无此键）返回 false。
   - sqlite 侧：`sqlite_test.go` 新增 `TestTaskPathColumnMigration`——先用 `database/sql` 直接建一个**旧 schema**（无 `task_path` 列，即当前 `setupSQL` 去掉该列）的 db 文件并插入一行 writes，关闭；再 `sqlite.New(path, ...)` 打开，断言旧行 `TaskPath == ""` 可读出、新 `PutWrites(..., "p")` 的 `TaskPath == "p"` 可往返。把既有 7 处 `PutWrites` 调用加 `""` 实参。
 - [ ] **Step 3: 运行验证失败**（编译失败即失败——签名未改），然后实现根 module 部分。`checkpoint/checkpoint.go` 按 D1 改三处（含 doc comment：`Filter` 注明"键集合封闭为 source/step/parents"、`TaskPath` 注明 Python 对应与当前调用点传 `""`）。新建 `checkpoint/filter.go` 完整代码：
 ```go
 package checkpoint
 
-import (
-	"encoding/json"
-	"reflect"
-)
+import "encoding/json"
 
-// MetadataMatchesFilter reports whether md contains every key/value pair in
-// filter, the in-process equivalent of Postgres's `metadata @> filter`
-// containment used by persistent savers. The metadata document is md's JSON
-// projection — {"source": ..., "step": ..., "parents": ...} — so filter keys
-// are limited to source/step/parents (Metadata is a closed struct, unlike
-// Python's free-form CheckpointMetadata). Both sides are normalized through
-// JSON before comparison so `step` filters match whether written as int or
-// float64 (JSONB numeric equality), and nested `parents` values compare by
-// JSON equality.
+// MetadataMatchesFilter reports whether md contains filter, the in-process
+// equivalent of Postgres's `metadata @> filter` JSONB containment used by
+// persistent savers. The metadata document is md's JSON projection —
+// {"source": ..., "step": ..., "parents": ...} — so filter keys are limited
+// to source/step/parents (Metadata is a closed struct, unlike Python's
+// free-form CheckpointMetadata). Both sides are normalized through JSON
+// before comparison so `step` filters match whether written as int or
+// float64 (JSONB numeric equality). Containment is recursive, mirroring @>:
+// an object filter matches when every key is present and contained, an array
+// filter when every element is contained in some element of the target, and
+// scalars when equal.
 func MetadataMatchesFilter(md Metadata, filter map[string]any) bool {
 	if len(filter) == 0 {
 		return true
@@ -117,18 +117,55 @@ func MetadataMatchesFilter(md Metadata, filter map[string]any) bool {
 	if md.Parents != nil {
 		doc["parents"] = md.Parents
 	}
-	normDoc := normalizeJSON(doc)
-	for k, v := range filter {
-		got, ok := normDoc[k]
-		if !ok || !reflect.DeepEqual(got, normalizeJSON(v)) {
+	return jsonContains(normalizeJSON(doc), normalizeJSON(filter))
+}
+
+// jsonContains reports whether doc contains filter with Postgres @>
+// semantics: objects contain recursively (every filter key must be present
+// and contained), arrays contain element-wise, scalars compare by equality
+// (after JSON normalization, so int and float64 encodings of the same number
+// are equal).
+func jsonContains(doc, filter any) bool {
+	switch fv := filter.(type) {
+	case map[string]any:
+		dv, ok := doc.(map[string]any)
+		if !ok {
 			return false
 		}
+		for k, v := range fv {
+			d, ok := dv[k]
+			if !ok || !jsonContains(d, v) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		dv, ok := doc.([]any)
+		if !ok {
+			return false
+		}
+		for _, item := range fv {
+			found := false
+			for _, d := range dv {
+				if jsonContains(d, item) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	default:
+		// Scalars: both sides are JSON-normalized (float64/string/bool/nil),
+		// so == compares with JSONB numeric equality semantics.
+		return doc == filter
 	}
-	return true
 }
 
 // normalizeJSON round-trips v through encoding/json so numbers become
-// float64 and maps/slices compare with JSON semantics.
+// float64 and maps/slices become map[string]any/[]any.
 func normalizeJSON(v any) any {
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -213,10 +250,20 @@ func ensureTaskPathColumn(db *sql.DB) error {
 ```
   （Filter 为空时维持现有 SQL 级 Before/Limit 路径不变。）
   7. `graph/resume.go:54` 与 `graph/graph.go:929` 加 `""` 实参。
+  8. 顺手修正 sqlite `reservedWriteIdx`（sqlite.go:55-64）的过时注释（**行为不改**）：Python `WRITES_IDX_MAP` 为 `{ERROR:-1, SCHEDULED:-2, INTERRUPT:-3, RESUME:-4}`（`libs/checkpoint/langgraph/checkpoint/base/__init__.py:795`），**TASKS 不在 map 中**——Python 的 TASKS 写走位置 idx；Go 以 `__tasks__` 顶位 -2 属近似（sqlite 既有行为，postgres 照搬）。注释须写明此分歧及碰撞风险：同批次多条 `__tasks__` 写共享 idx -2，all-reserved 批次 UPSERT 只保留最后一条、mixed 批次 `DO NOTHING` 只保留第一条。
+  9. 刷新 `langchain/internal/agentruntime/checkpoint/checkpoint.go` 的包注释（当前只记录 M2 的 break），改为：
+```go
+// The shim remains for in-repo compatibility only. Note that the Saver
+// interface broke twice pre-1.0: in M2 (the versioned
+// GetTuple/List/Put/PutWrites/DeleteThread contract keyed by Config replaced
+// the M1 Get/Put/Delete methods) and in M5 (ListOptions gained Filter,
+// Write gained TaskPath, and PutWrites gained a taskPath parameter); the
+// type aliases still resolve unchanged.
+```
 - [ ] **Step 5: 门禁 PASS** — 根 module `go build ./... && go vet ./... && go test ./...`；`cd langgraph/checkpoint/sqlite && go build ./... && go vet ./... && go test ./...`。
 - [ ] **Step 6: Commit** —
 ```
-git add langgraph/checkpoint/checkpoint.go langgraph/checkpoint/filter.go langgraph/checkpoint/filter_test.go langgraph/checkpoint/checkpoint_test.go langgraph/checkpoint/memory.go langgraph/checkpoint/sqlite/sqlite.go langgraph/checkpoint/sqlite/sqlite_test.go langgraph/graph/resume.go langgraph/graph/graph.go
+git add langgraph/checkpoint/checkpoint.go langgraph/checkpoint/filter.go langgraph/checkpoint/filter_test.go langgraph/checkpoint/checkpoint_test.go langgraph/checkpoint/memory.go langgraph/checkpoint/sqlite/sqlite.go langgraph/checkpoint/sqlite/sqlite_test.go langgraph/graph/resume.go langgraph/graph/graph.go langchain/internal/agentruntime/checkpoint/checkpoint.go
 git commit -m "feat(langgraph/checkpoint): ListOptions.Filter metadata filter and PutWrites task_path (breaking)"
 ```
 
@@ -343,12 +390,13 @@ module github.com/projanvil/langchain-golang/langgraph/checkpoint/postgres
 go 1.23.0
 
 require (
-	github.com/jackc/pgx/v5 v5.x.x
+	github.com/jackc/pgx/v5 v5.7.6
 	github.com/projanvil/langchain-golang v0.0.0
 )
 
 replace github.com/projanvil/langchain-golang => ../../../
 ```
+（`v5.7.6` 为写下限的真实版本号；随后的 `go get github.com/jackc/pgx/v5@latest` 会把它解析到当时最新版，go.sum 以解析结果为准。）
 然后 `cd langgraph/checkpoint/postgres && go get github.com/jackc/pgx/v5@latest && go mod tidy`（需要网络；若 module fetch 失败，STOP 并报告 BLOCKED）。
 - [ ] **Step 2: 写 `doc.go`**（包注释，英文，含全部文档化分歧）：
 ```go
@@ -377,6 +425,10 @@ replace github.com/projanvil/langchain-golang => ../../../
 //     dict/list to blobs).
 //   - checkpoint.Metadata is a closed struct (Source/Step/Parents), so
 //     ListOptions.Filter keys are limited to those three.
+//   - Null bytes in strings: Python silently strips \u0000 from metadata
+//     strings before writing (langgraph/checkpoint/base/__init__.py's
+//     get_checkpoint_metadata, lines 762 and 772); Go fails loudly instead —
+//     Put returns an error rather than silently mutating user data.
 //   - No Shallow saver variant and no delta channel history fast path:
 //     Python's ShallowPostgresSaver and _DeltaSnapshot have no Go
 //     counterparts.
@@ -387,7 +439,7 @@ package postgres
   - `TestSplitChannelValues`：混合 map 拆分后 inline 恰含原语键、blobs 恰含其余键（并集=原键集、交集为空）。
   - `TestCheckpointProjectionRoundTrip`：含 inline 原语 + typed Next Arg 的 checkpoint 经 `encodeCheckpoint`→`decodeCheckpoint`（无 blobs 合并）后 DeepEqual（ChannelValues 只含 inline 键）。
   - `TestMigrations`：`len(Migrations) == 10`；`Migrations[6]`、`[7]`、`[8]` 含 `"CREATE INDEX CONCURRENTLY"`；`Migrations[2]` 含 `"version BIGINT NOT NULL"`（Go 分歧行）；`Migrations[9]` 含 `"task_path"`。
-  - `TestListQuery`：`listQuery` 对空 Filter/有 Filter/Before/Limit 各组合的 SQL 文本与参数个数断言（`@> $N::jsonb` 片段存在）。
+  - `TestListQuery`：`listQuery` 对空 Filter/有 Filter/Before/Limit 各组合的 SQL 文本与参数个数断言（`@> $N::jsonb` 片段存在）；`Filter` 含不可 JSON-marshal 值（如 `map[string]any{"bad": func(){}}`）时返回非 nil error（不得吞错）。
   运行 `go test ./...` 验证编译失败（包仅有 doc.go/go.mod）。
 - [ ] **Step 4: 写 `migrations.go`** — 逐字照搬 Python `base.py:43-91`，唯一改动为 v2 的 version 列类型（行内注释标明分歧）：
 ```go
@@ -506,9 +558,16 @@ const (
     ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) DO NOTHING`
 )
 
-// reservedWriteIdx maps reserved channels to their negative write idx,
-// mirroring Python's WRITES_IDX_MAP {ERROR:-1, SCHEDULED:-2, INTERRUPT:-3,
-// RESUME:-4}; Go has no SCHEDULED/RESUME writes (same comment as sqlite's).
+// reservedWriteIdx maps reserved channels to their negative write idx.
+// Divergence from Python's WRITES_IDX_MAP {ERROR:-1, SCHEDULED:-2,
+// INTERRUPT:-3, RESUME:-4} (langgraph/checkpoint/base/__init__.py:795):
+// Python's map has NO TASKS entry — its TASKS writes use the positional
+// idx — but the Go executor persists Command.Goto routing as __tasks__
+// writes, so Go maps __tasks__ to -2, matching the sqlite saver's
+// established approximation (Go has no SCHEDULED/RESUME writes). Collision
+// risk, shared with sqlite: multiple __tasks__ writes in one batch all map
+// to idx -2, so an all-reserved batch's upsert keeps only the last such
+// write and a mixed batch's ON CONFLICT DO NOTHING keeps only the first.
 var reservedWriteIdx = map[string]int{
 	checkpoint.ReservedError:     -1,
 	checkpoint.ReservedTasks:     -2,
@@ -525,8 +584,13 @@ type Saver struct {
 
 var _ checkpoint.Saver = (*Saver)(nil)
 
-// New returns a Saver on pool, persisting through serde.
+// New returns a Saver on pool, persisting through serde. Both arguments are
+// required; New panics on a nil pool or nil serde (programmer error —
+// Python's PostgresSaver likewise cannot function without a connection).
 func New(pool *pgxpool.Pool, serde checkpoint.Serializer) *Saver {
+	if pool == nil {
+		panic("postgres: New requires a non-nil *pgxpool.Pool")
+	}
 	if serde == nil {
 		panic("postgres: New requires a non-nil checkpoint.Serializer")
 	}
@@ -662,6 +726,9 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 // negative idx (re-invocation overwrites); any other batch INSERTs with
 // ON CONFLICT DO NOTHING at the positional idx (first write wins).
 func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
+	if len(writes) == 0 {
+		return nil // no-op, matching Python's executemany with an empty batch
+	}
 	cpID, err := s.resolveCheckpointID(ctx, cfg)
 	if err != nil {
 		return err
@@ -722,7 +789,10 @@ func (s *Saver) GetTuple(ctx context.Context, cfg checkpoint.Config) (*checkpoin
 // List implements checkpoint.Saver: newest checkpoint ID first, with
 // Before, metadata @> Filter (server-side JSONB containment) and Limit.
 func (s *Saver) List(ctx context.Context, cfg checkpoint.Config, opts checkpoint.ListOptions) ([]checkpoint.Tuple, error) {
-	query, args := listQuery(cfg, opts)
+	query, args, err := listQuery(cfg, opts)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("postgres saver: list thread %q: %w", cfg.ThreadID, err)
@@ -762,8 +832,9 @@ func (s *Saver) List(ctx context.Context, cfg checkpoint.Config, opts checkpoint
 
 // listQuery builds the checkpoints SELECT with Before / metadata @> Filter /
 // Limit predicates. Filter marshals to a JSONB containment argument
-// (Python's `metadata @> %s`, base.py:655).
-func listQuery(cfg checkpoint.Config, opts checkpoint.ListOptions) (string, []any) {
+// (Python's `metadata @> %s`, base.py:655); a non-JSON-marshalable filter
+// value (e.g. a func) is an error, never silently dropped.
+func listQuery(cfg checkpoint.Config, opts checkpoint.ListOptions) (string, []any, error) {
 	query := `SELECT checkpoint_id, parent_checkpoint_id, checkpoint, metadata FROM checkpoints WHERE thread_id = $1 AND checkpoint_ns = $2`
 	args := []any{cfg.ThreadID, cfg.CheckpointNS}
 	if opts.Before != nil && opts.Before.CheckpointID != "" {
@@ -771,7 +842,10 @@ func listQuery(cfg checkpoint.Config, opts checkpoint.ListOptions) (string, []an
 		query += fmt.Sprintf(` AND checkpoint_id < $%d`, len(args))
 	}
 	if len(opts.Filter) > 0 {
-		filterJSON, _ := json.Marshal(opts.Filter)
+		filterJSON, err := json.Marshal(opts.Filter)
+		if err != nil {
+			return "", nil, fmt.Errorf("postgres saver: encode list filter: %w", err)
+		}
 		args = append(args, string(filterJSON))
 		query += fmt.Sprintf(` AND metadata @> $%d::jsonb`, len(args))
 	}
@@ -780,7 +854,7 @@ func listQuery(cfg checkpoint.Config, opts checkpoint.ListOptions) (string, []an
 		args = append(args, opts.Limit)
 		query += fmt.Sprintf(` LIMIT $%d`, len(args))
 	}
-	return query, args
+	return query, args, nil
 }
 
 // assemble decodes one checkpoints row and merges in its blob channel
@@ -1147,11 +1221,11 @@ func TestPostgresSaverContract(t *testing.T) {
 }
 ```
 postgres 专属用例（同文件继续）：
-  1. `TestSetupIdempotent`：`NewFromConnString(ctx, testDSN, serde.NewJSONSerializer())` → `Setup` 两次均成功；SQL 断言 `SELECT count(*), max(v) FROM checkpoint_migrations` 为 `(10, 9)`；第三次 `NewFromConnString` + `Setup` 后 count 仍为 10（幂等，移植/扩展 `test_sync.py:277` `test_nonnull_migrations` 的约束验证意图）。
+  1. `TestSetupIdempotent`：`NewFromConnString(ctx, testDSN, serde.NewJSONSerializer())` → `Setup` 两次均成功；SQL 断言 `SELECT count(*), max(v) FROM checkpoint_migrations` 为 `(10, 9)`；第三次 `NewFromConnString` + `Setup` 后 count 仍为 10（**本用例只验证 Setup 幂等**；Python `test_nonnull_migrations`（test_sync.py:277）是对 MIGRATIONS 列表的静态 lint，其意图已由 Task 3 的 `TestMigrations` 静态断言覆盖，不在此重复）。
   2. `TestInlineBlobSplit`（inline/blobs 边界，D6）：Put 一个 checkpoint，`ChannelValues = {"s": "x", "b": true, "f": 1.5, "nilv": nil, "n": 7, "m": map[string]any{"a": 1}, "l": []any{1}}`，`newVersions` 全键 version 1。SQL 断言：`SELECT channel FROM checkpoint_blobs WHERE thread_id=$1 ORDER BY channel` 恰好 `["l","m","n"]`（int 进 blobs——Go 与 Python 的关键边界）；`SELECT checkpoint->'channel_values' FROM checkpoints ...` 的 JSON 键恰好 `["b","f","nilv","s"]` 且值正确。再 `GetTuple` 断言 `n` 还原为 `int(7)`、`m` 为 `map[string]any`。
   3. `TestMetadataContainmentFilter`（`@>` 服务端过滤）：两条 checkpoint（`{Source:"input",Step:-1}` / `{Source:"loop",Step:0,Parents:{"":"p1"}}`）；`List` 带 `Filter{"source":"loop"}` 返回 1 条；`Filter{"parents": map[string]string{"": "p1"}}` 返回 1 条（JSONB 嵌套包含）；`Filter{"step":2}` 返回 0 条。
   4. `TestPerVersionBlobDedup`（大 channel 值 per-version 去重）：cp1 `Put`（channel `big` = 大 `[]string`，version 1，在 newVersions 中）；cp2 以新 checkpoint ID `Put`，`big` 仍为 version 1 且再次出现在 newVersions——`ON CONFLICT DO NOTHING` 去重，`SELECT count(*) FROM checkpoint_blobs WHERE channel='big'` 为 1；cp3 把 `big` 推进到 version 2 后为 2；且三次 `GetTuple` 均读回正确值。
-  5. `TestNullCharsRejected`（移植 `test_sync.py:262` `test_null_chars`）：channel value / metadata-adjacent 字符串含 `\x00` 时 `Put` 返回非 nil error（JSONB 拒绝 `\u0000`）——断言报错而非静默写坏。
+  5. `TestNullCharsRejectedDivergence`（**有意分歧**，对标 `test_sync.py:262` `test_null_chars`）：Python 在写入前把 metadata 字符串中的 `\x00` 静默剥离（`libs/checkpoint/langgraph/checkpoint/base/__init__.py:762,772`），Go 选择 fail-loud——channel value 或 `Metadata.Source` 等字符串字段含 `\x00` 时 `Put` 返回非 nil error，断言报错而非静默改写用户数据；该分歧已写入 doc.go 清单。
   6. `TestPutWritesTaskPathStored`：直接 SQL `SELECT task_path FROM checkpoint_writes` 断言 `PutWrites(..., "path/a")` 落库为 `'path/a'`、默认 `''`（v9 列真实生效）。
 - [ ] **Step 3: Makefile** — `.PHONY` 行加 `test-postgres`，追加：
 ```make
@@ -1181,4 +1255,6 @@ git commit -m "test(langgraph/checkpoint/postgres): contract suite on embedded-p
   3. Python `test_search` 的"跨 namespace 搜索"（test_sync.py:253-259）在 Go 接口不存在（`Config.CheckpointNS` 精确匹配），套件注释中声明该分歧。
   4. MIGRATIONS 逐字照搬的唯一例外是 v2 的 `version` 列 TEXT→BIGINT（spec 已定分歧），在 migrations.go 行内注释与 doc.go 双重声明。
   5. `PutWrites` 调用点核实：`graph/graph.go:929`（中断 pending-writes 路径）与 `graph/resume.go:54`（`persistInterrupts` 内部，汇聚 graph.go:752/:919/:985 三处中断持久化）——共两个编辑点，均传 `""`。
+  6. Python `test_null_chars` 的真实语义是**静默剥离** `\x00`（`checkpoint/base/__init__.py:762,772`）而非报错——Go 有意分歧为 fail-loud（`TestNullCharsRejectedDivergence`，doc.go 清单已补此条）。
+- **Review 修订记录**（2026-08-08 审阅，无 blocker）：M1 null-chars 误标修正为有意分歧并补 doc.go 条目；m1 `MetadataMatchesFilter` 由 DeepEqual 改为递归 JSON 包含（严格对齐 `@>`：对象子集递归、数组逐元素、标量相等）；m2 修正 `reservedWriteIdx` 注释（WRITES_IDX_MAP 无 TASKS，Go 以 `__tasks__` 顶位 -2 属近似，写明碰撞风险；行为不改）；m3 `TestSetupIdempotent` 与 `test_nonnull_migrations`（静态 lint，由 `TestMigrations` 覆盖）解耦；m4 补防御（`New` 拒 nil pool、`PutWrites` 空批次早退、`listQuery` 返回 error 不吞 marshal 错）；n1 go.mod 写下限版本 v5.7.6；n2 刷新 agentruntime shim 注释；n3 修正 "metadata-adjacent" 措辞。
 - **风险**：(a) pgx/v5 与 embedded-postgres 的 `go get` 需要网络（Task 3 Step 1 / Task 4 Step 1 均标明 BLOCKED 处理）；(b) Setup 绝不包事务（CONCURRENTLY 限制），代码注释与测试双重固定；(c) embedded-postgres 首跑下载 ~30MB，`-short` 跳过路径在 TestMain 与每个测试双重保障；(d) 嵌套 module 对根 `go test ./...` 不可见——Task 4 的 Makefile target 与 Step 4 门禁分别运行。
