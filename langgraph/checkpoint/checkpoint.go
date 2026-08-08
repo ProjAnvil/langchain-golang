@@ -99,6 +99,17 @@ const (
 	// interrupt() sends (RESUME, scratchpad.resume); `RESUME = "__resume__"`,
 	// `_internal/_constants.py:11`).
 	ReservedResume = "__resume__"
+	// ReservedFnConsumed persists how many resume values a functional-API
+	// task's execution consumed via Interrupt before completing (fn package);
+	// Value is an int. Go runs fn tasks inside the entrypoint node, so they
+	// share the node's single resume queue (Python gives each @task call its
+	// own Pregel task and scratchpad): when such a task's result is replayed
+	// from a checkpoint instead of re-executed, its Interrupt calls do not
+	// re-fire, and this count lets the replay advance the shared queue past
+	// the values the original execution consumed, keeping later Interrupt
+	// calls aligned with their resume values. Go-only compensation — Python
+	// has no counterpart write.
+	ReservedFnConsumed = "__fn_consumed__"
 )
 
 // Write is a single pending write recorded against a checkpoint by a task,

@@ -14,15 +14,16 @@ import (
 // results. It reaches Task.Call through the context, the same injection
 // pattern as graph.Interrupt (graph/graph.go:1127-1128).
 type dispatcher struct {
-	mu      sync.Mutex
-	counts  map[string]int              // parentPath -> next call index (per-run replay counter)
-	replay  map[string]checkpoint.Write // deterministic task ID -> persisted result write; nil on a fresh run
-	cpID    string                      // replay base: the checkpoint the run resumed from
-	ns      string                      // checkpoint namespace (always "" — fn runs are root-namespace)
-	step    int                         // replay base: that checkpoint's Metadata.Step
-	cache   checkpoint.Cache            // EntrypointOpts.Cache; nil disables task caching
-	results []taskResult                // every outcome completed this run (execution, replay, cache hit)
-	sealed  bool                        // set at run end (after cancel); record() drops everything once sealed
+	mu       sync.Mutex
+	counts   map[string]int              // parentPath -> next call index (per-run replay counter)
+	replay   map[string]checkpoint.Write // deterministic task ID -> persisted result write; nil on a fresh run
+	consumed map[string]int              // deterministic task ID -> resume values the persisted execution consumed (nil on a fresh run)
+	cpID     string                      // replay base: the checkpoint the run resumed from
+	ns       string                      // checkpoint namespace (always "" — fn runs are root-namespace)
+	step     int                         // replay base: that checkpoint's Metadata.Step
+	cache    checkpoint.Cache            // EntrypointOpts.Cache; nil disables task caching
+	results  []taskResult                // every outcome completed this run (execution, replay, cache hit)
+	sealed   bool                        // set at run end (after cancel); record() drops everything once sealed
 }
 
 type taskResult struct {
@@ -32,6 +33,7 @@ type taskResult struct {
 	value      any    // set when isErr is false (falsy values included — the channel carries the state, not truthiness)
 	errMsg     string // set when isErr is true
 	isErr      bool
+	consumed   int // resume values the execution consumed via Interrupt (0 for replayed non-interrupting tasks)
 }
 
 type dispatcherKey struct{} // context key for *dispatcher
@@ -112,6 +114,16 @@ func (d *dispatcher) replayWrite(taskID string) (checkpoint.Write, bool) {
 	return w, ok
 }
 
+// replayConsumed returns how many resume values the persisted execution of
+// taskID consumed via Interrupt (0 on a fresh run / replay miss / a task
+// that never interrupted). Task.Call advances the node's shared resume queue
+// by this count when it replays the result (see graph.ReplayInterruptConsumption).
+func (d *dispatcher) replayConsumed(taskID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.consumed[taskID]
+}
+
 // loadReplay builds the replay table from the checkpoint the run resumed
 // from, when — and only when — one of the two gates holds:
 //
@@ -124,8 +136,10 @@ func (d *dispatcher) replayWrite(taskID string) (checkpoint.Write, bool) {
 //
 // A fresh run (a "loop"-source tuple without Resume, or no fn writes) does
 // NOT replay, so a new turn can never hit the previous turn's results. On a
-// gate hit, cpID/ns/step are taken from the tuple as the replay base and the
-// table keeps only __return__/__error__ writes (last write wins).
+// gate hit, cpID/ns/step are taken from the tuple as the replay base; the
+// replay table keeps only __return__/__error__ writes (last write wins) and
+// the consumed table the __fn_consumed__ counts (see ReservedFnConsumed for
+// why replayed tasks must re-skip their consumed resume values).
 func (d *dispatcher) loadReplay(tup *checkpoint.Tuple, opts graph.Options) {
 	hit := opts.Resume != nil && len(tup.Checkpoint.Next) > 0 // gate 1
 	if !hit && tup.Metadata.Source == "input" {               // gate 2
@@ -143,9 +157,20 @@ func (d *dispatcher) loadReplay(tup *checkpoint.Tuple, opts graph.Options) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.replay = make(map[string]checkpoint.Write)
+	d.consumed = make(map[string]int)
 	for _, w := range tup.PendingWrites {
-		if w.Channel == checkpoint.ReservedReturn || w.Channel == checkpoint.ReservedError {
+		switch w.Channel {
+		case checkpoint.ReservedReturn, checkpoint.ReservedError:
 			d.replay[w.TaskID] = w // last write wins
+		case checkpoint.ReservedFnConsumed:
+			// Savers round-tripping through JSON serde decode the count as
+			// float64; accept both (memory saver keeps the int as-is).
+			switch v := w.Value.(type) {
+			case int:
+				d.consumed[w.TaskID] = v
+			case float64:
+				d.consumed[w.TaskID] = int(v)
+			}
 		}
 	}
 	d.cpID = tup.Checkpoint.ID

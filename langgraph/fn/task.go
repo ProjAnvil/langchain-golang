@@ -80,7 +80,7 @@ func (t *Task[I, O]) Call(ctx context.Context, in I) *Future[O] {
 	if d.replay != nil {
 		id := graph.FnTaskID(d.cpID, d.ns, d.step, t.name, parentPath, callIdx)
 		if w, ok := d.replayWrite(id); ok {
-			return replayedCall[O](d, t.name, parentPath, callIdx, w)
+			return replayedCall[O](ctx, d, t.name, parentPath, callIdx, w, d.replayConsumed(id))
 		}
 	}
 	// 2. Cache lookup (independent second mechanism; only with a backend).
@@ -109,9 +109,17 @@ func fnCacheNS(name string) string { return "__fn_writes/" + name }
 
 // replayedCall fills a Future from a persisted replay write and re-records
 // the outcome: a replayed result must be re-buffered into this run's result
-// table so a chained pause re-appends it to the next checkpoint (F4). Once
-// the dispatcher is sealed, record drops it naturally — no race.
-func replayedCall[O any](d *dispatcher, name, parentPath string, callIdx int, w checkpoint.Write) *Future[O] {
+// table so a chained pause re-appends it to the next checkpoint (F4) — the
+// consumed count rides along so the queue alignment survives pause chains.
+// Once the dispatcher is sealed, record drops it naturally — no race.
+//
+// The replayed task does not re-execute, so the Interrupt calls its original
+// execution made never re-fire; consumed advances the node's shared resume
+// queue past the values that execution already consumed (Go-only
+// compensation for the shared queue — Python gives each @task call its own
+// Pregel task and scratchpad, see checkpoint.ReservedFnConsumed).
+func replayedCall[O any](ctx context.Context, d *dispatcher, name, parentPath string, callIdx int, w checkpoint.Write, consumed int) *Future[O] {
+	graph.ReplayInterruptConsumption(ctx, consumed)
 	var zero O
 	switch w.Channel {
 	case checkpoint.ReservedReturn:
@@ -121,14 +129,14 @@ func replayedCall[O any](d *dispatcher, name, parentPath string, callIdx int, w 
 			d.record(taskResult{name: name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: err.Error()})
 			return resolvedFuture[O](zero, err, nil)
 		}
-		d.record(taskResult{name: name, parentPath: parentPath, callIdx: callIdx, value: val})
+		d.record(taskResult{name: name, parentPath: parentPath, callIdx: callIdx, value: val, consumed: consumed})
 		return resolvedFuture[O](val, nil, nil)
 	case checkpoint.ReservedError:
 		msg, ok := w.Value.(string)
 		if !ok {
 			msg = fmt.Sprint(w.Value)
 		}
-		d.record(taskResult{name: name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: msg})
+		d.record(taskResult{name: name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: msg, consumed: consumed})
 		return resolvedFuture[O](zero, errors.New(msg), nil)
 	default:
 		// Unreachable: loadReplay keeps only __return__/__error__ writes.
@@ -148,6 +156,13 @@ func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], pare
 		taskPath = parentPath + "/" + taskPath // nested: "a@0/b@0"
 	}
 	taskCtx := context.WithValue(ctx, callPathKey{}, taskPath)
+	// Resume values this Call's execution consumes via Interrupt, measured as
+	// the node interrupt state's cursor delta over the whole attempt loop
+	// (retries included). Persisted with the outcome (see persistResults) so
+	// a later replay can re-skip them — replayed tasks never re-fire their
+	// Interrupt calls (checkpoint.ReservedFnConsumed).
+	consumedBefore := graph.InterruptConsumeCount(taskCtx)
+	consumed := func() int { return graph.InterruptConsumeCount(taskCtx) - consumedBefore }
 	go func() {
 		defer close(fut.done)
 		var retry *graph.RetryPolicy
@@ -167,11 +182,11 @@ func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], pare
 				// success first.
 				if cerr := cacheStore(ctx, d, t, in, val); cerr != nil {
 					fut.err = cerr
-					d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: cerr.Error()})
+					d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: cerr.Error(), consumed: consumed()})
 					return
 				}
 				fut.val = val
-				d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, value: val})
+				d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, value: val, consumed: consumed()})
 				return
 			}
 			if taskCtx.Err() != nil { // run canceled (interrupt pause / parent cancel): give up, record nothing
@@ -180,7 +195,7 @@ func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], pare
 			}
 			if retry == nil || attempt >= retry.MaxAttempts || !retry.RetryOn(err) {
 				fut.err = err
-				d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: err.Error()})
+				d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: err.Error(), consumed: consumed()})
 				return
 			}
 			timer := time.NewTimer(retry.BackoffDelay(attempt))

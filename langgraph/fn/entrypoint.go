@@ -221,9 +221,16 @@ func (e *Entrypoint[I, O, S]) persistResults(ctx context.Context, opts graph.Opt
 		if r.isErr {
 			w = checkpoint.Write{Channel: checkpoint.ReservedError, Value: r.errMsg}
 		}
+		writes := []checkpoint.Write{w}
+		if r.consumed > 0 {
+			// The execution consumed resume values via Interrupt; persist the
+			// count so a replay of this result re-skips them in the node's
+			// shared resume queue (checkpoint.ReservedFnConsumed).
+			writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedFnConsumed, Value: r.consumed})
+		}
 		// One PutWrites per result: PutWrites stamps a single taskID on the
 		// whole batch (checkpoint/checkpoint.go + memory.go).
-		if err := saver.PutWrites(ctx, tup.Config, []checkpoint.Write{w}, id, r.parentPath); err != nil {
+		if err := saver.PutWrites(ctx, tup.Config, writes, id, r.parentPath); err != nil {
 			return err
 		}
 	}

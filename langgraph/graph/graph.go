@@ -1370,7 +1370,9 @@ func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]an
 		if r := recover(); r != nil {
 			if gi, ok := r.(*types.GraphInterrupt); ok {
 				interrupted = &gi.Interrupt
+				ist.mu.Lock()
 				consumed = append([]any{}, ist.resumeQueue[:ist.idx]...)
+				ist.mu.Unlock()
 				result = nil
 				err = nil
 				return
@@ -1385,7 +1387,14 @@ func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]an
 
 type interruptCtxKey struct{}
 
+// taskInterruptState is the per-node-invocation interrupt bookkeeping. The
+// mutex guards idx/counter: fn tasks call Interrupt from their own
+// goroutines (task.go startTask), so the entrypoint body and in-flight task
+// goroutines can touch the shared state concurrently (fn measures the
+// consumption cursor via InterruptConsumeCount while a sibling task
+// interrupts). resumeQueue is fixed at creation and read-only thereafter.
 type taskInterruptState struct {
+	mu          sync.Mutex
 	resumeQueue []any
 	idx         int
 	counter     int
@@ -1410,6 +1419,8 @@ func Interrupt(ctx context.Context, value any) any {
 	if !ok {
 		panic("graph: Interrupt called outside of a graph node execution")
 	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	if st.idx < len(st.resumeQueue) {
 		v := st.resumeQueue[st.idx]
 		st.idx++
@@ -1421,6 +1432,43 @@ func Interrupt(ctx context.Context, value any) any {
 		Value: value,
 		ID:    fmt.Sprintf("%s-%d", st.nodeName, st.counter),
 	}})
+}
+
+// InterruptConsumeCount reports how many resume values the node invocation
+// owning ctx has consumed via Interrupt so far. It returns 0 when ctx carries
+// no interrupt state (outside a node execution). The fn package uses it to
+// measure how many resume values a task's execution consumed, so the count
+// can be persisted (checkpoint.ReservedFnConsumed) and honored on replay.
+func InterruptConsumeCount(ctx context.Context) int {
+	st, ok := ctx.Value(interruptCtxKey{}).(*taskInterruptState)
+	if !ok {
+		return 0
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.idx
+}
+
+// ReplayInterruptConsumption advances ctx's interrupt state as if n
+// Interrupt calls had each consumed a queued resume value: the next Interrupt
+// call skips the n values a replayed execution already consumed in an
+// earlier run. The counter advances too, keeping generated interrupt IDs
+// identical to a full re-execution. It is a no-op when ctx carries no
+// interrupt state or n <= 0.
+//
+// This exists for checkpoint-replay layers (the fn package): a task whose
+// persisted result is replayed does not re-execute, so its Interrupt calls
+// never re-fire — without this advance, the next Interrupt call would be
+// misaligned onto the resume value the replayed task already consumed.
+func ReplayInterruptConsumption(ctx context.Context, n int) {
+	st, ok := ctx.Value(interruptCtxKey{}).(*taskInterruptState)
+	if !ok || n <= 0 {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.idx += n
+	st.counter += n
 }
 
 // interruptBeforeID / interruptAfterID prefix the IDs of boundary interrupts
