@@ -70,7 +70,7 @@ langgraph/
 - SQLite checkpoint 后端（对齐 `langgraph-checkpoint-sqlite` 的 schema：checkpoints/writes 两表、type+value 双列）。**设计决策（2026-08-08）**：Go stdlib 无 SQLite 驱动；为保持根 module 零第三方依赖，SQLite saver 放在**独立嵌套 module** `langgraph/checkpoint/sqlite/`（自己的 go.mod，`require` 根 module + 纯 Go 驱动 `modernc.org/sqlite`），镜像 Python 的 `langgraph-checkpoint-sqlite` 分包。这是整个移植引入的第一个第三方依赖。
 - M2 遗留技术债清理：`Metadata.Step` 与 Python 对齐（update checkpoint step+1、new-turn input 延续计数）；补齐 M2 终审遗留测试（goto-only sibling replay、CheckpointID+非空 input、interrupt→update_state→resume、子图双重进入、子图内 interrupt 报错路径）。
 
-### M4（可选远景）
+### M4 prebuilt 与节点策略（已完成 2026-08-08）
 
 - `prebuilt/`：`ToolNode` 图节点适配器（包装现有 `langchain/tools.ToolNode` 为可直接 `AddNode` 的图节点，补 `messages_key` 选项与工具返回 `Command` 的透传）。~~`create_react_agent` 等价物~~ **设计决策（2026-08-08）**：不做。Python 的 `create_react_agent` 自 v1.0 起已 deprecated（`chat_agent_executor.py:274-278`），其能力（model↔tools 循环）是本仓库 `langchain/agents.CreateAgent` 的真子集，重复建设违背 YAGNI；文档中说明等价关系即可。
 - 节点 retry / cache 策略：`RetryPolicy`（initial_interval/backoff_factor/max_interval/max_attempts/jitter/retry_on，执行器层级逐节点重试，对齐 `pregel/_retry.py`）；`CachePolicy` + `Cache` 接口 + `InMemoryCache`（缓存的是任务 writes 而非返回值，key 为节点输入的哈希，对齐 `pregel/_algo.py:668-687`/`_loop.py:1549-1625`）。
