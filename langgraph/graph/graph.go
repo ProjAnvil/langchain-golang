@@ -1102,6 +1102,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// differs only when a join child co-runs with its own parent in
 		// one superstep (the parent's idempotent re-arrival is consumed
 		// away here, kept as a new partial arrival in Python).
+		// Documented divergence: Python's consume path also bumps the
+		// barrier channel's version to next_version on success
+		// (pregel/_algo.py:289-290); Go's Barrier.Consume only clears
+		// the seen set and leaves the version untouched. No behavioral
+		// difference: a re-trigger requires a fresh parent arrival,
+		// which itself bumps the version.
 		if len(g.joins) > 0 {
 			ran := make(map[string]bool, len(active))
 			for _, t := range active {

@@ -112,6 +112,8 @@ func (s *Saver) Setup(ctx context.Context) error
 
 **不做**：`defer=True` / `NamedBarrierValueAfterFinish`（依赖 PULL 循环"试探性最后超步"的 finish 广播，边驱动无等价物）——文档化。
 
+**文档化分歧（Consume 版本簿记）**：Python 在 consume 成功时会把 barrier channel 的版本 bump 到 next_version（`pregel/_algo.py:289-290`）；Go 的 `Barrier.Consume` 只清零 `seen`、不动版本。行为无差异——重触发必经新的父到达，而新到达本身会 bump 版本。
+
 **Send/Command.goto 到 join 子节点**：维持 PUSH 直发，绕过 barrier（Python 一致）。注意 Python 中 Send 触发的 c（带 arg）与 barrier 触发的 c（共享 state）是两个合法独立任务，Go 的去重不得误伤 Send 路径。
 
 **测试移植**：从 Python `libs/langgraph/tests/` 中定位 waiting-edge 用例（grep `add_edge([` / `waiting_edges` / `NamedBarrierValue`；用例集中在 `test_pregel.py:1953-3085` 系列），移植：同超步多父→子恰好一次；跨超步多父→子等待齐后一次；三父 join；join 在循环中复位重触发；join 子节点被普通边/Send 同时触发（OR 语义、次数对齐 Python）；join channel 不进 snapshot/stream values。**Go 侧新增**（Python 无对应用例）：父中断→resume→补写后触发；checkpoint 往返后 barrier 部分到达状态保留。
