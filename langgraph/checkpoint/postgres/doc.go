@@ -17,10 +17,16 @@
 //     the version column type divergence. A database written by one
 //     language cannot be read by the other.
 //   - Channel values inline only JSON primitives (nil/string/bool/float64)
-//     into the checkpoints JSONB document; int/int64 (serde-enveloped, not
-//     JSON-native), maps, slices and all registry types go to
-//     checkpoint_blobs (Python inlines str/int/float/bool and sends
-//     dict/list to blobs).
+//     into the checkpoints JSONB document; versioned composite values
+//     (int/int64 — serde-enveloped, not JSON-native — maps, slices and all
+//     registry types) go to checkpoint_blobs (Python inlines
+//     str/int/float/bool and sends dict/list to blobs).
+//   - A composite channel value with no version (absent from both
+//     newVersions and the checkpoint's ChannelVersions) is inlined into the
+//     checkpoints JSONB document as a serde typed envelope instead of being
+//     dropped: Python's _dump_blobs iterates new_versions only and silently
+//     loses such values; Go preserves them (savertest contract: Put never
+//     loses channel data).
 //   - checkpoint.Metadata is a closed struct (Source/Step/Parents), so
 //     ListOptions.Filter keys are limited to those three.
 //   - Null bytes in strings: Python silently strips \u0000 from metadata

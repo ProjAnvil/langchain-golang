@@ -151,10 +151,16 @@ func splitChannelValues(values map[string]any) (inline, blobs map[string]any) {
 	return inline, blobs
 }
 
-// Put implements checkpoint.Saver. Blob rows are written only for channels
-// present in newVersions (Python parity: __init__.py:322-324) with
-// ON CONFLICT DO NOTHING (immutable versioned rows); the checkpoints row
-// upserts.
+// Put implements checkpoint.Saver. Every composite channel gets a blob row
+// attempt at its current version — newVersions's version when the channel was
+// just bumped, else the version already in cp.ChannelVersions — with
+// ON CONFLICT DO NOTHING (immutable versioned rows), so re-Putting unchanged
+// values is a no-op while a first-time write of a pre-versioned value still
+// persists (Python's _dump_blobs iterates new_versions only and can lose
+// such values; the savertest contract forbids losing channel data). A
+// composite channel value with NO version anywhere is inlined into the
+// checkpoint JSON as a serde typed envelope instead (see doc.go). The
+// checkpoints row upserts.
 func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (checkpoint.Config, error) {
 	stored := cp
 	if len(newVersions) > 0 {
@@ -165,6 +171,23 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 		maps.Copy(stored.ChannelVersions, newVersions)
 	}
 	inline, blobValues := splitChannelValues(stored.ChannelValues)
+	for channel, v := range blobValues {
+		if _, ok := newVersions[channel]; ok {
+			continue // versioned: blob row written below
+		}
+		if _, ok := stored.ChannelVersions[channel]; ok {
+			continue // versioned: blob row written below at the stored version
+		}
+		// Unversioned composite: no blob row can be addressed without a
+		// version, and adding one would corrupt ChannelVersions. Python
+		// silently drops such values; Go inlines them as serde envelopes.
+		typ, data, err := s.serde.DumpsTyped(v)
+		if err != nil {
+			return checkpoint.Config{}, fmt.Errorf("postgres saver: encode unversioned channel %q: %w", channel, err)
+		}
+		inline[channel] = storedValue{Type: typ, Data: data}
+		delete(blobValues, channel)
+	}
 	cpJSON, err := s.encodeCheckpoint(stored, inline)
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("postgres saver: encode checkpoint %q: %w", cp.ID, err)
@@ -178,11 +201,12 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 		parent = &cfg.CheckpointID
 	}
 	batch := &pgx.Batch{}
-	// Sorted for deterministic batch order.
+	// Every channel left in blobValues has a version — from newVersions when
+	// just bumped, else the stored one. Sorted for deterministic batch order.
 	for _, channel := range slices.Sorted(maps.Keys(blobValues)) {
 		ver, ok := newVersions[channel]
 		if !ok {
-			continue // only channels in newVersions get blob rows (Python parity)
+			ver = stored.ChannelVersions[channel]
 		}
 		typ, data, err := s.serde.DumpsTyped(blobValues[channel])
 		if err != nil {
@@ -504,8 +528,10 @@ func allReserved(writes []checkpoint.Write) bool {
 
 // storedCheckpoint is the JSONB projection of checkpoint.Checkpoint persisted
 // in the checkpoints table's checkpoint column. Unlike the sqlite
-// projection, ChannelValues holds only INLINE primitives as plain JSON;
-// non-primitive values live in checkpoint_blobs. Next task args remain
+// projection, ChannelValues holds only INLINE entries: JSON primitives as
+// plain JSON, plus unversioned composite values as serde typed envelopes
+// (storedValue — Python drops such values; Go preserves them, see Put).
+// Versioned composite values live in checkpoint_blobs. Next task args remain
 // serde-typed envelopes (storedValue), exactly as in the sqlite saver.
 type storedCheckpoint struct {
 	V               int                         `json:"v"`
@@ -571,10 +597,33 @@ func (s *Saver) encodeCheckpoint(cp checkpoint.Checkpoint, inline map[string]any
 
 // decodeCheckpoint restores a Checkpoint from its JSONB document; ChannelValues
 // contains only the inline entries (blob values are merged by assemble).
+// Inline entries are plain JSON primitives, except unversioned composite
+// values which Put stores as serde typed envelopes — those are decoded back
+// here. Plain primitives never decode to a JSON object, so any object value
+// in this map is an envelope Put wrote.
 func (s *Saver) decodeCheckpoint(blob []byte) (checkpoint.Checkpoint, error) {
 	var proj storedCheckpoint
 	if err := json.Unmarshal(blob, &proj); err != nil {
 		return checkpoint.Checkpoint{}, err
+	}
+	for k, v := range proj.ChannelValues {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue // plain inline primitive
+		}
+		raw, err := json.Marshal(m)
+		if err != nil {
+			return checkpoint.Checkpoint{}, fmt.Errorf("re-encode inline envelope %q: %w", k, err)
+		}
+		var sv storedValue
+		if err := json.Unmarshal(raw, &sv); err != nil || sv.Type == "" {
+			return checkpoint.Checkpoint{}, fmt.Errorf("decode inline envelope %q: %w", k, err)
+		}
+		val, err := s.serde.LoadsTyped(sv.Type, sv.Data)
+		if err != nil {
+			return checkpoint.Checkpoint{}, fmt.Errorf("decode inline channel %q: %w", k, err)
+		}
+		proj.ChannelValues[k] = val
 	}
 	cp := checkpoint.Checkpoint{
 		V:               proj.V,
