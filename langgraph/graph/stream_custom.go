@@ -5,7 +5,8 @@ import "context"
 // StreamWriter lets a node emit an arbitrary custom payload into an active
 // Stream stream (StreamCustom mode), mirroring Python's
 // `langgraph.config.get_stream_writer`. Payloads flow straight to the chunk
-// stream with the emitting node's namespace.
+// stream with the emitting node's namespace. Writes after the run has ended
+// are silently dropped (never panic).
 type StreamWriter func(payload any)
 
 // streamWriterKey is the context-value key under which the executor installs

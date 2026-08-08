@@ -475,6 +475,41 @@ func TestStreamEmptyModes(t *testing.T) {
 	}
 }
 
+func TestStreamUnknownMode(t *testing.T) {
+	cg := streamLinearGraph(t)
+	_, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+		StreamOptions{Modes: []StreamMode{StreamValues, "bogus"}}))
+	if err == nil {
+		t.Fatal("expected error for unknown StreamMode")
+	}
+}
+
+// TestStreamWriterAfterRunEnd pins that a StreamWriter invoked after the run
+// has ended is a silent no-op instead of panicking on the closed delivery
+// channel.
+func TestStreamWriterAfterRunEnd(t *testing.T) {
+	var writer StreamWriter
+	g := NewStateGraph()
+	g.AddNode("n", func(ctx context.Context, _ map[string]any) (any, error) {
+		writer = StreamWriterFromContext(ctx)
+		return nil, nil
+	})
+	g.AddEdge(types.START, "n")
+	g.AddEdge("n", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if _, err := collectStream(t, cg.Stream(context.Background(), map[string]any{},
+		StreamOptions{Modes: []StreamMode{StreamCustom}})); err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if writer == nil {
+		t.Fatal("StreamWriterFromContext() = nil under StreamCustom")
+	}
+	writer("late") // run ended; must not panic
+}
+
 func TestStreamNodeError(t *testing.T) {
 	g := NewStateGraph()
 	want := errors.New("boom")

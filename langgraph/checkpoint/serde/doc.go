@@ -29,9 +29,8 @@
 // original map), and with an unknown name decode fails. Do not use
 // "__type__" as an ordinary map key.
 //
-// Nil values follow JSON's inherent asymmetry: []byte(nil) and
-// map[string]any(nil) encode as empty values and decode to their empty
-// (non-nil) forms, while []string(nil) and []messages.Message(nil) encode a
-// null envelope payload and fail to decode. Prefer empty non-nil values at
-// checkpoint boundaries.
+// Nil values follow JSON's inherent asymmetry: []byte(nil),
+// map[string]any(nil), []string(nil), and []messages.Message(nil) all encode
+// as empty/null payloads and decode to their empty (non-nil) forms. Prefer
+// empty non-nil values at checkpoint boundaries.
 package serde

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"sync/atomic"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
@@ -105,6 +106,14 @@ func (g *CompiledGraph) Stream(ctx context.Context, input map[string]any, opts S
 			yield(StreamChunk{}, fmt.Errorf("graph: StreamOptions.Modes must be non-empty"))
 			return
 		}
+		for _, mode := range opts.Modes {
+			switch mode {
+			case StreamValues, StreamUpdates, StreamDebug, StreamMessages, StreamCustom:
+			default:
+				yield(StreamChunk{}, fmt.Errorf("graph: unknown StreamMode %q", mode))
+				return
+			}
+		}
 
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -114,11 +123,13 @@ func (g *CompiledGraph) Stream(ctx context.Context, input map[string]any, opts S
 		var runErr error
 		emitter := newStreamEmitter(ctx, opts.Modes, opts.Subgraphs, chunks)
 		go func() {
-			// LIFO: close(chunks) runs before close(done), and both run after
-			// runErr is assigned, so the consumer safely reads runErr once the
-			// channel closes.
+			// LIFO: the closed flag is stored before close(chunks), which runs
+			// before close(done), and both run after runErr is assigned, so the
+			// consumer safely reads runErr once the channel closes. The flag
+			// makes emit a no-op once the delivery channel is gone.
 			defer close(done)
 			defer close(chunks)
+			defer emitter.closed.Store(true)
 			_, err := g.run(contextWithEmitter(ctx, emitter), input, opts.Options, nil)
 			runErr = topLevelParentCommandError(err)
 		}()
@@ -148,6 +159,11 @@ type streamEmitter struct {
 	send      chan<- StreamChunk
 	modes     map[StreamMode]bool
 	subgraphs bool
+	// closed is set just before the run's delivery channel closes; shared
+	// with child emitters so an emit after the run ends (e.g. a StreamWriter
+	// invoked post-return) is a no-op instead of panicking on the closed
+	// channel.
+	closed *atomic.Bool
 	// ns is this run's emission namespace: "" for the root graph, the node
 	// path ("a", "a/b") for subgraph runs.
 	ns string
@@ -158,7 +174,7 @@ func newStreamEmitter(ctx context.Context, modes []StreamMode, subgraphs bool, s
 	for _, mode := range modes {
 		m[mode] = true
 	}
-	return &streamEmitter{ctx: ctx, send: send, modes: m, subgraphs: subgraphs}
+	return &streamEmitter{ctx: ctx, send: send, modes: m, subgraphs: subgraphs, closed: &atomic.Bool{}}
 }
 
 // streamEmitterKey is the context-value key under which the active emitter
@@ -186,16 +202,20 @@ func (e *streamEmitter) child(name string) *streamEmitter {
 		send:      e.send,
 		modes:     e.modes,
 		subgraphs: e.subgraphs,
+		closed:    e.closed,
 		ns:        joinCheckpointNS(e.ns, name),
 	}
 }
 
-// emit delivers one chunk for mode, unless the mode is inactive or the run
-// has been cancelled (early iterator break).
+// emit delivers one chunk for mode, unless the mode is inactive, the run has
+// been cancelled (early iterator break), or the run has ended.
 func (e *streamEmitter) emit(mode StreamMode, payload any) {
-	if e == nil || !e.modes[mode] {
+	if e == nil || !e.modes[mode] || e.closed.Load() {
 		return
 	}
+	// A send racing the run goroutine's close would panic; drop the chunk
+	// instead — post-run emission is a no-op by contract.
+	defer func() { _ = recover() }()
 	select {
 	case e.send <- StreamChunk{Namespace: e.ns, Mode: mode, Payload: payload}:
 	case <-e.ctx.Done():
@@ -295,7 +315,9 @@ func (e *streamEmitter) emitDebug(step int, typ string, payload map[string]any) 
 // be used where known, and since it is never known here, the node name
 // itself stands in (documented approximation). `id` is the task's planned ID
 // when the task comes from a resumed checkpoint, else "" (planned IDs are
-// minted only at checkpoint-save time).
+// minted only at checkpoint-save time). The task `input` field is the full
+// pre-superstep state snapshot (or the Send arg for Send tasks); Python passes
+// the task's actual input — a documented approximation.
 func (e *streamEmitter) debugTask(step int, t task, state map[string]any) {
 	if e == nil || !e.modes[StreamDebug] {
 		return

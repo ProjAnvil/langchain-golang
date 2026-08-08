@@ -222,7 +222,10 @@ func decodeEnvelope(name string, payload any) (any, error) {
 		return m, nil
 	case nameMessages:
 		if payload == nil {
-			return nil, fmt.Errorf("serde: decode %s: missing data payload", name)
+			// A typed nil slice encodes a null payload; decode restores
+			// the empty (non-nil) slice so such checkpoints stay
+			// restorable (JSON's nil/empty asymmetry).
+			return []messages.Message{}, nil
 		}
 		var ms []messages.Message
 		if err := remarshal(payload, &ms); err != nil {
@@ -298,6 +301,11 @@ func decodeEnvelope(name string, payload any) (any, error) {
 		}
 		return int(n), nil
 	case nameStrings:
+		if payload == nil {
+			// A typed nil slice encodes a null payload; decode restores
+			// the empty (non-nil) slice, as for []messages.Message.
+			return []string{}, nil
+		}
 		items, ok := payload.([]any)
 		if !ok {
 			return nil, fmt.Errorf("serde: decode %s: payload is %T, want an array", name, payload)

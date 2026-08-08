@@ -128,6 +128,32 @@ func TestJSONSerializerPreservesSliceAndBytesTypes(t *testing.T) {
 	}
 }
 
+// TestJSONSerializerNilSliceRoundTrip pins that typed nil slices encode a
+// null envelope payload and decode back to empty non-nil slices, so a
+// checkpoint containing them is restorable (regression: decode used to
+// reject the null payload).
+func TestJSONSerializerNilSliceRoundTrip(t *testing.T) {
+	s := NewJSONSerializer()
+
+	_, got := roundTrip(t, s, []string(nil))
+	ss, ok := got.([]string)
+	if !ok {
+		t.Fatalf("[]string(nil) decoded as %T, want []string", got)
+	}
+	if ss == nil || len(ss) != 0 {
+		t.Fatalf("[]string(nil) round trip = %#v, want empty non-nil []string", ss)
+	}
+
+	_, got = roundTrip(t, s, []messages.Message(nil))
+	ms, ok := got.([]messages.Message)
+	if !ok {
+		t.Fatalf("[]messages.Message(nil) decoded as %T, want []messages.Message", got)
+	}
+	if ms == nil || len(ms) != 0 {
+		t.Fatalf("[]messages.Message(nil) round trip = %#v, want empty non-nil []messages.Message", ms)
+	}
+}
+
 func TestJSONSerializerNestedRegistryValues(t *testing.T) {
 	s := NewJSONSerializer()
 
@@ -206,17 +232,17 @@ func TestJSONSerializerMalformedEnvelopes(t *testing.T) {
 
 	names := []string{
 		"messages.Message",
-		"[]messages.Message",
 		"types.Send",
 		"types.Interrupt",
 		"time.Time",
 		"[]byte",
 		"int64",
 		"int",
-		"[]string",
 	}
 
-	// Missing or null data is an error for every registry type.
+	// Missing or null data is an error for every registry type except the
+	// two slice types ([]messages.Message, []string), whose typed-nil
+	// encoding is a null payload that decodes to the empty slice.
 	for _, name := range names {
 		for _, doc := range []string{
 			`{"__type__":` + strconv.Quote(name) + `}`,

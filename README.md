@@ -18,7 +18,7 @@ A Go port of:
 
 It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — the ported graph runtime (channel objects, versioned checkpoints with history, time travel, subgraphs, stream modes, checkpoint serde) lives in the public top-level `langgraph/` packages (see [Not supported](#not-supported--out-of-scope) and the [graph runtime guide](docs/usage/langgraph.md)).
 
-All tests green: `go test ./...` — 920+ tests across 55 packages.
+All tests green: `go test ./...` — 830+ tests across 56 packages.
 
 ---
 

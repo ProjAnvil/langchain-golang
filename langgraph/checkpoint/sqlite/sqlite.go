@@ -76,7 +76,9 @@ var _ checkpoint.Saver = (*Saver)(nil)
 
 // New opens (creating if needed) the SQLite database at path — or an
 // in-memory database for `:memory:` — applies the schema, and returns a Saver
-// persisting through serde. The caller must Close the Saver.
+// persisting through serde. An empty path opens a private temporary on-disk
+// database that is deleted when the Saver is closed (modernc.org/sqlite
+// empty-DSN behavior). The caller must Close the Saver.
 func New(path string, serde checkpoint.Serializer) (*Saver, error) {
 	if serde == nil {
 		return nil, errors.New("sqlite: New requires a non-nil checkpoint.Serializer")
