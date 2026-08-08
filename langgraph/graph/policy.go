@@ -166,7 +166,9 @@ type NodePolicies struct {
 // return value. On a hit the stored writes are injected as the task's
 // outcome: the node does not execute, no RawNodeStart/RawNodeEnd pair is
 // emitted, the injected updates still surface as `updates` stream chunks,
-// and cached Command.Goto routing is replayed.
+// and cached Command.Goto routing is replayed. Lookup-phase failures
+// (KeyFunc or Get error) fail the task during the lookup pass, so the node
+// likewise emits no RawNodeStart/RawNodeEnd pair.
 type CachePolicy struct {
 	// KeyFunc derives the cache key from the task's input (the Send arg when
 	// the task was dispatched via types.Send, else the pre-superstep state

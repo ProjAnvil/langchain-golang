@@ -791,6 +791,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// node and silently drop the resume value. Tasks replayed from pending
 		// writes never reach dispatch at all, so they bypass the cache
 		// automatically.
+		//
+		// Because the whole lookup pass precedes the store pass, two Sends
+		// with the same arg to one cached node in a single superstep both
+		// execute (neither sees the other's entry yet) — Python parity.
 		execute := make([]bool, len(active))
 		missed := make([]bool, len(active)) // cache miss: store writes after execution
 		storeKey := make([]string, len(active))
@@ -859,7 +863,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// Cache store pass: tasks that missed and then completed (no error,
 		// no interrupt) persist their writes — via completedTaskWrites, the
 		// same serializer the resume path uses — so later runs with the same
-		// input replay them. Errored and interrupted tasks store nothing.
+		// input replay them. Errored and interrupted tasks store nothing, and
+		// neither do RESUMED tasks (missed stays false for them). That last
+		// part is load-bearing correctness, not an accident: writes produced
+		// from a human's resume value cached under the pre-interrupt input key
+		// would poison later fresh runs with that same input.
 		for i, o := range outcomes {
 			if !missed[i] || o.err != nil || o.interrupted != nil {
 				continue
