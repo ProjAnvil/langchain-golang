@@ -563,7 +563,7 @@ func (g *StateGraph) AddJoinEdge(from []string, to string) *StateGraph {
 }
 ```
 
-`Compile` 中，在 conditional 校验循环（:315-319）之后、`options` 构造之前插入节点存在性校验；并把 CompiledGraph 构造改为注册 join：
+`Compile` 中，在 policies 校验循环（:320-326）之后、`options` 构造（:328）之前插入节点存在性校验；并把 CompiledGraph 构造改为注册 join：
 
 ```go
 	for _, je := range g.joinEdges {
@@ -631,7 +631,13 @@ CompiledGraph 构造段（:333-345）替换为（`channelProtos` 必须 clone �
 - [ ] **Step 5: 提交**
   ```
   git add langgraph/graph/graph.go langgraph/graph/join_test.go
-  git commit -m "feat(langgraph/graph): StateGraph.AddJoinEdge builder + compile-time barrier registration"
+  git commit -m "feat(langgraph/graph): StateGraph.AddJoinEdge builder + compile-time barrier registration
+
+  Compile now clones the builder's channelProtos before registering join
+  barrier prototypes (required for Compile re-entrancy). Observable
+  tightening: mutating the builder via AddReducer/AddChannel AFTER Compile
+  no longer leaks into an already-compiled graph — that pathological usage
+  previously worked via the shared map and is now cut off."
   ```
 
 ---
@@ -659,7 +665,7 @@ CompiledGraph 构造段（:333-345）替换为（`channelProtos` 必须 clone �
 
 1. **隐式 write 搭进任务 update 批次**：注入点在 cache store pass（:871-882）之后、结果收集循环（:884）之前。由此 ①走 `applyWrites` 的同一版本递增；②中断路径 `completedTaskWrites(o.update, o.cmd)`（:924）自动带上 join write，持久化为 pending writes；③cache 条目不含 join key（store 在注入之前），cache 命中的父任务在注入循环里照常补写 arrival。中断/出错的任务不注入（Python：父中断则其 ChannelWrite 不执行）。
 2. **恰好一次**：`applyWrites` 提交后，对每个 `joinMeta`：barrier channel `IsAvailable()` 且 `rs.seen[child][key] < rs.versions[key]`（版本簿记未见过）→ 追加 `task{node: child}` 进 `nextTasks` 并立即记账 `rs.seen[child][key] = v`。同超步多父 writes 被 `applyWrites` 聚成一次 channel `Update`、只 bump 一个版本，天然一次；dispatch 时记账使 interrupt_before(child) 暂停 checkpoint 的 VersionsSeen 与 Next 自洽。触发循环插在 staticNext 循环（:953-967）之后、`interrupt_after` 检查（:975）之前——暂停 checkpoint 的 Next 因此包含 barrier 触发的子节点。
-3. **Consume 复位**：同一提交块内、触发判定之前。关键不变量：**只有被 barrier 触发而运行的子节点才能 Consume 该 barrier**（Python 中 `consume` 只对任务实际读取过的 channel 调用；Send/普通边触发的 PUSH 任务没有读 join channel，不得消费它）。判定用版本簿记：barrier 触发 dispatch 时已记账 `seen[child][key] = v`，而子任务提交时 `applyWrites` 第 1 步会把 `seen[child][key]` 重写为**本超步写入前**的 barrier 版本——于是 `seen[child][key] >= versions[key]` 当且仅当子节点看到的是当前满员版本（即被 barrier 触发）；子节点经 Send/普通边与父同超步运行时，父的到达把 barrier 顶到新版本，`seen < versions`，Consume 跳过、barrier 保持待命，随后触发扫描正常 dispatch（`TestJoinSendBypassesBarrier` 锁死此路径）。非满 barrier 上 Consume 本身是 no-op；满员 barrier 上父的幂等重到达会被 consume 吞掉——Python 同样如此，不"改进"。
+3. **Consume 复位**：同一提交块内、触发判定之前。关键不变量：**只有被 barrier 触发而运行的子节点才能 Consume 该 barrier**（Python 中 `consume` 只对任务实际读取过的 channel 调用；Send/普通边触发的 PUSH 任务没有读 join channel，不得消费它）。判定用版本簿记：barrier 触发 dispatch 时已记账 `seen[child][key] = v`，而子任务提交时 `applyWrites` 第 1 步会把 `seen[child][key]` 重写为**本超步写入前**的 barrier 版本——于是 `seen[child][key] >= versions[key]` 当且仅当子节点看到的是当前满员版本（即被 barrier 触发）；子节点经 Send/普通边与父同超步运行时，父的到达把 barrier 顶到新版本，`seen < versions`，Consume 跳过、barrier 保持待命，随后触发扫描正常 dispatch（`TestJoinSendBypassesBarrier` 锁死此路径）。非满 barrier 上 Consume 本身是 no-op。**文档化分歧（consume 执行顺序）**：Python 在 `apply_writes` 头部先 consume 再应用本超步 writes（`_algo.py:285-292` 在 :294 的分组写入之前），Go 是先 `applyWrites` 后 Consume。仅在"join 子节点与它自己的某个父同超步运行"的冷僻交错下（父对已满员的 barrier 做幂等重到达），Go 会把该轮重到达随同满员集合一起 consume 掉，而 Python 先 consume、再把这次重到达保留为新的一轮部分到达。常规图型（父与子不同超步）两者无差异；按 Python 语义如实记录，不"改进"。
 4. **过滤**：`isJoinKey` 以 prototype 类型断言判定控制面 key。四处过滤：`rs.snapshot()`（覆盖节点输入、`Result.Values`、values chunk、pause chunk、staticNext 路由输入）；`emitUpdate`/`debugTaskResult` 实参（:895-896）；resume 重放的 `emitUpdate`（:711）；`debugCheckpoint` 的 values 实参（:639——checkpoint 本体 `rs.channelValues()` 必须保留 join key，只过滤 emission 副本）。外加 `snapshotFromTuple`（GetState/GetStateHistory 的 Values）。
 5. **`applyWrites` bool 语义收窄**：该返回值只被 values-emission 门控使用（:683/:698/:995），改为"至少一个**非 join** channel 版本递增"——Python 的 values 门控是 `updated_channels ∩ output_keys`，join channel 不在 output_keys，barrier-only 变化的超步不应产 values chunk。无 join 边时行为逐点不变（零回归）。
 6. **`staticNext`**：节点无普通/条件出边但 `joinsByParent` 非空 → 返回 `nil, nil`（其后继由 barrier 触发），不再报 "no outgoing edge"。无 join 的图该分支不可达，报错路径不变。
@@ -716,7 +722,7 @@ func TestJoinBasicTrigger(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行 `go test ./langgraph/graph/ -run TestJoinBasicTrigger -v`，确认失败**（`c` 从不被触发：`childCalls = 0`）。
+- [ ] **Step 2: 运行 `go test ./langgraph/graph/ -run TestJoinBasicTrigger -v`，确认失败**（预期失败形态：Invoke 报错 `graph: node "a" has no outgoing edge ...`——join-only 父节点在 staticNext 的新分支（编辑块 e）生效前就报错，早于 `childCalls = 0` 的断言失败）。
 - [ ] **Step 3: 实现**，按以下六个编辑块：
 
 **(a) `state.go`——`isJoinKey` 自由函数 + `snapshot` 过滤 + `applyWrites` bool 收窄。** 在 `cloneSeen` 前加：
@@ -868,7 +874,13 @@ func (g *CompiledGraph) dropJoinKeys(m map[string]any) map[string]any {
 			// still dispatches the barrier task (OR semantics;
 			// TestJoinSendBypassesBarrier locks this in). Consume itself is a
 			// no-op on a non-full barrier. Must run BEFORE the trigger scan,
-			// or a consumed barrier would re-dispatch its child.
+			// or a consumed barrier would re-dispatch its child. Documented
+			// divergence: Python consumes read channels at the apply_writes
+			// head, before applying the superstep's writes
+			// (pregel/_algo.py:285-292); Go consumes after applyWrites, which
+			// differs only when a join child co-runs with its own parent in
+			// one superstep (the parent's idempotent re-arrival is consumed
+			// away here, kept as a new partial arrival in Python).
 			if len(g.joins) > 0 {
 				ran := make(map[string]bool, len(active))
 				for _, t := range active {
@@ -989,14 +1001,16 @@ func (g *CompiledGraph) snapshotFromTuple(tup *checkpoint.Tuple) StateSnapshot {
 | `TestJoinWaitingEdgePlusRegularEdge` | `..._plus_regular`（:2710-2804） | OR 语义：普通边直达 + barrier 触发，qa 恰好两次 |
 | `TestJoinLoopReset` | `..._waiting_edge_multiple`（:2808-2921） | 循环中 Consume 复位重触发；cache 变体 |
 | `TestJoinSendBypassesBarrier` | 绕过语义（spec M6；`attach_edge` vs Send，`state.py:1537-1545`） | Send 到 join 子节点绕过 barrier；PUSH 任务不被去重 |
-| `TestJoinThreeParents` | Go 扩展（Python 无三父用例） | `join:a+b+c` key、三父齐后一次 |
+| `TestJoinThreeParents` | Go 扩展（Python 无三父用例） | `join:a+b+c:d` key、三父齐后一次 |
 | `TestJoinParentInterruptResume` | Go 新增 | 父中断→resume→补写触发；已完成父不重跑 |
 | `TestJoinCheckpointPartialArrival` | Go 新增 | checkpoint 保留部分到达（[]string{"a"}）；snapshot 不泄漏 |
 | `TestJoinKeyNotLeaked` | Go 新增（spec 风险项） | join key 不进 snapshot/节点输入/stream values+updates/debug |
+| （不移植） | `..._waiting_edge_via_branch`（:2364-2452） | 与 :1953 的唯一差异是 retriever_two 由条件边（branch）而非普通边触发；条件边到 join 父节点的路由在 Go 与条件边/Send 绕过语义同一条 `resolveDestinations` 路径，已由 `TestJoinSendBypassesBarrier` + `TestJoinFanOutWaitingEdge` 覆盖 |
+| （不移植） | `..._waiting_edge_multiple_cond_edge`（:2975-3056） | :2808 的变体，差异仅在入口扇出用条件边（retriever_picker）；循环中 Consume 复位语义与 :2808 完全相同，而 `TestJoinLoopReset` 的 decider 本就走 `AddConditionalEdges`，条件边路由已被覆盖 |
 
 顺序与时序说明：Go 执行器在超步内按 deterministic task order 收集 outcomes（M3 已文档化分歧），因此 updates chunk 顺序与 Python 的 sleep 编排不同——断言用 Go 的确定序（下方测试代码已按此写死），这不是语义偏差。docs 累积用 `sortedAddReducer`（对齐 Python 用例里的 `sorted_add`）使最终值逐点一致。
 
-- [ ] **Step 1: 写失败测试**——向 `langgraph/graph/join_test.go` 追加（import 块需补 `"encoding/json"`、`"fmt"`、`"reflect"`、`"sort"`、`"sync"`、`"github.com/projanvil/langchain-golang/langgraph/checkpoint"`）：
+- [ ] **Step 1: 写测试（验证性）**——向 `langgraph/graph/join_test.go` 追加（import 块需补 `"encoding/json"`、`"fmt"`、`"reflect"`、`"sort"`、`"sync"`、`"github.com/projanvil/langchain-golang/langgraph/checkpoint"`）。注意：执行器已在 Task 3 完成，本任务不是 TDD 的红-绿循环，而是对既有实现的移植验证；测试应先全部通过，任何一个失败都视为 Task 3 的实现 bug 处理：
 
 ```go
 // sortedAddReducer mirrors the sorted_add reducer used by the Python
@@ -1612,7 +1626,7 @@ func TestJoinKeyNotLeaked(t *testing.T) {
 
 注意：`TestJoinWaitingEdgePlusRegularEdge` 直接改写 `g.nodes["qa"]`（白盒，同包）以记录每次 qa 的 answer；若实现期间觉得改 builder 内部 map 不妥，可改为在 `newWaitingEdgeGraph` 增加可选的记录参数——但以上写法对本计划即为定稿，不要再引入新 helper。
 
-- [ ] **Step 2: 运行 `go test ./langgraph/graph/ -run TestJoin -v`，确认全部通过**（Task 3 已实现执行器，这些测试是对它的移植验证；若有失败，按 TDD 回到实现修 bug——不允许改测试断言来迁就错误行为，顺序/计数断言均以 Python 语义为准）。
+- [ ] **Step 2: 运行 `go test ./langgraph/graph/ -run TestJoin -v`，确认全部通过**（验证性测试，预期直接全绿而非先红后绿；若有失败，回到 Task 3 修实现——不允许改测试断言来迁就错误行为，顺序/计数断言均以 Python 语义为准）。
 - [ ] **Step 3: 门禁 PASS**：`go build ./... && go vet ./... && go test ./...` + `make test-sqlite`。
 - [ ] **Step 4: 提交**
   ```
