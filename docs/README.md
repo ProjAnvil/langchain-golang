@@ -1,5 +1,7 @@
 # langchain-golang documentation
 
+**Languages:** English | [简体中文](README.zh-CN.md)
+
 This directory holds the usage documentation for **langchain-golang**, a
 community Go port of [LangChain](https://github.com/langchain-ai/langchain).
 
@@ -15,7 +17,19 @@ supported features, scope, and known gaps, see the top-level
 | [Getting started](usage/getting-started.md) | Install, configure a provider, run your first agent |
 | [Composing runnables (LCEL)](usage/composition.md) | `Pipe` / `Pipe3-6` / `Parallel` / `Branch` / `Fallbacks` / `Retry` — the Go equivalent of Python's `prompt \| model \| parser` |
 | [Agents — `CreateAgent`](usage/agents.md) | System prompts, tools, middleware, structured output, interrupts, state/context schema |
+| [Graph runtime (langgraph/)](usage/langgraph.md) | StateGraph, checkpoints, Stream modes, savers, join edges, functional API |
 | [Streaming](usage/streaming.md) | `Agent.StreamEvents`: per-token model deltas + tool/node lifecycle events |
+
+## Bilingual convention
+
+Documentation in this repository is bilingual (English + Simplified Chinese):
+
+1. The English file is the primary document; the Chinese translation lives as a
+   sibling file named `<name>.zh-CN.md` in the same directory.
+2. Both files carry a language-switch line (`English | 简体中文`) at the top,
+   one blank line below the title, linking to each other.
+3. New or changed documentation must be written in both languages in the same
+   change — do not land an English-only update and translate it later.
 
 ## Examples in the repo
 
