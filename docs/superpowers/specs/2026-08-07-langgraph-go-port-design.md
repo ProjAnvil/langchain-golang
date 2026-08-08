@@ -63,7 +63,7 @@ langgraph/
 - 多父节点 barrier join（Python `NamedBarrierValue`）不做：当前 Go builder 无多起点边 API，spec 未要求。
 - subgraph 支持：`Command.Graph = ParentGraph`、子图作为节点；子图 checkpoint 使用 namespace 前缀（与 Python 的 ns+task_id 方案存在文档化差异）。
 
-### M3 流式与持久化
+### M3 流式与持久化（已完成 2026-08-08）
 
 - Stream modes：`values` / `updates` / `debug` / `messages` / `custom`（对齐 Python `stream_mode`；多模式复用、子图 namespace 前缀）。**设计决策（2026-08-08）**：Go API 形态为 `Stream(ctx, input, StreamOptions) iter.Seq2[StreamChunk, error]`（Go 1.23 range-over-func，惯用且背压友好），区别于 Python 的生成器+元组；`InvokeStream`/`NodeEventSink` 保留不动（agents 依赖），未来可再统一。`messages` 模式通过 `core/callbacks` Handler 桥接 `core/language` 的 `EventChatModelStream` 事件 + 执行器按节点注入元数据（节点名/ns/step）实现，节点需自行接线 callbacks（文档化）。
 - Checkpoint serde：`Serializer` 接口 + JSON 实现（对齐 `JsonPlusSerializer` 的可移植子集；Go 用 JSON + 封闭类型注册表信封代替 Python 的 msgpack+import-by-name，不与 Python checkpoint 二进制兼容，明确记录）。

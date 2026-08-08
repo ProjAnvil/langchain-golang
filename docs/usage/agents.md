@@ -206,6 +206,12 @@ The related `graph.Interrupt(ctx, value)` primitive — pause *inside* a
 node and feed a value back on resume — is available to middleware/node authors
 via the public `github.com/projanvil/langchain-golang/langgraph/graph` package.
 
+> **Durable checkpoints:** `checkpoint.NewMemorySaver` is in-memory. For a
+> durable backend, the nested module `langgraph/checkpoint/sqlite` provides a
+> SQLite saver — `sqlite.New(path, serde.NewJSONSerializer())` — usable
+> anywhere a `checkpoint.Saver` is accepted (including
+> `WithAgentCheckpointer`). See the [graph runtime guide](langgraph.md).
+
 ## State and context schema
 
 - **`WithAgentStateFields`** — register custom graph-state fields with their
@@ -222,7 +228,10 @@ See the `agents` package godoc for the full `WithAgent*` option set
 ## Streaming
 
 For real-time output, use `agent.StreamEvents` — see the
-[streaming guide](streaming.md).
+[streaming guide](streaming.md). For the lower-level graph surface, the
+compiled graph (`Agent.Graph`) also exposes `Stream` with Python-parity
+stream modes (`values` / `updates` / `debug` / `messages` / `custom`) — see
+the [graph runtime guide](langgraph.md).
 
 ## Subagents (agent-as-tool)
 
