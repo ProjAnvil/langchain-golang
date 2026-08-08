@@ -65,9 +65,9 @@ func (s *Saver) Setup(ctx context.Context) error
 // Saver 实现 checkpoint.Saver（含 M5 扩展后的接口，见下）。
 ```
 
-**Schema**：逐条照搬 Python `MIGRATIONS`（v0–v9）为 Go 字符串常量，含 `checkpoint_migrations` 版本表与 `CREATE INDEX CONCURRENTLY`。**文档化分歧**：Go 的 channel version 是 `int64`，blobs 表 `version` 列用 `BIGINT`（Python 是 `"%032d.%016f"` TEXT）；Go 自建库不受影响，但与 Python 跨语言共库不可行（serde 字节格式本就不互通：Go JSON envelope vs Python msgpack——doc.go 明确声明）。
+**Schema**：逐条照搬 Python `MIGRATIONS`（v0–v9）为 Go 字符串常量，含 `checkpoint_migrations` 版本表与 `CREATE INDEX CONCURRENTLY`。**文档化分歧**：Python blobs 表 `version` 列为 TEXT、存十进制整数字符串（`get_next_version` 返回整数，`_dump_blobs` 仅 `cast(str, ver)`，postgres/base.py:549-570）；Go 的 channel version 是 `int64`，blobs 表 `version` 列用 `BIGINT`。Go 自建库不受影响，但与 Python 跨语言共库不可行（serde 字节格式本就不互通：Go JSON envelope vs Python msgpack——doc.go 明确声明）。
 
-**inline 判定的文档化分歧**：Go 侧仅 `nil / string / bool / float64` 内联进 checkpoint JSONB（对齐 serde `encodeValue` 的 JSON-native 接受集，`checkpoint/serde/json.go:106-138`）；**Go 的 `int/int64` 一律进 blobs 表**（serde 中它们走 envelope，不是 JSON-native），与 Python 的 "int 内联" 不同。判定函数集中一处并配测试。
+**inline 判定的文档化分歧**：Go 侧**仅原语内联**——`nil / string / bool / float64` 内联进 checkpoint JSONB；**`int/int64`、`map[string]any`、`[]any` 及一切其他类型一律进 blobs 表**（与 Python 对齐：Python 只内联原语，dict/list 进 blobs；Go 的 int 在 serde 中走 envelope、不是 JSON-native，故也不内联）。判定函数集中一处并配测试。
 
 **读取实现**：拆 3 条查询（checkpoints / blobs / writes，scan-then-decode，sqlite.go 同风格），不照搬 Python 的单条嵌套 `array_agg` SQL。
 
@@ -100,21 +100,21 @@ func (s *Saver) Setup(ctx context.Context) error
 
 ### Go 设计（方案 A：忠实移植 barrier channel）
 
-**Builder**：新增 `AddJoinEdge(from []string, to string)`（校验：≥2 个去重父节点、节点已注册、to 非 START/END 保留名）。现有 `AddEdge` 不动。Compile 时注册 `join:a+b:c` 的 `channels.Barrier` 实例，记录 join 元数据（barrier key → parents/child；parent → 参与的 barrier key 列表）。
+**Builder**：新增 `AddJoinEdge(from []string, to string)`（校验：≥2 个去重父节点、节点已注册、to 非 START/END 保留名）。现有 `AddEdge` 不动。**文档化分歧**：Python 接受单元素起点序列（退化为普通等待边）并用 set 静默去重；Go 收紧为 ≥2 且重复父节点报错。Compile 时注册 `join:a+b:c` 的 `channels.Barrier` 实例，记录 join 元数据（barrier key → parents/child；parent → 参与的 barrier key 列表）。
 
-**channels 包**：新增 `Barrier` 类型，实现现有 `channels.Channel` 接口（`channels/channel.go:11-26`）：`Update`（幂等累计）、`Get`/`IsAvailable`（满才可用）、`Consume`（清零）、`Checkpoint`/`FromCheckpoint`（`seen` 为 `[]string`，serde 已支持，`checkpoint/serde/json.go:173`）。
+**channels 包**：新增 `Barrier` 类型，实现现有 `channels.Channel` 接口（`channels/channel.go:11-26`）：`Update`（幂等累计，收到非父名写入报 `ErrInvalidUpdate`）、`Get`/`IsAvailable`（满才可用）、`Checkpoint`/`FromCheckpoint`（`seen` 为 `[]string`，serde 已支持，`checkpoint/serde/json.go:173`）。`Consume`（清零复位）**不在** `Channel` 接口内——它是接口外扩展点，执行器通过类型断言 `interface{ Consume() bool }` 调用（对齐 Python `BaseChannel.consume` 可选方法的形态）。
 
 **执行器**（`graph/graph.go` / `graph/state.go`）：
 
-- 父任务 commit 阶段，对其参与的每个 barrier 追加一条隐式 write（`{channel: barrierKey, value: parentName}`），走 `applyWrites` 的同一版本递增路径——持久化/时间旅行/中断恢复零额外成本。
-- `staticNext` 不再为 waiting edge 直接产任务；当某 barrier 因本轮 writes 变为 available 且版本簿记判定未见过时，把 child 追加进 `nextTasks`（恰好一次）；child 任务的 writes 提交后对该 barrier `Consume` 复位（循环图语义）。
-- join channel key 从 `snapshot()`、节点输入、stream `values` chunk 中排除（控制面 channel，Python 中同样不在 output_keys）。
+- 父任务 commit 阶段，对其参与的每个 barrier 追加一条隐式 write（`{channel: barrierKey, value: parentName}`）。**该隐式 write 必须搭进父任务的 update 批次**（`taskWrites.update`），从而同时：①走 `applyWrites` 的同一版本递增路径；②在中断路径随 `completedTaskWrites` 序列化为 pending writes（`graph/graph.go:912-934`）——"父 A 已到达、父 B 中断→resume 补写"的持久化由此闭环，resume 重放时 barrier 到达记录不丢。
+- `staticNext` 不为 waiting edge 产任务；当某 barrier 因本轮 writes 变为 available 且版本簿记判定未见过时，把 child 追加进 `nextTasks`（恰好一次）；child 任务的 writes 提交后对该 barrier `Consume` 复位（循环图语义）。
+- join channel key 从一切用户可见面排除（控制面 channel，Python 中同样不在 output_keys）：`snapshot()`、节点输入、stream `values`/`updates` chunk、debug `task_result` 事件（隐式 write 搭在 update 批次里，后两者不过滤会泄漏 join key）。
 
 **不做**：`defer=True` / `NamedBarrierValueAfterFinish`（依赖 PULL 循环"试探性最后超步"的 finish 广播，边驱动无等价物）——文档化。
 
 **Send/Command.goto 到 join 子节点**：维持 PUSH 直发，绕过 barrier（Python 一致）。注意 Python 中 Send 触发的 c（带 arg）与 barrier 触发的 c（共享 state）是两个合法独立任务，Go 的去重不得误伤 Send 路径。
 
-**测试移植**：从 Python `libs/langgraph/tests/` 中定位 waiting-edge 用例（grep `add_edge((` / `waiting_edges` / `NamedBarrierValue`），移植：同超步多父→子恰好一次；跨超步多父→子等待齐后一次；三父 join；join 在循环中复位重触发；父中断→resume→补写后触发；join 子节点被普通边/Send 同时触发（OR 语义、次数对齐 Python）；join channel 不进 snapshot/stream values；checkpoint 往返后 barrier 部分到达状态保留。
+**测试移植**：从 Python `libs/langgraph/tests/` 中定位 waiting-edge 用例（grep `add_edge([` / `waiting_edges` / `NamedBarrierValue`；用例集中在 `test_pregel.py:1953-3085` 系列），移植：同超步多父→子恰好一次；跨超步多父→子等待齐后一次；三父 join；join 在循环中复位重触发；join 子节点被普通边/Send 同时触发（OR 语义、次数对齐 Python）；join channel 不进 snapshot/stream values。**Go 侧新增**（Python 无对应用例）：父中断→resume→补写后触发；checkpoint 往返后 barrier 部分到达状态保留。
 
 **风险**：
 
@@ -128,7 +128,7 @@ func (s *Saver) Setup(ctx context.Context) error
 
 ### Python 侧语义（移植基线，`langgraph/func/__init__.py`）
 
-- `@entrypoint(checkpointer=..., store=...)` 把函数编译成**单节点 Pregel 图**：三个保留 channel（`__input__`=EphemeralValue、`__output__`=LastValue、`__previous__`=LastValue）；`previous` 从上轮同线程 checkpoint 读入。
+- `@entrypoint(checkpointer=..., store=...)` 把函数编译成**单节点 Pregel 图**：三个保留 channel（`__start__`=EphemeralValue、`__end__`=LastValue、`__previous__`=LastValue，`func/__init__.py:576-596`）；`previous` 从上轮同线程 checkpoint 读入。
 - `entrypoint.final(value, save)` 解耦"返回给调用者的值"与"写入 PREVIOUS 的保存值"；返回普通值时两者相同。
 - `@task(retry=..., cache_policy=...)` 调用时不执行函数，返回 future；executor 把调用包成 `Call` 在下一 tick 调度。task 结果作为 `__return__`/`__error__` write 持久化到**当前 checkpoint**（不新建超步 checkpoint）。
 - **恢复重放**：resume 时 entrypoint 从头重跑；`Call` 凭确定性 task ID = hash(checkpoint_id, checkpoint_ns, step, task_name, PUSH, parent_path, call_idx) 查 pending writes，命中即回填 future 不重跑；错误同样持久化并在 resume 时重抛。`call_counter` 保证同 task 循环调用区分。
@@ -181,12 +181,12 @@ func (e *Entrypoint[I, O, S]) Stream(ctx context.Context, in I, opts graph.Optio
 
 **实现要点**：
 
-- 内部编译为现有 `graph.StateGraph` 的单节点图，三个保留 channel key（`__input__`/`__output__`/`__previous__`），节点函数跑用户函数并把返回拆 value/save 写两 channel——interrupt/resume/stream/time-travel 全部经由现有机制获得。保留 key 不进用户可见 state（同 M6 控制面过滤）。
+- 内部编译为现有 `graph.StateGraph` 的单节点图，三个保留 channel key（`__start__`/`__end__`/`__previous__`，与 Python 对齐），节点函数跑用户函数并把返回拆 value/save 写两 channel——interrupt/resume/stream/time-travel 全部经由现有机制获得。保留 key 不进用户可见 state（同 M6 控制面过滤）。
 - task dispatcher 经 `context.Context` 注入（与 `graph.Interrupt` 的 ctx 注入模式一致，`graph/graph.go:1127-1128`）。task 在 goroutine 立即执行（不引入"下一 tick"调度——Go 边驱动循环无 tick 概念，且 task 在节点函数内部执行，时序由用户控制流决定）。
-- 确定性 task ID = fnv-1a(cpID, checkpoint_ns, step, taskName, parentPath, callIdx)，复用/扩展 `graph/taskid.go`；per-run call counter 每次 entrypoint 重跑从零重放（文档约束：重跑时调用顺序必须确定，同 Python determinism 一节）。
-- checkpoint 保存点把已完成 task 的 `__return__`/`__error__` 结果经 `PutWrites` 写入**当前 checkpoint**；resume 时 `Call` 查 pending writes 命中即回填。
+- 确定性 task ID = fnv-1a(cpID, checkpoint_ns, step, taskName, parentPath, callIdx)，复用/扩展 `graph/taskid.go`；per-run call counter 每次 entrypoint 重跑从零重放（文档约束：重跑时调用顺序必须确定，同 Python determinism 一节）。task ID 中的 cpID 取**本次运行恢复所用的 checkpoint ID**（与 Python 哈希输入一致）。
+- **task 结果持久化机制（闭环设计）**：`fn` 包是 StateGraph 的外层包装，checkpoint 保存在 graph 执行器内部、且无回调点；尤其 interrupt 以 panic 传播时节点内失去控制。因此：①**dispatcher 对象由 fn 包装层持有**（不挂在节点栈上），interrupt panic 后仍可访问，已缓冲的 task 结果不丢；②**每次运行开始时**，fn 层用 `Saver.GetTuple` 载入目标 checkpoint（ThreadID/CheckpointID 定位）的 pending writes，交给 dispatcher 供 `Call` 重放查询——命中即回填 future，不重跑；③**每次运行返回后**（正常完成、出错、或 interrupt 暂停），fn 层用 `GetTuple` 定位运行产生的最新 checkpoint，把本轮已完成 task 的 `__return__`/`__error__` 结果经 `PutWrites` 追加到该 checkpoint（pending writes 本就是惰性读取，事后追加语义正确）。
 - retry/cache 复用 `graph.RetryPolicy`/`graph.CachePolicy` 与 `checkpoint.Cache` 接口；cache key 从"节点输入哈希"改为"调用参数哈希"，命名空间 `__fn_writes/<task-name>`。
-- **文档化语义分歧**：①Timeout 只能做到"ctx 取消 + 放弃等待"（goroutine 不可强杀；Python sync 函数同样不支持 timeout）；②interrupt 触发时，已启动但未完成的 task 被取消（ctx cancel），已完成的结果落 pending writes 后暂停（Python 丢弃未完成 PUSH 任务，语义对应）；③无 checkpointer 时 `hasPrev=false`（Python 为 None，Go 用显式 bool 防误读零值）。
+- **文档化语义分歧**：①Timeout 只能做到"ctx 取消 + 放弃等待"（goroutine 不可强杀；Python sync 函数同样不支持 timeout）；②interrupt 触发时，已启动但未完成的 task 被取消（ctx cancel），已完成的结果落 pending writes 后暂停（Python 丢弃未完成 PUSH 任务，语义对应）；③无 checkpointer 时 `hasPrev=false`（Python 为 None，Go 用显式 bool 防误读零值）；④**不支持 `store`**（Python `@entrypoint(checkpointer=..., store=...)` 的跨线程 BaseStore 未移植，Go `EntrypointOpts` 无此字段）。
 - serde：I/O/S 及 task 输入输出必须 JSON 可往返（封闭类型注册表），文档约束。
 
 **测试移植**：定位 Python `libs/langgraph/tests/` 中函数式 API 测试文件（grep `@entrypoint` / `entrypoint.final`），移植：entrypoint 基本 invoke；previous 跨 invoke 累积；final 的 value≠save；task 并行 futures（AwaitAll）；task 结果 resume 重放（副作用计数器断言不重跑）；task 错误持久化与 resume 重抛；task retry；task cache 命中；entrypoint 内 interrupt→resume（resume 值按序匹配）；无 checkpointer 时 hasPrev=false；task 在 StateGraph 节点内调用；确定性 call counter（循环中同 task 多次调用结果各自正确）。
