@@ -16,10 +16,14 @@ import (
 // A paused run persists, as pending writes against the pause checkpoint
 // (Saver.PutWrites), keyed by each task's planned ID (D5):
 //   - each interrupted task's interrupts as ReservedInterrupt writes;
-//   - each interrupted IN-NODE task's already-consumed resume values as
-//     ReservedResume writes (one per value, in consumption order), so a
-//     later resume rebuilds the task's full ordered resume queue instead of
-//     misaligning the new value onto an already-answered interrupt;
+//   - each interrupted IN-NODE task's already-consumed resume values as ONE
+//     ReservedResume write whose value is the whole ordered prefix list
+//     (mirroring Python, whose every RESUME write carries the full
+//     accumulated scratchpad list, types.py:905-925), so a later resume
+//     rebuilds the task's full ordered resume queue instead of misaligning
+//     the new value onto an already-answered interrupt — and so savers that
+//     give __resume__ a single reserved write slot (sqlite/postgres idx -4,
+//     last-write-wins) lose nothing;
 //   - each COMPLETED sibling task's state writes as plain channel writes,
 //     plus one ReservedTasks write per Command.Goto destination, plain node
 //     names normalized to types.Send (D4).
@@ -61,18 +65,22 @@ func persistInterrupts(ctx context.Context, saver checkpoint.Saver, cfg checkpoi
 }
 
 // persistInterruptAndResume records a paused in-node task's pending
-// interrupts plus the ordered prefix of resume values it has already
-// consumed (one ReservedResume write per value, in consumption order), so
-// the next resume rebuilds the full ordered queue (see resumeValuesFor).
-// Boundary interrupts keep using persistInterrupts — no node ran, so there
-// is no consumed prefix.
+// interrupts plus, when the task has already consumed resume values, ONE
+// ReservedResume write whose value is the whole ordered consumed prefix —
+// mirroring Python, where every RESUME write carries the full accumulated
+// scratchpad list (types.py:905-925). A single full-list write keeps the
+// prefix intact under savers that assign __resume__ one reserved write slot
+// (sqlite/postgres idx -4, INSERT OR REPLACE last-write-wins): one write,
+// nothing to collapse. The next resume rebuilds the full ordered queue from
+// this prefix (see resumeValuesFor). Boundary interrupts keep using
+// persistInterrupts — no node ran, so there is no consumed prefix.
 func persistInterruptAndResume(ctx context.Context, saver checkpoint.Saver, cfg checkpoint.Config, taskID string, interrupts []types.Interrupt, consumed []any) error {
-	writes := make([]checkpoint.Write, 0, len(interrupts)+len(consumed))
+	writes := make([]checkpoint.Write, 0, len(interrupts)+1)
 	for _, intr := range interrupts {
 		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: intr})
 	}
-	for _, v := range consumed {
-		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedResume, Value: v})
+	if len(consumed) > 0 {
+		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedResume, Value: []any(consumed)})
 	}
 	return saver.PutWrites(ctx, cfg, writes, taskID, "")
 }
@@ -230,7 +238,13 @@ func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
 					interrupts = append(interrupts, intr)
 				}
 			case checkpoint.ReservedResume:
-				resumePrefix = append(resumePrefix, w.Value)
+				// One write carries the WHOLE consumed prefix as a []any
+				// (Python parity: types.py:905-925). A non-slice value is
+				// malformed — ignore it, matching the type-assertion style
+				// of the other reserved channels above.
+				if prefix, ok := w.Value.([]any); ok {
+					resumePrefix = prefix
+				}
 			case checkpoint.ReservedTasks:
 				if send, ok := w.Value.(types.Send); ok {
 					sends = append(sends, send)
@@ -258,9 +272,9 @@ func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
 }
 
 // resumeValuesFor computes the resume queue for a re-run task: the persisted
-// prefix of already-consumed resume values (ReservedResume writes, in
-// consumption order) followed by the values matched from THIS resume call,
-// mirroring Python's accumulated (RESUME, ...) scratchpad list
+// prefix of already-consumed resume values (the single ReservedResume write's
+// full list, in consumption order) followed by the values matched from THIS
+// resume call, mirroring Python's accumulated (RESUME, ...) scratchpad list
 // (`types.py:905-925`). Matching rules for the new value are unchanged: a
 // map[string]any addresses pending interrupts by ID (unmatched ones re-fire
 // on re-run), a nil resume appends nothing (the pending interrupt re-fires,

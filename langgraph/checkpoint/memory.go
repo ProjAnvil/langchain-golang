@@ -32,9 +32,12 @@ type writeKey struct {
 // (`libs/checkpoint/langgraph/checkpoint/base/__init__.py:795`): writes to
 // reserved channels occupy a fixed negative slot and are overwritten on
 // rewrite, while regular channels occupy their positional idx and keep the
-// first write. (Go has no SCHEDULED/RESUME writes, and __tasks__ is
-// positional here exactly as in Python's map — unlike the Go sqlite saver,
-// which assigns it the reserved slot -2.)
+// first write. Go has no SCHEDULED counterpart; `__resume__` and `__tasks__`
+// stay positional here (Python's map slots RESUME at -4 and has no TASKS
+// entry) — harmless because the executor persists a task's consumed resume
+// prefix as ONE write carrying the whole ordered list, so no same-batch slot
+// collapse is possible (unlike the Go sqlite saver, which assigns
+// `__tasks__` the reserved slot -2 and `__resume__` -4).
 var reservedWriteIdx = map[string]int{
 	ReservedError:     -1,
 	ReservedInterrupt: -3,

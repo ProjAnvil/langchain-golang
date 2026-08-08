@@ -71,6 +71,12 @@ func (rs *runState) restore(cp checkpoint.Checkpoint) {
 		rs.channels[key] = rs.protoFor(key).FromCheckpoint(value)
 	}
 	rs.versions = maps.Clone(cp.ChannelVersions)
+	if rs.versions == nil {
+		// Savers that JSON-encode the checkpoint (sqlite/postgres) decode an
+		// empty ChannelVersions map as nil (`omitempty` drops it); applyWrites
+		// assigns into rs.versions, so restore must guarantee a non-nil map.
+		rs.versions = map[string]int64{}
+	}
 	rs.seen = cloneSeen(cp.VersionsSeen)
 }
 

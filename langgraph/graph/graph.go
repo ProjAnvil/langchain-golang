@@ -1044,9 +1044,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// tasks persist their writes (state updates + D4-normalized goto
 			// Sends) so resume replays them instead of re-running the tasks;
 			// interrupted tasks persist their ReservedInterrupt writes plus
-			// the ordered prefix of resume values they already consumed as
-			// ReservedResume writes (see persistInterruptAndResume), so the
-			// next resume rebuilds their full ordered resume queue. All
+			// one ReservedResume write carrying the ordered prefix of resume
+			// values they already consumed (see persistInterruptAndResume),
+			// so the next resume rebuilds their full ordered resume queue. All
 			// pending writes are keyed by the task's planned ID (D5).
 			if checkpointing {
 				next := plannedTasks(active)
@@ -1349,7 +1349,7 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 // before panicking (ist.resumeQueue[:ist.idx]; at the panic idx ==
 // len(resumeQueue), i.e. the full ordered prefix consumed so far, including
 // values carried from earlier pause/resume cycles) — so the pause path can
-// persist it as ReservedResume writes. Retry/error paths discard it: an
+// persist it as a single full-list ReservedResume write. Retry/error paths discard it: an
 // errored task produces no pause checkpoint, so the prefix has nowhere to
 // land.
 func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any) (result any, interrupted *types.Interrupt, consumed []any, err error) {

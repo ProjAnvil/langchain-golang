@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -272,8 +273,8 @@ func TestResumeSequentialInterruptsGraphAPI(t *testing.T) {
 // TestResumePauseCheckpointPersistsResumePrefix pins the pause checkpoint's
 // pending-writes shape after a SECOND sequential interrupt fires: the paused
 // task carries one ReservedInterrupt write (the freshly raised interrupt)
-// followed by one ReservedResume write per already-consumed resume value, in
-// consumption order (interrupt writes first, resume writes after).
+// followed by ONE ReservedResume write whose value is the whole ordered
+// consumed prefix (interrupt write first, resume write after).
 func TestResumePauseCheckpointPersistsResumePrefix(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := multiInterruptGraph(t, saver)
@@ -322,8 +323,8 @@ func TestResumePauseCheckpointPersistsResumePrefix(t *testing.T) {
 	if writes[1].Channel != checkpoint.ReservedResume {
 		t.Fatalf("writes[1].Channel = %q, want ReservedResume", writes[1].Channel)
 	}
-	if writes[1].Value != "first_answer" {
-		t.Fatalf("writes[1].Value = %v, want %q", writes[1].Value, "first_answer")
+	if want := []any{"first_answer"}; !reflect.DeepEqual(writes[1].Value, want) {
+		t.Fatalf("writes[1].Value = %v (%T), want the full prefix %v", writes[1].Value, writes[1].Value, want)
 	}
 }
 
@@ -371,27 +372,30 @@ func TestResumeChainedInterruptPrefixAccumulates(t *testing.T) {
 		t.Fatalf("invoke 3 Interrupts = %+v, want one interrupt (q2)", r3.Interrupts)
 	}
 
-	// The third pause checkpoint carries the two-value consumed prefix, one
-	// ReservedResume write per value, in consumption order.
+	// The third pause checkpoint carries the two-value consumed prefix as ONE
+	// ReservedResume write whose value is the full ordered list.
 	tup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t"})
 	if err != nil || tup == nil {
 		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
 	}
-	var resumes []any
+	var resumes []checkpoint.Write
 	sawInterrupt := false
 	for _, w := range tup.PendingWrites {
 		switch w.Channel {
 		case checkpoint.ReservedInterrupt:
 			sawInterrupt = true
 		case checkpoint.ReservedResume:
-			resumes = append(resumes, w.Value)
+			resumes = append(resumes, w)
 		}
 	}
 	if !sawInterrupt {
 		t.Fatal("pause checkpoint pending writes missing the ReservedInterrupt write")
 	}
-	if len(resumes) != 2 || resumes[0] != "a" || resumes[1] != "b" {
-		t.Fatalf("ReservedResume writes = %v, want [a b] in order", resumes)
+	if len(resumes) != 1 {
+		t.Fatalf("ReservedResume writes = %+v, want exactly ONE full-list write", resumes)
+	}
+	if want := []any{"a", "b"}; !reflect.DeepEqual(resumes[0].Value, want) {
+		t.Fatalf("ReservedResume value = %v (%T), want the full prefix %v", resumes[0].Value, resumes[0].Value, want)
 	}
 
 	r4, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "c"})
@@ -429,5 +433,84 @@ func TestResumeNilResumeRepauses(t *testing.T) {
 	}
 	if len(again.Interrupts) != 1 || again.Interrupts[0].Value != "First question?" {
 		t.Fatalf("nil-resume Invoke() Interrupts = %+v, want the same interrupt re-fired (First question?)", again.Interrupts)
+	}
+}
+
+// TestResumeNilResumeRepausesKeepsPrefix pins the nil-resume re-pause path
+// when the paused task has a NON-EMPTY consumed resume prefix: resuming with
+// nil resume (Python's invoke(None)) must re-fire the same pending interrupt
+// AND re-persist the full prefix intact, so a later real resume still
+// rebuilds the complete ordered queue.
+func TestResumeNilResumeRepausesKeepsPrefix(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("chain", func(ctx context.Context, _ map[string]any) (any, error) {
+		a := Interrupt(ctx, "q0")
+		b := Interrupt(ctx, "q1")
+		c := Interrupt(ctx, "q2")
+		return map[string]any{"data": fmt.Sprintf("%v,%v,%v", a, b, c)}, nil
+	})
+	g.AddEdge(types.START, "chain")
+	g.AddEdge("chain", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	ctx := context.Background()
+
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"}); err != nil {
+		t.Fatalf("invoke 1 error = %v", err)
+	}
+	r2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "a"})
+	if err != nil {
+		t.Fatalf("invoke 2 error = %v", err)
+	}
+	if len(r2.Interrupts) != 1 || r2.Interrupts[0].Value != "q1" {
+		t.Fatalf("invoke 2 Interrupts = %+v, want one interrupt (q1)", r2.Interrupts)
+	}
+
+	// invoke(None) on the second pause: nil input, no Resume — q1 re-fires.
+	again, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("nil-resume Invoke() error = %v", err)
+	}
+	if len(again.Interrupts) != 1 || again.Interrupts[0].Value != "q1" {
+		t.Fatalf("nil-resume Invoke() Interrupts = %+v, want the same interrupt re-fired (q1)", again.Interrupts)
+	}
+
+	// The re-pause checkpoint must still carry the full consumed prefix.
+	tup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	var prefix []any
+	for _, w := range tup.PendingWrites {
+		if w.Channel == checkpoint.ReservedResume {
+			if list, ok := w.Value.([]any); ok {
+				prefix = list
+			}
+		}
+	}
+	if want := []any{"a"}; !reflect.DeepEqual(prefix, want) {
+		t.Fatalf("re-pause ReservedResume prefix = %v, want %v (prefix lost)", prefix, want)
+	}
+
+	// The chain still advances correctly from the preserved prefix.
+	r3, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "b"})
+	if err != nil {
+		t.Fatalf("invoke 3 error = %v", err)
+	}
+	if len(r3.Interrupts) != 1 || r3.Interrupts[0].Value != "q2" {
+		t.Fatalf("invoke 3 Interrupts = %+v, want one interrupt (q2)", r3.Interrupts)
+	}
+	r4, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "c"})
+	if err != nil {
+		t.Fatalf("invoke 4 error = %v", err)
+	}
+	if len(r4.Interrupts) != 0 {
+		t.Fatalf("invoke 4 Interrupts = %+v, want none (run must complete)", r4.Interrupts)
+	}
+	if r4.Values["data"] != "a,b,c" {
+		t.Fatalf("data = %v, want %q", r4.Values["data"], "a,b,c")
 	}
 }

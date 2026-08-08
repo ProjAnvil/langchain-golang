@@ -41,20 +41,24 @@ const (
     ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) DO NOTHING`
 )
 
-// reservedWriteIdx maps reserved channels to their negative write idx.
-// Divergence from Python's WRITES_IDX_MAP {ERROR:-1, SCHEDULED:-2,
-// INTERRUPT:-3, RESUME:-4} (langgraph/checkpoint/base/__init__.py:795):
-// Python's map has NO TASKS entry — its TASKS writes use the positional
-// idx — but the Go executor persists Command.Goto routing as __tasks__
-// writes, so Go maps __tasks__ to -2, matching the sqlite saver's
-// established approximation (Go has no SCHEDULED/RESUME writes). Collision
-// risk, shared with sqlite: multiple __tasks__ writes in one batch all map
-// to idx -2, so an all-reserved batch's upsert keeps only the last such
-// write and a mixed batch's ON CONFLICT DO NOTHING keeps only the first.
+// reservedWriteIdx maps reserved channels to their negative write idx,
+// matching Python's WRITES_IDX_MAP {ERROR:-1, SCHEDULED:-2, INTERRUPT:-3,
+// RESUME:-4} (langgraph/checkpoint/base/__init__.py:795) — Go has no
+// SCHEDULED counterpart, so -2 is free. Divergence: Python's map has NO
+// TASKS entry — its TASKS writes use the positional idx — but the Go
+// executor persists Command.Goto routing as __tasks__ writes, so Go maps
+// __tasks__ to -2, matching the sqlite saver's established approximation.
+// Collision risk, shared with sqlite: multiple __tasks__ writes in one batch
+// all map to idx -2, so an all-reserved batch's upsert keeps only the last
+// such write and a mixed batch's ON CONFLICT DO NOTHING keeps only the
+// first. RESUME at -4 is lossless: the executor persists the consumed resume
+// prefix as ONE write carrying the whole ordered list (Python parity,
+// types.py:905-925), so last-write-wins has nothing to collapse.
 var reservedWriteIdx = map[string]int{
 	checkpoint.ReservedError:     -1,
 	checkpoint.ReservedTasks:     -2,
 	checkpoint.ReservedInterrupt: -3,
+	checkpoint.ReservedResume:    -4,
 }
 
 // Saver is a checkpoint.Saver backed by PostgreSQL. It is safe for
