@@ -88,7 +88,7 @@ func (s *Saver) Setup(ctx context.Context) error
 
 ---
 
-## M6 多父 barrier join
+## M6 多父 barrier join（已完成 2026-08-08）
 
 ### Python 侧语义（移植基线）
 

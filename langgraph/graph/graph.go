@@ -24,6 +24,12 @@
 //     It coexists with the older event-ified path (InvokeStream + the
 //     NodeEventSink in events.go), which CreateAgent's StreamEvents uses to
 //     observe node/model/tool lifecycle; neither replaces the other.
+//   - Multi-parent waiting edges (StateGraph.AddJoinEdge) are supported via
+//     a barrier channel per edge (Python's NamedBarrierValue): the child
+//     triggers exactly once after all parents commit; plain edges, Sends,
+//     and Command.Goto into the child bypass the barrier (Python's OR
+//     semantics). defer=True / NamedBarrierValueAfterFinish are NOT
+//     supported (the edge-driven loop has no finish broadcast).
 //   - Checkpointing (via the checkpoint package) keeps full versioned
 //     history per thread: one "input" checkpoint per turn plus one "loop"
 //     checkpoint per committed superstep, each carrying channel values,

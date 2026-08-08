@@ -5,8 +5,28 @@ The public top-level `langgraph/` packages hold the ported graph runtime:
 `langgraph/channels`, `langgraph/checkpoint` (+ `checkpoint/serde`),
 `langgraph/types`, `langgraph/prebuilt`. `agents.CreateAgent` is built on it;
 this guide covers the M3 additions (the `Stream` API, checkpoint
-serialization, the durable SQLite checkpoint saver) and the M4 additions
-(per-node retry/cache policies and `prebuilt.ToolNode`).
+serialization, the durable SQLite checkpoint saver), the M4 additions
+(per-node retry/cache policies and `prebuilt.ToolNode`), and the M6 addition
+(multi-parent join edges).
+
+## Join edges (multi-parent barrier)
+
+`AddJoinEdge([]string{"a", "b"}, "c")` mirrors Python's
+`add_edge(("a", "b"), "c")`: `c` runs exactly once after ALL parents have
+committed, whether they finish in the same superstep or several apart, and
+re-arms on each loop round. Arrivals are checkpointed, so an interrupted
+parent that resumes later still completes the barrier.
+
+> **Warning (OR semantics, Python parity):** a plain edge, conditional edge,
+> `types.Send`, or `Command.Goto` into the join child bypasses the barrier and
+> triggers the child directly. Mixing both edge kinds into one child can run
+> it multiple times.
+
+Divergences from Python: Go requires >= 2 distinct parents (Python accepts a
+single-element tuple and silently dedups) and rejects `types.END` as a join
+child. `defer=True` / `NamedBarrierValueAfterFinish` are not supported. The
+`join:a+b:c` barrier channel is control-plane state: it never appears in node
+inputs, snapshots, or stream output.
 
 ## Stream API (`CompiledGraph.Stream`)
 
