@@ -160,30 +160,74 @@ func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) 
 }
 
 // prepare assembles one fresh run: the input batch (with the previous save
-// value injected from the thread's latest checkpoint, when any) and a
-// run-scoped context carrying this run's dispatcher. The returned cancel
-// must run before the dispatcher is sealed (F4 teardown order: cancel ->
-// seal). Replay loading and result persistence are layered on in a later
-// milestone; a fresh round never replays.
+// value injected from the thread's latest checkpoint, when any), the replay
+// table loaded from that same tuple, and a run-scoped context carrying this
+// run's dispatcher. The returned cancel must run before the dispatcher is
+// sealed (F4 teardown order: cancel -> seal).
 func (e *Entrypoint[I, O, S]) prepare(ctx context.Context, in I, opts graph.Options) (context.Context, map[string]any, context.CancelFunc, *dispatcher, error) {
 	input := map[string]any{channelStart: in}
-	// Fresh rounds read previous from the pre-run checkpoint and write it
-	// into the input batch; on resume the graph ignores input and
-	// __previous__ is restored from the pause checkpoint instead.
-	if e.opts.Checkpointer != nil && opts.ThreadID != "" && opts.Resume == nil {
+	d := newDispatcher(e.opts.Cache)
+	if e.opts.Checkpointer != nil && opts.ThreadID != "" {
 		tup, err := e.opts.Checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointID: opts.CheckpointID})
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("fn: entrypoint checkpoint load: %w", err)
 		}
 		if tup != nil {
-			if rawPrev, ok := tup.Checkpoint.ChannelValues[channelPrevious]; ok {
-				input[channelPrevious] = rawPrev
+			// Replay loading must finish before the run starts: Task.Call
+			// reads d.replay/d.cpID/d.step lock-free, ordered after this
+			// load by the run's start (happens-before).
+			d.loadReplay(tup, opts)
+			// Fresh rounds read previous from the pre-run checkpoint and
+			// write it into the input batch; on resume the graph ignores
+			// input and __previous__ is restored from the pause checkpoint
+			// instead.
+			if opts.Resume == nil {
+				if rawPrev, ok := tup.Checkpoint.ChannelValues[channelPrevious]; ok {
+					input[channelPrevious] = rawPrev
+				}
 			}
 		}
 	}
-	d := newDispatcher(e.opts.Cache)
 	runCtx, cancel := context.WithCancel(contextWithDispatcher(ctx, d))
 	return runCtx, input, cancel, d, nil
+}
+
+// persistResults appends the run's recorded task results to the thread's
+// latest checkpoint L (F4: the executor creates the pause/final checkpoint
+// during the run — pause -> the pause checkpoint; completion -> the final
+// loop checkpoint; failure -> the pre-run input checkpoint — so each
+// result's deterministic task ID is re-stamped against L only afterwards;
+// recompute-on-restore then always recomputes the same ID). A nil
+// checkpointer, an empty ThreadID, or an empty result table is a no-op.
+func (e *Entrypoint[I, O, S]) persistResults(ctx context.Context, opts graph.Options, d *dispatcher) error {
+	if e.opts.Checkpointer == nil || opts.ThreadID == "" {
+		return nil
+	}
+	results := d.snapshotResults()
+	if len(results) == 0 {
+		return nil
+	}
+	saver := e.opts.Checkpointer
+	tup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID})
+	if err != nil {
+		return err
+	}
+	if tup == nil {
+		return nil // the run committed no checkpoint (e.g. it failed pre-loop)
+	}
+	for _, r := range results {
+		id := graph.FnTaskID(tup.Checkpoint.ID, tup.Config.CheckpointNS, tup.Metadata.Step, r.name, r.parentPath, r.callIdx)
+		w := checkpoint.Write{Channel: checkpoint.ReservedReturn, Value: r.value}
+		if r.isErr {
+			w = checkpoint.Write{Channel: checkpoint.ReservedError, Value: r.errMsg}
+		}
+		// One PutWrites per result: PutWrites stamps a single taskID on the
+		// whole batch (checkpoint/checkpoint.go + memory.go).
+		if err := saver.PutWrites(ctx, tup.Config, []checkpoint.Write{w}, id, r.parentPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Invoke runs the entrypoint. opts.ThreadID (+ a Checkpointer) enables
@@ -202,11 +246,29 @@ func (e *Entrypoint[I, O, S]) Invoke(ctx context.Context, in I, opts graph.Optio
 		return zero, err
 	}
 	defer cancel() // panic-path backstop; the normal path cancels explicitly first
+	defer func() {
+		// A user panic unwinding through the graph run still gets the
+		// pinned teardown (cancel -> seal -> snapshot -> PutWrites) on a
+		// best-effort basis: a persist failure here must not mask the
+		// original panic, which always continues to propagate.
+		if p := recover(); p != nil {
+			cancel()
+			d.seal()
+			_ = e.persistResults(ctx, opts, d)
+			panic(p)
+		}
+	}()
 	res, err := e.graph.InvokeWithOptions(runCtx, input, opts)
+	// Pinned teardown order (F4): cancel the run-scoped ctx, seal the
+	// dispatcher, then snapshot+persist the recorded results.
 	cancel()
 	d.seal()
+	perr := e.persistResults(ctx, opts, d)
 	if err != nil {
 		return zero, err
+	}
+	if perr != nil {
+		return zero, fmt.Errorf("fn: persisting task results: %w", perr)
 	}
 	if len(res.Interrupts) > 0 {
 		return zero, &InterruptError{Interrupts: res.Interrupts}
@@ -234,8 +296,14 @@ func (e *Entrypoint[I, O, S]) Stream(ctx context.Context, in I, opts graph.Optio
 			yield(graph.StreamChunk{}, err)
 			return
 		}
-		defer d.seal()
-		defer cancel()
+		defer func() {
+			// Same pinned teardown as Invoke (cancel -> seal -> persist),
+			// best-effort: chunk/yield errors already reached the caller,
+			// and a user panic unwinding through the run keeps propagating.
+			cancel()
+			d.seal()
+			_ = e.persistResults(ctx, opts, d)
+		}()
 		for chunk, err := range e.graph.Stream(runCtx, input, graph.StreamOptions{
 			Options: opts,
 			Modes:   []graph.StreamMode{graph.StreamUpdates},
