@@ -1,4 +1,4 @@
-# Graph runtime (`langgraph/`) — stream modes, serde, SQLite checkpoints
+# Graph runtime (`langgraph/`) — stream modes, serde, SQLite checkpoints, retry/cache policies, prebuilt ToolNode
 
 The public top-level `langgraph/` packages hold the ported graph runtime:
 `langgraph/graph` (StateGraph builder + Pregel executor),
@@ -115,7 +115,7 @@ Policies attach at node-registration time via `AddNodeWithPolicies`; nodes
 added with plain `AddNode` carry no policy and are never retried:
 
 ```go
-g := graph.NewStateGraph()
+g := graphpkg.NewStateGraph()
 g.AddNodeWithPolicies("flaky", flakyNode, graphpkg.NodePolicies{
 	Retry: &graphpkg.RetryPolicy{MaxAttempts: 5},
 })
@@ -148,7 +148,7 @@ g.AddNodeWithPolicies("flaky", flakyNode, graphpkg.NodePolicies{
 and a `checkpoint.Cache` backend installed at compile time:
 
 ```go
-g := graph.NewStateGraph()
+g := graphpkg.NewStateGraph()
 g.AddNodeWithPolicies("expensive", expensiveNode, graphpkg.NodePolicies{
 	Cache: &graphpkg.CachePolicy{TTL: 10 * time.Minute},
 })
