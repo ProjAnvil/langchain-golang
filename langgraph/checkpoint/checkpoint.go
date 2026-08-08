@@ -132,6 +132,29 @@ type Serializer interface {
 	LoadsTyped(typ string, data []byte) (any, error)
 }
 
+// Cache stores a completed graph task's writes keyed by a policy-computed
+// cache key, so a later task with the same input replays the stored writes
+// instead of re-executing the node (see graph.CachePolicy). It mirrors
+// Python's `langgraph.cache.base.BaseCache`.
+//
+// Packaging divergence from Python (which ships `langgraph.cache.*`): the Go
+// cache lives here beside Saver because checkpoint imports nothing from
+// graph, keeping the dependency direction acyclic.
+//
+// ns namespaces entries (the executor uses "writes/<node>"); Clear removes a
+// whole namespace. TTLs are absolute expiries checked on read (Python
+// parity).
+type Cache interface {
+	// Get returns the writes stored under ns/key, or ok=false when no entry
+	// exists or it has expired.
+	Get(ctx context.Context, ns, key string) (writes []Write, ok bool, err error)
+	// Set stores writes under ns/key; ttl is the entry's lifetime from now,
+	// with ttl <= 0 meaning the entry never expires.
+	Set(ctx context.Context, ns, key string, writes []Write, ttl time.Duration) error
+	// Clear removes every entry in namespace ns.
+	Clear(ctx context.Context, ns string) error
+}
+
 // ListOptions filters Saver.List results.
 type ListOptions struct {
 	// Before, when non-nil with a non-empty CheckpointID, restricts results

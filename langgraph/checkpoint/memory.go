@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"time"
 )
 
 // stored is one persisted checkpoint plus its associated data.
@@ -196,4 +197,71 @@ func copyMetadata(md Metadata) Metadata {
 	out := md
 	out.Parents = maps.Clone(md.Parents)
 	return out
+}
+
+// cacheEntry is one stored cache value with its absolute expiry (the zero
+// time means the entry never expires).
+type cacheEntry struct {
+	writes  []Write
+	expires time.Time
+}
+
+// InMemoryCache is an in-memory Cache, the Go equivalent of Python's
+// `langgraph.cache.memory.InMemoryCache`: entries live until their TTL's
+// absolute expiry and are lost when the process exits. The zero value is
+// ready to use. It is safe for concurrent use.
+type InMemoryCache struct {
+	mu sync.Mutex
+	// entries maps namespace -> key -> entry.
+	entries map[string]map[string]cacheEntry
+}
+
+// NewInMemoryCache constructs an empty InMemoryCache.
+func NewInMemoryCache() *InMemoryCache {
+	return &InMemoryCache{entries: map[string]map[string]cacheEntry{}}
+}
+
+// Get implements Cache. An entry at or past its absolute expiry is evicted
+// and reported as a miss (Python parity: TTLs are checked on read).
+func (c *InMemoryCache) Get(ctx context.Context, ns, key string) ([]Write, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[ns][key]
+	if !ok {
+		return nil, false, nil
+	}
+	if !entry.expires.IsZero() && !time.Now().Before(entry.expires) {
+		delete(c.entries[ns], key)
+		return nil, false, nil
+	}
+	return slices.Clone(entry.writes), true, nil
+}
+
+// Set implements Cache. The writes slice is cloned so later caller mutation
+// cannot corrupt the stored entry.
+func (c *InMemoryCache) Set(ctx context.Context, ns, key string, writes []Write, ttl time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[string]map[string]cacheEntry{}
+	}
+	byKey := c.entries[ns]
+	if byKey == nil {
+		byKey = map[string]cacheEntry{}
+		c.entries[ns] = byKey
+	}
+	entry := cacheEntry{writes: slices.Clone(writes)}
+	if ttl > 0 {
+		entry.expires = time.Now().Add(ttl)
+	}
+	byKey[key] = entry
+	return nil
+}
+
+// Clear implements Cache.
+func (c *InMemoryCache) Clear(ctx context.Context, ns string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, ns)
+	return nil
 }

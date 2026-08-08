@@ -81,6 +81,33 @@ func completedTaskWrites(update map[string]any, cmd *types.Command) ([]checkpoin
 	return writes, nil
 }
 
+// outcomeFromCachedWrites rebuilds a task outcome from cached writes using
+// the same channel classification planResume uses: ReservedTasks writes are
+// routing (rebuilt as Command.Goto), every other channel a state-update
+// entry. It is the inverse of completedTaskWrites, used when a cache hit
+// injects a task's stored writes as its outcome instead of executing the
+// node (see the cache lookup pass in CompiledGraph.run).
+func outcomeFromCachedWrites(writes []checkpoint.Write) (map[string]any, *types.Command) {
+	var update map[string]any
+	var dests []any
+	for _, w := range writes {
+		if w.Channel == checkpoint.ReservedTasks {
+			if send, ok := w.Value.(types.Send); ok {
+				dests = append(dests, send)
+			}
+			continue
+		}
+		if update == nil {
+			update = map[string]any{}
+		}
+		update[w.Channel] = w.Value
+	}
+	if len(dests) == 0 {
+		return update, nil
+	}
+	return update, &types.Command{Update: update, Goto: dests}
+}
+
 // gotoSends normalizes routing destinations to types.Send values (D4): plain
 // node names become Send{Node: name} with a nil Arg.
 func gotoSends(dests []any) ([]types.Send, error) {

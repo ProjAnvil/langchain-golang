@@ -2,6 +2,9 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math"
 	"math/rand"
@@ -152,13 +155,39 @@ type NodePolicies struct {
 }
 
 // CachePolicy configures per-node write caching, mirroring Python's
-// `langgraph.types.CachePolicy`. Only the struct lives here; the Cache
-// backend interface and the executor's cache lookup land separately.
+// `langgraph.types.CachePolicy`. It is installed per node via
+// StateGraph.AddNodeWithPolicies and requires a checkpoint.Cache backend
+// installed via WithCache; without a backend the policy is inert and the
+// node executes uncached.
+//
+// On a cache miss the executor runs the node and stores the task's WRITES
+// (state updates as channel writes plus routing as ReservedTasks writes, the
+// same serializer the resume path uses — see completedTaskWrites), not its
+// return value. On a hit the stored writes are injected as the task's
+// outcome: the node does not execute, no RawNodeStart/RawNodeEnd pair is
+// emitted, the injected updates still surface as `updates` stream chunks,
+// and cached Command.Goto routing is replayed.
 type CachePolicy struct {
 	// KeyFunc derives the cache key from the task's input (the Send arg when
 	// the task was dispatched via types.Send, else the pre-superstep state
-	// snapshot). Nil means the default canonical-JSON key function.
+	// snapshot). Nil means DefaultCacheKey. A KeyFunc error fails the task
+	// with a wrapped error (Python parity: `key_func` errors propagate as
+	// task errors).
 	KeyFunc func(input map[string]any) (string, error)
 	// TTL is how long a cached entry lives; 0 means it never expires.
 	TTL time.Duration
+}
+
+// DefaultCacheKey is the default CachePolicy.KeyFunc: the sha256 hex digest
+// of the canonical JSON encoding of input. encoding/json marshals maps with
+// sorted keys, so the digest is deterministic for JSON-representable values;
+// non-JSON values (funcs, channels, cyclic structures, NaN) produce an
+// error, which the executor surfaces as the task's error.
+func DefaultCacheKey(input map[string]any) (string, error) {
+	data, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

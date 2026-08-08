@@ -217,6 +217,7 @@ type CompileOption func(*compileOptions)
 
 type compileOptions struct {
 	checkpointer    checkpoint.Saver
+	cache           checkpoint.Cache
 	recursionLimit  int
 	interruptBefore map[string]bool
 	interruptAfter  map[string]bool
@@ -226,6 +227,14 @@ type compileOptions struct {
 // support (mirrors passing `checkpointer=` to Python's `.compile()`).
 func WithCheckpointer(saver checkpoint.Saver) CompileOption {
 	return func(o *compileOptions) { o.checkpointer = saver }
+}
+
+// WithCache installs a checkpoint.Cache backend, enabling per-node
+// CachePolicy write caching (see StateGraph.AddNodeWithPolicies and
+// CachePolicy). Nodes with a cache policy but no installed backend execute
+// uncached, exactly as if they had no policy.
+func WithCache(c checkpoint.Cache) CompileOption {
+	return func(o *compileOptions) { o.cache = c }
 }
 
 // WithRecursionLimit overrides the default superstep limit (100), mirroring
@@ -329,6 +338,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		conditional:     g.conditional,
 		entry:           g.entry,
 		checkpointer:    options.checkpointer,
+		cache:           options.cache,
 		recursionLimit:  options.recursionLimit,
 		interruptBefore: options.interruptBefore,
 		interruptAfter:  options.interruptAfter,
@@ -345,9 +355,26 @@ type CompiledGraph struct {
 	conditional     map[string]ConditionalEdge
 	entry           string
 	checkpointer    checkpoint.Saver
+	cache           checkpoint.Cache
 	recursionLimit  int
 	interruptBefore map[string]bool
 	interruptAfter  map[string]bool
+}
+
+// ClearCache removes every cached entry in namespace ns, delegating to the
+// cache backend installed via WithCache. The executor namespaces each node's
+// entries as "writes/<node>". It is a no-op returning nil when no cache
+// backend is installed.
+func (g *CompiledGraph) ClearCache(ctx context.Context, ns string) error {
+	if g.cache == nil {
+		return nil
+	}
+	return g.cache.Clear(ctx, ns)
+}
+
+// cacheWritesNS is the cache namespace holding nodeName's cached task writes.
+func cacheWritesNS(nodeName string) string {
+	return "writes/" + nodeName
 }
 
 // Options configures a single Invoke call.
@@ -745,12 +772,70 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		outcomes := make([]outcome, len(active))
 
 		state := rs.snapshot()
-		// Debug task events fire at dispatch, in deterministic task order.
+		// Debug task events fire at dispatch, in deterministic task order —
+		// including for cache-hit tasks, whose node never executes (Python
+		// emits task events for prepared tasks; documented parity).
 		for _, t := range active {
 			em.debugTask(rs.step+1, t, state)
 		}
+
+		// Cache lookup pass (per-node CachePolicy, see WithCache), synchronous
+		// and in deterministic task order, BEFORE any task dispatches — and
+		// therefore before its RawNodeStart event. A hit injects the stored
+		// writes as the task's outcome: the node never executes and no
+		// RawNodeStart/End pair is emitted (Python parity: execution is
+		// skipped, so no node events fire). Tasks resuming with a pending
+		// interrupt skip the lookup — they carry a (possibly empty) resume
+		// queue entry in resumeValues, see planResume — because a cache entry
+		// populated by a DIFFERENT run for the same input must not skip the
+		// node and silently drop the resume value. Tasks replayed from pending
+		// writes never reach dispatch at all, so they bypass the cache
+		// automatically.
+		execute := make([]bool, len(active))
+		missed := make([]bool, len(active)) // cache miss: store writes after execution
+		storeKey := make([]string, len(active))
+		for i, t := range active {
+			policy, ok := g.policies[t.node]
+			if g.cache == nil || !ok || policy.Cache == nil {
+				execute[i] = true
+				continue
+			}
+			if _, resuming := resumeValues[t.id]; resuming {
+				execute[i] = true
+				continue
+			}
+			input := state
+			if t.arg != nil {
+				input = t.arg
+			}
+			keyFunc := policy.Cache.KeyFunc
+			if keyFunc == nil {
+				keyFunc = DefaultCacheKey
+			}
+			key, err := keyFunc(input)
+			if err != nil {
+				outcomes[i].err = fmt.Errorf("graph: node %q cache key: %w", t.node, err)
+				continue
+			}
+			writes, hit, err := g.cache.Get(ctx, cacheWritesNS(t.node), key)
+			if err != nil {
+				outcomes[i].err = fmt.Errorf("graph: node %q cache get: %w", t.node, err)
+				continue
+			}
+			if hit {
+				outcomes[i].update, outcomes[i].cmd = outcomeFromCachedWrites(writes)
+				continue
+			}
+			execute[i] = true
+			missed[i] = true
+			storeKey[i] = key
+		}
+
 		var wg sync.WaitGroup
 		for i, t := range active {
+			if !execute[i] {
+				continue
+			}
 			wg.Add(1)
 			go func(i int, t task) {
 				defer wg.Done()
@@ -770,6 +855,23 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 		wg.Wait()
 		resumeValues = nil
+
+		// Cache store pass: tasks that missed and then completed (no error,
+		// no interrupt) persist their writes — via completedTaskWrites, the
+		// same serializer the resume path uses — so later runs with the same
+		// input replay them. Errored and interrupted tasks store nothing.
+		for i, o := range outcomes {
+			if !missed[i] || o.err != nil || o.interrupted != nil {
+				continue
+			}
+			writes, err := completedTaskWrites(o.update, o.cmd)
+			if err != nil {
+				return Result{}, fmt.Errorf("graph: node %q cache writes: %w", active[i].node, err)
+			}
+			if err := g.cache.Set(ctx, cacheWritesNS(active[i].node), storeKey[i], writes, g.policies[active[i].node].Cache.TTL); err != nil {
+				return Result{}, fmt.Errorf("graph: node %q cache set: %w", active[i].node, err)
+			}
+		}
 
 		// Collect outcomes in deterministic task order: debug task_result per
 		// task at completion, then the task's updates chunk. (Divergence from
