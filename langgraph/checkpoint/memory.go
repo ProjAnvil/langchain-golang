@@ -16,6 +16,28 @@ type stored struct {
 	md     Metadata
 	parent *Config
 	writes []Write
+	// writeSlots maps each occupied write slot to its position in writes,
+	// mirroring the inner key of Python InMemorySaver's writes map.
+	writeSlots map[writeKey]int
+}
+
+// writeKey identifies one write slot of a checkpoint: (task ID, write idx).
+type writeKey struct {
+	taskID string
+	idx    int
+}
+
+// reservedWriteIdx mirrors Python's WRITES_IDX_MAP
+// `{ERROR: -1, SCHEDULED: -2, INTERRUPT: -3, RESUME: -4}`
+// (`libs/checkpoint/langgraph/checkpoint/base/__init__.py:795`): writes to
+// reserved channels occupy a fixed negative slot and are overwritten on
+// rewrite, while regular channels occupy their positional idx and keep the
+// first write. (Go has no SCHEDULED/RESUME writes, and __tasks__ is
+// positional here exactly as in Python's map — unlike the Go sqlite saver,
+// which assigns it the reserved slot -2.)
+var reservedWriteIdx = map[string]int{
+	ReservedError:     -1,
+	ReservedInterrupt: -3,
 }
 
 // MemorySaver is an in-memory Saver, the Go equivalent of Python's
@@ -113,8 +135,13 @@ func (s *MemorySaver) Put(ctx context.Context, cfg Config, cp Checkpoint, md Met
 	return Config{ThreadID: cfg.ThreadID, CheckpointNS: cfg.CheckpointNS, CheckpointID: cp.ID}, nil
 }
 
-// PutWrites implements Saver. Each write is stamped with taskID and taskPath
-// and appended to the checkpoint's pending writes in call order.
+// PutWrites implements Saver. Each write is stamped with taskID and
+// taskPath and recorded under its (taskID, idx) slot, mirroring Python
+// InMemorySaver's put_writes: a regular channel takes its positional idx and
+// re-writing an occupied slot is ignored (first-write-wins); a reserved
+// channel takes its fixed negative slot (reservedWriteIdx) and re-writing it
+// replaces the stored value in place. PendingWrites reads back in insertion
+// order.
 func (s *MemorySaver) PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,13 +150,27 @@ func (s *MemorySaver) PutWrites(ctx context.Context, cfg Config, writes []Write,
 		return fmt.Errorf("checkpoint: PutWrites: no checkpoint %q for thread %q (ns %q)",
 			cfg.CheckpointID, cfg.ThreadID, cfg.CheckpointNS)
 	}
-	stamped := make([]Write, len(writes))
+	if st.writeSlots == nil {
+		st.writeSlots = map[writeKey]int{}
+	}
 	for i, w := range writes {
+		idx := i
+		if reserved, ok := reservedWriteIdx[w.Channel]; ok {
+			idx = reserved
+		}
+		key := writeKey{taskID: taskID, idx: idx}
 		w.TaskID = taskID
 		w.TaskPath = taskPath
-		stamped[i] = w
+		if pos, occupied := st.writeSlots[key]; occupied {
+			if idx >= 0 {
+				continue // first write wins
+			}
+			st.writes[pos] = w // reserved slot: replace in place
+			continue
+		}
+		st.writeSlots[key] = len(st.writes)
+		st.writes = append(st.writes, w)
 	}
-	st.writes = append(st.writes, stamped...)
 	s.threads[cfg.ThreadID][cfg.CheckpointNS][id] = st
 	return nil
 }

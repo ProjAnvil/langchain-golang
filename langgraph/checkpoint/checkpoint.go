@@ -195,8 +195,13 @@ type Saver interface {
 	// is non-empty it is recorded as the new checkpoint's parent link (D3).
 	// newVersions, when non-nil, is merged into the stored ChannelVersions.
 	Put(ctx context.Context, cfg Config, cp Checkpoint, md Metadata, newVersions map[string]int64) (Config, error)
-	// PutWrites appends writes (each stamped with taskID and taskPath) to
-	// the pending writes of the checkpoint identified by cfg.
+	// PutWrites records writes (each stamped with taskID and taskPath)
+	// against the pending writes of the checkpoint identified by cfg,
+	// erroring when no such checkpoint exists. Re-writing the same task is
+	// deduplicated per write slot: the first write to a regular channel
+	// wins, while a batch whose channels are all reserved replaces the
+	// stored values (Python's WRITES_IDX_MAP put_writes semantics, pinned
+	// by the savertest contract suite).
 	PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error
 	// DeleteThread removes all checkpoints and pending writes for threadID.
 	DeleteThread(ctx context.Context, threadID string) error
