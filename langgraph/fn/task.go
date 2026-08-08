@@ -84,13 +84,16 @@ func (t *Task[I, O]) Call(ctx context.Context, in I) *Future[O] {
 		}
 	}
 	// 2. Cache lookup (independent second mechanism; only with a backend).
+	key := ""
 	if t.opts.Cache != nil && d.cache != nil {
-		if fut, ok := cachedCall(ctx, d, t, parentPath, callIdx, in); ok {
+		fut, k, ok := cachedCall(ctx, d, t, parentPath, callIdx, in)
+		if ok {
 			return fut
 		}
+		key = k // reuse for the post-run store: KeyFunc runs once per Call
 	}
 	// 3. Fresh execution in its own goroutine.
-	return startTask(d, ctx, t, parentPath, callIdx, in)
+	return startTask(d, ctx, t, parentPath, callIdx, in, key)
 }
 
 // ClearCache removes every cached result of this task from cache,
@@ -149,7 +152,7 @@ func replayedCall[O any](ctx context.Context, d *dispatcher, name, parentPath st
 // by that goroutine. The goroutine writes fut's fields before close(fut.done)
 // (happens-before via the channel) and is the sole closer, so done is closed
 // exactly once.
-func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], parentPath string, callIdx int, in I) *Future[O] {
+func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], parentPath string, callIdx int, in I, key string) *Future[O] {
 	fut := &Future[O]{done: make(chan struct{})}
 	taskPath := t.name + "@" + strconv.Itoa(callIdx) // root call: "a@0" (no leading /)
 	if parentPath != "" {
@@ -180,7 +183,7 @@ func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], pare
 				// Store before resolving: a cache-store failure fails the
 				// task (graph node-cache parity), so it must not observe a
 				// success first.
-				if cerr := cacheStore(ctx, d, t, in, val); cerr != nil {
+				if cerr := cacheStore(ctx, d, t, key, val); cerr != nil {
 					fut.err = cerr
 					d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: cerr.Error(), consumed: consumed()})
 					return
@@ -266,52 +269,56 @@ func callSafely[I, O any](ctx context.Context, t *Task[I, O], in I) (val O, gi *
 }
 
 // cachedCall serves a Call from the cache backend. ok=false means cache miss
-// (or expired entry) and the caller proceeds to fresh execution. Lookup-phase
-// failures (KeyFunc or Get error) fail the task with a wrapped error and are
-// recorded as __error__ — graph node-cache parity ("key_func errors
-// propagate as task errors"). A hit re-records the outcome into this run's
-// result table, like replayedCall.
+// (or expired entry) and the caller proceeds to fresh execution, reusing the
+// returned key for the post-run store so the KeyFunc is evaluated exactly
+// once per Call. Lookup-phase failures (KeyFunc or Get error) fail the task
+// with a wrapped error and are recorded as __error__ — graph node-cache
+// parity ("key_func errors propagate as task errors"). A hit re-records the
+// outcome into this run's result table, like replayedCall.
 //
 // The KeyFunc receives the call arguments packed as a single-key map,
 // map[string]any{"input": in} (documented divergence: Python's key_func
 // receives *args/**kwargs).
-func cachedCall[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], parentPath string, callIdx int, in I) (*Future[O], bool) {
+//
+// Unsupported combination: a cache HIT replays the result without the
+// resume-queue alignment replayedCall performs (the cached entry carries no
+// consumed count), so a cached task whose function also calls Interrupt
+// would misalign the node's shared resume queue — Python's baseline never
+// combines cache_policy with interrupt-in-task (documented divergence).
+func cachedCall[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], parentPath string, callIdx int, in I) (*Future[O], string, bool) {
 	key, err := cacheKey(t, in)
 	if err != nil {
 		d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: err.Error()})
 		var zero O
-		return resolvedFuture[O](zero, err, nil), true
+		return resolvedFuture[O](zero, err, nil), "", true
 	}
 	writes, ok, err := d.cache.Get(ctx, fnCacheNS(t.name), key)
 	if err != nil {
 		werr := fmt.Errorf("fn: task %q cache get: %w", t.name, err)
 		d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: werr.Error()})
 		var zero O
-		return resolvedFuture[O](zero, werr, nil), true
+		return resolvedFuture[O](zero, werr, nil), "", true
 	}
 	if !ok || len(writes) == 0 || writes[0].Channel != checkpoint.ReservedReturn {
-		return nil, false
+		return nil, key, false
 	}
 	val, ok := writes[0].Value.(O)
 	if !ok {
 		var zero O
 		err := fmt.Errorf("fn: cached result of task %q has type %T, want the declared output type", t.name, writes[0].Value)
 		d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: err.Error()})
-		return resolvedFuture[O](zero, err, nil), true
+		return resolvedFuture[O](zero, err, nil), "", true
 	}
 	d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, value: val})
-	return resolvedFuture[O](val, nil, nil), true
+	return resolvedFuture[O](val, nil, nil), "", true
 }
 
-// cacheStore stores a successful result. A Set failure fails the task with a
-// wrapped error (graph node-cache parity); the caller records that error.
-func cacheStore[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], in I, val O) error {
+// cacheStore stores a successful result under the key cachedCall already
+// derived for this Call. A Set failure fails the task with a wrapped error
+// (graph node-cache parity); the caller records that error.
+func cacheStore[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], key string, val O) error {
 	if t.opts.Cache == nil || d.cache == nil {
 		return nil
-	}
-	key, err := cacheKey(t, in)
-	if err != nil {
-		return err
 	}
 	if err := d.cache.Set(ctx, fnCacheNS(t.name), key, []checkpoint.Write{{Channel: checkpoint.ReservedReturn, Value: val}}, t.opts.Cache.TTL); err != nil {
 		return fmt.Errorf("fn: task %q cache set: %w", t.name, err)
