@@ -1,5 +1,7 @@
 # langchain-golang
 
+**Languages:** English | [简体中文](README.zh-CN.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain) — the Python AI application framework. Build LLM agents and LLM applications in Go using LangChain's abstractions: chat models, tools, prompts, output parsers, messages, vector stores, retrievers, and the `create_agent` factory.
@@ -16,9 +18,9 @@ A Go port of:
 - **`langchain-tests`** → `standardtests/` — shared conformance suites.
 - **`model-profiles`** → `modelprofiles/` + the `cmd/langchain-profiles` CLI.
 
-It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — the ported graph runtime (channel objects, versioned checkpoints with history, time travel, subgraphs, stream modes, checkpoint serde) lives in the public top-level `langgraph/` packages (see [Not supported](#not-supported--out-of-scope) and the [graph runtime guide](docs/usage/langgraph.md)).
+It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — the ported graph runtime (channel objects, versioned checkpoints with history, time travel, subgraphs, stream modes, checkpoint serde, join edges (`AddJoinEdge`), a Postgres checkpoint saver, and the functional API (`fn` package)) lives in the public top-level `langgraph/` packages (see [Not supported](#not-supported--out-of-scope) and the [graph runtime guide](docs/usage/langgraph.md)).
 
-All tests green: `go test ./...` — 830+ tests across 56 packages.
+All tests green: `go test ./...` — 1250+ tests across 52 packages.
 
 ---
 
@@ -71,9 +73,8 @@ A model ↔ tools agent loop built on the public `langgraph/` graph runtime, wit
 ### Deliberately not ported
 
 - **`langchain_classic`** — legacy chains, agents, memory, tools, retrievers, vectorstores, storage. The classic `AgentExecutor` is gone; use `agents.CreateAgent`.
-- **A full `langgraph` port**. The ported surface lives in the public top-level `langgraph/` packages (`langgraph/{types,channels,checkpoint,graph,prebuilt}`) and covers the `create_agent` runtime plus: channel objects (`NewLastValue` / `NewTopic` / `NewBinaryOperator` / `NewEphemeral` via `AddChannel`), versioned checkpoints with history (`GetState` / `GetStateHistory` / `UpdateState`), time travel (`Options.CheckpointID`), subgraphs (`AddSubgraph`, parent-targeted `Command{Graph: types.ParentGraph}`), the `CompiledGraph.Stream` API with Python-parity stream modes (`values` / `updates` / `debug` / `messages` / `custom` over `iter.Seq2[StreamChunk, error]`), and checkpoint serde (`checkpoint.Serializer` + `checkpoint/serde`'s JSON serializer with a closed type registry), per-node retry/cache policies (`RetryPolicy` / `CachePolicy` via `AddNodeWithPolicies`, with `WithCache` + `checkpoint.NewInMemoryCache`), and `prebuilt.ToolNode` (a graph-node adapter over `langchain/tools.ToolNode`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: a graph-level default retry policy, the functional `@entrypoint`/`@task` API, a persistent Postgres checkpoint backend, and the langgraph CLI/SDK. A SQLite checkpoint backend DOES exist as the nested module `langgraph/checkpoint/sqlite` (its own `go.mod`; the port's first third-party dependency, `modernc.org/sqlite`; test via `make test-sqlite`). See the [graph runtime guide](docs/usage/langgraph.md).
+- **A full `langgraph` port**. The ported surface lives in the public top-level `langgraph/` packages (`langgraph/{types,channels,checkpoint,graph,prebuilt,fn}`) and covers the `create_agent` runtime plus: channel objects (`NewLastValue` / `NewTopic` / `NewBinaryOperator` / `NewEphemeral` via `AddChannel`), versioned checkpoints with history (`GetState` / `GetStateHistory` / `UpdateState`), time travel (`Options.CheckpointID`), subgraphs (`AddSubgraph`, parent-targeted `Command{Graph: types.ParentGraph}`), the `CompiledGraph.Stream` API with Python-parity stream modes (`values` / `updates` / `debug` / `messages` / `custom` over `iter.Seq2[StreamChunk, error]`), and checkpoint serde (`checkpoint.Serializer` + `checkpoint/serde`'s JSON serializer with a closed type registry), per-node retry/cache policies (`RetryPolicy` / `CachePolicy` via `AddNodeWithPolicies`, with `WithCache` + `checkpoint.NewInMemoryCache`), multi-parent barrier join edges (`AddJoinEdge`, the waiting-edge equivalent of Python's `add_edge((a, b), c)`), the functional API (`langgraph/fn`: `NewEntrypoint` / `NewEntrypointFinal` / `NewTask`, the `@entrypoint`/`@task` equivalent), Saver interface extensions (`ListOptions.Filter` metadata filtering, `PutWrites` task paths, and the shared `langgraph/checkpoint/savertest` conformance suite), and `prebuilt.ToolNode` (a graph-node adapter over `langchain/tools.ToolNode`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: a graph-level default retry policy, the langgraph CLI/SDK, `defer=True` nodes (`NamedBarrierValueAfterFinish`), Shallow saver variants, the delta channel history fast path, and the functional API's `store` parameter (Python's `@entrypoint(checkpointer=..., store=...)` cross-thread BaseStore is not ported). A SQLite checkpoint backend DOES exist as the nested module `langgraph/checkpoint/sqlite` (its own `go.mod`; the port's first third-party dependency, `modernc.org/sqlite`; test via `make test-sqlite`). A persistent Postgres checkpoint backend also DOES exist as the nested module `langgraph/checkpoint/postgres` (its own `go.mod`; the port's second third-party dependency, `pgx/v5`; explicit `Setup` runs the migrations; test via `make test-postgres`, which spins up an embedded Postgres and runs the shared `savertest` conformance suite). See the [graph runtime guide](docs/usage/langgraph.md).
 - **Subagent transformer (`transformers` / `run.subagents`)** — not exposed. `transformers` is a langgraph stream-mode construct built on Python's shape-shifting stream output, which the Go `Stream` API deliberately replaces with explicitly-typed `StreamChunk`s. The motivating feature — **PII streaming-delta redaction** — IS delivered, via a bounded middleware delta layer (`WrapModelStreamHook` + `PIIStreamTransformer`'s lookback buffer); batch redaction also works.
-- **Functional `@entrypoint`/`@task` API** — see above.
 
 ### Limited partner coverage
 
@@ -161,7 +162,7 @@ Usage guides live under [`docs/`](docs/) — example-driven, with every snippet 
 - [Composing runnables (LCEL)](docs/usage/composition.md) — `Pipe` / `Pipe3-6` / `Parallel` / `Branch` / `Fallbacks` / `Retry`, the Go equivalent of Python's `prompt | model | parser`.
 - [Agents — `CreateAgent`](docs/usage/agents.md) — system prompts, tools, the 15-module middleware chain, structured output, interrupts.
 - [Streaming](docs/usage/streaming.md) — `Agent.StreamEvents`: per-token model deltas + tool/node lifecycle events.
-- [Graph runtime (`langgraph/`)](docs/usage/langgraph.md) — `CompiledGraph.Stream` stream modes, checkpoint serde, the SQLite checkpoint saver, per-node retry/cache policies, `prebuilt.ToolNode`.
+- [Graph runtime (`langgraph/`)](docs/usage/langgraph.md) — `CompiledGraph.Stream` stream modes, checkpoint serde, the SQLite and Postgres checkpoint savers, per-node retry/cache policies, join edges (`AddJoinEdge`), the functional API (`langgraph/fn`), `prebuilt.ToolNode`.
 
 For the full API reference, see the package docs at [pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang). Compile-checked examples also live in each package's `example_test.go`.
 
@@ -170,8 +171,11 @@ For the full API reference, see the package docs at [pkg.go.dev](https://pkg.go.
 ```
 langchain-golang/
 ├── core/                  # langchain_core port
-├── langgraph/             # langgraph port: StateGraph builder, Pregel executor, channel objects, versioned checkpoints + history, time travel, subgraphs, Stream API (values/updates/debug/messages/custom), checkpoint serde, per-node retry/cache policies, prebuilt.ToolNode
-│   └── checkpoint/sqlite/ # nested Go module: SQLite checkpoint saver (modernc.org/sqlite, pure Go); test it with `make test-sqlite`
+├── langgraph/             # langgraph port: StateGraph builder, Pregel executor, channel objects, versioned checkpoints + history, time travel, subgraphs, Stream API (values/updates/debug/messages/custom), checkpoint serde, per-node retry/cache policies, join edges (AddJoinEdge), functional API (fn), Postgres checkpoint saver, prebuilt.ToolNode
+│   ├── checkpoint/sqlite/ # nested Go module: SQLite checkpoint saver (modernc.org/sqlite, pure Go); test it with `make test-sqlite`
+│   ├── checkpoint/postgres/ # nested Go module: Postgres checkpoint saver (pgx/v5); test it with make test-postgres
+│   ├── checkpoint/savertest/ # shared checkpoint.Saver conformance suite (mirrors the standardtests/ philosophy)
+│   └── fn/                # functional API: NewEntrypoint / NewTask (Python @entrypoint/@task)
 ├── langchain/             # langchain (v1) port
 │   ├── agents/            # CreateAgent + 15 middleware
 │   ├── chatmodels/ embeddings/ messages/ tools/ ratelimiters/
