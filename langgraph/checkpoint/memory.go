@@ -36,8 +36,9 @@ type writeKey struct {
 // stay positional here (Python's map slots RESUME at -4 and has no TASKS
 // entry) — harmless because the executor persists a task's consumed resume
 // prefix as ONE write carrying the whole ordered list, so no same-batch slot
-// collapse is possible (unlike the Go sqlite saver, which assigns
-// `__tasks__` the reserved slot -2 and `__resume__` -4).
+// collapse is possible. The sqlite and postgres savers keep `__resume__` at
+// the reserved -4 (lossless for the same reason) and likewise route
+// `__tasks__` through the positional idx.
 var reservedWriteIdx = map[string]int{
 	ReservedError:     -1,
 	ReservedInterrupt: -3,

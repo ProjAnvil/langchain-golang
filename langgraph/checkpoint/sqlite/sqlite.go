@@ -57,17 +57,18 @@ const checkpointBlobType = "json"
 // INSERT OR REPLACE, approximating Python's WRITES_IDX_MAP
 // `{ERROR: -1, SCHEDULED: -2, INTERRUPT: -3, RESUME: -4}`
 // (`libs/checkpoint/langgraph/checkpoint/base/__init__.py:795`): the Go
-// runtime has no SCHEDULED counterpart, and checkpoint.ReservedError is
-// currently unused by the executor — its mapping is kept for forward
-// compatibility.
+// runtime has no SCHEDULED counterpart, so the -2 slot stays empty, and
+// checkpoint.ReservedError is currently unused by the executor — its mapping
+// is kept for forward compatibility.
 //
-// Known divergence: TASKS is NOT in Python's map — Python's TASKS writes go
-// through the positional idx. Go assigns `__tasks__` the reserved idx -2,
-// colliding with Python's SCHEDULED slot (a pre-existing sqlite behavior the
-// postgres saver mirrors). The collision risk: multiple `__tasks__` writes in
-// one batch share idx -2, so an all-reserved batch's INSERT OR REPLACE keeps
-// only the LAST one and a mixed batch's INSERT OR IGNORE keeps only the
-// FIRST one. `__resume__` at idx -4 is lossless by construction: like Python
+// TASKS is NOT in Python's map — Python's TASKS writes go through the
+// positional idx — and neither is Go's `__tasks__`: it takes the positional
+// idx like any regular channel, so multiple `__tasks__` writes in one batch
+// (a multi-destination Command.Goto) each occupy their own slot and ALL
+// survive, matching Python and MemorySaver. (An earlier revision assigned
+// `__tasks__` the reserved idx -2, collapsing same-batch `__tasks__` writes
+// to one row; see doc.go for the pre-1.0 behavior-change note.)
+// `__resume__` at idx -4 is lossless by construction: like Python
 // (one RESUME write per interrupt() call whose value is the WHOLE
 // accumulated scratchpad list, types.py:905-925), the Go executor persists
 // the consumed resume prefix as a SINGLE write carrying the full ordered
@@ -75,7 +76,6 @@ const checkpointBlobType = "json"
 // nothing to collapse.
 var reservedWriteIdx = map[string]int{
 	checkpoint.ReservedError:     -1,
-	checkpoint.ReservedTasks:     -2,
 	checkpoint.ReservedInterrupt: -3,
 	checkpoint.ReservedResume:    -4,
 }

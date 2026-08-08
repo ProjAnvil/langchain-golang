@@ -25,6 +25,7 @@ func Run(t *testing.T, newSaver func(t *testing.T) checkpoint.Saver) {
 	t.Run("list_filter", func(t *testing.T) { testListFilter(t, newSaver) })
 	t.Run("put_writes_round_trip", func(t *testing.T) { testPutWritesRoundTrip(t, newSaver) })
 	t.Run("put_writes_batch_rule", func(t *testing.T) { testPutWritesBatchRule(t, newSaver) })
+	t.Run("put_writes_tasks_all_survive", func(t *testing.T) { testPutWritesTasksAllSurvive(t, newSaver) })
 	t.Run("put_writes_task_path", func(t *testing.T) { testPutWritesTaskPath(t, newSaver) })
 	t.Run("put_writes_missing_checkpoint", func(t *testing.T) { testPutWritesMissingCheckpoint(t, newSaver) })
 	t.Run("delete_thread", func(t *testing.T) { testDeleteThread(t, newSaver) })
@@ -346,8 +347,9 @@ func testPutWritesBatchRule(t *testing.T, newSaver func(t *testing.T) checkpoint
 		t.Fatalf("Put: %v", err)
 	}
 
-	// Mixed batch (state key + reserved __tasks__): duplicate PutWrites for
-	// the same task are ignored — the first write wins.
+	// Mixed batch (state key + __tasks__, both positional since __tasks__ is
+	// not a reserved slot): duplicate PutWrites for the same task are
+	// ignored — the first write wins.
 	mixed := []checkpoint.Write{
 		{Channel: "state_key", Value: "first"},
 		{Channel: checkpoint.ReservedTasks, Value: types.Send{Node: "n1"}},
@@ -398,6 +400,47 @@ func testPutWritesBatchRule(t *testing.T, newSaver func(t *testing.T) checkpoint
 	}
 	if len(tup.PendingWrites) != 3 {
 		t.Fatalf("PendingWrites = %+v, want exactly 3 rows (duplicates ignored/replaced)", tup.PendingWrites)
+	}
+}
+
+// testPutWritesTasksAllSurvive pins the Python-parity __tasks__ rule:
+// `__tasks__` is NOT in WRITES_IDX_MAP, so several `__tasks__` writes in ONE
+// batch (a multi-destination Command.Goto's routing) each take their own
+// positional idx and ALL survive the round trip, in insertion order. (A
+// reserved-slot mapping would collapse the batch to a single row.)
+func testPutWritesTasksAllSurvive(t *testing.T, newSaver func(t *testing.T) checkpoint.Saver) {
+	t.Helper()
+	ctx := context.Background()
+	s := newSaver(t)
+
+	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	writes := []checkpoint.Write{
+		{Channel: checkpoint.ReservedTasks, Value: types.Send{Node: "n1"}},
+		{Channel: checkpoint.ReservedTasks, Value: types.Send{Node: "n2"}},
+		{Channel: checkpoint.ReservedTasks, Value: types.Send{Node: "n3"}},
+	}
+	if err := s.PutWrites(ctx, cfg, writes, "task-1", ""); err != nil {
+		t.Fatalf("PutWrites: %v", err)
+	}
+
+	tup, err := s.GetTuple(ctx, cfg)
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple: tup=%v err=%v", tup, err)
+	}
+	if len(tup.PendingWrites) != len(writes) {
+		t.Fatalf("PendingWrites = %+v, want all %d __tasks__ writes to survive", tup.PendingWrites, len(writes))
+	}
+	for i, w := range tup.PendingWrites {
+		if w.TaskID != "task-1" || w.Channel != checkpoint.ReservedTasks {
+			t.Fatalf("PendingWrites[%d] = %+v, want task-1 __tasks__ write", i, w)
+		}
+		want := writes[i].Value.(types.Send)
+		if got, ok := w.Value.(types.Send); !ok || got.Node != want.Node {
+			t.Fatalf("PendingWrites[%d].Value = %v, want %v (insertion order)", i, w.Value, want)
+		}
 	}
 }
 

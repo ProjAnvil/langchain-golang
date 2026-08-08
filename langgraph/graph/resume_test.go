@@ -102,6 +102,105 @@ func TestResumeReplaysGotoOnlySibling(t *testing.T) {
 	}
 }
 
+// TestResumeMultiDestinationGotoAllSurvive pins the F1 regression: a
+// goto-only sibling whose Command routes to TWO destinations persists TWO
+// ReservedTasks pending writes in one batch — both must survive the pause
+// checkpoint (the sqlite/postgres reserved-slot -2 mapping collapsed them to
+// one) — and on resume both destinations dispatch exactly once.
+func TestResumeMultiDestinationGotoAllSurvive(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	var aRuns, bRuns, cRuns, dRuns int32
+	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&aRuns, 1)
+		return &types.Command{Goto: To("c", "d")}, nil // routing only, no update
+	})
+	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&bRuns, 1)
+		Interrupt(ctx, "pause-b")
+		return nil, nil
+	})
+	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&cRuns, 1)
+		return map[string]any{"c_ran": true}, nil
+	})
+	g.AddNode("d", func(_ context.Context, _ map[string]any) (any, error) {
+		atomic.AddInt32(&dRuns, 1)
+		return map[string]any{"d_ran": true}, nil
+	})
+	g.AddEdge(types.START, "start")
+	g.AddEdge("start", "a")
+	g.AddEdge("start", "b")
+	g.AddEdge("b", types.END)
+	g.AddEdge("c", types.END)
+	g.AddEdge("d", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].Value != "pause-b" {
+		t.Fatalf("expected one interrupt (pause-b), got %+v", first.Interrupts)
+	}
+
+	// The pause checkpoint must carry BOTH of a's ReservedTasks sends.
+	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	aTaskID := ""
+	for _, pt := range tup.Checkpoint.Next {
+		if pt.Node == "a" {
+			aTaskID = pt.ID
+		}
+	}
+	if aTaskID == "" {
+		t.Fatalf("pause checkpoint Next = %+v, want sibling a planned", tup.Checkpoint.Next)
+	}
+	var sends []types.Send
+	for _, w := range tup.PendingWrites {
+		if w.TaskID != aTaskID {
+			continue
+		}
+		if w.Channel != checkpoint.ReservedTasks {
+			t.Fatalf("goto-only sibling persisted a %q channel write, want ReservedTasks writes only", w.Channel)
+		}
+		send, ok := w.Value.(types.Send)
+		if !ok {
+			t.Fatalf("ReservedTasks write value = %T, want types.Send", w.Value)
+		}
+		sends = append(sends, send)
+	}
+	if len(sends) != 2 {
+		t.Fatalf("multi-destination goto persisted %d ReservedTasks writes, want 2 (both must survive): %+v", len(sends), sends)
+	}
+
+	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "go"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 0 {
+		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
+	}
+	if aRuns != 1 {
+		t.Fatalf("goto-only sibling a must NOT re-run on resume, ran %d times", aRuns)
+	}
+	if bRuns != 2 {
+		t.Fatalf("interrupted sibling b must re-run exactly once, ran %d times", bRuns)
+	}
+	if cRuns != 1 || dRuns != 1 {
+		t.Fatalf("a's replayed sends must dispatch c and d exactly once each, ran c=%d d=%d", cRuns, dRuns)
+	}
+	if second.Values["c_ran"] != true || second.Values["d_ran"] != true {
+		t.Fatalf("resumed values = %+v, want c_ran and d_ran true", second.Values)
+	}
+}
+
 // TestInterruptUpdateStateResumeHITL walks the human-in-the-loop flow: a node
 // interrupts for approval, the human records the decision via UpdateState
 // attributed to the interrupting node's predecessor (so the update
