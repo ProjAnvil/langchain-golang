@@ -90,6 +90,7 @@ func To(names ...string) []any {
 // Python's `langgraph.graph.StateGraph` builder.
 type StateGraph struct {
 	nodes         map[string]NodeFunc
+	policies      map[string]NodePolicies
 	channelProtos map[string]channels.Channel
 	edges         map[string][]string
 	conditional   map[string]ConditionalEdge
@@ -101,6 +102,7 @@ type StateGraph struct {
 func NewStateGraph() *StateGraph {
 	return &StateGraph{
 		nodes:         map[string]NodeFunc{},
+		policies:      map[string]NodePolicies{},
 		channelProtos: map[string]channels.Channel{},
 		edges:         map[string][]string{},
 		conditional:   map[string]ConditionalEdge{},
@@ -114,8 +116,19 @@ func (g *StateGraph) setErr(err error) {
 }
 
 // AddNode registers a node. Names must be unique, non-empty, and distinct
-// from types.START/types.END.
+// from types.START/types.END. It is AddNodeWithPolicies with zero policies:
+// the node is never retried and never cached.
 func (g *StateGraph) AddNode(name string, fn NodeFunc) *StateGraph {
+	return g.AddNodeWithPolicies(name, fn, NodePolicies{})
+}
+
+// AddNodeWithPolicies registers a node together with its per-node execution
+// policies (see NodePolicies). Policies are validated at Compile time.
+//
+// There is deliberately no graph-level default retry (Python has
+// `retry_policy=` on compile; per-node policies suffice — documented
+// divergence, YAGNI).
+func (g *StateGraph) AddNodeWithPolicies(name string, fn NodeFunc, policies NodePolicies) *StateGraph {
 	if name == "" || name == types.START || name == types.END {
 		g.setErr(fmt.Errorf("graph: invalid node name %q", name))
 		return g
@@ -129,6 +142,7 @@ func (g *StateGraph) AddNode(name string, fn NodeFunc) *StateGraph {
 		return g
 	}
 	g.nodes[name] = fn
+	g.policies[name] = policies
 	return g
 }
 
@@ -294,6 +308,13 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 			return nil, fmt.Errorf("graph: conditional edge source %q is not a registered node", from)
 		}
 	}
+	for name, policies := range g.policies {
+		if policies.Retry != nil {
+			if err := policies.Retry.validate(); err != nil {
+				return nil, fmt.Errorf("graph: node %q retry policy: %w", name, err)
+			}
+		}
+	}
 
 	options := compileOptions{recursionLimit: defaultRecursionLimit}
 	for _, opt := range opts {
@@ -302,6 +323,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 
 	return &CompiledGraph{
 		nodes:           g.nodes,
+		policies:        g.policies,
 		channelProtos:   g.channelProtos,
 		edges:           g.edges,
 		conditional:     g.conditional,
@@ -317,6 +339,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 // `CompiledStateGraph`.
 type CompiledGraph struct {
 	nodes           map[string]NodeFunc
+	policies        map[string]NodePolicies
 	channelProtos   map[string]channels.Channel
 	edges           map[string][]string
 	conditional     map[string]ConditionalEdge
@@ -734,22 +757,15 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if sink != nil {
 					sink.EmitRawEvent(RawEvent{Kind: RawNodeStart, Node: t.node})
 				}
-				result, interrupted, err := g.runNode(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
+				update, cmd, interrupted, err := g.runTask(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
 				if sink != nil {
 					// Always emit node_end so start/end pairs are balanced per
-					// invocation, even on the error/interrupt paths.
+					// invocation, even on the error/interrupt paths. The pair
+					// wraps the WHOLE attempt loop: retried tasks emit exactly
+					// one start/end pair regardless of attempt count.
 					sink.EmitRawEvent(RawEvent{Kind: RawNodeEnd, Node: t.node})
 				}
-				if err != nil {
-					outcomes[i] = outcome{err: err}
-					return
-				}
-				if interrupted != nil {
-					outcomes[i] = outcome{interrupted: interrupted}
-					return
-				}
-				update, cmd, nerr := normalizeNodeResult(result)
-				outcomes[i] = outcome{update: update, cmd: cmd, err: nerr}
+				outcomes[i] = outcome{update: update, cmd: cmd, interrupted: interrupted, err: err}
 			}(i, t)
 		}
 		wg.Wait()
@@ -933,6 +949,58 @@ func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state m
 		return resolveDestinations(To(edges...))
 	}
 	return nil, fmt.Errorf("graph: node %q has no outgoing edge (add AddEdge/AddConditionalEdges, or return a *types.Command with Goto)", nodeName)
+}
+
+// runTask executes one task, wrapping runNode in the node's RetryPolicy
+// attempt loop (installed via StateGraph.AddNodeWithPolicies). Nodes without
+// a retry policy take exactly one attempt, preserving the pre-policy
+// behavior.
+//
+// Semantics (Python parity, `pregel/_retry.py`):
+//
+//   - Interrupts are terminal: runNode's deferred recover converts a
+//     GraphInterrupt panic into interrupted != nil BEFORE this loop sees
+//     anything, so an interrupted task is never re-executed.
+//   - Each attempt re-invokes the node from the start: runNode builds a
+//     fresh taskInterruptState per call, so a retried resume re-feeds the
+//     resume values from index 0.
+//   - Node-internal emissions of a failed attempt (InvokeStream sink events,
+//     messages/custom stream chunks) are NOT rolled back and therefore
+//     duplicate across attempts. Outcome writes do NOT duplicate: outcomes
+//     are buffered pre-commit, so a failed attempt leaves nothing to clear.
+//   - Backoff sleeps select on ctx.Done(): parent cancellation aborts the
+//     retry loop immediately and surfaces the PARENT's ctx error, not the
+//     node's error.
+//
+// Events: the RawNodeStart/RawNodeEnd pair (in run's task wrapper) and the
+// debug task_result emission bracket the whole attempt loop, so exactly one
+// of each appears per task regardless of attempt count.
+func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]any, resumeQueue []any) (update map[string]any, cmd *types.Command, interrupted *types.Interrupt, err error) {
+	var retry *RetryPolicy
+	if policies, ok := g.policies[t.node]; ok && policies.Retry != nil {
+		p := policies.Retry.withDefaults()
+		retry = &p
+	}
+	for attempt := 1; ; attempt++ {
+		result, intr, rerr := g.runNode(ctx, t, state, resumeQueue)
+		if intr != nil {
+			return nil, nil, intr, nil
+		}
+		if rerr == nil {
+			update, cmd, nerr := normalizeNodeResult(result)
+			return update, cmd, nil, nerr
+		}
+		if retry == nil || attempt >= retry.MaxAttempts || !retry.RetryOn(rerr) {
+			return nil, nil, nil, rerr
+		}
+		timer := time.NewTimer(retry.backoff(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, nil, nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any) (result any, interrupted *types.Interrupt, err error) {
