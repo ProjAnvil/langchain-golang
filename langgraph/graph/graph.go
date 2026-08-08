@@ -234,6 +234,9 @@ func (g *StateGraph) AddEdge(from, to string) *StateGraph {
 // least 2 parents (Python accepts a single-element tuple as a degenerate
 // waiting edge), rejects duplicate parents (Python silently set-dedups), and
 // rejects types.END as the child (Python allows `add_edge((a, b), END)`).
+// Neither parents nor the child may be the reserved names types.START or
+// types.END. defer=True / NamedBarrierValueAfterFinish are not supported
+// (see the package documentation).
 // Node-existence is validated at Compile time, consistent with AddEdge.
 func (g *StateGraph) AddJoinEdge(from []string, to string) *StateGraph {
 	if len(from) < 2 {

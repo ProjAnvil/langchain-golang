@@ -18,7 +18,7 @@ A Go port of:
 - **`langchain-tests`** → `standardtests/` — shared conformance suites.
 - **`model-profiles`** → `modelprofiles/` + the `cmd/langchain-profiles` CLI.
 
-It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — the ported graph runtime (channel objects, versioned checkpoints with history, time travel, subgraphs, stream modes, checkpoint serde, join edges (`AddJoinEdge`), a Postgres checkpoint saver, and the functional API (`fn` package)) lives in the public top-level `langgraph/` packages (see [Not supported](#not-supported--out-of-scope) and the [graph runtime guide](docs/usage/langgraph.md)).
+It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — the ported graph runtime (channel objects, versioned checkpoints with history, time travel, subgraphs, stream modes, checkpoint serde, join edges (`AddJoinEdge`), a Postgres checkpoint saver, and the functional API (`fn` package)) lives in the public top-level `langgraph/` packages (see [Not supported](#-not-supported--out-of-scope) and the [graph runtime guide](docs/usage/langgraph.md)).
 
 All tests green: `go test ./...` — 1250+ tests across 52 packages.
 

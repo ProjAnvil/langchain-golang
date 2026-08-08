@@ -203,7 +203,7 @@ func (e *Entrypoint[I, O, S]) Stream(ctx context.Context, in I, opts graph.Optio
 
 ---
 
-## M8 文档刷新与双语化
+## M8 文档刷新与双语化（已完成 2026-08-08）
 
 现状问题：README 的 "Not supported" 段仍列着 Postgres/函数式 API 为缺失；usage guides 只有英文；M1–M4 新增能力在 guides 中覆盖不全。
 
