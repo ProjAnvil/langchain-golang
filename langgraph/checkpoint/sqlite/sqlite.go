@@ -57,8 +57,8 @@ const checkpointBlobType = "json"
 // INSERT OR REPLACE, approximating Python's WRITES_IDX_MAP
 // `{ERROR: -1, SCHEDULED: -2, INTERRUPT: -3, RESUME: -4}`
 // (`libs/checkpoint/langgraph/checkpoint/base/__init__.py:795`): the Go
-// runtime has no SCHEDULED/RESUME writes, and checkpoint.ReservedError is
-// currently unused by the executor — the mapping is kept for forward
+// runtime has no SCHEDULED counterpart, and checkpoint.ReservedError is
+// currently unused by the executor — its mapping is kept for forward
 // compatibility.
 //
 // Known divergence: TASKS is NOT in Python's map — Python's TASKS writes go
@@ -67,11 +67,18 @@ const checkpointBlobType = "json"
 // postgres saver mirrors). The collision risk: multiple `__tasks__` writes in
 // one batch share idx -2, so an all-reserved batch's INSERT OR REPLACE keeps
 // only the LAST one and a mixed batch's INSERT OR IGNORE keeps only the
-// FIRST one.
+// FIRST one. The same applies to `__resume__` at idx -4: Python sends one
+// RESUME write per interrupt() call whose value is the WHOLE accumulated
+// scratchpad list (types.py:905-925), so last-write-wins is lossless there;
+// Go's executor instead writes one value per consumed resume (see
+// graph.persistInterruptAndResume), so a batch with a 2+-value prefix keeps
+// only its last value under this saver. The MemorySaver keeps `__resume__`
+// positional and preserves the full prefix.
 var reservedWriteIdx = map[string]int{
 	checkpoint.ReservedError:     -1,
 	checkpoint.ReservedTasks:     -2,
 	checkpoint.ReservedInterrupt: -3,
+	checkpoint.ReservedResume:    -4,
 }
 
 // Saver is a checkpoint.Saver backed by a SQLite database. It is safe for

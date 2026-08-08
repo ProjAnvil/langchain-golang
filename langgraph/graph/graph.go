@@ -878,6 +878,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			update      map[string]any
 			cmd         *types.Command
 			interrupted *types.Interrupt
+			consumed    []any
 			err         error
 		}
 		outcomes := make([]outcome, len(active))
@@ -957,7 +958,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if sink != nil {
 					sink.EmitRawEvent(RawEvent{Kind: RawNodeStart, Node: t.node})
 				}
-				update, cmd, interrupted, err := g.runTask(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
+				update, cmd, interrupted, consumed, err := g.runTask(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
 				if sink != nil {
 					// Always emit node_end so start/end pairs are balanced per
 					// invocation, even on the error/interrupt paths. The pair
@@ -965,7 +966,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					// one start/end pair regardless of attempt count.
 					sink.EmitRawEvent(RawEvent{Kind: RawNodeEnd, Node: t.node})
 				}
-				outcomes[i] = outcome{update: update, cmd: cmd, interrupted: interrupted, err: err}
+				outcomes[i] = outcome{update: update, cmd: cmd, interrupted: interrupted, consumed: consumed, err: err}
 			}(i, t)
 		}
 		wg.Wait()
@@ -1042,7 +1043,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// plans the superstep's full active task set. Completed sibling
 			// tasks persist their writes (state updates + D4-normalized goto
 			// Sends) so resume replays them instead of re-running the tasks;
-			// interrupted tasks persist their ReservedInterrupt writes. All
+			// interrupted tasks persist their ReservedInterrupt writes plus
+			// the ordered prefix of resume values they already consumed as
+			// ReservedResume writes (see persistInterruptAndResume), so the
+			// next resume rebuilds their full ordered resume queue. All
 			// pending writes are keyed by the task's planned ID (D5).
 			if checkpointing {
 				next := plannedTasks(active)
@@ -1052,7 +1056,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				for i, o := range outcomes {
 					taskID := next[i].ID
 					if o.interrupted != nil {
-						if err := persistInterrupts(ctx, g.checkpointer, *currentCfg, taskID, []types.Interrupt{*o.interrupted}); err != nil {
+						if err := persistInterruptAndResume(ctx, g.checkpointer, *currentCfg, taskID, []types.Interrupt{*o.interrupted}, o.consumed); err != nil {
 							return Result{}, err
 						}
 						continue
@@ -1312,38 +1316,46 @@ func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state m
 // Events: the RawNodeStart/RawNodeEnd pair (in run's task wrapper) and the
 // debug task_result emission bracket the whole attempt loop, so exactly one
 // of each appears per task regardless of attempt count.
-func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]any, resumeQueue []any) (update map[string]any, cmd *types.Command, interrupted *types.Interrupt, err error) {
+func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]any, resumeQueue []any) (update map[string]any, cmd *types.Command, interrupted *types.Interrupt, consumed []any, err error) {
 	var retry *RetryPolicy
 	if policies, ok := g.policies[t.node]; ok && policies.Retry != nil {
 		p := policies.Retry.withDefaults()
 		retry = &p
 	}
 	for attempt := 1; ; attempt++ {
-		result, intr, rerr := g.runNode(ctx, t, state, resumeQueue)
+		result, intr, cons, rerr := g.runNode(ctx, t, state, resumeQueue)
 		if intr != nil {
-			return nil, nil, intr, nil
+			return nil, nil, intr, cons, nil
 		}
 		if rerr == nil {
 			update, cmd, nerr := normalizeNodeResult(result)
-			return update, cmd, nil, nerr
+			return update, cmd, nil, nil, nerr
 		}
 		if retry == nil || attempt >= retry.MaxAttempts || !retry.RetryOn(rerr) {
-			return nil, nil, nil, rerr
+			return nil, nil, nil, nil, rerr
 		}
 		timer := time.NewTimer(retry.backoff(attempt))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, nil, nil, ctx.Err()
+			return nil, nil, nil, nil, ctx.Err()
 		case <-timer.C:
 		}
 	}
 }
 
-func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any) (result any, interrupted *types.Interrupt, err error) {
+// runNode runs one node invocation. On an interrupt it additionally reports
+// consumed — a copy of the resume-queue prefix the invocation consumed
+// before panicking (ist.resumeQueue[:ist.idx]; at the panic idx ==
+// len(resumeQueue), i.e. the full ordered prefix consumed so far, including
+// values carried from earlier pause/resume cycles) — so the pause path can
+// persist it as ReservedResume writes. Retry/error paths discard it: an
+// errored task produces no pause checkpoint, so the prefix has nowhere to
+// land.
+func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any) (result any, interrupted *types.Interrupt, consumed []any, err error) {
 	fn, ok := g.nodes[t.node]
 	if !ok {
-		return nil, nil, fmt.Errorf("graph: unknown node %q", t.node)
+		return nil, nil, nil, fmt.Errorf("graph: unknown node %q", t.node)
 	}
 
 	input := state
@@ -1358,6 +1370,7 @@ func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]an
 		if r := recover(); r != nil {
 			if gi, ok := r.(*types.GraphInterrupt); ok {
 				interrupted = &gi.Interrupt
+				consumed = append([]any{}, ist.resumeQueue[:ist.idx]...)
 				result = nil
 				err = nil
 				return

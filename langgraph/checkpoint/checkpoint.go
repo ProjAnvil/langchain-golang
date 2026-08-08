@@ -92,6 +92,13 @@ const (
 	// ReservedReturn persists a functional-API task's return value (fn package),
 	// mirroring Python's `__return__` (`_internal/_constants.py:22`).
 	ReservedReturn = "__return__"
+	// ReservedResume persists the ordered prefix of resume values a re-run task
+	// has already consumed (one write per value, in consumption order), so a
+	// later resume rebuilds the full ordered queue instead of misaligning the
+	// new value onto an already-answered interrupt (Python parity: `types.py`
+	// interrupt() sends (RESUME, scratchpad.resume); `RESUME = "__resume__"`,
+	// `_internal/_constants.py:11`).
+	ReservedResume = "__resume__"
 )
 
 // Write is a single pending write recorded against a checkpoint by a task,

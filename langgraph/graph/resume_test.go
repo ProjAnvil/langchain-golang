@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -195,5 +196,238 @@ func TestInterruptUpdateStateResumeHITL(t *testing.T) {
 	}
 	if reviewRuns != 2 {
 		t.Fatalf("review must re-run exactly once after the update, ran %d times", reviewRuns)
+	}
+}
+
+// multiInterruptGraph builds the StateGraph of
+// test_node_before_multiple_interrupt_cycles_graph_api
+// (langgraph tests/test_pregel.py:6048-6090): a prepare node (count+10)
+// feeding a node that raises two sequential in-node interrupts and joins
+// their resume values.
+func multiInterruptGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
+	t.Helper()
+	g := NewStateGraph()
+	g.AddNode("prepare", func(_ context.Context, state map[string]any) (any, error) {
+		count, _ := state["count"].(int)
+		return map[string]any{"count": count + 10}, nil
+	})
+	g.AddNode("multi_interrupt", func(ctx context.Context, _ map[string]any) (any, error) {
+		first := Interrupt(ctx, "First question?")
+		second := Interrupt(ctx, "Second question?")
+		return map[string]any{"data": fmt.Sprintf("%v,%v", first, second)}, nil
+	})
+	g.AddEdge(types.START, "prepare")
+	g.AddEdge("prepare", "multi_interrupt")
+	g.AddEdge("multi_interrupt", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	return cg
+}
+
+// TestResumeSequentialInterruptsGraphAPI ports
+// test_node_before_multiple_interrupt_cycles_graph_api
+// (langgraph tests/test_pregel.py:6048-6090): a node running before an
+// interrupt node must not interfere with multiple interrupt/resume cycles.
+// Each resume value feeds the NEXT unconsumed interrupt — not the queue
+// head — because the pause checkpoint persists the already-consumed resume
+// prefix (ReservedResume writes) and resume rebuilds the full ordered queue.
+func TestResumeSequentialInterruptsGraphAPI(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	cg := multiInterruptGraph(t, saver)
+	ctx := context.Background()
+
+	first, err := cg.InvokeWithOptions(ctx, map[string]any{"count": 0, "data": ""}, Options{ThreadID: "1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].Value != "First question?" {
+		t.Fatalf("first Invoke() Interrupts = %+v, want one interrupt (First question?)", first.Interrupts)
+	}
+
+	second, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "1", Resume: "first_answer"})
+	if err != nil {
+		t.Fatalf("second Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 1 || second.Interrupts[0].Value != "Second question?" {
+		t.Fatalf("second Invoke() Interrupts = %+v, want one interrupt (Second question?)", second.Interrupts)
+	}
+
+	third, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "1", Resume: "second_answer"})
+	if err != nil {
+		t.Fatalf("third Invoke() error = %v", err)
+	}
+	if len(third.Interrupts) != 0 {
+		t.Fatalf("third Invoke() Interrupts = %+v, want none (run must complete)", third.Interrupts)
+	}
+	if third.Values["count"] != 10 {
+		t.Fatalf("count = %v, want 10", third.Values["count"])
+	}
+	if third.Values["data"] != "first_answer,second_answer" {
+		t.Fatalf("data = %v, want %q", third.Values["data"], "first_answer,second_answer")
+	}
+}
+
+// TestResumePauseCheckpointPersistsResumePrefix pins the pause checkpoint's
+// pending-writes shape after a SECOND sequential interrupt fires: the paused
+// task carries one ReservedInterrupt write (the freshly raised interrupt)
+// followed by one ReservedResume write per already-consumed resume value, in
+// consumption order (interrupt writes first, resume writes after).
+func TestResumePauseCheckpointPersistsResumePrefix(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	cg := multiInterruptGraph(t, saver)
+	ctx := context.Background()
+
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"count": 0, "data": ""}, Options{ThreadID: "1"}); err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	second, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "1", Resume: "first_answer"})
+	if err != nil {
+		t.Fatalf("second Invoke() error = %v", err)
+	}
+	if len(second.Interrupts) != 1 || second.Interrupts[0].Value != "Second question?" {
+		t.Fatalf("second Invoke() Interrupts = %+v, want one interrupt (Second question?)", second.Interrupts)
+	}
+
+	tup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "1"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	taskID := ""
+	for _, pt := range tup.Checkpoint.Next {
+		if pt.Node == "multi_interrupt" {
+			taskID = pt.ID
+		}
+	}
+	if taskID == "" {
+		t.Fatalf("pause checkpoint Next = %+v, want multi_interrupt planned", tup.Checkpoint.Next)
+	}
+	var writes []checkpoint.Write
+	for _, w := range tup.PendingWrites {
+		if w.TaskID == taskID {
+			writes = append(writes, w)
+		}
+	}
+	if len(writes) != 2 {
+		t.Fatalf("paused task pending writes = %+v, want exactly 2 (interrupt + resume)", writes)
+	}
+	if writes[0].Channel != checkpoint.ReservedInterrupt {
+		t.Fatalf("writes[0].Channel = %q, want ReservedInterrupt (interrupt writes come first)", writes[0].Channel)
+	}
+	intr, ok := writes[0].Value.(types.Interrupt)
+	if !ok || intr.Value != "Second question?" {
+		t.Fatalf("writes[0].Value = %+v, want types.Interrupt (Second question?)", writes[0].Value)
+	}
+	if writes[1].Channel != checkpoint.ReservedResume {
+		t.Fatalf("writes[1].Channel = %q, want ReservedResume", writes[1].Channel)
+	}
+	if writes[1].Value != "first_answer" {
+		t.Fatalf("writes[1].Value = %v, want %q", writes[1].Value, "first_answer")
+	}
+}
+
+// TestResumeChainedInterruptPrefixAccumulates drives a single node through
+// three sequential interrupts across four invocations. Each pause checkpoint
+// must carry the task's FULL consumed resume prefix, so the queue rebuilds
+// in order and the chain advances instead of re-feeding the newest value to
+// the first interrupt (the pre-fix misalignment loop).
+func TestResumeChainedInterruptPrefixAccumulates(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("chain", func(ctx context.Context, _ map[string]any) (any, error) {
+		a := Interrupt(ctx, "q0")
+		b := Interrupt(ctx, "q1")
+		c := Interrupt(ctx, "q2")
+		return map[string]any{"data": fmt.Sprintf("%v,%v,%v", a, b, c)}, nil
+	})
+	g.AddEdge(types.START, "chain")
+	g.AddEdge("chain", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	ctx := context.Background()
+
+	r1, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("invoke 1 error = %v", err)
+	}
+	if len(r1.Interrupts) != 1 || r1.Interrupts[0].Value != "q0" {
+		t.Fatalf("invoke 1 Interrupts = %+v, want one interrupt (q0)", r1.Interrupts)
+	}
+	r2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "a"})
+	if err != nil {
+		t.Fatalf("invoke 2 error = %v", err)
+	}
+	if len(r2.Interrupts) != 1 || r2.Interrupts[0].Value != "q1" {
+		t.Fatalf("invoke 2 Interrupts = %+v, want one interrupt (q1)", r2.Interrupts)
+	}
+	r3, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "b"})
+	if err != nil {
+		t.Fatalf("invoke 3 error = %v", err)
+	}
+	if len(r3.Interrupts) != 1 || r3.Interrupts[0].Value != "q2" {
+		t.Fatalf("invoke 3 Interrupts = %+v, want one interrupt (q2)", r3.Interrupts)
+	}
+
+	// The third pause checkpoint carries the two-value consumed prefix, one
+	// ReservedResume write per value, in consumption order.
+	tup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil || tup == nil {
+		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
+	}
+	var resumes []any
+	sawInterrupt := false
+	for _, w := range tup.PendingWrites {
+		switch w.Channel {
+		case checkpoint.ReservedInterrupt:
+			sawInterrupt = true
+		case checkpoint.ReservedResume:
+			resumes = append(resumes, w.Value)
+		}
+	}
+	if !sawInterrupt {
+		t.Fatal("pause checkpoint pending writes missing the ReservedInterrupt write")
+	}
+	if len(resumes) != 2 || resumes[0] != "a" || resumes[1] != "b" {
+		t.Fatalf("ReservedResume writes = %v, want [a b] in order", resumes)
+	}
+
+	r4, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "c"})
+	if err != nil {
+		t.Fatalf("invoke 4 error = %v", err)
+	}
+	if len(r4.Interrupts) != 0 {
+		t.Fatalf("invoke 4 Interrupts = %+v, want none (run must complete)", r4.Interrupts)
+	}
+	if r4.Values["data"] != "a,b,c" {
+		t.Fatalf("data = %v, want %q", r4.Values["data"], "a,b,c")
+	}
+}
+
+// TestResumeNilResumeRepauses pins the unchanged nil-resume semantic:
+// resuming a paused run with nil resume (Python's invoke(None)) re-fires the
+// same pending interrupt instead of answering it with nil.
+func TestResumeNilResumeRepauses(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	cg := multiInterruptGraph(t, saver)
+	ctx := context.Background()
+
+	first, err := cg.InvokeWithOptions(ctx, map[string]any{"count": 0, "data": ""}, Options{ThreadID: "1"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].Value != "First question?" {
+		t.Fatalf("first Invoke() Interrupts = %+v, want one interrupt (First question?)", first.Interrupts)
+	}
+
+	// invoke(None): nil input, no Resume — the pending interrupt re-fires.
+	again, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "1"})
+	if err != nil {
+		t.Fatalf("nil-resume Invoke() error = %v", err)
+	}
+	if len(again.Interrupts) != 1 || again.Interrupts[0].Value != "First question?" {
+		t.Fatalf("nil-resume Invoke() Interrupts = %+v, want the same interrupt re-fired (First question?)", again.Interrupts)
 	}
 }
