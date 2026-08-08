@@ -926,7 +926,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						return Result{}, err
 					}
 					if len(writes) > 0 {
-						if err := g.checkpointer.PutWrites(ctx, *currentCfg, writes, taskID); err != nil {
+						if err := g.checkpointer.PutWrites(ctx, *currentCfg, writes, taskID, ""); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
 						}
 					}

@@ -3,11 +3,12 @@
 // package for documentation. New code should import langgraph/checkpoint
 // directly.
 //
-// The shim remains for in-repo compatibility only. Note that the `Saver`
-// interface's methods changed in M2 (the versioned
+// The shim remains for in-repo compatibility only. Note that the Saver
+// interface broke twice pre-1.0: in M2 (the versioned
 // GetTuple/List/Put/PutWrites/DeleteThread contract keyed by Config replaced
-// the M1 Get/Put/Delete methods — a sanctioned pre-1.0 break); the type
-// alias still resolves unchanged.
+// the M1 Get/Put/Delete methods) and in M5 (ListOptions gained Filter,
+// Write gained TaskPath, and PutWrites gained a taskPath parameter); the
+// type aliases still resolve unchanged.
 package checkpoint
 
 import "github.com/projanvil/langchain-golang/langgraph/checkpoint"

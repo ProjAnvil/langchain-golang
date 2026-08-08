@@ -97,6 +97,11 @@ type Write struct {
 	// TaskID identifies the task that produced the write (stamped by
 	// Saver.PutWrites).
 	TaskID string
+	// TaskPath identifies the task's position within the run, mirroring
+	// Python's `task_path` (PendingWrite / the checkpoint_writes column,
+	// added there in migration v9). Stamped by Saver.PutWrites; all current
+	// in-repo call sites pass "".
+	TaskPath string
 	// Channel is the state key written, or one of the Reserved* constants.
 	Channel string
 	// Value is the written value.
@@ -161,6 +166,12 @@ type ListOptions struct {
 	// to checkpoints strictly before that one (older IDs, same thread and
 	// namespace).
 	Before *Config
+	// Filter, when non-empty, restricts results to checkpoints whose
+	// metadata contains the filter under Postgres @>-style containment (see
+	// MetadataMatchesFilter). Filter keys are closed to source/step/parents
+	// — the fields of Metadata. Filter is applied before Limit, mirroring
+	// Python's WHERE-before-LIMIT ordering.
+	Filter map[string]any
 	// Limit caps the number of returned tuples; 0 means no limit.
 	Limit int
 }
@@ -184,9 +195,9 @@ type Saver interface {
 	// is non-empty it is recorded as the new checkpoint's parent link (D3).
 	// newVersions, when non-nil, is merged into the stored ChannelVersions.
 	Put(ctx context.Context, cfg Config, cp Checkpoint, md Metadata, newVersions map[string]int64) (Config, error)
-	// PutWrites appends writes (each stamped with taskID) to the pending
-	// writes of the checkpoint identified by cfg.
-	PutWrites(ctx context.Context, cfg Config, writes []Write, taskID string) error
+	// PutWrites appends writes (each stamped with taskID and taskPath) to
+	// the pending writes of the checkpoint identified by cfg.
+	PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error
 	// DeleteThread removes all checkpoints and pending writes for threadID.
 	DeleteThread(ctx context.Context, threadID string) error
 }

@@ -45,14 +45,19 @@ func (s *MemorySaver) GetTuple(ctx context.Context, cfg Config) (*Tuple, error) 
 }
 
 // List implements Saver: checkpoints of cfg.ThreadID/cfg.CheckpointNS,
-// newest (highest ID) first, filtered by opts.Before and capped by opts.Limit.
+// newest (highest ID) first, filtered by opts.Before and opts.Filter (filter
+// before limit, mirroring Python's WHERE→LIMIT order) and capped by
+// opts.Limit.
 func (s *MemorySaver) List(ctx context.Context, cfg Config, opts ListOptions) ([]Tuple, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ns := s.threads[cfg.ThreadID][cfg.CheckpointNS]
 	ids := make([]string, 0, len(ns))
-	for id := range ns {
+	for id, st := range ns {
 		if opts.Before != nil && opts.Before.CheckpointID != "" && id >= opts.Before.CheckpointID {
+			continue
+		}
+		if !MetadataMatchesFilter(st.md, opts.Filter) {
 			continue
 		}
 		ids = append(ids, id)
@@ -108,9 +113,9 @@ func (s *MemorySaver) Put(ctx context.Context, cfg Config, cp Checkpoint, md Met
 	return Config{ThreadID: cfg.ThreadID, CheckpointNS: cfg.CheckpointNS, CheckpointID: cp.ID}, nil
 }
 
-// PutWrites implements Saver. Each write is stamped with taskID and appended
-// to the checkpoint's pending writes in call order.
-func (s *MemorySaver) PutWrites(ctx context.Context, cfg Config, writes []Write, taskID string) error {
+// PutWrites implements Saver. Each write is stamped with taskID and taskPath
+// and appended to the checkpoint's pending writes in call order.
+func (s *MemorySaver) PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, st, ok := s.lookup(cfg)
@@ -121,6 +126,7 @@ func (s *MemorySaver) PutWrites(ctx context.Context, cfg Config, writes []Write,
 	stamped := make([]Write, len(writes))
 	for i, w := range writes {
 		w.TaskID = taskID
+		w.TaskPath = taskPath
 		stamped[i] = w
 	}
 	st.writes = append(st.writes, stamped...)

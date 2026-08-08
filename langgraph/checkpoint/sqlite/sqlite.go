@@ -37,15 +37,16 @@ CREATE TABLE IF NOT EXISTS writes (
     channel TEXT NOT NULL,
     type TEXT,
     value BLOB,
+    task_path TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
 );
 `
 
 const (
 	insertCheckpointSQL = `INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`
-	insertOrIgnoreSQL   = `INSERT OR IGNORE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	insertOrReplaceSQL  = `INSERT OR REPLACE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	selectWritesSQL     = `SELECT task_id, channel, type, value FROM writes WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? ORDER BY task_id, idx`
+	insertOrIgnoreSQL   = `INSERT OR IGNORE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value, task_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	insertOrReplaceSQL  = `INSERT OR REPLACE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value, task_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	selectWritesSQL     = `SELECT task_id, task_path, channel, type, value FROM writes WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? ORDER BY task_id, idx`
 )
 
 // checkpointBlobType is the `type` column value for checkpoint blobs: the
@@ -54,9 +55,19 @@ const checkpointBlobType = "json"
 
 // reservedWriteIdx maps reserved channels to the negative write idx used with
 // INSERT OR REPLACE, approximating Python's WRITES_IDX_MAP
-// `{ERROR: -1, SCHEDULED: -2, INTERRUPT: -3, RESUME: -4}`: the Go runtime has
-// no SCHEDULED/RESUME writes, and checkpoint.ReservedError is currently
-// unused by the executor — the mapping is kept for forward compatibility.
+// `{ERROR: -1, SCHEDULED: -2, INTERRUPT: -3, RESUME: -4}`
+// (`libs/checkpoint/langgraph/checkpoint/base/__init__.py:795`): the Go
+// runtime has no SCHEDULED/RESUME writes, and checkpoint.ReservedError is
+// currently unused by the executor — the mapping is kept for forward
+// compatibility.
+//
+// Known divergence: TASKS is NOT in Python's map — Python's TASKS writes go
+// through the positional idx. Go assigns `__tasks__` the reserved idx -2,
+// colliding with Python's SCHEDULED slot (a pre-existing sqlite behavior the
+// postgres saver mirrors). The collision risk: multiple `__tasks__` writes in
+// one batch share idx -2, so an all-reserved batch's INSERT OR REPLACE keeps
+// only the LAST one and a mixed batch's INSERT OR IGNORE keeps only the
+// FIRST one.
 var reservedWriteIdx = map[string]int{
 	checkpoint.ReservedError:     -1,
 	checkpoint.ReservedTasks:     -2,
@@ -94,7 +105,42 @@ func New(path string, serde checkpoint.Serializer) (*Saver, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: setup %q: %w", path, err)
 	}
+	if err := ensureTaskPathColumn(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Saver{db: db, serde: serde}, nil
+}
+
+// ensureTaskPathColumn adds the task_path column to writes tables created
+// before the M5 schema evolution (Python added task_path in migration v9;
+// Go sqlite savers created before M5 lack it).
+func ensureTaskPathColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(writes)`)
+	if err != nil {
+		return fmt.Errorf("sqlite: inspect writes schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("sqlite: inspect writes schema: %w", err)
+		}
+		if name == "task_path" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: inspect writes schema: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE writes ADD COLUMN task_path TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("sqlite: add writes.task_path column: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying database.
@@ -135,7 +181,10 @@ func (s *Saver) buildTuple(ctx context.Context, ns string, row *sql.Row) (*check
 }
 
 // List implements checkpoint.Saver: newest (highest checkpoint ID) first,
-// restricted to IDs strictly before opts.Before and capped by opts.Limit.
+// restricted to IDs strictly before opts.Before and to metadata containing
+// opts.Filter, capped by opts.Limit. With a non-empty Filter the SQL query
+// omits LIMIT — filtering happens in process and must precede the limit,
+// mirroring Python's WHERE-before-LIMIT ordering.
 func (s *Saver) List(ctx context.Context, cfg checkpoint.Config, opts checkpoint.ListOptions) ([]checkpoint.Tuple, error) {
 	query := `SELECT thread_id, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ?`
 	args := []any{cfg.ThreadID, cfg.CheckpointNS}
@@ -144,7 +193,7 @@ func (s *Saver) List(ctx context.Context, cfg checkpoint.Config, opts checkpoint
 		args = append(args, opts.Before.CheckpointID)
 	}
 	query += ` ORDER BY checkpoint_id DESC`
-	if opts.Limit > 0 {
+	if opts.Limit > 0 && len(opts.Filter) == 0 {
 		query += ` LIMIT ?`
 		args = append(args, opts.Limit)
 	}
@@ -176,7 +225,13 @@ func (s *Saver) List(ctx context.Context, cfg checkpoint.Config, opts checkpoint
 		if err != nil {
 			return nil, err
 		}
+		if !checkpoint.MetadataMatchesFilter(tup.Metadata, opts.Filter) {
+			continue
+		}
 		out = append(out, *tup)
+		if opts.Limit > 0 && len(opts.Filter) > 0 && len(out) >= opts.Limit {
+			break
+		}
 	}
 	return out, nil
 }
@@ -219,7 +274,7 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 // INSERT OR IGNORE with the positional idx (first write wins). Reserved
 // channels keep their negative idx even in mixed batches, like Python's
 // `WRITES_IDX_MAP.get(channel, idx)`.
-func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID string) error {
+func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
 	cpID, err := s.resolveCheckpointID(ctx, cfg)
 	if err != nil {
 		return err
@@ -247,7 +302,7 @@ func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []c
 		if err != nil {
 			return fmt.Errorf("sqlite: encode write %d to channel %q: %w", i, w.Channel, err)
 		}
-		if _, err := stmt.ExecContext(ctx, cfg.ThreadID, cfg.CheckpointNS, cpID, taskID, idx, w.Channel, typ, data); err != nil {
+		if _, err := stmt.ExecContext(ctx, cfg.ThreadID, cfg.CheckpointNS, cpID, taskID, idx, w.Channel, typ, data, taskPath); err != nil {
 			return fmt.Errorf("sqlite: put write %d to channel %q: %w", i, w.Channel, err)
 		}
 	}
@@ -385,7 +440,7 @@ func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]ch
 		var w checkpoint.Write
 		var typ string
 		var data []byte
-		if err := rows.Scan(&w.TaskID, &w.Channel, &typ, &data); err != nil {
+		if err := rows.Scan(&w.TaskID, &w.TaskPath, &w.Channel, &typ, &data); err != nil {
 			return nil, fmt.Errorf("sqlite: load writes for checkpoint %q: %w", cpID, err)
 		}
 		v, err := s.serde.LoadsTyped(typ, data)

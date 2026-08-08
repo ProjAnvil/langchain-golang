@@ -163,7 +163,7 @@ func TestPutWritesVisibleOnGetTuple(t *testing.T) {
 		{Channel: ReservedInterrupt, Value: types.Interrupt{Value: "confirm?", ID: "int-1"}},
 		{Channel: "x", Value: 2},
 	}
-	if err := saver.PutWrites(ctx, cfg, writes, "task-1"); err != nil {
+	if err := saver.PutWrites(ctx, cfg, writes, "task-1", ""); err != nil {
 		t.Fatalf("PutWrites() error = %v", err)
 	}
 
@@ -182,6 +182,97 @@ func TestPutWritesVisibleOnGetTuple(t *testing.T) {
 	intr, ok := tup.PendingWrites[0].Value.(types.Interrupt)
 	if !ok || intr.ID != "int-1" {
 		t.Fatalf("PendingWrites[0].Value = %+v, want interrupt int-1", tup.PendingWrites[0].Value)
+	}
+}
+
+// TestListFilter verifies ListOptions.Filter metadata filtering, mirroring
+// the query_1..query_4 semantics of Python's `test_sync.py:214-260` with the
+// Go Metadata keys source/step.
+func TestListFilter(t *testing.T) {
+	ctx := context.Background()
+	saver := NewMemorySaver()
+
+	mds := []Metadata{
+		{Source: "input", Step: -1},
+		{Source: "loop", Step: 0},
+		{Source: "loop", Step: 1},
+	}
+	ids := make([]string, len(mds))
+	cfg := Config{ThreadID: "t"}
+	for i, md := range mds {
+		cp := Checkpoint{V: 1, ID: NewID(i), TS: time.Now()}
+		var err error
+		cfg, err = saver.Put(ctx, cfg, cp, md, nil)
+		if err != nil {
+			t.Fatalf("Put() error = %v", err)
+		}
+		ids[i] = cp.ID
+	}
+
+	list := func(filter map[string]any) []Tuple {
+		t.Helper()
+		tups, err := saver.List(ctx, Config{ThreadID: "t"}, ListOptions{Filter: filter})
+		if err != nil {
+			t.Fatalf("List(Filter=%v) error = %v", filter, err)
+		}
+		return tups
+	}
+
+	// {"source": "input"}: exactly the first checkpoint.
+	if tups := list(map[string]any{"source": "input"}); len(tups) != 1 || tups[0].Checkpoint.ID != ids[0] {
+		t.Fatalf("List(source=input) = %+v, want [%s]", tups, ids[0])
+	}
+	// {"source": "loop"}: both loop checkpoints, newest first.
+	if tups := list(map[string]any{"source": "loop"}); len(tups) != 2 || tups[0].Checkpoint.ID != ids[2] || tups[1].Checkpoint.ID != ids[1] {
+		t.Fatalf("List(source=loop) = %+v, want [%s %s] (newest first)", tups, ids[2], ids[1])
+	}
+	// {"step": 1}: exactly the third checkpoint.
+	if tups := list(map[string]any{"step": 1}); len(tups) != 1 || tups[0].Checkpoint.ID != ids[2] {
+		t.Fatalf("List(step=1) = %+v, want [%s]", tups, ids[2])
+	}
+	// {"source": "update"}: no matches.
+	if tups := list(map[string]any{"source": "update"}); len(tups) != 0 {
+		t.Fatalf("List(source=update) = %+v, want empty", tups)
+	}
+	// Empty filter: everything.
+	if tups := list(map[string]any{}); len(tups) != 3 {
+		t.Fatalf("List(empty filter) = %d tuples, want 3", len(tups))
+	}
+}
+
+// TestPutWritesTaskPathRoundTrip verifies PutWrites stamps each write with
+// the given taskPath and that it round-trips through GetTuple.
+func TestPutWritesTaskPathRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	saver := NewMemorySaver()
+
+	cp := Checkpoint{V: 1, ID: NewID(0), TS: time.Now()}
+	cfg, err := saver.Put(ctx, Config{ThreadID: "t"}, cp, Metadata{Source: "loop", Step: 0}, nil)
+	if err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	if err := saver.PutWrites(ctx, cfg, []Write{{Channel: "c", Value: "v"}}, "task-1", "path/a"); err != nil {
+		t.Fatalf("PutWrites() error = %v", err)
+	}
+	tup, err := saver.GetTuple(ctx, Config{ThreadID: "t", CheckpointID: cp.ID})
+	if err != nil {
+		t.Fatalf("GetTuple() error = %v", err)
+	}
+	if len(tup.PendingWrites) != 1 || tup.PendingWrites[0].TaskPath != "path/a" {
+		t.Fatalf("PendingWrites = %+v, want one write with TaskPath %q", tup.PendingWrites, "path/a")
+	}
+
+	// The default "" argument stamps an empty TaskPath.
+	if err := saver.PutWrites(ctx, cfg, []Write{{Channel: "c2", Value: "v2"}}, "task-2", ""); err != nil {
+		t.Fatalf("PutWrites() error = %v", err)
+	}
+	tup, err = saver.GetTuple(ctx, Config{ThreadID: "t", CheckpointID: cp.ID})
+	if err != nil {
+		t.Fatalf("GetTuple() error = %v", err)
+	}
+	if len(tup.PendingWrites) != 2 || tup.PendingWrites[1].TaskPath != "" {
+		t.Fatalf("PendingWrites = %+v, want second write with empty TaskPath", tup.PendingWrites)
 	}
 }
 

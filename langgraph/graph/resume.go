@@ -51,7 +51,7 @@ func persistInterrupts(ctx context.Context, saver checkpoint.Saver, cfg checkpoi
 	for i, intr := range interrupts {
 		writes[i] = checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: intr}
 	}
-	return saver.PutWrites(ctx, cfg, writes, taskID)
+	return saver.PutWrites(ctx, cfg, writes, taskID, "")
 }
 
 // completedTaskWrites builds the pending writes persisting a completed

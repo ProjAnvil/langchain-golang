@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -239,26 +240,26 @@ func TestPutWritesBatchRule(t *testing.T) {
 		{Channel: "state_key", Value: "first"},
 		{Channel: checkpoint.ReservedTasks, Value: types.Send{Node: "n1"}},
 	}
-	if err := s.PutWrites(ctx, cfg, mixed, "task-1"); err != nil {
+	if err := s.PutWrites(ctx, cfg, mixed, "task-1", ""); err != nil {
 		t.Fatalf("PutWrites mixed: %v", err)
 	}
 	dupe := []checkpoint.Write{
 		{Channel: "state_key", Value: "second"},
 		{Channel: checkpoint.ReservedTasks, Value: types.Send{Node: "n2"}},
 	}
-	if err := s.PutWrites(ctx, cfg, dupe, "task-1"); err != nil {
+	if err := s.PutWrites(ctx, cfg, dupe, "task-1", ""); err != nil {
 		t.Fatalf("PutWrites duplicate mixed: %v", err)
 	}
 
 	// All-reserved batch: re-writing the same task REPLACES the stored value.
 	if err := s.PutWrites(ctx, cfg, []checkpoint.Write{
 		{Channel: checkpoint.ReservedInterrupt, Value: types.Interrupt{Value: "v1", ID: "i1"}},
-	}, "task-2"); err != nil {
+	}, "task-2", ""); err != nil {
 		t.Fatalf("PutWrites reserved: %v", err)
 	}
 	if err := s.PutWrites(ctx, cfg, []checkpoint.Write{
 		{Channel: checkpoint.ReservedInterrupt, Value: types.Interrupt{Value: "v2", ID: "i1"}},
-	}, "task-2"); err != nil {
+	}, "task-2", ""); err != nil {
 		t.Fatalf("PutWrites reserved replace: %v", err)
 	}
 
@@ -293,9 +294,86 @@ func TestPutWritesBatchRule(t *testing.T) {
 func TestPutWritesMissingCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	s := newSaver(t, dbPath(t))
-	err := s.PutWrites(ctx, checkpoint.Config{ThreadID: "t1", CheckpointID: "nope"}, []checkpoint.Write{{Channel: "c", Value: 1}}, "task-1")
+	err := s.PutWrites(ctx, checkpoint.Config{ThreadID: "t1", CheckpointID: "nope"}, []checkpoint.Write{{Channel: "c", Value: 1}}, "task-1", "")
 	if err == nil {
 		t.Fatalf("PutWrites against unknown checkpoint: got nil error")
+	}
+}
+
+// TestTaskPathColumnMigration verifies D3: a database whose writes table was
+// created before the M5 schema evolution (no task_path column) is upgraded in
+// place on open (ALTER TABLE): pre-existing rows read back with an empty
+// TaskPath, and new PutWrites round-trip their task path.
+func TestTaskPathColumnMigration(t *testing.T) {
+	ctx := context.Background()
+	path := dbPath(t)
+	cpID := checkpoint.NewID(1)
+
+	// Build an old-schema database: the pre-M5 writes table (no task_path
+	// column) with one row.
+	ser := serde.NewJSONSerializer()
+	typ, data, err := ser.DumpsTyped("old-value")
+	if err != nil {
+		t.Fatalf("DumpsTyped: %v", err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE writes (
+	    thread_id TEXT NOT NULL,
+	    checkpoint_ns TEXT NOT NULL DEFAULT '',
+	    checkpoint_id TEXT NOT NULL,
+	    task_id TEXT NOT NULL,
+	    idx INTEGER NOT NULL,
+	    channel TEXT NOT NULL,
+	    type TEXT,
+	    value BLOB,
+	    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+	)`); err != nil {
+		t.Fatalf("create old writes table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"t1", "", cpID, "old-task", 0, "c", typ, data); err != nil {
+		t.Fatalf("insert old row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close old db: %v", err)
+	}
+
+	// Reopen through the Saver: the missing column is added on setup.
+	s := newSaver(t, path)
+	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(cpID), checkpoint.Metadata{}, nil)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// The pre-existing row reads back with an empty TaskPath.
+	tup, err := s.GetTuple(ctx, cfg)
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple: tup=%v err=%v", tup, err)
+	}
+	if len(tup.PendingWrites) != 1 || tup.PendingWrites[0].TaskID != "old-task" || tup.PendingWrites[0].TaskPath != "" {
+		t.Fatalf("old row = %+v, want task old-task with empty TaskPath", tup.PendingWrites)
+	}
+
+	// New writes round-trip their task path.
+	if err := s.PutWrites(ctx, cfg, []checkpoint.Write{{Channel: "c2", Value: "new"}}, "task-2", "p"); err != nil {
+		t.Fatalf("PutWrites: %v", err)
+	}
+	tup, err = s.GetTuple(ctx, cfg)
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple: tup=%v err=%v", tup, err)
+	}
+	if len(tup.PendingWrites) != 2 {
+		t.Fatalf("PendingWrites = %+v, want 2 writes", tup.PendingWrites)
+	}
+	byTask := map[string]checkpoint.Write{}
+	for _, w := range tup.PendingWrites {
+		byTask[w.TaskID] = w
+	}
+	if byTask["task-2"].TaskPath != "p" {
+		t.Fatalf("task-2 TaskPath = %q, want %q", byTask["task-2"].TaskPath, "p")
 	}
 }
 
@@ -310,7 +388,7 @@ func TestDeleteThread(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Put %s: %v", thread, err)
 		}
-		if err := s.PutWrites(ctx, cfg, []checkpoint.Write{{Channel: "c", Value: "v"}}, "task-1"); err != nil {
+		if err := s.PutWrites(ctx, cfg, []checkpoint.Write{{Channel: "c", Value: "v"}}, "task-1", ""); err != nil {
 			t.Fatalf("PutWrites %s: %v", thread, err)
 		}
 	}
@@ -358,7 +436,7 @@ func TestConcurrentAccess(t *testing.T) {
 					errs <- fmt.Errorf("Put %s: %w", threadID, err)
 					return
 				}
-				if err := s.PutWrites(ctx, next, []checkpoint.Write{{Channel: "c", Value: i}}, "task-1"); err != nil {
+				if err := s.PutWrites(ctx, next, []checkpoint.Write{{Channel: "c", Value: i}}, "task-1", ""); err != nil {
 					errs <- fmt.Errorf("PutWrites %s: %w", threadID, err)
 					return
 				}
