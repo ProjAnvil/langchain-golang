@@ -1,5 +1,7 @@
 # Streaming
 
+**Languages:** English | [简体中文](streaming.zh-CN.md)
+
 `Agent.StreamEvents` returns a pull-based stream of `StreamEvent` values that
 let you observe the run as it happens: per-token model deltas, tool dispatch
 lifecycle, and node boundaries. It is the Go equivalent of Python's

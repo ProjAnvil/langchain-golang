@@ -253,9 +253,9 @@ g.AddEdge("c", types.END)
   stream 输出中。
 
 `AddJoinEdge` 链式返回 `*StateGraph`。校验失败经 `setErr` 累积、在
-`Compile` 时报错：至少 2 个去重后的父节点（重复父节点报错）；父节点必须
-是已注册的节点（在 Compile 时检查，与 `AddEdge` 一致）；父节点与子节点
-均不得为 `types.START` 或 `types.END`。
+`Compile` 时报错：至少 2 个去重后的父节点（重复父节点报错）；父节点与
+子节点都必须是已注册的节点（在 Compile 时检查，与 `AddEdge` 一致）；
+父节点与子节点均不得为 `types.START` 或 `types.END`。
 
 > **警告（OR 语义，Python 对齐）：** 指向 join 子节点的普通边、条件边、
 > `types.Send` 或 `Command.Goto` 会绕过 barrier 直接触发子节点。同一节点
@@ -484,13 +484,15 @@ if errors.As(err, &ierr) {
 ### Checkpoint 重放与确定性
 
 resume 时 entrypoint 函数**从头重跑**；每个 `Call` 的确定性任务 ID ——
-由恢复所用 checkpoint ID、step、任务名与每轮调用索引组成的哈希 —— 若
+由恢复所用 checkpoint ID、checkpoint namespace、step、任务名、父调用
+路径与按路径计数的调用索引组成的哈希 —— 若
 命中 checkpoint 中的 pending write，则直接用持久化结果填充 future 而
 **不重新执行**（错误同样持久化，并从 `Get` 重抛）。只有当重放是确定
 的时候，这个模式才正确：
 
-- 同一 entrypoint 的多次重放中，任务调用顺序必须确定（每轮调用计数器
-  从零重计）—— 把非确定性逻辑（时间、随机、网络）放进 task 内，绝不要
+- 同一 entrypoint 的多次重放中，任务调用顺序必须确定（调用计数器每次
+  重放都从零重计，且按父调用路径独立计数）—— 把非确定性逻辑（时间、
+  随机、网络）放进 task 内，绝不要
   放进 entrypoint 的控制流。Interrupt 同样必须以确定的 `Get` 顺序浮现。
 - 运行因 interrupt 暂停时，已启动但未完成的 task 被取消；已完成的结
   果在暂停前落入 checkpoint 的 pending writes。

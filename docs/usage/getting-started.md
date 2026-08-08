@@ -1,5 +1,7 @@
 # Getting started
 
+**Languages:** English | [简体中文](getting-started.zh-CN.md)
+
 This guide takes you from `go get` to a running agent in a few minutes. It
 mirrors the README's Quick start section but explains each piece.
 
@@ -127,9 +129,9 @@ Each partner reads its credentials from the environment:
 | `partners/anthropic` | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` (or `ANTHROPIC_API_URL`) |
 | `partners/ollama` | `OLLAMA_HOST` (default `http://localhost:11434`) |
 
-> `anthropic` and `ollama` are integrated but not yet registered as
-> auto-resolving factories — for those, construct the `ChatModel` positionally
-> (form 1). `openai` resolves end-to-end via `WithAgentModel("openai:...")`.
+> All three partners self-register an auto-resolving factory on import, so
+> `WithAgentModel("anthropic:...")` and `WithAgentModel("ollama:...")` resolve
+> end-to-end the same way as `"openai:..."` once the package is imported.
 
 ## Where to go next
 
@@ -137,4 +139,6 @@ Each partner reads its credentials from the environment:
   parsers with `Pipe` / `Pipe3-6`, the Go equivalent of Python's `|`.
 - [Agents — `CreateAgent`](agents.md) — tools, middleware, structured output,
   interrupts, and streaming.
+- [Graph runtime (langgraph/)](langgraph.md) — checkpoints, stream modes,
+  savers, join edges, functional API.
 - [Streaming](streaming.md) — per-token model deltas via `StreamEvents`.

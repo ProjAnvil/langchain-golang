@@ -272,9 +272,9 @@ g.AddEdge("c", types.END)
 
 `AddJoinEdge` returns `*StateGraph` for chaining. Validation failures
 accumulate via `setErr` and surface at `Compile`: at least 2 distinct
-parents (duplicates are an error), parents must be registered nodes
-(checked at Compile time, consistent with `AddEdge`), and neither a parent
-nor the child may be `types.START` or `types.END`.
+parents (duplicates are an error), parents and the child must be registered
+nodes (checked at Compile time, consistent with `AddEdge`), and neither a
+parent nor the child may be `types.START` or `types.END`.
 
 > **Warning (OR semantics, Python parity):** a plain edge, conditional edge,
 > `types.Send`, or `Command.Goto` into the join child bypasses the barrier and
@@ -521,13 +521,15 @@ fixed to `updates` (Python's entrypoint default `stream_mode="updates"`).
 
 On resume the entrypoint function **re-runs from the beginning**; each
 `Call` whose deterministic task ID — a hash of the recovery checkpoint ID,
-step, task name, and per-run call index — matches a pending write in the
+checkpoint namespace, step, task name, parent call path, and per-path call
+index — matches a pending write in the
 checkpoint is filled from the persisted result **without re-executing**
 (errors are persisted the same way and re-thrown from `Get`). The pattern is
 correct exactly when replays are deterministic:
 
 - The task call order must be deterministic across replays of the same
-  entrypoint (the per-run call counter restarts from zero) — put
+  entrypoint (the call counter restarts from zero on every re-run and counts
+  independently per parent call path) — put
   non-deterministic logic (time, randomness, network) inside tasks, never
   in the entrypoint's control flow. Interrupts must likewise surface in a
   deterministic `Get` order.

@@ -1,5 +1,7 @@
 # Agents — `CreateAgent`
 
+**Languages:** English | [简体中文](agents.zh-CN.md)
+
 `agents.CreateAgent` is the Go equivalent of Python's
 `langchain.agents.create_agent`. It builds a model↔tools loop on top of the
 public `langgraph/` graph runtime, with composable middleware hooks around each
@@ -108,7 +110,7 @@ Fifteen middleware modules ship in-tree:
 | `NewProviderToolSearchMiddleware` | Provider-side tool search |
 | `NewShellToolMiddleware` | Persistent shell session tool |
 | `NewTodoListMiddleware` | Task-tracking tool |
-| `NewLLMToolEmulatorMiddleware` | Emulate tool calls via the LLM |
+| `NewLLMToolEmulator` | Emulate tool calls via the LLM |
 | `NewLLMToolSelectorMiddleware` | LLM-selected tool subset |
 
 Hook execution order (outermost-first):
@@ -179,12 +181,16 @@ result, _ := agent.Graph.InvokeWithOptions(ctx,
 > **API note:** the checkpointer types (`checkpoint.Saver`,
 > `checkpoint.NewMemorySaver`) live in the public package
 > `github.com/projanvil/langchain-golang/langgraph/checkpoint`. To wire a
-> custom saver, implement the versioned `Saver` interface —
-> `GetTuple` / `List` / `Put` / `PutWrites` / `DeleteThread`, keyed by
-> `checkpoint.Config` (thread ID + checkpoint namespace + checkpoint ID); see
+> custom saver, implement the versioned `Saver` interface — `GetTuple` /
+> `List` (with `ListOptions.Filter` metadata filtering) / `Put` / `PutWrites`
+> (with a `taskPath` argument; `checkpoint.Write` carries `TaskPath`) /
+> `DeleteThread`, keyed by `checkpoint.Config` (thread ID + checkpoint
+> namespace + checkpoint ID); see
 > `langchain/agents/create_agent_test.go` (`TestCreateAgent_InterruptBeforeNode`)
-> for the round-trip shape. (This replaced the M1 `Get` / `Put` / `Delete`
-> interface in a sanctioned pre-1.0 break.)
+> for the round-trip shape. This replaced the M1 `Get` / `Put` / `Delete`
+> interface and was extended again by M5 — both sanctioned pre-1.0 breaks; see
+> the [graph runtime guide](langgraph.md)'s *Breaking changes* section for the
+> before/after signatures and migration notes.
 
 ### Checkpoint history and time travel
 
@@ -210,7 +216,11 @@ via the public `github.com/projanvil/langchain-golang/langgraph/graph` package.
 > durable backend, the nested module `langgraph/checkpoint/sqlite` provides a
 > SQLite saver — `sqlite.New(path, serde.NewJSONSerializer())` — usable
 > anywhere a `checkpoint.Saver` is accepted (including
-> `WithAgentCheckpointer`). See the [graph runtime guide](langgraph.md).
+> `WithAgentCheckpointer`). The nested module `langgraph/checkpoint/postgres`
+> provides a Postgres saver —
+> `postgres.NewFromConnString(ctx, dsn, serde.NewJSONSerializer())` plus one
+> explicit `Setup(ctx)` call — usable the same way. See the
+> [graph runtime guide](langgraph.md).
 
 ## State and context schema
 
