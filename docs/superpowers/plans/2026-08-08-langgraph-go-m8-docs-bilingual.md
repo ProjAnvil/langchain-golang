@@ -17,12 +17,13 @@
 - 提交信息遵循仓库 conventional 格式（参照 `git log`：`feat(langgraph): ...` / `docs(langgraph): ...`），每个任务一次提交，`git add` 只加本任务的具体文件。
 - 双语同步落笔：同一任务内英文版与中文版一起写完一起提交，不接受"先英文后补翻译"。
 - 中文版要求：段落结构与英文版一一对应（标题层级序列、列表项数、表格行数相同）；代码块（含围栏语言标记）原样保留不翻译；技术术语与代码标识符（`AddJoinEdge`、`checkpoint.Saver`、`iter.Seq2` 等）保持英文原文；正文行文为通顺中文。
-- 语言切换行格式（每个双语文件第 2 行，即 `# 标题` 之下空一行后）：
+- 语言切换行格式（位置统一为：标题行 `# ...` 之下空一行后）：
   - 英文主文件：`**Languages:** English | [简体中文](<name>.zh-CN.md)`
   - 中文姊妹文件：`**Languages:** [English](<name>.md) | 简体中文`
   - 链接为同目录相对路径，不带子目录前缀。
 - 写作风格对标现有 `docs/usage/agents.md`：先给签名再给最短可运行示例，divergence / 限制用 `>` 引述块显著标出，段落简短，术语首次出现附 Python 对应物。
 - 不要顺手重排无关文件（`langchain/` 下存在已知的 gofmt 漂移，与本里程碑无关，不碰）。
+- **不要创建或改动 `docs/usage/AGENTS.md`**：经核实该文件并不存在（macOS 大小写不敏感文件系统会把 `agents.md` 匹配为 `AGENTS.md` 而造成误报）；本里程碑的文件清单中没有任何 AGENTS.md。
 
 ## 前置条件（开工前必须确认）
 
@@ -31,12 +32,12 @@
 ```bash
 cd langchain_golang
 ls langgraph/fn langgraph/checkpoint/postgres langgraph/checkpoint/savertest
-grep -n "func (g \*StateGraph) AddJoinEdge" langgraph/graph/state.go
+grep -n "func (g \*StateGraph) AddJoinEdge" langgraph/graph/graph.go
 grep -n "taskPath" langgraph/checkpoint/checkpoint.go
 grep -n "Filter" langgraph/checkpoint/checkpoint.go
 ```
 
-预期：三个目录存在且各有 `doc.go`；`AddJoinEdge`、`PutWrites` 的 `taskPath` 参数、`ListOptions.Filter` 均出现。任一缺失 → **STOP with BLOCKED**（说明哪项未落地），不得按 spec 签名凭空撰写文档。
+预期：三个目录存在且各有 `doc.go`；`langgraph/graph/graph.go` 中出现 `func (g *StateGraph) AddJoinEdge(from []string, to string) *StateGraph`（链式返回，校验错误经 `setErr` 延迟到 `Compile` 报出——见 M6 计划）；`PutWrites` 的 `taskPath` 参数、`ListOptions.Filter` 均出现。任一缺失 → **STOP with BLOCKED**（说明哪项未落地），不得按 spec 签名凭空撰写文档。
 
 ---
 
@@ -54,8 +55,8 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
   - 修复已知缺口：现 `docs/README.md` 的 "Usage guides" 表格（第 13–18 行）**缺 `usage/langgraph.md` 一行**——本任务补上：`[Graph runtime (langgraph/)](usage/langgraph.md) | StateGraph, checkpoints, Stream modes, savers, join edges, functional API`（该描述在 Task 3 完成后如与 guide 实际内容不符，由 Task 5 终验时校正）。
 
 - [ ] **Step 1: 核实现状** —— `grep -n "langgraph" docs/README.md` 确认表格确无 langgraph.md 行；`ls docs/*.zh-CN.md docs/usage/*.zh-CN.md 2>&1` 确认尚无任何中文版（预期 `No such file`）。
-- [ ] **Step 2: 修改 `docs/README.md`** —— 第 2 行加语言切换行（指向 `README.zh-CN.md`）；Usage guides 表格补 langgraph.md 行；新增 `## Bilingual convention` 节（Produce 中的三条约定逐条写入）。其余内容不动。
-- [ ] **Step 3: 创建 `docs/README.zh-CN.md`** —— 与英文版逐段对应的中文翻译：标题 `# langchain-golang 文档`；第 2 行切换行指回 `README.md`；"Usage guides" 表格的 Guide 列翻译为中文、链接目标保持 `usage/getting-started.md` 等英文文件名不变（usage 各篇的中文版由 Task 3/4 创建，docs/README 表格只链主文件）；Bilingual convention 节同步翻译。
+- [ ] **Step 2: 修改 `docs/README.md`** —— 标题下空一行处加语言切换行（指向 `README.zh-CN.md`）；Usage guides 表格补 langgraph.md 行；新增 `## Bilingual convention` 节（Produce 中的三条约定逐条写入）。其余内容不动。
+- [ ] **Step 3: 创建 `docs/README.zh-CN.md`** —— 与英文版逐段对应的中文翻译：标题 `# langchain-golang 文档`；标题下空一行处加切换行指回 `README.md`；"Usage guides" 表格的 Guide 列翻译为中文、链接目标保持 `usage/getting-started.md` 等英文文件名不变（usage 各篇的中文版由 Task 3/4 创建，docs/README 表格只链主文件）；Bilingual convention 节同步翻译。
 - [ ] **Step 4: 验收** —— 运行全局验收脚本（见文末"全局验收命令"，下同）：相对链接检查无 BROKEN 输出；`diff <(grep -oE '^#+' docs/README.md) <(grep -oE '^#+' docs/README.zh-CN.md)` 无输出（标题层级序列一致）；`go test ./...` 全绿（本任务未碰代码，此步为底线守护）。
 - [ ] **Step 5: Commit** —— `git add docs/README.md docs/README.zh-CN.md && git commit -m "docs(langgraph): establish bilingual docs convention, add docs/README.zh-CN.md"`
 
@@ -72,7 +73,7 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
   - `langgraph/checkpoint/postgres`：`postgres.New(pool *pgxpool.Pool, serde checkpoint.Serializer) *Saver`、`postgres.NewFromConnString(ctx context.Context, dsn string, serde checkpoint.Serializer) (*Saver, error)`、`(*Saver).Setup(ctx context.Context) error`。
   - `langgraph/checkpoint/savertest`：共享 saver 契约套件（对标 Python `libs/checkpoint-postgres/tests/` 与 `libs/langgraph/tests/test_checkpoint*.py` 的契约用例）。
   - M5 接口扩展（breaking）：`checkpoint.ListOptions` 新增 `Filter map[string]any`；`Saver.PutWrites` 新增 `taskPath string` 参数；`checkpoint.Write` 新增 `TaskPath string` 字段。
-  - M6：`graph.(*StateGraph).AddJoinEdge(from []string, to string) error`、`channels.Barrier`。
+  - M6：`graph.(*StateGraph).AddJoinEdge(from []string, to string) *StateGraph`（链式返回；校验失败经 `setErr` 延迟到 `Compile` 时报错——见 M6 计划）、`channels.Barrier`。
   - M7：`langgraph/fn` 包（`NewTask` / `NewEntrypoint` / `NewEntrypointFinal` / `Final` / `AwaitAll`，完整签名见 Task 3 的 Interfaces 块）。
 - Produces: 更新后的 `README.md` 与逐段对应的中文版。逐条要求：
 
@@ -86,7 +87,7 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
      - "Intentionally absent" 列表保留并补齐为：a graph-level default retry policy、the langgraph CLI/SDK、`defer=True` 节点（`NamedBarrierValueAfterFinish`）、Shallow saver 变体、delta channel history 快路径、函数式 API 的 `store` 参数（Python `@entrypoint(checkpointer=..., store=...)` 的跨线程 BaseStore 未移植）。同时在同 bullet 补一句 Postgres saver 的存在形式（嵌套 module、第二个第三方依赖 `pgx/v5`、经 `make test-postgres` 测试），与现有 SQLite 那句（第 74 行）句式对齐。
   3. **What this is 段**（第 19 行）：langgraph 能力枚举补 `join edges (AddJoinEdge)`、`Postgres checkpoint saver`、`functional API (fn package)` 三项。
   4. **测试计数**（第 21 行 "830+ tests across 56 packages"）：用下方命令实测更新（向下取整到十位，保留 `+`）。
-  5. **Repository layout**（第 170–184 行）：`langgraph/` 行描述补 join edges / fn / postgres；`checkpoint/sqlite/` 行之后补两行：`│   ├── checkpoint/postgres/ # nested Go module: Postgres checkpoint saver (pgx/v5); test it with make test-postgres` 与 `│   └── fn/                # functional API: NewEntrypoint / NewTask (Python @entrypoint/@task)`（树形符号与现有行对齐，`postgres` 行用 `├──`、`fn` 行用 `└──`，`sqlite` 行的 `└──` 相应改 `├──`）。
+  5. **Repository layout**（第 170–184 行）：`langgraph/` 行描述补 join edges / fn / postgres；`checkpoint/sqlite/` 行之后补三行：`│   ├── checkpoint/postgres/ # nested Go module: Postgres checkpoint saver (pgx/v5); test it with make test-postgres`、`│   ├── checkpoint/savertest/ # shared checkpoint.Saver conformance suite (mirrors the standardtests/ philosophy)` 与 `│   └── fn/                # functional API: NewEntrypoint / NewTask (Python @entrypoint/@task)`（树形符号与现有行对齐，`postgres` / `savertest` 行用 `├──`、`fn` 行用 `└──`，`sqlite` 行的 `└──` 相应改 `├──`）。
   6. **Documentation 段**（第 164 行）：graph runtime guide 条目描述更新为含 join edges、Postgres saver、函数式 API。
   7. **不变**：Quick start、Installation、Acknowledgments、License、partner 段——逐字不动。
 
@@ -99,7 +100,7 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
   ```
   记录实测数字与签名；若 `make test-postgres` target 不存在 → STOP with BLOCKED。
 - [ ] **Step 2: 改 `README.md` 英文版** —— 按 Produces 第 1–6 条逐条落笔；第 21 行计数替换为 Step 1 实测值。改完通读一遍确认 "Intentionally absent" 列表不再含 Postgres / 函数式 API。
-- [ ] **Step 3: 创建 `README.zh-CN.md`** —— 全文逐段翻译（含 Supported / Not supported 全部条目、Quick start 代码块原样、Repository layout 代码块原样）。标题行 `# langchain-golang` 不变，第 2 行切换行指回 `README.md`。badge 行（shields.io 图片链接）原样保留。
+- [ ] **Step 3: 创建 `README.zh-CN.md`** —— 全文逐段翻译（含 Supported / Not supported 全部条目、Quick start 代码块原样、Repository layout 代码块原样）。标题行 `# langchain-golang` 不变，标题下空一行处加切换行指回 `README.md`。badge 行（shields.io 图片链接）原样保留。
 - [ ] **Step 4: 验收** —— 全局验收脚本全过；结构对等 diff（标题层级 + 代码块 + 归一化链接）无输出；`go test ./...` 全绿。
 - [ ] **Step 5: Commit** —— `git add README.md README.zh-CN.md && git commit -m "docs(langgraph): update README for M5-M7, add README.zh-CN.md"`
 
@@ -125,7 +126,9 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
   Barrier join：
 
   ```go
-  func (g *StateGraph) AddJoinEdge(from []string, to string) error // 校验: ≥2 个去重父节点、节点已注册、to 非 START/END
+  // 链式返回；校验失败经 setErr 累积、在 Compile 时报错（见 M6 计划）。
+  // 校验: ≥2 个去重父节点、父节点已注册、父与子均非 types.START/types.END
+  func (g *StateGraph) AddJoinEdge(from []string, to string) *StateGraph
   // channels.Barrier 实现 channels.Channel; 执行器经类型断言 interface{ Consume() bool } 复位
   ```
 
@@ -165,22 +168,23 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
   type Write struct { TaskID string; Channel string; Value any }
   // after
   type ListOptions struct { Before *Config; Limit int; Filter map[string]any }
-  PutWrites(ctx context.Context, cfg Config, writes []Write, taskID string, taskPath string) error
+  PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error
   type Write struct { TaskID string; Channel string; Value any; TaskPath string }
   ```
 
 - Produces —— `langgraph.md` 在现有章节基础上追加以下新章节（顺序接在 "`prebuilt.ToolNode`" 节之后、"`create_react_agent` ≡ `agents.CreateAgent`" 节之前），并把标题与开头段落更新为 M1–M7 全量口径：
 
-  1. **Join edges (`AddJoinEdge`)**：语义 = 所有父节点都完成后子节点在下一超步**恰好运行一次**（同超步多父完成也只一次）；对齐 Python `add_edge((a, b), c)` → waiting edge（`../langgraph/libs/langgraph/langgraph/graph/state.py:956-966`）+ `NamedBarrierValue`（`../langgraph/libs/langgraph/langgraph/channels/named_barrier_value.py`）；到达记录进 checkpoint，"父 A 已到达、父 B 中断→resume 补写"天然正确；循环图中子节点写提交后 barrier 复位、可再次触发。最短示例（两父一子）须可对应到真实 API。校验规则：≥2 个去重父节点、父已注册、to 非 `types.START`/`types.END`，重复父报错——**文档化分歧**：Python 接受单元素起点并静默去重，Go 收紧。`>` 引述块显著警告**绕过语义**：普通边/条件边、`Send`、`Command.Goto` 指向 join 子节点时绕过 barrier 直接触发（OR 语义），同一节点混用两类边可能被触发多次——这是 Python 既定行为，Go 忠实复刻，不是 bug。另一 `>` 块：不支持 `defer=True` / `NamedBarrierValueAfterFinish`（边驱动模型无等价物）。
+  1. **Join edges (`AddJoinEdge`)**：语义 = 所有父节点都完成后子节点在下一超步**恰好运行一次**（同超步多父完成也只一次）；对齐 Python `add_edge((a, b), c)` → waiting edge（`../langgraph/libs/langgraph/langgraph/graph/state.py:956-966`）+ `NamedBarrierValue`（`../langgraph/libs/langgraph/langgraph/channels/named_barrier_value.py`）；到达记录进 checkpoint，"父 A 已到达、父 B 中断→resume 补写"天然正确；循环图中子节点写提交后 barrier 复位、可再次触发。最短示例（两父一子）须可对应到真实 API。校验规则：≥2 个去重父节点、父节点已注册、**父与子均不得为 `types.START`/`types.END`**，重复父报错；`AddJoinEdge` 链式返回 `*StateGraph`，校验失败经 `setErr` 累积、**在 `Compile` 时报错**（M6 计划）。两条**文档化分歧**：① Python 接受单元素起点并静默去重，Go 收紧为 ≥2 且重复报错；② **Go 拒绝 `END` 作为 join 子节点，Python 允许**（`state.py:963-964` 的校验只拒绝 `START` 作终点、`END` 作起点）。`>` 引述块显著警告**绕过语义**：普通边/条件边、`Send`、`Command.Goto` 指向 join 子节点时绕过 barrier 直接触发（OR 语义），同一节点混用两类边可能被触发多次——这是 Python 既定行为，Go 忠实复刻，不是 bug。另一 `>` 块：不支持 `defer=True` / `NamedBarrierValueAfterFinish`（边驱动模型无等价物）。
   2. **Postgres checkpoint saver**：`New` / `NewFromConnString` / `Setup` 示例（对照现有 SQLite 节的写法）；`Setup` 必须显式首调、执行 v0–v9 migrations、不包事务（`CREATE INDEX CONCURRENTLY` 限制，Python 基线 `../langgraph/libs/checkpoint-postgres/langgraph/checkpoint/postgres/base.py:43-91` 的四表 + 迁移表 schema）；依赖声明（嵌套 module，第二个第三方依赖 `github.com/jackc/pgx/v5`，纯 Go；根 module 仍零依赖）；测试方式：`make test-postgres` 用 `github.com/fergusstrange/embedded-postgres` 进程内起真库，`-short` 跳过，首次运行联网下载 ~30MB；`savertest` 共享契约套件（sqlite 与 postgres 跑同一套）。`>` 引述块**跨语言不互通声明**：Go serde 为 JSON + 封闭类型注册表（非 Python msgpack），且 blobs 表 `version` 列 Go 用 `BIGINT`（Python 为 TEXT 存十进制字符串）——Go/Python 各自建的库互不通用。另一 `>` 块：inline 判定分歧——仅 `nil`/`string`/`bool`/`float64` 内联进 checkpoint JSONB，`int`/`int64`/`map[string]any`/`[]any` 及一切其他类型进 blobs 表；无 Shallow saver 变体、无 delta channel history。
   3. **Functional API (`langgraph/fn`)**：完整 guide，章节顺序对齐 Python functional API 文档结构（`../langgraph/libs/langgraph/langgraph/func/__init__.py:576-596` 的单节点 Pregel 编译模型）：
      - 概述：普通 Go 控制流 + 任务级 checkpoint 重放；何时用函数式 API 而非 StateGraph。
      - `NewEntrypoint` 基础：最短 invoke 示例；三个保留 channel key `__start__`/`__end__`/`__previous__` 的实现事实一句话带过。
      - `previous` 跨轮状态：`prev` / `hasPrev` 语义；**分歧**：Python 无 checkpointer 时 `previous=None`，Go 用显式 `hasPrev bool` 防误读零值。
      - `NewEntrypointFinal` / `Final{Value, Save}`：解耦返回值与写入 `__previous__` 的保存值（对齐 `entrypoint.final`），value≠save 示例。
-     - `NewTask` + `Call` + `Future.Get`：task 在 goroutine 立即执行（无 Python 的"下一 tick"调度——Go 边驱动无 tick 概念）；`Call` 仅可在 entrypoint 函数 / 其他 task / StateGraph 节点内调用，否则 panic。
+     - `NewTask` + `Call` + `Future.Get`：task 在 goroutine 立即执行（无 Python 的"下一 tick"调度——Go 边驱动无 tick 概念）；`Call` 仅可在 entrypoint 函数 / 其他 task 内调用，否则 panic。**分歧⑥**（对齐 M7 doc.go）：Go 无裸 task-in-node——StateGraph 节点内使用 task 的形态是**节点内 `Invoke` 一个 `Entrypoint`**（Python 的裸 `@task`-in-node 依赖 Pregel config 注入，无 Go 等价物）。
      - `AwaitAll` 并发示例。
      - `TaskOpts` 的 retry / cache / timeout：retry/cache 复用 `graph.RetryPolicy` / `graph.CachePolicy` 与 `checkpoint.Cache`，cache key 为调用参数哈希、命名空间 `__fn_writes/<task-name>`；**分歧**：`Timeout` 只能做到 ctx 取消 + 放弃等待（goroutine 不可强杀；Python sync 函数同样不支持 timeout）。
+     - **Interrupt 与 resume**：entrypoint 内 `graph.Interrupt(ctx, value)` 使 `Invoke` 返回 `*fn.InterruptError`（携带 interrupt 值）；resume 经下一次 `Invoke` 的 `graph.Options{ThreadID: ..., Resume: ...}` 传入，多个 interrupt 的 resume 值按索引顺序匹配；**分歧⑦**（对齐 M7 doc.go）：`Entrypoint.Stream` 固定为 updates 模式，task 级 chunk 不产生（task 在节点内执行，不是图任务）。
      - Checkpoint 重放与 determinism 约束：确定性 task ID（hash 输入含恢复所用 checkpoint ID、step、task name、call idx）；resume 时 entrypoint 从头重跑、命中 pending writes 的 task 直接回填 future 不重跑（错误同样持久化并重抛）；per-run call counter 从零重放——**文档约束**：重跑时 task 调用顺序必须确定（非确定性逻辑放进 task 内），interrupt 的 resume 值按索引顺序匹配（同 Python determinism 一节）；interrupt 触发时已启动未完成的 task 被取消、已完成结果落 pending writes 后暂停；**不支持 `store`**（Python `@entrypoint` 的跨线程 BaseStore 未移植，`EntrypointOpts` 无此字段）；I/O/S 及 task 输入输出必须 JSON 可往返（serde 封闭注册表），未注册类型明确报错。
   4. **Breaking changes (M5 saver interface)**：一节列出 before/after 签名对照（用本任务 Interfaces 块的代码块原样呈现），并给自定义 `Saver` 实现者的迁移指引：实现体把 `taskPath` 透传进 `Write.TaskPath`（或忽略并传 `""`）；`List` 增加 `Filter` 的 map 包含过滤语义（postgres 服务端 `@>`，memory/sqlite 进程内 map 包含比较，语义相同）；sqlite 旧库兼容（启动时检测 `task_path` 列缺失则 `ALTER TABLE ADD COLUMN`）一句说明。标注这是 spec 允许的 pre-1.0 break。
 
@@ -189,11 +193,11 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
 - [ ] **Step 1: 核实代码事实** —— 除前置条件块外，运行：
   ```bash
   grep -n "func New\|func (s \*Saver) Setup" langgraph/checkpoint/postgres/*.go
-  grep -n "func NewTask\|func NewEntrypoint\|func NewEntrypointFinal\|func AwaitAll\|type Final\|type TaskOpts\|type EntrypointOpts" langgraph/fn/*.go
+  grep -n "func NewTask\|func NewEntrypoint\|func NewEntrypointFinal\|func AwaitAll\|type Final\|type TaskOpts\|type EntrypointOpts\|type InterruptError" langgraph/fn/*.go
   grep -n "type Barrier" langgraph/channels/*.go
   grep -n "func Run\|func RunAll\|func Suite" langgraph/checkpoint/savertest/*.go | head
   ```
-  逐签名比对本任务 Interfaces 块；任何签名漂移 → 以代码为准修订文档文字，并在提交信息中注明。
+  逐签名比对本任务 Interfaces 块；任何签名漂移 → 以代码为准修订文档文字，并在提交信息中注明。**随后通读 `langgraph/fn/doc.go` 的文档化分歧清单（①–⑩，与 M7 计划 Task 7 Step 1 逐条一致），对照 fn guide 大纲（Produces 第 3 条）逐条核对：guide 中每一条分歧声明与 doc.go 不矛盾，且 ③hasPrev、④无 store、⑥节点内 task 形态、⑦Stream 固定 updates、⑧determinism、⑨serde 约束均已写进 guide。**
 - [ ] **Step 2: 校对现有章节** —— 重读 Stream / serde / SQLite / retry / cache / `prebuilt.ToolNode` 各节，对照 `langgraph/graph/stream.go`、`langgraph/checkpoint/serde/json.go`、`langgraph/checkpoint/sqlite/sqlite.go`、`langgraph/graph/policy.go`、`langgraph/prebuilt/` 现状核对每一条声明；只修正确证过时的表述，不做文风改写。
 - [ ] **Step 3: 写英文版新章节** —— 按 Produces 1–4 落笔，更新标题与开头段落。
 - [ ] **Step 4: 创建 `docs/usage/langgraph.zh-CN.md`** —— 全文（含原有 M3/M4 章节）逐段中文翻译；代码块原样；切换行指回 `langgraph.md`。
@@ -232,7 +236,7 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
 ### Task 5: 新包 doc.go 分歧审计 + spec 标记 + 全仓终验
 
 **Files:**
-- Audit（预期只读；缺漏时 Modify）: `langgraph/checkpoint/postgres/doc.go`、`langgraph/checkpoint/savertest/doc.go`、`langgraph/fn/doc.go`、`langgraph/channels/`（Barrier 的 doc comment）、`langgraph/graph/state.go`（`AddJoinEdge` 的 doc comment）
+- Audit（预期只读；缺漏时 Modify）: `langgraph/checkpoint/postgres/doc.go`、`langgraph/checkpoint/savertest/doc.go`、`langgraph/fn/doc.go`、`langgraph/channels/`（Barrier 的 doc comment）、`langgraph/graph/graph.go`（`AddJoinEdge` 的 doc comment）
 - Modify: `docs/superpowers/specs/2026-08-08-langgraph-go-m5-m8-design.md`（标记 M8 完成，写实际日期）
 
 **Interfaces:**
@@ -243,13 +247,19 @@ grep -n "Filter" langgraph/checkpoint/checkpoint.go
   ```bash
   # postgres doc.go 须含：BIGINT version 分歧；仅原语 inline；无 Shallow/delta；跨语言不互通（serde + version 双重分歧）
   grep -n -i "bigint\|inline\|shallow\|delta\|interop\|msgpack" langgraph/checkpoint/postgres/doc.go
-  # fn doc.go 须含：timeout 语义（ctx 取消 + 放弃等待）；interrupt 取消未完成 task；hasPrev 显式 bool；无 store；determinism 约束
-  grep -n -i "timeout\|interrupt\|hasPrev\|store\|determinis" langgraph/fn/doc.go
-  # Barrier / AddJoinEdge 注释须含：单元素起点收紧（≥2、去重、重复报错）；不支持 defer/NamedBarrierValueAfterFinish
-  grep -n -i "defer\|barrier" langgraph/channels/*.go langgraph/graph/state.go | head
+  # fn doc.go 须覆盖 M7 全部 10 条文档化分歧（清单照抄 M7 计划 Task 7 Step 1，逐条打勾）：
+  #   ①Timeout=ctx 取消+放弃等待；②interrupt 时已启动未完成 task 被取消、已完成结果落 pending writes；
+  #   ③无 checkpointer 时 hasPrev=false；④不支持 store；⑤重放重抛的错误丢失具体类型（仅存 message）；
+  #   ⑥StateGraph 节点内使用 task 的 Go 形态 = 节点内 Invoke 一个 Entrypoint；
+  #   ⑦Stream 固定 updates 模式、task 级 chunk 不产生；⑧determinism 约束（重跑调用顺序确定）；
+  #   ⑨serde 契约（未注册类型报描述性错误）；⑩cache key 输入包装为 map[string]any{"input": in}
+  grep -n -i "timeout\|interrupt\|hasprev\|store\|determinis\|replay\|re-raise\|message\|entrypoint\|updates\|cache key\|\"input\"" langgraph/fn/doc.go
+  # Barrier / AddJoinEdge 注释须含：单元素起点收紧（≥2、去重、重复报错）；父与子均不得为 START/END
+  # （拒绝 END 作 join 子节点是文档化分歧，Python 允许）；不支持 defer/NamedBarrierValueAfterFinish
+  grep -n -i "defer\|barrier" langgraph/channels/*.go langgraph/graph/graph.go | head
   ```
 - [ ] **Step 2: spec 标记** —— 在 spec 的 M8 节末尾加一行完成标记（实际日期），参照 M1–M4 spec 的既有标记格式。
-- [ ] **Step 3: 全仓终验** —— 完整运行全局验收脚本（相对链接检查、全部 7 组双语文件的结构对等 diff）；`go test ./...` 全绿；`make test-sqlite`、`make test-postgres` 不被破坏（docs-only，预期无影响，跑一次确认）；人工通读英文版与中文版各一遍（spec 的 M8 验收要求）。
+- [ ] **Step 3: 全仓终验** —— 完整运行全局验收脚本（相对链接检查、全部 7 组双语文件的结构对等 diff）；`go test ./...` 全绿；`make test-sqlite`、`make test-postgres` 不被破坏（docs-only，预期无影响，跑一次确认）；人工通读英文版与中文版各一遍（spec 的 M8 验收要求）。**承接 Task 2 的测试计数责任**：重跑 Task 2 Step 1 的两条计数命令（`go test ./... | grep -c '^ok'` 与 `go test ./... -v -count=1 | grep -c '^=== RUN'`），确认 `README.md` / `README.zh-CN.md` 中的包数与测试数为实测校正值——若 M5–M7 在 Task 2 之后又合入新测试，以终验时实测为准再校正一次。
 - [ ] **Step 4: Commit** —— `git add docs/superpowers/specs/2026-08-08-langgraph-go-m5-m8-design.md`（若 Step 1 补了 doc.go 则一并 `git add` 对应文件）`&& git commit -m "docs(langgraph): audit M5-M7 doc.go divergence notes; mark M8 done"`
 
 ---
@@ -287,3 +297,4 @@ go test ./...
 - Spec M8 覆盖：范围 1（README + 双语）→ Task 2；范围 2（docs/README + 双语约定）→ Task 1；范围 3（langgraph.md 全量刷新 + 双语）→ Task 3；范围 4（其余 guides 校对 + 双语）→ Task 4；范围 5（新包 doc.go 分歧清单）→ Task 5 Step 1。验收条款（双语对等、`example_test.go` 不受影响、链接检查）→ 全局验收命令块，每个任务引用，Task 5 Step 3 全仓跑一遍。无 spec 外扩张。
 - 任务间一致性：Task 1 定语言切换行格式，Task 2–4 照抄；Task 3 的 fn/postgres/AddJoinEdge 签名是 Task 2 README 条目的引用源；Task 4 agents.md 的 "Durable checkpoints" 块引用 Task 3 的 langgraph.md；Task 5 依赖 Task 1–4 全部产物做终验。执行顺序即任务编号顺序。
 - 风险：(a) M5–M7 未真正落地 → 前置条件块 STOP with BLOCKED，禁止按 spec 凭空写文档；(b) M5 落地签名与本计划 Interfaces 块漂移 → Task 3 Step 1 显式授权"以代码为准修订"并在提交信息注明；(c) 链接检查的 `while` 子 shell 无法回传计数，故以"BROKEN 行输出为空"为判定标准，已写入脚本注释语义；(d) docs/README.md 表格缺 langgraph.md 行是本次核实中发现的既有缺口，已在 Task 1 修复并在 Task 5 终验复核描述一致性。
+- Review history：一审无 blocker，按 2 条 Major + 5 条 minor + 2 条 nit 修订——`AddJoinEdge` 签名三处改为 `*StateGraph` 链式返回（校验经 `setErr` 延迟到 `Compile`；前置条件 grep 路径改到 `graph/graph.go`，避免 M6 正确落地后误报 BLOCKED）；fn guide 补 "Interrupt 与 resume" 小节（`InterruptError`、`graph.Options.Resume`、Stream 固定 updates 的分歧⑦）并把 "task 可在 StateGraph 节点内调用" 的 Python 语义误植改为分歧⑥（节点内 Invoke 一个 Entrypoint）；Task 3 Step 1 增加对照 `fn/doc.go` 十条分歧清单的显式核对；Task 5 Step 1 的 fn 审计扩到全部 10 条分歧；join 校验文档补"父节点也不得为 START/END"与"拒绝 END 作 join 子节点是文档化分歧（Python 允许）"；Repository layout 补 `checkpoint/savertest/` 行；Global Constraints 显式声明不创建/改动 `docs/usage/AGENTS.md`；Task 5 Step 3 承接 README 测试计数实测校正；切换行位置统一为"标题下空一行后"；`PutWrites` after 签名改为合并声明 `taskID, taskPath string`。
