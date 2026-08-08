@@ -126,7 +126,9 @@ func (s *Saver) Setup(ctx context.Context) error
 
 ---
 
-## M7 函数式 API
+## M7 函数式 API（已完成 2026-08-08）
+
+状态：已完成（2026-08-08，实施计划 docs/superpowers/plans/2026-08-08-langgraph-go-m7-functional-api.md）
 
 ### Python 侧语义（移植基线，`langgraph/func/__init__.py`）
 
