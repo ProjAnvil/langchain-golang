@@ -65,7 +65,6 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/prompts"
 	"github.com/projanvil/langchain-golang/core/schema"
-	"github.com/projanvil/langchain-golang/core/stores"
 	"github.com/projanvil/langchain-golang/core/streamevents"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
@@ -74,6 +73,8 @@ import (
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
+	"github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 
 	// Blank-import partners/openai so "openai:..." resolves out-of-the-box via
@@ -205,10 +206,12 @@ type AgentOptions struct {
 	// expected fields and reserves room for future validation; it does not
 	// gate WithContextValues/ContextValue.
 	ContextSchema []ContextField
-	// Store is the agent's cross-thread KV store, mirroring Python's
-	// `create_agent(store=...)`. When non-nil, it is injected into every
-	// ToolCallRequest.Store (see middleware.ToolCallRequest).
-	Store stores.BaseStore[any]
+	// Store is the agent's cross-thread semantic store (Python's
+	// `create_agent(store=BaseStore)` / langgraph BaseStore). When non-nil, it
+	// is installed on the compiled graph (surfaced on Runtime.Store) and
+	// injected into every ToolCallRequest.Store (see middleware.ToolCallRequest).
+	// It is distinct from core/stores.BaseStore[V] (the generic typed KV).
+	Store store.Store
 	// Cache caches model responses, mirroring Python's `create_agent(cache=...)`
 	// parameter (but with a deliberate behavioral divergence — see
 	// WithAgentCache). When non-nil, the model node consults it before the
@@ -300,12 +303,19 @@ func WithAgentCheckpointer(saver checkpoint.Saver) AgentOption {
 	return func(o *AgentOptions) { o.Checkpointer = saver }
 }
 
-// WithAgentStore installs a cross-thread KV store, mirroring Python's
-// `create_agent(store=...)`. The store is injected into each tool call via
-// middleware.ToolCallRequest.Store (Go has no Python-style InjectedStore
+// WithAgentStore installs a cross-thread semantic store (the langgraph
+// BaseStore), mirroring Python's `create_agent(store=BaseStore)`. The store is
+// surfaced on Runtime.Store for every node and injected into each tool call
+// via middleware.ToolCallRequest.Store (Go has no Python-style InjectedStore
 // annotation; tools read it explicitly).
-func WithAgentStore(store stores.BaseStore[any]) AgentOption {
-	return func(o *AgentOptions) { o.Store = store }
+//
+// BREAKING (M1.2): the parameter type changed from core/stores.BaseStore[any]
+// (the generic typed KV) to store.Store (the langgraph semantic store), so
+// call sites must now pass a store.Store such as store.NewInMemoryStore().
+// This realigns the Go port with Python's create_agent(store=BaseStore). The
+// port is a v0.3.x preview whose README declares the API may change.
+func WithAgentStore(s store.Store) AgentOption {
+	return func(o *AgentOptions) { o.Store = s }
 }
 
 // WithAgentCache installs a model-response cache, mirroring Python's
@@ -722,7 +732,7 @@ func (a *Agent) withRunTags(ctx context.Context) context.Context {
 }
 
 func buildRouteAfterModel(finalNode string) graphpkg.ConditionalEdge {
-	return func(_ context.Context, state map[string]any) ([]any, error) {
+	return func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		msgs, _ := state["messages"].([]messages.Message)
 		if agenttools.HasPendingToolCalls(msgs) {
 			return graphpkg.To(ToolsNodeName), nil
@@ -800,7 +810,7 @@ func hasHook[T any](mws []any) bool {
 // BeforeAgentHook middleware once (in order) before the model<->tools loop
 // starts. logger, when non-nil, emits a debug log at node entry.
 func buildBeforeAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
-	return func(ctx context.Context, rawState map[string]any) (any, error) {
+	return func(rt runtime.Runtime, rawState map[string]any) (any, error) {
 		if logger != nil {
 			logger.Info("agents: before_agent node entry")
 		}
@@ -811,7 +821,7 @@ func buildBeforeAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 			if !ok {
 				continue
 			}
-			hookUpdate, err := hook.BeforeAgent(ctx, state)
+			hookUpdate, err := hook.BeforeAgent(rt, state)
 			if err != nil {
 				return nil, err
 			}
@@ -829,7 +839,7 @@ func buildBeforeAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 // ends. Matching AfterAgentHook's signature, it does not produce a state
 // update. logger, when non-nil, emits a debug log at node entry.
 func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
-	return func(ctx context.Context, state map[string]any) (any, error) {
+	return func(rt runtime.Runtime, state map[string]any) (any, error) {
 		if logger != nil {
 			logger.Info("agents: after_agent node entry")
 		}
@@ -838,7 +848,7 @@ func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 			if !ok {
 				continue
 			}
-			if err := hook.AfterAgent(ctx, state); err != nil {
+			if err := hook.AfterAgent(rt, state); err != nil {
 				return nil, err
 			}
 		}
@@ -870,7 +880,7 @@ func buildModelNode(
 ) graphpkg.NodeFunc {
 	toolsAny := toolsToAny(toolList)
 
-	return func(ctx context.Context, rawState map[string]any) (any, error) {
+	return func(rt runtime.Runtime, rawState map[string]any) (any, error) {
 		state := cloneMapState(rawState)
 
 		localMessages, _ := state["messages"].([]messages.Message)
@@ -881,7 +891,7 @@ func buildModelNode(
 		}
 		for _, mw := range mws {
 			if hook, ok := mw.(BeforeModelCommandHook); ok {
-				cmd, err := hook.BeforeModel(ctx, state)
+				cmd, err := hook.BeforeModel(rt, state)
 				if err != nil {
 					return nil, err
 				}
@@ -897,7 +907,7 @@ func buildModelNode(
 			if !ok {
 				continue
 			}
-			update, err := hook.BeforeModel(ctx, state)
+			update, err := hook.BeforeModel(rt, state)
 			if err != nil {
 				return nil, err
 			}
@@ -919,13 +929,14 @@ func buildModelNode(
 			}
 		}
 
-		resolvedPrompt := systemPrompt(ctx)
+		resolvedPrompt := systemPrompt(rt)
 		req, err := middleware.NewModelRequest(middleware.ModelRequest{
 			Model:         model,
 			Messages:      localMessages,
 			Tools:         toolsAny,
 			SystemPrompt:  resolvedPrompt,
 			State:         state,
+			Runtime:       rt,
 			ModelSettings: providerStrategyModelSettings(providerStrategy),
 		})
 		if err != nil {
@@ -980,10 +991,10 @@ func buildModelNode(
 		// doc comment for the full rationale.
 		var resp middleware.ModelResponse
 		cacheHit := false
-		cacheEnabled := cache != nil && sinkFromContext(ctx) == nil
+		cacheEnabled := cache != nil && sinkFromContext(rt) == nil
 		if cacheEnabled {
 			promptString, llmString := cacheKey(req)
-			if gens, ok, lerr := cache.Lookup(ctx, promptString, llmString); lerr == nil && ok && len(gens) > 0 {
+			if gens, ok, lerr := cache.Lookup(rt, promptString, llmString); lerr == nil && ok && len(gens) > 0 {
 				cached := make([]messages.Message, 0, len(gens))
 				for _, g := range gens {
 					cached = append(cached, messages.AI(g.Text))
@@ -997,7 +1008,7 @@ func buildModelNode(
 			}
 		}
 		if !cacheHit {
-			resp, err = handler(ctx, req)
+			resp, err = handler(rt, req)
 			if err != nil {
 				return nil, err
 			}
@@ -1016,7 +1027,7 @@ func buildModelNode(
 				for _, m := range resp.Result {
 					generations = append(generations, caches.Generation{Text: messages.Text(m)})
 				}
-				_ = cache.Update(ctx, promptString, llmString, generations)
+				_ = cache.Update(rt, promptString, llmString, generations)
 			}
 		}
 		newMessages := append([]messages.Message(nil), resp.Result...)
@@ -1046,7 +1057,7 @@ func buildModelNode(
 			if !ok {
 				continue
 			}
-			hookUpdate, err := hook.AfterModel(ctx, afterState)
+			hookUpdate, err := hook.AfterModel(rt, afterState)
 			if err != nil {
 				return nil, err
 			}
@@ -1453,9 +1464,13 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 	// text (see projection.Output() below).
 	dispatch := func(ev streamevents.Event) {
 		projection.Dispatch(ev)
-		if ev.Delta != nil && ev.Delta["type"] == "text-delta" {
-			if text, ok := ev.Delta["text"].(string); ok && text != "" {
-				ev.Delta["text"] = transform(text)
+		if ev.Delta != nil {
+			deltaMap := messages.BlockToMap(ev.Delta)
+			if deltaMap["type"] == "text-delta" {
+				if text, ok := deltaMap["text"].(string); ok && text != "" {
+					deltaMap["text"] = transform(text)
+					ev.Delta = messages.ParseContentBlock(deltaMap)
+				}
 			}
 		}
 		// The legacy-bridge finish() also emits a content-block-finish event
@@ -1467,9 +1482,13 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 		// for redaction, so re-running it on the assembled text is safe. The
 		// projection already saw the raw event above, so its assembled message
 		// is unaffected (applyDeltaTransform handles model_end separately).
-		if ev.Content != nil && ev.Content["type"] == "text" {
-			if text, ok := ev.Content["text"].(string); ok && text != "" {
-				ev.Content["text"] = transform(text)
+		if ev.Content != nil {
+			contentMap := messages.BlockToMap(ev.Content)
+			if contentMap["type"] == "text" {
+				if text, ok := contentMap["text"].(string); ok && text != "" {
+					contentMap["text"] = transform(text)
+					ev.Content = messages.ParseContentBlock(contentMap)
+				}
 			}
 		}
 		sink.emitModelDelta(ev)
@@ -1505,11 +1524,16 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 			msg.Content = transform(msg.Content)
 		}
 		for i, block := range msg.ContentBlocks {
-			if block == nil || block["type"] != "text" {
+			if block == nil {
 				continue
 			}
-			if text, ok := block["text"].(string); ok && text != "" {
-				msg.ContentBlocks[i]["text"] = transform(text)
+			m := messages.BlockToMap(block)
+			if m["type"] != "text" {
+				continue
+			}
+			if text, ok := m["text"].(string); ok && text != "" {
+				m["text"] = transform(text)
+				msg.ContentBlocks[i] = messages.ParseContentBlock(m)
 			}
 		}
 		return msg
@@ -1541,24 +1565,24 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 // newToolsNode builds the "tools" graph node backed by a
 // langchain/tools.ToolNode, with any WrapToolCallHook middleware composed
 // into its ToolCallWrapper. logger, when non-nil, emits a debug log per tool
-// dispatch (mirroring Python's debug output around the tools node). store,
-// when non-nil, is installed on the ToolNode so each ToolCallRequest.Store is
+// dispatch (mirroring Python's debug output around the tools node). s, when
+// non-nil, is installed on the ToolNode so each ToolCallRequest.Store is
 // populated for tools/wrappers that need it (mirroring Python's
 // `create_agent(store=...)`).
-func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, store stores.BaseStore[any]) (graphpkg.NodeFunc, error) {
+func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s store.Store) (graphpkg.NodeFunc, error) {
 	nodeOpts := make([]agenttools.ToolNodeOption, 0, 2)
 	if wrap := composeToolCallWrapper(mws, logger); wrap != nil {
 		nodeOpts = append(nodeOpts, agenttools.WithToolCallWrapper(wrap))
 	}
-	if store != nil {
-		nodeOpts = append(nodeOpts, agenttools.WithToolNodeStore(store))
+	if s != nil {
+		nodeOpts = append(nodeOpts, agenttools.WithToolNodeStore(s))
 	}
 	toolNode, err := agenttools.NewToolNode(toolList, nodeOpts...)
 	if err != nil {
 		return nil, err
 	}
 
-	return func(ctx context.Context, state map[string]any) (any, error) {
+	return func(rt runtime.Runtime, state map[string]any) (any, error) {
 		msgs, _ := state["messages"].([]messages.Message)
 		if logger != nil {
 			pending := 0
@@ -1569,7 +1593,7 @@ func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, sto
 			}
 			logger.Info("agents: tools node entry", slog.Int("pending_tool_calls", pending))
 		}
-		results, err := toolNode.Invoke(ctx, msgs, state)
+		results, err := toolNode.Invoke(rt, msgs, state)
 		if err != nil {
 			return nil, err
 		}

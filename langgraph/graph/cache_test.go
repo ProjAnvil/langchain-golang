@@ -10,6 +10,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -58,7 +59,7 @@ func TestDefaultCacheKeyDeterministic(t *testing.T) {
 
 func TestCacheHitSkipsExecutionButAppliesWrites(t *testing.T) {
 	var runs atomic.Int32
-	cg := compileCacheGraph(t, func(_ context.Context, state map[string]any) (any, error) {
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, state map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
@@ -85,7 +86,7 @@ func TestCacheHitSkipsExecutionButAppliesWrites(t *testing.T) {
 
 func TestCacheMissOnDifferentInput(t *testing.T) {
 	var runs atomic.Int32
-	cg := compileCacheGraph(t, func(_ context.Context, state map[string]any) (any, error) {
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, state map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
@@ -108,7 +109,7 @@ func TestCacheMissOnDifferentInput(t *testing.T) {
 
 func TestCacheTTLExpiryReexecutes(t *testing.T) {
 	var runs atomic.Int32
-	cg := compileCacheGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"done": true}, nil
 	}, &CachePolicy{TTL: 20 * time.Millisecond}, checkpoint.NewInMemoryCache())
@@ -128,7 +129,7 @@ func TestCacheTTLExpiryReexecutes(t *testing.T) {
 
 func TestClearCacheForcesReexecution(t *testing.T) {
 	var runs atomic.Int32
-	cg := compileCacheGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"done": true}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
@@ -152,13 +153,13 @@ func TestCacheSendArgsKeyOnArg(t *testing.T) {
 	var runs atomic.Int32
 	g := NewStateGraph()
 	g.AddReducer("results", channels.AppendSliceReducer)
-	g.AddNode("fan", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("fan", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return &types.Command{Goto: []any{
 			&types.Send{Node: "work", Arg: map[string]any{"n": 1}},
 			&types.Send{Node: "work", Arg: map[string]any{"n": 2}},
 		}}, nil
 	})
-	g.AddNodeWithPolicies("work", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNodeWithPolicies("work", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"results": []int{state["n"].(int) * 10}}, nil
 	}, NodePolicies{Cache: &CachePolicy{}})
@@ -203,11 +204,11 @@ func TestCacheCompletedSiblingReplayBypassesCache(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var firstRuns, secondRuns atomic.Int32
 	g := NewStateGraph()
-	g.AddNodeWithPolicies("first", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNodeWithPolicies("first", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		firstRuns.Add(1)
 		return map[string]any{"a": 1}, nil
 	}, NodePolicies{Cache: &CachePolicy{}})
-	g.AddNode("second", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("second", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		secondRuns.Add(1)
 		Interrupt(ctx, "hold")
 		return nil, nil
@@ -263,7 +264,7 @@ func TestCacheInterruptResumeBypassesCache(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var runs atomic.Int32
 	g := NewStateGraph()
-	g.AddNodeWithPolicies("gate", func(ctx context.Context, state map[string]any) (any, error) {
+	g.AddNodeWithPolicies("gate", func(ctx runtime.Runtime, state map[string]any) (any, error) {
 		runs.Add(1)
 		if state["mode"] == "auto" {
 			return map[string]any{"answer": "auto"}, nil
@@ -324,7 +325,7 @@ func TestCacheInterruptResumeBypassesCache(t *testing.T) {
 
 func TestCacheKeyErrorFailsTask(t *testing.T) {
 	var runs atomic.Int32
-	cg := compileCacheGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"done": true}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
@@ -345,11 +346,11 @@ func TestCacheKeyErrorFailsTask(t *testing.T) {
 func TestCacheCommandGotoCachedAndReplayed(t *testing.T) {
 	var routerRuns, targetRuns atomic.Int32
 	g := NewStateGraph()
-	g.AddNodeWithPolicies("router", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNodeWithPolicies("router", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		routerRuns.Add(1)
 		return &types.Command{Update: map[string]any{"r": "yes"}, Goto: To("target")}, nil
 	}, NodePolicies{Cache: &CachePolicy{}})
-	g.AddNode("target", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("target", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		targetRuns.Add(1)
 		return map[string]any{"done": true}, nil
 	})
@@ -410,7 +411,7 @@ func updatesChunks(chunks []StreamChunk) []any {
 
 func TestCacheHitEmitsUpdatesAndDebugTaskEvents(t *testing.T) {
 	var runs atomic.Int32
-	cg := compileCacheGraph(t, func(_ context.Context, state map[string]any) (any, error) {
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, state map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
@@ -451,7 +452,7 @@ func TestCacheHitEmitsUpdatesAndDebugTaskEvents(t *testing.T) {
 
 func TestCacheHitEmitsNoNodeStartEnd(t *testing.T) {
 	var runs atomic.Int32
-	cg := compileCacheGraph(t, func(_ context.Context, state map[string]any) (any, error) {
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, state map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
@@ -484,7 +485,7 @@ func TestCachePolicyWithoutCacheBackendUnchanged(t *testing.T) {
 	// node executes on every run, and ClearCache is a no-op.
 	var runs atomic.Int32
 	g := NewStateGraph()
-	g.AddNodeWithPolicies("node", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNodeWithPolicies("node", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, NodePolicies{Cache: &CachePolicy{}})

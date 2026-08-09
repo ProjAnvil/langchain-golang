@@ -9,6 +9,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -40,14 +41,21 @@ type TaskOpts struct {
 // IDs, so it must be unique within an entrypoint's call graph.
 type Task[I, O any] struct {
 	name string
-	f    func(context.Context, I) (O, error)
+	f    func(runtime.Runtime, I) (O, error)
 	opts TaskOpts
 }
 
 // NewTask wraps f as a Task. f runs in its own goroutine per Call; it must
 // be safe for concurrent use if the caller holds several Futures of the same
 // task at once.
-func NewTask[I, O any](name string, f func(context.Context, I) (O, error), opts TaskOpts) *Task[I, O] {
+//
+// f receives a runtime.Runtime (which satisfies context.Context, so existing
+// ctx idioms — ctx.Done(), ctx.Err(), graph.Interrupt(ctx, ...) — survive).
+// The executor carries the parent node's Runtime fields (Context, Store,
+// StreamWriter, ...) into the task and swaps the backing ctx to the task's
+// derived context (call path, timeout), so t.f observes the same run-scoped
+// surface a node does.
+func NewTask[I, O any](name string, f func(runtime.Runtime, I) (O, error), opts TaskOpts) *Task[I, O] {
 	if name == "" {
 		panic("fn: task name must be non-empty")
 	}
@@ -74,6 +82,14 @@ func (t *Task[I, O]) Call(ctx context.Context, in I) *Future[O] {
 	}
 	parentPath, _ := ctx.Value(callPathKey{}).(string)
 	callIdx := d.nextCallIdx(parentPath)
+	// Extract the parent Runtime (the one the Call site — a node or task
+	// function — received) so t.f observes the same run-scoped surface. Fall
+	// back to a fresh NewRuntime when the caller passed a plain
+	// context.Context (e.g. a test dispatcher).
+	parentRt, ok := ctx.(runtime.Runtime)
+	if !ok {
+		parentRt = runtime.NewRuntime(ctx)
+	}
 
 	// 1. Checkpoint replay: a persisted result fills the future without
 	//    re-executing (pregel/_runner.py:745-756).
@@ -93,7 +109,7 @@ func (t *Task[I, O]) Call(ctx context.Context, in I) *Future[O] {
 		key = k // reuse for the post-run store: KeyFunc runs once per Call
 	}
 	// 3. Fresh execution in its own goroutine.
-	return startTask(d, ctx, t, parentPath, callIdx, in, key)
+	return startTask(d, ctx, parentRt, t, parentPath, callIdx, in, key)
 }
 
 // ClearCache removes every cached result of this task from cache,
@@ -152,7 +168,13 @@ func replayedCall[O any](ctx context.Context, d *dispatcher, name, parentPath st
 // by that goroutine. The goroutine writes fut's fields before close(fut.done)
 // (happens-before via the channel) and is the sole closer, so done is closed
 // exactly once.
-func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], parentPath string, callIdx int, in I, key string) *Future[O] {
+//
+// parentRt is the Runtime the task's Call site received (a node's Runtime for
+// a top-level task, the parent task's Runtime for a nested task). It carries
+// the run-scoped fields (Context, Store, StreamWriter, ...) into the task; the
+// backing ctx is swapped to the task's derived context (call path / timeout)
+// at call time so t.f observes the same surface a node does.
+func startTask[I, O any](d *dispatcher, ctx context.Context, parentRt runtime.Runtime, t *Task[I, O], parentPath string, callIdx int, in I, key string) *Future[O] {
 	fut := &Future[O]{done: make(chan struct{})}
 	taskPath := t.name + "@" + strconv.Itoa(callIdx) // root call: "a@0" (no leading /)
 	if parentPath != "" {
@@ -174,7 +196,7 @@ func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], pare
 			retry = &r
 		}
 		for attempt := 1; ; attempt++ {
-			val, gi, err := runAttempt(taskCtx, t, in)
+			val, gi, err := runAttempt(taskCtx, parentRt, t, in)
 			if gi != nil { // interrupt passthrough: not recorded, not retried; Get re-panics
 				fut.gi = gi
 				return
@@ -220,10 +242,14 @@ func startTask[I, O any](d *dispatcher, ctx context.Context, t *Task[I, O], pare
 // with context.DeadlineExceeded (the goroutine itself cannot be killed — see
 // TaskOpts.Timeout). Parent/run cancellation is distinguished from the
 // task's own timeout and surfaced as the parent's error.
-func runAttempt[I, O any](ctx context.Context, t *Task[I, O], in I) (O, *types.GraphInterrupt, error) {
+//
+// parentRt is threaded so t.f can receive a runtime.Runtime whose fields
+// match the parent (node/task) Runtime while the backing ctx is the attempt's
+// derived context (task path / timeout).
+func runAttempt[I, O any](ctx context.Context, parentRt runtime.Runtime, t *Task[I, O], in I) (O, *types.GraphInterrupt, error) {
 	var zero O
 	if t.opts.Timeout <= 0 {
-		return callSafely(ctx, t, in)
+		return callSafely(ctx, parentRt, t, in)
 	}
 	attCtx, cancel := context.WithTimeout(ctx, t.opts.Timeout)
 	defer cancel()
@@ -234,7 +260,7 @@ func runAttempt[I, O any](ctx context.Context, t *Task[I, O], in I) (O, *types.G
 	}
 	ch := make(chan outcome, 1)
 	go func() {
-		v, g, e := callSafely(attCtx, t, in)
+		v, g, e := callSafely(attCtx, parentRt, t, in)
 		ch <- outcome{v, g, e}
 	}()
 	select {
@@ -251,7 +277,13 @@ func runAttempt[I, O any](ctx context.Context, t *Task[I, O], in I) (O, *types.G
 // callSafely invokes f, converting panics: a *types.GraphInterrupt is
 // returned as gi (interrupt passthrough); any other panic becomes an
 // ordinary error that participates in RetryOn decisions.
-func callSafely[I, O any](ctx context.Context, t *Task[I, O], in I) (val O, gi *types.GraphInterrupt, err error) {
+//
+// ctx is the attempt's derived context (task path / timeout). parentRt is the
+// Runtime the Call site received. The Runtime passed to t.f carries parentRt's
+// fields (Context, Store, StreamWriter, ...) with the backing ctx swapped to
+// ctx, so t.f observes the same run-scoped surface a node does while the
+// interrupt / dispatcher / call-path plumbing stays on ctx.
+func callSafely[I, O any](ctx context.Context, parentRt runtime.Runtime, t *Task[I, O], in I) (val O, gi *types.GraphInterrupt, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if g, ok := r.(*types.GraphInterrupt); ok {
@@ -264,7 +296,8 @@ func callSafely[I, O any](ctx context.Context, t *Task[I, O], in I) (val O, gi *
 			err = fmt.Errorf("fn: task %q panicked: %v", t.name, r)
 		}
 	}()
-	val, err = t.f(ctx, in)
+	rt := parentRt.Override(runtime.WithRuntimeCtx(ctx))
+	val, err = t.f(rt, in)
 	return val, nil, err
 }
 

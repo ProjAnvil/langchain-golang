@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -30,7 +31,7 @@ func compileChild(t *testing.T, nodeName string, fn NodeFunc) *CompiledGraph {
 // child's final values merge back into the parent's state as the node's
 // update, so shared keys flow in and out.
 func TestSubgraphNodeSharesState(t *testing.T) {
-	child := compileChild(t, "child_step", func(_ context.Context, state map[string]any) (any, error) {
+	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		if state["value"] != 1 {
 			t.Errorf("child saw value = %v, want 1 (parent state as input)", state["value"])
 		}
@@ -40,7 +41,7 @@ func TestSubgraphNodeSharesState(t *testing.T) {
 	g := NewStateGraph()
 	g.AddSubgraph("sub", child)
 	var afterSaw any
-	g.AddNode("after", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("after", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		afterSaw = state["value"]
 		return nil, nil
 	})
@@ -75,14 +76,14 @@ func TestSubgraphNodeSharesState(t *testing.T) {
 func TestSubgraphParentCommandAppliesAtParent(t *testing.T) {
 	childNextRan := false
 	child := NewStateGraph()
-	child.AddNode("decide", func(_ context.Context, _ map[string]any) (any, error) {
+	child.AddNode("decide", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return &types.Command{
 			Graph:  types.ParentGraph,
 			Update: map[string]any{"k": "v"},
 			Goto:   To("target"),
 		}, nil
 	})
-	child.AddNode("child_next", func(_ context.Context, _ map[string]any) (any, error) {
+	child.AddNode("child_next", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		childNextRan = true
 		return nil, nil
 	})
@@ -97,11 +98,11 @@ func TestSubgraphParentCommandAppliesAtParent(t *testing.T) {
 	targetRan := false
 	g := NewStateGraph()
 	g.AddSubgraph("sub", childCG)
-	g.AddNode("target", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("target", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		targetRan = true
 		return nil, nil
 	})
-	g.AddNode("fallback", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("fallback", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return nil, nil
 	})
 	g.AddEdge(types.START, "sub")
@@ -134,7 +135,7 @@ func TestSubgraphParentCommandAppliesAtParent(t *testing.T) {
 // merged into child state, goto resolved against child nodes) — it must not
 // reach the top graph, which has no "child_target" node.
 func TestSubgraphGrandchildCommandAppliesAtChildLevel(t *testing.T) {
-	grand := compileChild(t, "grand_step", func(_ context.Context, _ map[string]any) (any, error) {
+	grand := compileChild(t, "grand_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return &types.Command{
 			Graph:  types.ParentGraph,
 			Update: map[string]any{"level": "child"},
@@ -145,11 +146,11 @@ func TestSubgraphGrandchildCommandAppliesAtChildLevel(t *testing.T) {
 	childTargetRan := false
 	child := NewStateGraph()
 	child.AddSubgraph("grand", grand)
-	child.AddNode("child_target", func(_ context.Context, _ map[string]any) (any, error) {
+	child.AddNode("child_target", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		childTargetRan = true
 		return nil, nil
 	})
-	child.AddNode("child_fallback", func(_ context.Context, _ map[string]any) (any, error) {
+	child.AddNode("child_fallback", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return nil, nil
 	})
 	child.AddEdge(types.START, "grand")
@@ -186,7 +187,7 @@ func TestSubgraphGrandchildCommandAppliesAtChildLevel(t *testing.T) {
 // than a grandchild's: the child's run aborts, the top graph's AddSubgraph
 // wrapper recovers it, and the top graph applies update+goto itself.
 func TestSubgraphChildCommandReachesTopGraph(t *testing.T) {
-	child := compileChild(t, "child_decide", func(_ context.Context, _ map[string]any) (any, error) {
+	child := compileChild(t, "child_decide", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return &types.Command{
 			Graph:  types.ParentGraph,
 			Update: map[string]any{"from": "child"},
@@ -197,7 +198,7 @@ func TestSubgraphChildCommandReachesTopGraph(t *testing.T) {
 	topTargetRan := false
 	top := NewStateGraph()
 	top.AddSubgraph("child", child)
-	top.AddNode("top_target", func(_ context.Context, _ map[string]any) (any, error) {
+	top.AddNode("top_target", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		topTargetRan = true
 		return nil, nil
 	})
@@ -227,7 +228,7 @@ func TestSubgraphChildCommandReachesTopGraph(t *testing.T) {
 func TestSubgraphCheckpointsNamespaced(t *testing.T) {
 	ctx := context.Background()
 
-	grand := compileChild(t, "grand_step", func(_ context.Context, _ map[string]any) (any, error) {
+	grand := compileChild(t, "grand_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"grand_ran": true}, nil
 	})
 	child := NewStateGraph()
@@ -275,7 +276,7 @@ func TestSubgraphCheckpointsNamespaced(t *testing.T) {
 // TestSubgraphWithoutParentCheckpointer verifies a subgraph still runs (with
 // no checkpointing of its own) when the parent has no checkpointer.
 func TestSubgraphWithoutParentCheckpointer(t *testing.T) {
-	child := compileChild(t, "child_step", func(_ context.Context, _ map[string]any) (any, error) {
+	child := compileChild(t, "child_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"done": true}, nil
 	})
 	g := NewStateGraph()
@@ -299,7 +300,7 @@ func TestSubgraphWithoutParentCheckpointer(t *testing.T) {
 // Command.Graph other than types.ParentGraph remains an error.
 func TestCommandGraphUnsupportedValueErrors(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("n", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return &types.Command{Graph: "bogus"}, nil
 	})
 	g.AddEdge(types.START, "n")
@@ -328,7 +329,7 @@ func TestTopLevelParentCommandDescriptiveError(t *testing.T) {
 		Goto:   To("nowhere"),
 	}
 	g := NewStateGraph()
-	g.AddNode("n", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return cmd, nil
 	})
 	g.AddEdge(types.START, "n")
@@ -363,16 +364,16 @@ func TestTopLevelParentCommandDescriptiveError(t *testing.T) {
 func TestSubgraphParentsPinTimeTravel(t *testing.T) {
 	ctx := context.Background()
 
-	child := compileChild(t, "child_step", func(_ context.Context, state map[string]any) (any, error) {
+	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		n, _ := state["child_n"].(int)
 		return map[string]any{"child_n": n + 1}, nil
 	})
 
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("pre", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("pre", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddSubgraph("sub", child)
-	g.AddNode("post", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("post", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddEdge(types.START, "pre")
 	g.AddEdge("pre", "sub")
 	g.AddEdge("sub", "post")
@@ -479,7 +480,7 @@ func TestSubgraphPinOncePerRun(t *testing.T) {
 	ctx := context.Background()
 
 	var childRuns int32
-	child := compileChild(t, "child_step", func(_ context.Context, state map[string]any) (any, error) {
+	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		childRuns++
 		n, _ := state["child_n"].(int)
 		return map[string]any{"child_n": n + 1}, nil
@@ -487,18 +488,18 @@ func TestSubgraphPinOncePerRun(t *testing.T) {
 
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("pre", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("pre", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddSubgraph("sub", child)
 	// again loops back to sub until visits reaches 2, so the subgraph node
 	// executes twice per run.
-	g.AddNode("again", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("again", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		v, _ := state["visits"].(int)
 		return map[string]any{"visits": v + 1}, nil
 	})
 	g.AddEdge(types.START, "pre")
 	g.AddEdge("pre", "sub")
 	g.AddEdge("sub", "again")
-	g.AddConditionalEdges("again", func(_ context.Context, state map[string]any) ([]any, error) {
+	g.AddConditionalEdges("again", func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		if state["visits"].(int) < 2 {
 			return To("sub"), nil
 		}
@@ -584,7 +585,7 @@ func TestSubgraphPinOncePerRun(t *testing.T) {
 // silently treating the paused child as complete (resuming interrupted
 // subgraphs is unsupported).
 func TestSubgraphInterruptDescriptiveError(t *testing.T) {
-	child := compileChild(t, "child_step", func(ctx context.Context, _ map[string]any) (any, error) {
+	child := compileChild(t, "child_step", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		Interrupt(ctx, "pause-inside-child")
 		return nil, nil
 	})

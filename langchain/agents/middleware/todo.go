@@ -75,10 +75,10 @@ func (m *TodoListMiddleware) WrapModelCall(ctx context.Context, request ModelReq
 	if request.SystemMessage != nil {
 		system = *request.SystemMessage
 		system.ContentBlocks = append([]messages.ContentBlock(nil), system.ContentBlocks...)
-		system.ContentBlocks = append(system.ContentBlocks, messages.ContentBlock{"type": "text", "text": "\n\n" + systemPrompt})
+		system.ContentBlocks = append(system.ContentBlocks, messages.TextBlock{Text: "\n\n" + systemPrompt})
 	} else {
 		system = messages.System("")
-		system.ContentBlocks = []messages.ContentBlock{{"type": "text", "text": systemPrompt}}
+		system.ContentBlocks = []messages.ContentBlock{messages.TextBlock{Text: systemPrompt}}
 	}
 	next, err := request.Override(WithSystemMessage(&system))
 	if err != nil {

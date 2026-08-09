@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -17,7 +18,7 @@ func snapshotLinearGraph(t *testing.T, saver checkpoint.Saver, calls map[string]
 	g := NewStateGraph()
 	for _, name := range []string{"n1", "n2", "n3"} {
 		node := name
-		g.AddNode(node, func(_ context.Context, _ map[string]any) (any, error) {
+		g.AddNode(node, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 			calls[node]++
 			return map[string]any{"k" + node[1:]: "v" + node[1:]}, nil
 		})
@@ -147,10 +148,10 @@ func TestGetStateHistory(t *testing.T) {
 func TestGetStateInterrupts(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("n1", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n1", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"k1": "v1"}, nil
 	})
-	g.AddNode("n2", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n2", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"k2": "v2"}, nil
 	})
 	g.AddEdge(types.START, "n1")
@@ -189,22 +190,22 @@ func TestUpdateState(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	calls := map[string]int{}
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		calls["a"]++
 		return nil, nil
 	})
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		calls["b"]++
 		return map[string]any{"via": "b"}, nil
 	})
-	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		calls["c"]++
 		return map[string]any{"via": "c"}, nil
 	})
 	g.AddEdge(types.START, "a")
 	// a's router reads the "route" key, so re-resolving a's successors after
 	// an update must reflect the updated state.
-	g.AddConditionalEdges("a", func(_ context.Context, state map[string]any) ([]any, error) {
+	g.AddConditionalEdges("a", func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		if state["route"] == "c" {
 			return To("c"), nil
 		}
@@ -285,8 +286,8 @@ func TestUpdateStateAsNodeErrors(t *testing.T) {
 	ctx := context.Background()
 
 	g := NewStateGraph()
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddEdge(types.START, "a")
 	g.AddEdge("a", "b")
 	g.AddEdge("b", types.END)
@@ -309,7 +310,7 @@ func TestUpdateStateAsNodeErrors(t *testing.T) {
 
 	// A single-node graph unambiguously attributes the update to its one node.
 	single := NewStateGraph()
-	single.AddNode("only", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	single.AddNode("only", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	single.AddEdge(types.START, "only")
 	single.AddEdge("only", types.END)
 	scg, err := single.Compile(WithCheckpointer(saver))
@@ -470,7 +471,7 @@ func TestNewTurnFromPinnedCheckpoint(t *testing.T) {
 // UpdateState all fail clearly without a checkpointer.
 func TestStateAPIsRequireCheckpointer(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddEdge(types.START, "a")
 	g.AddEdge("a", types.END)
 	cg, err := g.Compile()
@@ -501,7 +502,7 @@ func TestUpdateStateSubgraphNamespace(t *testing.T) {
 	ctx := context.Background()
 	saver := checkpoint.NewMemorySaver()
 
-	child := compileChild(t, "child_step", func(_ context.Context, _ map[string]any) (any, error) {
+	child := compileChild(t, "child_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"x": "child"}, nil
 	})
 	top := NewStateGraph()

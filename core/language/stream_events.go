@@ -100,9 +100,9 @@ func (b *chunkProtocolBridge) Push(chunk messages.Message) {
 		b.stream.Dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: 0,
-			Delta: messages.ContentBlock{
-				"type": "text-delta",
-				"text": chunk.Content,
+			Delta: messages.NonStandardContentBlock{
+				Type:  "text-delta",
+				Value: map[string]any{"text": chunk.Content},
 			},
 		})
 	}
@@ -113,11 +113,10 @@ func (b *chunkProtocolBridge) Push(chunk messages.Message) {
 		b.stream.Dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: len(b.stream.Events()),
-			Content: messages.ContentBlock{
-				"type": "tool_call",
-				"id":   call.ID,
-				"name": call.Name,
-				"args": call.Args,
+			Content: messages.ToolCallBlock{
+				ID:   call.ID,
+				Name: call.Name,
+				Args: call.Args,
 			},
 		})
 	}
@@ -125,11 +124,13 @@ func (b *chunkProtocolBridge) Push(chunk messages.Message) {
 		b.stream.Dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: len(b.stream.Events()),
-			Content: messages.ContentBlock{
-				"type": "invalid_tool_call",
-				"id":   call.ID,
-				"name": call.Name,
-				"args": call.Args,
+			Content: messages.NonStandardContentBlock{
+				Type: "invalid_tool_call",
+				Value: map[string]any{
+					"id":   call.ID,
+					"name": call.Name,
+					"args": call.Args,
+				},
 			},
 		})
 	}
@@ -146,9 +147,8 @@ func (b *chunkProtocolBridge) Finish() {
 		b.stream.Dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: 0,
-			Content: messages.ContentBlock{
-				"type": "text",
-				"text": b.text,
+			Content: messages.TextBlock{
+				Text: b.text,
 			},
 		})
 	}
@@ -174,73 +174,74 @@ func (b *chunkProtocolBridge) ensureTextStarted() {
 	b.stream.Dispatch(streamevents.Event{
 		Event: streamevents.EventContentBlockStart,
 		Index: 0,
-		Content: messages.ContentBlock{
-			"type": "text",
-			"text": "",
+		Content: messages.TextBlock{
+			Text: "",
 		},
 	})
 }
 
 func (b *chunkProtocolBridge) pushBlock(block messages.ContentBlock) {
-	blockType, _ := block["type"].(string)
+	m := messages.BlockToMap(block)
+	blockType, _ := m["type"].(string)
 	switch blockType {
 	case "text":
-		if text, _ := block["text"].(string); text != "" {
+		if text, _ := m["text"].(string); text != "" {
 			b.ensureTextStarted()
 			b.text += text
 			b.stream.Dispatch(streamevents.Event{
 				Event: streamevents.EventContentBlockDelta,
 				Index: 0,
-				Delta: messages.ContentBlock{
-					"type": "text-delta",
-					"text": text,
+				Delta: messages.NonStandardContentBlock{
+					Type:  "text-delta",
+					Value: map[string]any{"text": text},
 				},
 			})
 		}
 	case "reasoning":
-		if reasoning, _ := block["reasoning"].(string); reasoning != "" {
-			index := blockIndex(block, len(b.stream.Events()))
+		if reasoning, _ := m["reasoning"].(string); reasoning != "" {
+			index := blockIndex(m, len(b.stream.Events()))
 			b.stream.Dispatch(streamevents.Event{
 				Event: streamevents.EventContentBlockDelta,
 				Index: index,
-				Delta: messages.ContentBlock{
-					"type":      "reasoning-delta",
-					"reasoning": reasoning,
+				Delta: messages.NonStandardContentBlock{
+					Type:  "reasoning-delta",
+					Value: map[string]any{"reasoning": reasoning},
 				},
 			})
 			b.stream.Dispatch(streamevents.Event{
 				Event: streamevents.EventContentBlockFinish,
 				Index: index,
-				Content: messages.ContentBlock{
-					"type":      "reasoning",
-					"reasoning": reasoning,
+				Content: messages.ReasoningBlock{
+					Reasoning: reasoning,
 				},
 			})
 		}
 	case "tool_call_chunk":
 		b.stream.Dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
-			Index: blockIndex(block, len(b.stream.Events())),
-			Delta: messages.ContentBlock{
-				"type": "tool_call_chunk",
-				"id":   block["id"],
-				"name": block["name"],
-				"args": block["args"],
+			Index: blockIndex(m, len(b.stream.Events())),
+			Delta: messages.NonStandardContentBlock{
+				Type: "tool_call_chunk",
+				Value: map[string]any{
+					"id":   m["id"],
+					"name": m["name"],
+					"args": m["args"],
+				},
 			},
 		})
 	default:
 		if blockType != "" {
 			b.stream.Dispatch(streamevents.Event{
 				Event:   streamevents.EventContentBlockFinish,
-				Index:   blockIndex(block, len(b.stream.Events())),
+				Index:   blockIndex(m, len(b.stream.Events())),
 				Content: block,
 			})
 		}
 	}
 }
 
-func blockIndex(block messages.ContentBlock, fallback int) int {
-	switch index := block["index"].(type) {
+func blockIndex(m map[string]any, fallback int) int {
+	switch index := m["index"].(type) {
 	case int:
 		return index
 	case float64:

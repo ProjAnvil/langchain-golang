@@ -39,7 +39,7 @@
 //     exception object).
 //
 //  6. Tasks inside a StateGraph node: the Go shape is invoking an
-//     Entrypoint inside the node (e.g. add.Invoke(ctx, ...) within the
+//     Entrypoint inside the node (e.g. add.Invoke(rt, ...) within the
 //     NodeFunc). Python's bare @task-in-node relies on Pregel config
 //     injection and has no Go equivalent.
 //

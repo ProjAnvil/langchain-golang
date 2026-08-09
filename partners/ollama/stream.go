@@ -169,9 +169,9 @@ func (s *chatStream) planChunk(ctx context.Context, chunk chatResponse) {
 			if err := s.emitProtocol(ctx, streamevents.Event{
 				Event: streamevents.EventContentBlockDelta,
 				Index: textBlockIndex,
-				Delta: messages.ContentBlock{
-					"type": "text-delta",
-					"text": text,
+				Delta: messages.NonStandardContentBlock{
+					Type:  "text-delta",
+					Value: map[string]any{"text": text},
 				},
 			}); err != nil {
 				return messages.Message{}, false, err
@@ -195,18 +195,17 @@ func (s *chatStream) planChunk(ctx context.Context, chunk chatResponse) {
 				if err := s.emitProtocol(ctx, streamevents.Event{
 					Event: streamevents.EventContentBlockDelta,
 					Index: reasoningBlockIndex,
-					Delta: messages.ContentBlock{
-						"type":      "reasoning-delta",
-						"reasoning": text,
+					Delta: messages.NonStandardContentBlock{
+						Type:  "reasoning-delta",
+						Value: map[string]any{"reasoning": text},
 					},
 				}); err != nil {
 					return messages.Message{}, false, err
 				}
 				out := messages.AI("")
-				out.ContentBlocks = []messages.ContentBlock{{
-					"type":      "reasoning",
-					"reasoning": text,
-					"index":     reasoningBlockIndex,
+				out.ContentBlocks = []messages.ContentBlock{messages.ReasoningBlock{
+					Reasoning: text,
+					Index:     reasoningBlockIndex,
 				}}
 				if err := emitStream(ctx, s.cfg, out); err != nil {
 					return messages.Message{}, false, err
@@ -259,11 +258,10 @@ func (s *chatStream) emitToolCallFinish(ctx context.Context, index int, call mes
 	if err := s.beginProtocol(ctx); err != nil {
 		return err
 	}
-	block := messages.ContentBlock{
-		"type": "tool_call",
-		"id":   call.ID,
-		"name": call.Name,
-		"args": call.Args,
+	block := messages.ToolCallBlock{
+		ID:   call.ID,
+		Name: call.Name,
+		Args: call.Args,
 	}
 	if err := s.emitProtocol(ctx, streamevents.Event{
 		Event:   streamevents.EventContentBlockStart,
@@ -331,9 +329,8 @@ func (s *chatStream) startTextBlock(ctx context.Context) error {
 	return s.emitProtocol(ctx, streamevents.Event{
 		Event: streamevents.EventContentBlockStart,
 		Index: textBlockIndex,
-		Content: messages.ContentBlock{
-			"type": "text",
-			"text": "",
+		Content: messages.TextBlock{
+			Text: "",
 		},
 	})
 }
@@ -347,9 +344,8 @@ func (s *chatStream) finishTextBlock(ctx context.Context) error {
 	}
 	text := s.textBlock.text
 	s.textBlock.started = false
-	block := messages.ContentBlock{
-		"type": "text",
-		"text": text,
+	block := messages.TextBlock{
+		Text: text,
 	}
 	s.output.ContentBlocks = append(s.output.ContentBlocks, block)
 	return s.emitProtocol(ctx, streamevents.Event{
@@ -373,9 +369,8 @@ func (s *chatStream) startReasoningBlock(ctx context.Context) error {
 	return s.emitProtocol(ctx, streamevents.Event{
 		Event: streamevents.EventContentBlockStart,
 		Index: reasoningBlockIndex,
-		Content: messages.ContentBlock{
-			"type":      "reasoning",
-			"reasoning": "",
+		Content: messages.ReasoningBlock{
+			Reasoning: "",
 		},
 	})
 }
@@ -386,9 +381,8 @@ func (s *chatStream) finishReasoningBlock(ctx context.Context) error {
 	}
 	text := s.reasoningBlock.text
 	s.reasoningBlock.started = false
-	block := messages.ContentBlock{
-		"type":      "reasoning",
-		"reasoning": text,
+	block := messages.ReasoningBlock{
+		Reasoning: text,
 	}
 	s.output.ContentBlocks = append(s.output.ContentBlocks, block)
 	return s.emitProtocol(ctx, streamevents.Event{

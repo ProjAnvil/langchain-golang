@@ -77,8 +77,8 @@ func TestParityImageBase64ContentBlock(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	invokeWithBlocks(t, model, []messages.ContentBlock{
-		{"type": "image", "source_type": "base64", "mime_type": "image/png", "base64": "Zm9v"},
-		{"type": "text", "text": "what is this?"},
+		messages.ParseContentBlock(map[string]any{"type": "image", "source_type": "base64", "mime_type": "image/png", "base64": "Zm9v"}),
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": "what is this?"}),
 	})
 
 	blocks := firstUserContent(t, request)
@@ -103,7 +103,7 @@ func TestParityImageURLContentBlock(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	invokeWithBlocks(t, model, []messages.ContentBlock{
-		{"type": "image", "source_type": "url", "url": "https://example.com/cat.png"},
+		messages.ParseContentBlock(map[string]any{"type": "image", "source_type": "url", "url": "https://example.com/cat.png"}),
 	})
 
 	source := firstUserContent(t, request)[0]["source"].(map[string]any)
@@ -120,7 +120,7 @@ func TestParityImageDataURIContentBlock(t *testing.T) {
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	// data:image/jpeg;base64,Zm9v
 	invokeWithBlocks(t, model, []messages.ContentBlock{
-		{"type": "image", "source_type": "url", "url": "data:image/jpeg;base64,Zm9v"},
+		messages.ParseContentBlock(map[string]any{"type": "image", "source_type": "url", "url": "data:image/jpeg;base64,Zm9v"}),
 	})
 
 	source := firstUserContent(t, request)[0]["source"].(map[string]any)
@@ -136,7 +136,7 @@ func TestParityDocumentBase64ContentBlock(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	invokeWithBlocks(t, model, []messages.ContentBlock{
-		{"type": "file", "source_type": "base64", "mime_type": "application/pdf", "base64": "QUJD"},
+		messages.ParseContentBlock(map[string]any{"type": "file", "source_type": "base64", "mime_type": "application/pdf", "base64": "QUJD"}),
 	})
 
 	doc := firstUserContent(t, request)[0]
@@ -156,7 +156,7 @@ func TestParityDocumentTextContentBlock(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	invokeWithBlocks(t, model, []messages.ContentBlock{
-		{"type": "file", "source_type": "text", "mime_type": "text/plain", "text": "hello doc"},
+		messages.ParseContentBlock(map[string]any{"type": "file", "source_type": "text", "mime_type": "text/plain", "text": "hello doc"}),
 	})
 
 	doc := firstUserContent(t, request)[0]
@@ -353,14 +353,15 @@ func TestParityInvokeThinkingResponseBlock(t *testing.T) {
 
 	var reasoning messages.ContentBlock
 	for _, block := range resp.ContentBlocks {
-		if block["type"] == "reasoning" {
+		if messages.BlockToMap(block)["type"] == "reasoning" {
 			reasoning = block
 		}
 	}
 	if reasoning == nil {
 		t.Fatalf("no reasoning block: %+v", resp.ContentBlocks)
 	}
-	if reasoning["reasoning"] != "let me reason" || reasoning["signature"] != "sig_123" {
+	rm := messages.BlockToMap(reasoning)
+	if rm["reasoning"] != "let me reason" || rm["signature"] != "sig_123" {
 		t.Fatalf("reasoning block: %+v", reasoning)
 	}
 }
@@ -379,7 +380,8 @@ func TestParityInvokeRedactedThinkingResponseBlock(t *testing.T) {
 
 	found := false
 	for _, block := range resp.ContentBlocks {
-		if block["type"] == "reasoning" && block["data"] == "ZW5jcnlwdGVk" {
+		bm := messages.BlockToMap(block)
+		if bm["type"] == "reasoning" && bm["data"] == "ZW5jcnlwdGVk" {
 			found = true
 		}
 	}
@@ -437,14 +439,15 @@ func TestParityStreamThinkingBlock(t *testing.T) {
 	}
 	var reasoning messages.ContentBlock
 	for _, block := range output.ContentBlocks {
-		if block["type"] == "reasoning" {
+		if messages.BlockToMap(block)["type"] == "reasoning" {
 			reasoning = block
 		}
 	}
 	if reasoning == nil {
 		t.Fatalf("no reasoning block in output: %+v", output.ContentBlocks)
 	}
-	if reasoning["reasoning"] != "step by step" || reasoning["signature"] != "sig_abc" {
+	rm := messages.BlockToMap(reasoning)
+	if rm["reasoning"] != "step by step" || rm["signature"] != "sig_abc" {
 		t.Fatalf("reasoning block: %+v", reasoning)
 	}
 	if output.Content != "answer" {
@@ -460,7 +463,7 @@ func TestParitySystemCacheControl(t *testing.T) {
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	sys := messages.System("")
 	sys.ContentBlocks = []messages.ContentBlock{
-		{"type": "text", "text": "you are helpful", "cache_control": map[string]any{"type": "ephemeral"}},
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": "you are helpful", "cache_control": map[string]any{"type": "ephemeral"}}),
 	}
 	if _, err := model.Invoke(context.Background(), []messages.Message{sys, messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
@@ -487,7 +490,7 @@ func TestParityContentBlockCacheControl(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	invokeWithBlocks(t, model, []messages.ContentBlock{
-		{"type": "text", "text": "cache me", "cache_control": map[string]any{"type": "ephemeral"}},
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": "cache me", "cache_control": map[string]any{"type": "ephemeral"}}),
 	})
 
 	block := firstUserContent(t, request)[0]
@@ -505,7 +508,7 @@ func TestParityToolResultContentBlockCacheControlHoisted(t *testing.T) {
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	toolResult := messages.Tool("toolu_123", "")
 	toolResult.ContentBlocks = []messages.ContentBlock{
-		{"type": "text", "text": "cached result", "cache_control": map[string]any{"type": "ephemeral"}},
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": "cached result", "cache_control": map[string]any{"type": "ephemeral"}}),
 	}
 	if _, err := model.Invoke(context.Background(), []messages.Message{toolResult}); err != nil {
 		t.Fatalf("invoke: %v", err)

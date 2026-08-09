@@ -650,7 +650,7 @@ func TestChatModelStreamProtocolEvents(t *testing.T) {
 		}
 	}
 	finish := events[4].Chunk.(streamevents.Event)
-	if finish.Content["text"] != "hello" {
+	if messages.BlockToMap(finish.Content)["text"] != "hello" {
 		t.Fatalf("finish content: %+v", finish.Content)
 	}
 }
@@ -703,12 +703,12 @@ func TestChatModelStreamFunctionCallDeltas(t *testing.T) {
 	if len(chunks[0].ContentBlocks) != 1 {
 		t.Fatalf("added chunk blocks: %+v", chunks[0].ContentBlocks)
 	}
-	if chunks[0].ContentBlocks[0]["name"] != "adder" ||
-		chunks[0].ContentBlocks[0]["call_id"] != "call_123" {
+	c0 := messages.BlockToMap(chunks[0].ContentBlocks[0])
+	if c0["name"] != "adder" || c0["call_id"] != "call_123" {
 		t.Fatalf("added chunk block: %+v", chunks[0].ContentBlocks[0])
 	}
-	if chunks[1].ContentBlocks[0]["arguments"] != `{"a":2,` ||
-		chunks[2].ContentBlocks[0]["arguments"] != `"b":3}` {
+	if messages.BlockToMap(chunks[1].ContentBlocks[0])["arguments"] != `{"a":2,` ||
+		messages.BlockToMap(chunks[2].ContentBlocks[0])["arguments"] != `"b":3}` {
 		t.Fatalf("argument chunks: %+v %+v", chunks[1], chunks[2])
 	}
 	if len(chunks[3].ToolCalls) != 1 {
@@ -834,11 +834,11 @@ func TestChatModelStreamAdditionalResponsesItemsProtocolEvents(t *testing.T) {
 	}
 	wantTypes := []string{"web_search_call", "file_search_call", "code_interpreter_call", "custom_tool_call"}
 	for i, want := range wantTypes {
-		if got := finishes[i].Content["type"]; got != want {
+		if got := messages.BlockToMap(finishes[i].Content)["type"]; got != want {
 			t.Fatalf("finish[%d] type: got %v want %q (%+v)", i, got, want, finishes[i].Content)
 		}
 	}
-	if finishes[1].Content["queries"] == nil || finishes[2].Content["outputs"] == nil || finishes[3].Content["input"] != "abc" {
+	if messages.BlockToMap(finishes[1].Content)["queries"] == nil || messages.BlockToMap(finishes[2].Content)["outputs"] == nil || messages.BlockToMap(finishes[3].Content)["input"] != "abc" {
 		t.Fatalf("finish payloads not preserved: %+v", finishes)
 	}
 }
@@ -898,7 +898,8 @@ func TestChatModelStreamReasoningFinishProtocolEvent(t *testing.T) {
 	if finish.Event != streamevents.EventContentBlockFinish {
 		t.Fatal("missing reasoning finish event")
 	}
-	if finish.Content["type"] != "reasoning" || finish.Content["reasoning"] != "reasoning block one" {
+	rc := messages.BlockToMap(finish.Content)
+	if rc["type"] != "reasoning" || rc["reasoning"] != "reasoning block one" {
 		t.Fatalf("finish content: %+v", finish.Content)
 	}
 }

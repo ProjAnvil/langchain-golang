@@ -76,6 +76,12 @@ type Metadata struct {
 	Step int
 	// Parents maps checkpoint namespace -> parent checkpoint ID.
 	Parents map[string]string
+	// CountersSinceDeltaSnapshot tracks per-channel (updates, supersteps)
+	// since the last delta snapshot, mirroring Python's
+	// counters_since_delta_snapshot metadata field. Keyed by channel name;
+	// [0]=updates, [1]=supersteps. Nil/empty when no delta channels exist
+	// or the checkpoint predates this feature.
+	CountersSinceDeltaSnapshot map[string][2]int
 }
 
 // Reserved channel names used in Write.Channel for control-plane writes that
@@ -111,6 +117,12 @@ const (
 	// has no counterpart write.
 	ReservedFnConsumed = "__fn_consumed__"
 )
+
+// NullTaskID is the synthetic task ID for input writes persisted via PutWrites,
+// matching Python's NULL_TASK_ID (_internal/_constants.py:93). Used by the
+// executor to persist delta-channel input writes so GetState can replay them
+// via reconstructDeltaChannels.
+const NullTaskID = "00000000-0000-0000-0000-000000000000"
 
 // Write is a single pending write recorded against a checkpoint by a task,
 // mirroring Python's `PendingWrite` (task_id, channel, value).

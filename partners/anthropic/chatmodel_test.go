@@ -217,7 +217,7 @@ func TestChatModelStreamTextProtocol(t *testing.T) {
 		t.Fatalf("protocol events: got %d want 6: %+v", len(events), events)
 	}
 	finish := events[4].Chunk.(streamevents.Event)
-	if finish.Event != streamevents.EventContentBlockFinish || finish.Content["text"] != "hello" {
+	if finish.Event != streamevents.EventContentBlockFinish || messages.BlockToMap(finish.Content)["text"] != "hello" {
 		t.Fatalf("finish: %+v", finish)
 	}
 }

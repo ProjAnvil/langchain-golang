@@ -33,16 +33,17 @@ func formatContentBlocks(blocks []messages.ContentBlock) ([]contentBlock, error)
 }
 
 func formatContentBlock(block messages.ContentBlock) (contentBlock, error) {
-	cacheControl, _ := block["cache_control"].(map[string]any)
-	switch blockType, _ := block["type"].(string); blockType {
+	m := messages.BlockToMap(block)
+	cacheControl, _ := m["cache_control"].(map[string]any)
+	switch blockType, _ := m["type"].(string); blockType {
 	case "image":
-		source, err := imageSource(block)
+		source, err := imageSource(m)
 		if err != nil {
 			return contentBlock{}, err
 		}
 		return contentBlock{Type: "image", Source: source, CacheControl: cacheControl}, nil
 	case "file":
-		source, err := documentSource(block)
+		source, err := documentSource(m)
 		if err != nil {
 			return contentBlock{}, err
 		}
@@ -52,77 +53,77 @@ func formatContentBlock(block messages.ContentBlock) (contentBlock, error) {
 			Type: "document",
 			Source: map[string]any{
 				"type":       "text",
-				"media_type": stringValue(block["mime_type"], "text/plain"),
-				"data":       stringValue(block["text"], ""),
+				"media_type": stringValue(m["mime_type"], "text/plain"),
+				"data":       stringValue(m["text"], ""),
 			},
 			CacheControl: cacheControl,
 		}, nil
 	case "text":
-		text, _ := block["text"].(string)
+		text, _ := m["text"].(string)
 		return contentBlock{Type: "text", Text: text, CacheControl: cacheControl}, nil
 	default:
-		return passthroughBlock(block), nil
+		return passthroughBlock(m), nil
 	}
 }
 
 // imageSource builds the Anthropic "source" object for an image content block.
-func imageSource(block messages.ContentBlock) (map[string]any, error) {
-	if url, ok := block["url"].(string); ok && url != "" {
+func imageSource(m map[string]any) (map[string]any, error) {
+	if url, ok := m["url"].(string); ok && url != "" {
 		if mediaType, data, isData := parseDataURI(url); isData {
 			return map[string]any{"type": "base64", "media_type": mediaType, "data": data}, nil
 		}
 		return map[string]any{"type": "url", "url": url}, nil
 	}
-	switch sourceType, _ := block["source_type"].(string); sourceType {
+	switch sourceType, _ := m["source_type"].(string); sourceType {
 	case "base64":
-		if _, ok := block["base64"]; ok {
+		if _, ok := m["base64"]; ok {
 			return map[string]any{
 				"type":       "base64",
-				"media_type": block["mime_type"],
-				"data":       stringValue(block["data"], block["base64"]),
+				"media_type": m["mime_type"],
+				"data":       stringValue(m["data"], m["base64"]),
 			}, nil
 		}
 	case "id":
-		return map[string]any{"type": "file", "file_id": stringValue(block["id"], block["file_id"])}, nil
+		return map[string]any{"type": "file", "file_id": stringValue(m["id"], m["file_id"])}, nil
 	}
-	if fileID, ok := block["file_id"].(string); ok && fileID != "" {
+	if fileID, ok := m["file_id"].(string); ok && fileID != "" {
 		return map[string]any{"type": "file", "file_id": fileID}, nil
 	}
 	return nil, fmt.Errorf("anthropic: image content block requires url, base64, or file_id")
 }
 
 // documentSource builds the Anthropic "source" object for a file/document block.
-func documentSource(block messages.ContentBlock) (map[string]any, error) {
-	if url, ok := block["url"].(string); ok && url != "" {
+func documentSource(m map[string]any) (map[string]any, error) {
+	if url, ok := m["url"].(string); ok && url != "" {
 		if mediaType, data, isData := parseDataURI(url); isData {
 			return map[string]any{"type": "base64", "media_type": mediaType, "data": data}, nil
 		}
 		return map[string]any{"type": "url", "url": url}, nil
 	}
-	switch sourceType, _ := block["source_type"].(string); sourceType {
+	switch sourceType, _ := m["source_type"].(string); sourceType {
 	case "text":
 		return map[string]any{
 			"type":       "text",
-			"media_type": stringValue(block["mime_type"], "text/plain"),
-			"data":       stringValue(block["text"], ""),
+			"media_type": stringValue(m["mime_type"], "text/plain"),
+			"data":       stringValue(m["text"], ""),
 		}, nil
 	case "id":
-		return map[string]any{"type": "file", "file_id": stringValue(block["id"], block["file_id"])}, nil
+		return map[string]any{"type": "file", "file_id": stringValue(m["id"], m["file_id"])}, nil
 	case "base64":
 		return map[string]any{
 			"type":       "base64",
-			"media_type": stringValue(block["mime_type"], "application/pdf"),
-			"data":       stringValue(block["data"], block["base64"]),
+			"media_type": stringValue(m["mime_type"], "application/pdf"),
+			"data":       stringValue(m["data"], m["base64"]),
 		}, nil
 	}
-	if _, ok := block["base64"]; ok {
+	if _, ok := m["base64"]; ok {
 		return map[string]any{
 			"type":       "base64",
-			"media_type": stringValue(block["mime_type"], "application/pdf"),
-			"data":       stringValue(block["data"], block["base64"]),
+			"media_type": stringValue(m["mime_type"], "application/pdf"),
+			"data":       stringValue(m["data"], m["base64"]),
 		}, nil
 	}
-	if fileID, ok := block["file_id"].(string); ok && fileID != "" {
+	if fileID, ok := m["file_id"].(string); ok && fileID != "" {
 		return map[string]any{"type": "file", "file_id": fileID}, nil
 	}
 	return nil, fmt.Errorf("anthropic: file content block requires url, base64, text, or file_id")
@@ -160,9 +161,9 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 
 // passthroughBlock forwards provider-native blocks (tool_use, thinking,
 // redacted_thinking, ...) without reinterpreting their fields.
-func passthroughBlock(block messages.ContentBlock) contentBlock {
+func passthroughBlock(m map[string]any) contentBlock {
 	out := contentBlock{}
-	for key, value := range block {
+	for key, value := range m {
 		setContentBlockField(&out, key, value)
 	}
 	return out

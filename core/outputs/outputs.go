@@ -64,9 +64,14 @@ func messageText(message messages.Message) string {
 	}
 	text := ""
 	for _, block := range message.ContentBlocks {
-		if block["type"] == "text" || block["type"] == nil {
-			if value, ok := block["text"].(string); ok {
-				text += value
+		switch b := block.(type) {
+		case messages.TextBlock:
+			text += b.Text
+		case messages.NonStandardContentBlock:
+			if b.Type == "" || b.Type == "text" {
+				if value, ok := b.Value["text"].(string); ok {
+					text += value
+				}
 			}
 		}
 	}

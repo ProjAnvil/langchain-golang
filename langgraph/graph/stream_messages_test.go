@@ -7,6 +7,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -26,7 +27,7 @@ func messageChunkPayload(t *testing.T, c StreamChunk) MessageChunk {
 // an end message with an unseen ID (emitted).
 func TestStreamMessagesChunksAndMetadata(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("model", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("model", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		manager, ok := callbacks.ManagerFromContext(ctx)
 		if !ok {
 			t.Errorf("ManagerFromContext() ok = false, want an installed manager under StreamMessages")
@@ -100,7 +101,7 @@ func TestStreamMessagesChunksAndMetadata(t *testing.T) {
 // wrapped into an AI message chunk.
 func TestStreamMessagesLLMStringChunk(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("llm", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("llm", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		manager, ok := callbacks.ManagerFromContext(ctx)
 		if !ok {
 			t.Errorf("ManagerFromContext() ok = false, want an installed manager under StreamMessages")
@@ -139,7 +140,7 @@ func TestStreamMessagesLLMStringChunk(t *testing.T) {
 // and inside a subgraph.
 func TestStreamCustomMode(t *testing.T) {
 	child := NewStateGraph()
-	child.AddNode("inner", func(ctx context.Context, _ map[string]any) (any, error) {
+	child.AddNode("inner", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		writer := StreamWriterFromContext(ctx)
 		if writer == nil {
 			t.Errorf("StreamWriterFromContext() = nil, want a writer under StreamCustom")
@@ -156,7 +157,7 @@ func TestStreamCustomMode(t *testing.T) {
 	}
 
 	g := NewStateGraph()
-	g.AddNode("worker", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("worker", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		writer := StreamWriterFromContext(ctx)
 		if writer == nil {
 			t.Errorf("StreamWriterFromContext() = nil, want a writer under StreamCustom")
@@ -198,7 +199,7 @@ func TestStreamCustomMode(t *testing.T) {
 func TestStreamMessagesCustomInert(t *testing.T) {
 	var managerOK bool
 	var writer StreamWriter
-	probe := func(ctx context.Context, _ map[string]any) (any, error) {
+	probe := func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		_, managerOK = callbacks.ManagerFromContext(ctx)
 		writer = StreamWriterFromContext(ctx)
 		return nil, nil
@@ -242,9 +243,9 @@ func TestStreamMessagesCustomInert(t *testing.T) {
 // one messages chunk via the installed manager and one custom payload via
 // the installed StreamWriter. It records what the node observed so tests can
 // assert carrier visibility.
-func emitMessagesAndCustom(t *testing.T, observed *carriersObserved) func(ctx context.Context, _ map[string]any) (any, error) {
+func emitMessagesAndCustom(t *testing.T, observed *carriersObserved) func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 	t.Helper()
-	return func(ctx context.Context, _ map[string]any) (any, error) {
+	return func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		manager, ok := callbacks.ManagerFromContext(ctx)
 		writer := StreamWriterFromContext(ctx)
 		*observed = carriersObserved{managerOK: ok, managerEmpty: manager.Empty(), writer: writer}
@@ -329,7 +330,7 @@ func TestStreamSubgraphCarriersStripped(t *testing.T) {
 // chunk Namespace and the metadata's langgraph_checkpoint_ns.
 func TestStreamMessagesInSubgraph(t *testing.T) {
 	child := NewStateGraph()
-	child.AddNode("inner", func(ctx context.Context, _ map[string]any) (any, error) {
+	child.AddNode("inner", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		manager, ok := callbacks.ManagerFromContext(ctx)
 		if !ok {
 			t.Errorf("ManagerFromContext() ok = false, want an installed manager under StreamMessages")

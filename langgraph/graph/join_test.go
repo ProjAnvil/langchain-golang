@@ -12,10 +12,11 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
-func joinNoop(_ context.Context, _ map[string]any) (any, error) { return nil, nil }
+func joinNoop(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil }
 
 // joinBuilderBase returns a builder with nodes a, b, c registered and a as
 // entry point, so AddJoinEdge validation failures are the only Compile errors.
@@ -106,13 +107,13 @@ func TestJoinBasicTrigger(t *testing.T) {
 	var childCalls int
 	g := NewStateGraph()
 	g.AddNode("entry", joinNoop)
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"a_done": true}, nil
 	})
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"b_done": true}, nil
 	})
-	g.AddNode("c", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		childCalls++
 		if _, leaked := state["join:a+b:c"]; leaked {
 			t.Error("join key leaked into node input")
@@ -167,19 +168,19 @@ func sortedAddReducer(existing, update any) (any, error) {
 func newWaitingEdgeGraph(qaCalls *int) *StateGraph {
 	g := NewStateGraph()
 	g.AddReducer("docs", sortedAddReducer)
-	g.AddNode("rewrite_query", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("rewrite_query", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"query": "query: " + state["query"].(string)}, nil
 	})
-	g.AddNode("analyzer_one", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("analyzer_one", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"query": "analyzed: " + state["query"].(string)}, nil
 	})
-	g.AddNode("retriever_one", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("retriever_one", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"docs": []string{"doc1", "doc2"}}, nil
 	})
-	g.AddNode("retriever_two", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("retriever_two", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"docs": []string{"doc3", "doc4"}}, nil
 	})
-	g.AddNode("qa", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("qa", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		*qaCalls++
 		docs, _ := state["docs"].([]string)
 		return map[string]any{"answer": strings.Join(docs, ",")}, nil
@@ -213,10 +214,10 @@ func TestJoinExactlyOnceAcrossSupersteps(t *testing.T) {
 	})
 	g.AddNode("up", joinNoop)
 	g.AddNode("side", joinNoop)
-	g.AddNode("other", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("other", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"my_key": "_more"}, nil
 	})
-	g.AddNode("down", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("down", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		downCalls++
 		return nil, nil
 	})
@@ -332,7 +333,7 @@ func TestJoinWaitingEdgePlusRegularEdge(t *testing.T) {
 	g := newWaitingEdgeGraph(&qaCalls)
 	// Wrap qa to record every invocation's answer, in run order.
 	qaFn := g.nodes["qa"]
-	g.nodes["qa"] = func(ctx context.Context, state map[string]any) (any, error) {
+	g.nodes["qa"] = func(ctx runtime.Runtime, state map[string]any) (any, error) {
 		out, err := qaFn(ctx, state)
 		if m, ok := out.(map[string]any); ok {
 			answers = append(answers, m["answer"].(string))
@@ -372,7 +373,7 @@ func TestJoinLoopReset(t *testing.T) {
 			var rewriteCalls int
 			g := NewStateGraph()
 			g.AddReducer("docs", sortedAddReducer)
-			rewrite := func(_ context.Context, state map[string]any) (any, error) {
+			rewrite := func(_ runtime.Runtime, state map[string]any) (any, error) {
 				rewriteCalls++
 				return map[string]any{"query": "query: " + state["query"].(string)}, nil
 			}
@@ -381,17 +382,17 @@ func TestJoinLoopReset(t *testing.T) {
 				cachePolicy = NodePolicies{Cache: &CachePolicy{}}
 			}
 			g.AddNodeWithPolicies("rewrite_query", rewrite, cachePolicy)
-			g.AddNode("analyzer_one", func(_ context.Context, state map[string]any) (any, error) {
+			g.AddNode("analyzer_one", func(_ runtime.Runtime, state map[string]any) (any, error) {
 				return map[string]any{"query": "analyzed: " + state["query"].(string)}, nil
 			})
-			g.AddNodeWithPolicies("retriever_one", func(_ context.Context, _ map[string]any) (any, error) {
+			g.AddNodeWithPolicies("retriever_one", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 				return map[string]any{"docs": []string{"doc1", "doc2"}}, nil
 			}, cachePolicy)
-			g.AddNode("retriever_two", func(_ context.Context, _ map[string]any) (any, error) {
+			g.AddNode("retriever_two", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 				return map[string]any{"docs": []string{"doc3", "doc4"}}, nil
 			})
 			g.AddNode("decider", joinNoop)
-			g.AddNode("qa", func(_ context.Context, state map[string]any) (any, error) {
+			g.AddNode("qa", func(_ runtime.Runtime, state map[string]any) (any, error) {
 				docs, _ := state["docs"].([]string)
 				return map[string]any{"answer": strings.Join(docs, ",")}, nil
 			})
@@ -400,7 +401,7 @@ func TestJoinLoopReset(t *testing.T) {
 			g.AddEdge("analyzer_one", "retriever_one")
 			g.AddEdge("rewrite_query", "retriever_two")
 			g.AddJoinEdge([]string{"retriever_one", "retriever_two"}, "decider")
-			g.AddConditionalEdges("decider", func(_ context.Context, state map[string]any) ([]any, error) {
+			g.AddConditionalEdges("decider", func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 				if strings.Count(state["query"].(string), "analyzed") > 1 {
 					return To("qa"), nil
 				}
@@ -455,20 +456,20 @@ func TestJoinSendBypassesBarrier(t *testing.T) {
 	g := NewStateGraph()
 	g.AddReducer("docs", sortedAddReducer)
 	g.AddNode("entry", joinNoop)
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"docs": []string{"doc1"}}, nil
 	})
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"docs": []string{"doc2"}}, nil
 	})
-	g.AddNode("qa", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("qa", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		qaCalls++
 		docs, _ := state["docs"].([]string)
 		answers = append(answers, strings.Join(docs, ","))
 		return map[string]any{"answer": strings.Join(docs, ",")}, nil
 	})
 	g.AddEdge(types.START, "entry")
-	g.AddConditionalEdges("entry", func(_ context.Context, _ map[string]any) ([]any, error) {
+	g.AddConditionalEdges("entry", func(_ runtime.Runtime, _ map[string]any) ([]any, error) {
 		return []any{&types.Send{Node: "qa", Arg: map[string]any{"docs": []string{"sent"}}}, "a", "b"}, nil
 	})
 	g.AddJoinEdge([]string{"a", "b"}, "qa")
@@ -507,7 +508,7 @@ func TestJoinThreeParents(t *testing.T) {
 		g.AddNode(n, joinNoop)
 		g.AddEdge("entry", n)
 	}
-	g.AddNode("d", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("d", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		dCalls++
 		return nil, nil
 	})
@@ -539,16 +540,16 @@ func TestJoinParentInterruptResume(t *testing.T) {
 	var aCalls, bCalls, cCalls int
 	g := NewStateGraph()
 	g.AddNode("entry", joinNoop)
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		aCalls++
 		return map[string]any{"a_done": true}, nil
 	})
-	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		bCalls++
 		Interrupt(ctx, "b needs input") // panics on run 1; returns "ok" on resume
 		return map[string]any{"b_done": true}, nil
 	})
-	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		cCalls++
 		return map[string]any{"c_done": true}, nil
 	})
@@ -616,16 +617,16 @@ func TestJoinCheckpointPartialArrival(t *testing.T) {
 	var aCalls, bCalls, cCalls int
 	g := NewStateGraph()
 	g.AddNode("entry", joinNoop)
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		aCalls++
 		return map[string]any{"a_done": true}, nil
 	})
-	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		bCalls++
 		Interrupt(ctx, "b needs input")
 		return map[string]any{"b_done": true}, nil
 	})
-	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		cCalls++
 		return nil, nil
 	})
@@ -685,7 +686,7 @@ func TestJoinKeyNotLeaked(t *testing.T) {
 	g := NewStateGraph()
 	g.AddReducer("docs", sortedAddReducer)
 	wrap := func(fn NodeFunc) NodeFunc {
-		return func(ctx context.Context, state map[string]any) (any, error) {
+		return func(ctx runtime.Runtime, state map[string]any) (any, error) {
 			mu.Lock()
 			for k := range state {
 				seenInputKeys[k] = true
@@ -694,19 +695,19 @@ func TestJoinKeyNotLeaked(t *testing.T) {
 			return fn(ctx, state)
 		}
 	}
-	g.AddNode("rewrite_query", wrap(func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("rewrite_query", wrap(func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"query": "query: " + state["query"].(string)}, nil
 	}))
-	g.AddNode("analyzer_one", wrap(func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("analyzer_one", wrap(func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"query": "analyzed: " + state["query"].(string)}, nil
 	}))
-	g.AddNode("retriever_one", wrap(func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("retriever_one", wrap(func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"docs": []string{"doc1", "doc2"}}, nil
 	}))
-	g.AddNode("retriever_two", wrap(func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("retriever_two", wrap(func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"docs": []string{"doc3", "doc4"}}, nil
 	}))
-	g.AddNode("qa", wrap(func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("qa", wrap(func(_ runtime.Runtime, state map[string]any) (any, error) {
 		qaCalls++
 		docs, _ := state["docs"].([]string)
 		return map[string]any{"answer": strings.Join(docs, ",")}, nil

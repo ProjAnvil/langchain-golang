@@ -12,6 +12,7 @@ import (
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -33,7 +34,7 @@ func aiWithCalls(calls ...messages.ToolCall) messages.Message {
 // modelNodeStub returns a node that appends msg to the "messages" key,
 // standing in for a chat model.
 func modelNodeStub(msg messages.Message) graph.NodeFunc {
-	return func(_ context.Context, _ map[string]any) (any, error) {
+	return func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"messages": []messages.Message{msg}}, nil
 	}
 }
@@ -113,7 +114,7 @@ func TestToolNodeWithMessagesKey(t *testing.T) {
 
 	g := graph.NewStateGraph()
 	g.AddReducer("chat_history", channels.MessagesReducer)
-	g.AddNode("model", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("model", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"chat_history": []messages.Message{aiWithCalls(
 			messages.ToolCall{ID: "call-1", Name: "echo", Args: map[string]any{}},
 		)}}, nil
@@ -195,7 +196,7 @@ func commandGraph(t *testing.T, toolNode *tools.ToolNode, aiMsg messages.Message
 	t.Helper()
 	runs := map[string]*int{"done": new(int), "fallback": new(int)}
 	counting := func(name string) graph.NodeFunc {
-		return func(_ context.Context, _ map[string]any) (any, error) {
+		return func(_ runtime.Runtime, _ map[string]any) (any, error) {
 			*runs[name]++
 			return nil, nil
 		}
@@ -281,8 +282,8 @@ func TestToolNodeMergesMultipleCommands(t *testing.T) {
 		messages.ToolCall{ID: "call-2", Name: "toolB", Args: map[string]any{}},
 	)))
 	g.AddNode("tools", ToolNode(toolNode))
-	g.AddNode("done", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("extra", func(_ context.Context, _ map[string]any) (any, error) { extraRuns++; return nil, nil })
+	g.AddNode("done", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("extra", func(_ runtime.Runtime, _ map[string]any) (any, error) { extraRuns++; return nil, nil })
 	g.AddEdge(types.START, "model")
 	g.AddEdge("model", "tools")
 	g.AddEdge("tools", types.END) // overridden by the merged command's Goto
@@ -416,7 +417,7 @@ func TestToolNodeNoToolCalls(t *testing.T) {
 
 	node := ToolNode(toolNode)
 	state := map[string]any{"messages": []messages.Message{messages.AI("no calls here")}}
-	update, err := node(context.Background(), state)
+	update, err := node(runtime.NewRuntime(context.Background()), state)
 	if err != nil {
 		t.Fatalf("ToolNode() error = %v", err)
 	}

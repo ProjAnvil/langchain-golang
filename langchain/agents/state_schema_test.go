@@ -29,6 +29,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -54,7 +55,7 @@ func TestStateSchema_LastValueAcrossSupersteps(t *testing.T) {
 	var readerSaw any
 	var readerReadOK bool
 
-	g.AddNode("writer", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("writer", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		// First-read-tolerant: "counter" is absent on the writer's first read
 		// (nodes must tolerate an absent key, per the spec's open notes).
 		if _, ok := state["counter"]; ok {
@@ -62,7 +63,7 @@ func TestStateSchema_LastValueAcrossSupersteps(t *testing.T) {
 		}
 		return map[string]any{"counter": 41}, nil
 	})
-	g.AddNode("reader", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("reader", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		readerSaw, readerReadOK = state["counter"], true
 		return nil, nil
 	})
@@ -102,10 +103,10 @@ func TestStateSchema_LastValueAcrossSupersteps(t *testing.T) {
 func TestStateSchema_CustomReducerAccumulates(t *testing.T) {
 	g := graphpkg.NewStateGraph()
 
-	g.AddNode("first", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("first", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"docs": []string{"a"}}, nil
 	})
-	g.AddNode("second", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("second", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		// Append onto whatever "first" already produced; AppendSliceReducer
 		// concatenates rather than replaces.
 		return map[string]any{"docs": []string{"b", "c"}}, nil

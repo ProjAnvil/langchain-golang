@@ -2,7 +2,6 @@ package outputparser
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -66,16 +65,17 @@ func anthropicToolCallsFromMessage(message messages.Message) ([]AnthropicToolCal
 
 	out := []AnthropicToolCall{}
 	for i, block := range message.ContentBlocks {
-		blockType, _ := block["type"].(string)
+		m := messages.BlockToMap(block)
+		blockType, _ := m["type"].(string)
 		if blockType != "tool_use" {
 			continue
 		}
-		name, _ := block["name"].(string)
-		id, _ := block["id"].(string)
+		name, _ := m["name"].(string)
+		id, _ := m["id"].(string)
 		if name == "" {
 			return nil, fmt.Errorf("anthropic tool_use block missing name")
 		}
-		args, err := anthropicToolUseArgs(block)
+		args, err := anthropicToolUseArgs(m)
 		if err != nil {
 			return nil, err
 		}
@@ -92,8 +92,9 @@ func anthropicToolCallsFromMessage(message messages.Message) ([]AnthropicToolCal
 func anthropicToolUseIndexes(blocks []messages.ContentBlock) map[string]int {
 	out := map[string]int{}
 	for i, block := range blocks {
-		blockType, _ := block["type"].(string)
-		id, _ := block["id"].(string)
+		m := messages.BlockToMap(block)
+		blockType, _ := m["type"].(string)
+		id, _ := m["id"].(string)
 		if blockType == "tool_use" && id != "" {
 			out[id] = i
 		}
@@ -101,8 +102,8 @@ func anthropicToolUseIndexes(blocks []messages.ContentBlock) map[string]int {
 	return out
 }
 
-func anthropicToolUseArgs(block messages.ContentBlock) (map[string]any, error) {
-	raw, ok := block["input"]
+func anthropicToolUseArgs(m map[string]any) (map[string]any, error) {
+	raw, ok := m["input"]
 	if !ok || raw == nil {
 		return map[string]any{}, nil
 	}
@@ -110,21 +111,5 @@ func anthropicToolUseArgs(block messages.ContentBlock) (map[string]any, error) {
 	if ok {
 		return cloneArgs(args), nil
 	}
-	if typed, ok := raw.(messages.ContentBlock); ok {
-		return cloneContentBlockArgs(typed), nil
-	}
 	return nil, fmt.Errorf("anthropic tool_use input must be an object")
-}
-
-func cloneContentBlockArgs(args messages.ContentBlock) map[string]any {
-	keys := make([]string, 0, len(args))
-	for key := range args {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make(map[string]any, len(args))
-	for _, key := range keys {
-		out[key] = args[key]
-	}
-	return out
 }

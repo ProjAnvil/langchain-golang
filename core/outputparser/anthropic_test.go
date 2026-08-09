@@ -9,13 +9,12 @@ import (
 func TestAnthropicToolsOutputParserFromContentBlocks(t *testing.T) {
 	msg := messages.AI("")
 	msg.ContentBlocks = []messages.ContentBlock{
-		{"type": "text", "text": "using a tool"},
-		{
-			"type":  "tool_use",
+		messages.TextBlock{Text: "using a tool"},
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{
 			"id":    "toolu_1",
 			"name":  "search",
 			"input": map[string]any{"query": "go"},
-		},
+		}},
 	}
 
 	got, err := (AnthropicToolsOutputParser{}).ParseMessage(msg)
@@ -41,8 +40,8 @@ func TestAnthropicToolsOutputParserArgsOnlyFirstToolOnly(t *testing.T) {
 		{ID: "toolu_2", Name: "lookup", Args: map[string]any{"id": "2"}},
 	}
 	msg.ContentBlocks = []messages.ContentBlock{
-		{"type": "tool_use", "id": "toolu_1", "name": "search", "input": map[string]any{"query": "go"}},
-		{"type": "tool_use", "id": "toolu_2", "name": "lookup", "input": map[string]any{"id": "2"}},
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{"id": "toolu_1", "name": "search", "input": map[string]any{"query": "go"}}},
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{"id": "toolu_2", "name": "lookup", "input": map[string]any{"id": "2"}}},
 	}
 
 	got, err := (AnthropicToolsOutputParser{ArgsOnly: true, FirstToolOnly: true}).ParseMessage(msg)
@@ -78,7 +77,7 @@ func TestAnthropicToolsOutputParserNoToolCalls(t *testing.T) {
 func TestAnthropicToolsOutputParserInvalidBlock(t *testing.T) {
 	msg := messages.AI("")
 	msg.ContentBlocks = []messages.ContentBlock{
-		{"type": "tool_use", "id": "toolu_1", "input": map[string]any{"query": "go"}},
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{"id": "toolu_1", "input": map[string]any{"query": "go"}}},
 	}
 
 	_, err := (AnthropicToolsOutputParser{}).ParseMessage(msg)

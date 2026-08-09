@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
 )
 
@@ -32,13 +33,13 @@ func fnWrites(tup *checkpoint.Tuple, channel string) []checkpoint.Write {
 // resumed run.
 func TestPersistReplaySkipsReexecution(t *testing.T) {
 	var calls atomic.Int32
-	mapper := NewTask[int, string]("mapper", func(_ context.Context, in int) (string, error) {
+	mapper := NewTask[int, string]("mapper", func(_ runtime.Runtime, in int) (string, error) {
 		calls.Add(1)
 		return strings.Repeat(strconv.Itoa(in), 2), nil
 	}, TaskOpts{})
 	e := NewEntrypoint[[]int, []string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, in []int, _ any, _ bool) ([]string, error) {
+		func(ctx runtime.Runtime, in []int, _ any, _ bool) ([]string, error) {
 			futs := make([]*Future[string], len(in))
 			for i, v := range in {
 				futs[i] = mapper.Call(ctx, v)
@@ -86,13 +87,13 @@ func TestPersistReplaySkipsReexecution(t *testing.T) {
 // misread it as a zero value / miss.
 func TestPersistReplayFalsyResult(t *testing.T) {
 	var calls atomic.Int32
-	falsy := NewTask[any, bool]("falsy", func(_ context.Context, _ any) (bool, error) {
+	falsy := NewTask[any, bool]("falsy", func(_ runtime.Runtime, _ any) (bool, error) {
 		calls.Add(1)
 		return false, nil
 	}, TaskOpts{})
 	e := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, _, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			v, err := falsy.Call(ctx, nil).Get(ctx)
 			if err != nil {
 				return "", err
@@ -130,13 +131,13 @@ func TestPersistReplayFalsyResult(t *testing.T) {
 func TestPersistErrorRethrow(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	var calls atomic.Int32
-	bad := NewTask[any, string]("bad", func(_ context.Context, _ any) (string, error) {
+	bad := NewTask[any, string]("bad", func(_ runtime.Runtime, _ any) (string, error) {
 		calls.Add(1)
 		return "", errors.New("boom")
 	}, TaskOpts{})
 	e := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
-		func(ctx context.Context, _, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			return bad.Call(ctx, nil).Get(ctx)
 		})
 
@@ -178,12 +179,12 @@ func TestPersistErrorRethrow(t *testing.T) {
 	}
 
 	// A fresh thread is unaffected by the poisoned one.
-	good := NewTask[any, string]("bad", func(_ context.Context, _ any) (string, error) {
+	good := NewTask[any, string]("bad", func(_ runtime.Runtime, _ any) (string, error) {
 		return "fine", nil
 	}, TaskOpts{})
 	e2 := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
-		func(ctx context.Context, _, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			return good.Call(ctx, nil).Get(ctx)
 		})
 	out, err := e2.Invoke(ctx, "in", graph.Options{ThreadID: "t2"})
@@ -200,13 +201,13 @@ func TestPersistErrorRethrow(t *testing.T) {
 func TestPersistChainedPauseRestamp(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	var setupCalls atomic.Int32
-	setup := NewTask[any, int]("setup", func(_ context.Context, _ any) (int, error) {
+	setup := NewTask[any, int]("setup", func(_ runtime.Runtime, _ any) (int, error) {
 		setupCalls.Add(1)
 		return 2, nil
 	}, TaskOpts{})
 	e := NewEntrypoint[any, []string, any](
 		EntrypointOpts{Checkpointer: saver},
-		func(ctx context.Context, _, _ any, _ bool) ([]string, error) {
+		func(ctx runtime.Runtime, _, _ any, _ bool) ([]string, error) {
 			n, err := setup.Call(ctx, nil).Get(ctx)
 			if err != nil {
 				return nil, err
@@ -285,11 +286,11 @@ func TestPersistInterruptKeepsBufferedResults(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	var aCalls, bCalls atomic.Int32
 	bStarted := make(chan struct{})
-	taskA := NewTask[any, string]("a", func(_ context.Context, _ any) (string, error) {
+	taskA := NewTask[any, string]("a", func(_ runtime.Runtime, _ any) (string, error) {
 		aCalls.Add(1)
 		return "A", nil
 	}, TaskOpts{})
-	taskB := NewTask[any, string]("b", func(_ context.Context, _ any) (string, error) {
+	taskB := NewTask[any, string]("b", func(_ runtime.Runtime, _ any) (string, error) {
 		if bCalls.Add(1) == 1 {
 			close(bStarted) // first-run start signal; the goroutine is started but in flight
 		}
@@ -298,7 +299,7 @@ func TestPersistInterruptKeepsBufferedResults(t *testing.T) {
 	}, TaskOpts{})
 	e := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
-		func(ctx context.Context, _, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			futA := taskA.Call(ctx, nil)
 			vA, err := futA.Get(ctx) // A completes and is buffered
 			if err != nil {
@@ -364,12 +365,12 @@ func TestPersistInterruptKeepsBufferedResults(t *testing.T) {
 // Invoke, mirroring the no-checkpointer contract).
 func TestPersistDisabledWithoutCheckpointer(t *testing.T) {
 	var calls atomic.Int32
-	task := NewTask[any, string]("t", func(_ context.Context, _ any) (string, error) {
+	task := NewTask[any, string]("t", func(_ runtime.Runtime, _ any) (string, error) {
 		calls.Add(1)
 		return "v", nil
 	}, TaskOpts{})
 	e := NewEntrypoint[any, string, any](EntrypointOpts{},
-		func(ctx context.Context, _, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			v, err := task.Call(ctx, nil).Get(ctx)
 			if err != nil {
 				return "", err

@@ -79,7 +79,7 @@ func ContentBlocks(message Message) []ContentBlock {
 		return cloneBlocks(message.ContentBlocks)
 	}
 	if message.Content != "" {
-		return []ContentBlock{{"type": "text", "text": message.Content}}
+		return []ContentBlock{TextBlock{Text: message.Content}}
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 
@@ -179,6 +180,10 @@ type resumePlan struct {
 func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
+	// Seed deltaCounters from the loaded checkpoint so resume continues the
+	// per-channel cadence (S3). Cloned so rs.deltaCounters is independent of
+	// the (shared) loaded metadata map.
+	rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
 	plan, err := planResume(tup, resume)
 	if err != nil {
 		return nil, nil, "", nil, err

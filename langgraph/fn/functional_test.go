@@ -31,6 +31,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -56,14 +57,14 @@ func requireInterrupt(t *testing.T, err error) types.Interrupt {
 // results without re-executing (mapper_calls stays 2).
 func TestFunctionalImpTaskAwaitAll(t *testing.T) {
 	var mapperCalls atomic.Int32
-	mapper := NewTask[int, string]("mapper", func(_ context.Context, in int) (string, error) {
+	mapper := NewTask[int, string]("mapper", func(_ runtime.Runtime, in int) (string, error) {
 		mapperCalls.Add(1)
 		time.Sleep(time.Duration(in) * 10 * time.Millisecond) // Python: time.sleep(input / 100)
 		return strings.Repeat(strconv.Itoa(in), 2), nil
 	}, TaskOpts{})
 	e := NewEntrypoint[[]int, []string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, in []int, _ any, _ bool) ([]string, error) {
+		func(ctx runtime.Runtime, in []int, _ any, _ bool) ([]string, error) {
 			futs := make([]*Future[string], len(in))
 			for i, v := range in {
 				futs[i] = mapper.Call(ctx, v)
@@ -107,12 +108,12 @@ func TestFunctionalImpTaskAwaitAll(t *testing.T) {
 // ones (a replayed mapper never re-runs, so its submapper is never re-called).
 func TestFunctionalImpNested(t *testing.T) {
 	var mapperCalls, submapperCalls atomic.Int32
-	submapper := NewTask[int, string]("submapper", func(_ context.Context, in int) (string, error) {
+	submapper := NewTask[int, string]("submapper", func(_ runtime.Runtime, in int) (string, error) {
 		submapperCalls.Add(1)
 		time.Sleep(time.Duration(in) * 10 * time.Millisecond)
 		return strconv.Itoa(in), nil
 	}, TaskOpts{})
-	mapper := NewTask[int, string]("mapper", func(ctx context.Context, in int) (string, error) {
+	mapper := NewTask[int, string]("mapper", func(ctx runtime.Runtime, in int) (string, error) {
 		mapperCalls.Add(1)
 		sub, err := submapper.Call(ctx, in).Get(ctx)
 		if err != nil {
@@ -126,7 +127,7 @@ func TestFunctionalImpNested(t *testing.T) {
 	// one mynode appending "a"), invoked from inside the entrypoint.
 	addAGraph, err := graph.NewStateGraph().
 		AddChannel("items", channels.NewLastValue()).
-		AddNode("mynode", func(_ context.Context, state map[string]any) (any, error) {
+		AddNode("mynode", func(_ runtime.Runtime, state map[string]any) (any, error) {
 			items := state["items"].([]string)
 			out := make([]string, len(items))
 			for i, it := range items {
@@ -143,7 +144,7 @@ func TestFunctionalImpNested(t *testing.T) {
 
 	e := NewEntrypoint[[]int, []string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, in []int, _ any, _ bool) ([]string, error) {
+		func(ctx runtime.Runtime, in []int, _ any, _ bool) ([]string, error) {
 			futs := make([]*Future[string], len(in))
 			for i, v := range in {
 				futs[i] = mapper.Call(ctx, v)
@@ -201,15 +202,15 @@ func TestFunctionalImpNested(t *testing.T) {
 // is dropped and it re-executes or replays on resume — same result either
 // way, so no counter is asserted, matching Python).
 func TestFunctionalInterrupt(t *testing.T) {
-	foo := NewTask[map[string]any, map[string]any]("foo", func(_ context.Context, st map[string]any) (map[string]any, error) {
+	foo := NewTask[map[string]any, map[string]any]("foo", func(_ runtime.Runtime, st map[string]any) (map[string]any, error) {
 		return map[string]any{"a": st["a"].(string) + "foo"}, nil
 	}, TaskOpts{})
-	bar := NewTask[map[string]any, map[string]any]("bar", func(_ context.Context, st map[string]any) (map[string]any, error) {
+	bar := NewTask[map[string]any, map[string]any]("bar", func(_ runtime.Runtime, st map[string]any) (map[string]any, error) {
 		return map[string]any{"a": st["a"].(string) + "bar", "b": st["b"]}, nil
 	}, TaskOpts{})
 	e := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, in map[string]any, _ any, _ bool) (map[string]any, error) {
+		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			futFoo := foo.Call(ctx, in)
 			value, _ := graph.Interrupt(ctx, "Provide value for bar:").(string)
 			fooRes, err := futFoo.Get(ctx)
@@ -246,11 +247,11 @@ func TestFunctionalInterrupt(t *testing.T) {
 func TestFunctionalInterruptTask(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	var fooCalls, barCalls atomic.Int32
-	foo := NewTask[map[string]any, map[string]any]("foo", func(_ context.Context, st map[string]any) (map[string]any, error) {
+	foo := NewTask[map[string]any, map[string]any]("foo", func(_ runtime.Runtime, st map[string]any) (map[string]any, error) {
 		fooCalls.Add(1)
 		return map[string]any{"a": st["a"].(string) + "foo"}, nil
 	}, TaskOpts{})
-	bar := NewTask[map[string]any, map[string]any]("bar", func(ctx context.Context, st map[string]any) (map[string]any, error) {
+	bar := NewTask[map[string]any, map[string]any]("bar", func(ctx runtime.Runtime, st map[string]any) (map[string]any, error) {
 		barCalls.Add(1)
 		value, _ := graph.Interrupt(ctx, "Provide value for bar:").(string)
 		return map[string]any{"a": st["a"].(string) + value}, nil
@@ -259,7 +260,7 @@ func TestFunctionalInterruptTask(t *testing.T) {
 	// Segment 1 (Python thread "1"): a single interrupting bar call.
 	e1 := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: saver},
-		func(ctx context.Context, in map[string]any, _ any, _ bool) (map[string]any, error) {
+		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			fooRes, err := foo.Call(ctx, in).Get(ctx)
 			if err != nil {
 				return nil, err
@@ -285,7 +286,7 @@ func TestFunctionalInterruptTask(t *testing.T) {
 	barCalls.Store(0)
 	e2 := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: saver},
-		func(ctx context.Context, in map[string]any, _ any, _ bool) (map[string]any, error) {
+		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			fooRes, err := foo.Call(ctx, in).Get(ctx)
 			if err != nil {
 				return nil, err
@@ -332,13 +333,13 @@ func TestFunctionalInterruptTask(t *testing.T) {
 // earlier iterations replay without re-executing (counter stays 3).
 func TestFunctionalMultipleInterrupts(t *testing.T) {
 	var counter atomic.Int32
-	double := NewTask[int, int]("double", func(_ context.Context, x int) (int, error) {
+	double := NewTask[int, int]("double", func(_ runtime.Runtime, x int) (int, error) {
 		counter.Add(1)
 		return 2 * x, nil
 	}, TaskOpts{})
 	e := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, _ map[string]any, _ any, _ bool) (map[string]any, error) {
+		func(ctx runtime.Runtime, _ map[string]any, _ any, _ bool) (map[string]any, error) {
 			var values []any
 			for _, idx := range []int{1, 2, 3} {
 				v, err := double.Call(ctx, idx).Get(ctx)
@@ -377,13 +378,13 @@ func TestFunctionalMultipleInterrupts(t *testing.T) {
 func TestFunctionalMultipleInterruptsCache(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var counter atomic.Int32
-	double := NewTask[int, int]("double", func(_ context.Context, x int) (int, error) {
+	double := NewTask[int, int]("double", func(_ runtime.Runtime, x int) (int, error) {
 		counter.Add(1)
 		return 2 * x, nil
 	}, TaskOpts{Cache: &graph.CachePolicy{}})
 	e := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver(), Cache: cache},
-		func(ctx context.Context, _ map[string]any, _ any, _ bool) (map[string]any, error) {
+		func(ctx runtime.Runtime, _ map[string]any, _ any, _ bool) (map[string]any, error) {
 			var values []any
 			for _, idx := range []int{1, 1, 2, 2, 3, 3} {
 				v, err := double.Call(ctx, idx).Get(ctx)
@@ -449,21 +450,21 @@ func TestFunctionalMultipleInterruptsCache(t *testing.T) {
 // (counters stay 1) and the resume value reaches ask's re-executed Interrupt.
 func TestFunctionalMultipleTasksBeforeInterruptResume(t *testing.T) {
 	var aCalls, bCalls atomic.Int32
-	stepA := NewTask[int, int]("step_a", func(_ context.Context, x int) (int, error) {
+	stepA := NewTask[int, int]("step_a", func(_ runtime.Runtime, x int) (int, error) {
 		aCalls.Add(1)
 		return x + 1, nil
 	}, TaskOpts{})
-	stepB := NewTask[int, int]("step_b", func(_ context.Context, x int) (int, error) {
+	stepB := NewTask[int, int]("step_b", func(_ runtime.Runtime, x int) (int, error) {
 		bCalls.Add(1)
 		return x * 2, nil
 	}, TaskOpts{})
-	ask := NewTask[string, string]("ask", func(ctx context.Context, q string) (string, error) {
+	ask := NewTask[string, string]("ask", func(ctx runtime.Runtime, q string) (string, error) {
 		v, _ := graph.Interrupt(ctx, q).(string)
 		return v, nil
 	}, TaskOpts{})
 	e := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, in map[string]any, _ any, _ bool) (map[string]any, error) {
+		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			a, err := stepA.Call(ctx, in["x"].(int)).Get(ctx)
 			if err != nil {
 				return nil, err
@@ -510,27 +511,27 @@ func TestFunctionalMultipleTasksBeforeInterruptResume(t *testing.T) {
 // under different names produce different deterministic task IDs.
 func TestFunctionalNamedTasks(t *testing.T) {
 	var fooCalls atomic.Int32
-	fooFn := func(_ context.Context, v string) (string, error) {
+	fooFn := func(_ runtime.Runtime, v string) (string, error) {
 		fooCalls.Add(1)
 		return v + "foo", nil
 	}
 	foo := NewTask[string, string]("custom_foo", fooFn, TaskOpts{})
 	otherFoo := NewTask[string, string]("other_foo", fooFn, TaskOpts{})
-	bar := NewTask[string, string]("custom_bar", func(_ context.Context, v string) (string, error) {
+	bar := NewTask[string, string]("custom_bar", func(_ runtime.Runtime, v string) (string, error) {
 		return v + "|bar", nil
 	}, TaskOpts{})
-	bazTask := NewTask[string, string]("baz", func(_ context.Context, v string) (string, error) {
+	bazTask := NewTask[string, string]("baz", func(_ runtime.Runtime, v string) (string, error) {
 		return v + "|baz", nil
 	}, TaskOpts{})
-	customBazTask := NewTask[string, string]("custom_baz", func(_ context.Context, v string) (string, error) {
+	customBazTask := NewTask[string, string]("custom_baz", func(_ runtime.Runtime, v string) (string, error) {
 		return v + "|custom_baz", nil
 	}, TaskOpts{})
-	quxTask := NewTask[string, string]("qux", func(_ context.Context, v string) (string, error) {
+	quxTask := NewTask[string, string]("qux", func(_ runtime.Runtime, v string) (string, error) {
 		return v + "|qux", nil
 	}, TaskOpts{})
 
 	e := NewEntrypoint[string, string, any](EntrypointOpts{},
-		func(ctx context.Context, in string, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, in string, _ any, _ bool) (string, error) {
 			fooRes, err := foo.Call(ctx, in).Get(ctx)
 			if err != nil {
 				return "", err
@@ -584,14 +585,14 @@ func TestFunctionalNamedTasks(t *testing.T) {
 // equivalent — a node must go through Entrypoint.Invoke, as here.)
 func TestFunctionalSubgraphsMixedStateGraph(t *testing.T) {
 	add := NewEntrypoint[[]int, int, any](EntrypointOpts{},
-		func(_ context.Context, in []int, _ any, _ bool) (int, error) {
+		func(_ runtime.Runtime, in []int, _ any, _ bool) (int, error) {
 			return in[0] + in[1], nil
 		})
-	multiplyTask := NewTask[[]int, int]("multiply_task", func(_ context.Context, in []int) (int, error) {
+	multiplyTask := NewTask[[]int, int]("multiply_task", func(_ runtime.Runtime, in []int) (int, error) {
 		return in[0] * in[1], nil
 	}, TaskOpts{})
 	multiply := NewEntrypoint[[]int, int, any](EntrypointOpts{},
-		func(ctx context.Context, in []int, _ any, _ bool) (int, error) {
+		func(ctx runtime.Runtime, in []int, _ any, _ bool) (int, error) {
 			return multiplyTask.Call(ctx, in).Get(ctx)
 		})
 
@@ -601,7 +602,7 @@ func TestFunctionalSubgraphsMixedStateGraph(t *testing.T) {
 	// intermediate results must match Python's (5, then 15).
 	var firstAdd int
 	parentSame, err := graph.NewStateGraph().
-		AddNode("call_same_subgraph", func(nctx context.Context, state map[string]any) (any, error) {
+		AddNode("call_same_subgraph", func(nctx runtime.Runtime, state map[string]any) (any, error) {
 			a, b := state["a"].(int), state["b"].(int)
 			result, err := add.Invoke(nctx, []int{a, b}, graph.Options{})
 			if err != nil {
@@ -634,7 +635,7 @@ func TestFunctionalSubgraphsMixedStateGraph(t *testing.T) {
 	// call_multiple_subgraphs: add and multiply (the latter wrapping a task)
 	// invoked inside one node.
 	parentMulti, err := graph.NewStateGraph().
-		AddNode("call_multiple_subgraphs", func(nctx context.Context, state map[string]any) (any, error) {
+		AddNode("call_multiple_subgraphs", func(nctx runtime.Runtime, state map[string]any) (any, error) {
 			a, b := state["a"].(int), state["b"].(int)
 			addRes, err := add.Invoke(nctx, []int{a, b}, graph.Options{})
 			if err != nil {
@@ -672,17 +673,17 @@ func TestFunctionalSubgraphsMixedStateGraph(t *testing.T) {
 func TestFunctionalImpException(t *testing.T) {
 	var myTaskCalls, excCalls atomic.Int32
 	var caught []string
-	myTask := NewTask[int, int]("my_task", func(_ context.Context, n int) (int, error) {
+	myTask := NewTask[int, int]("my_task", func(_ runtime.Runtime, n int) (int, error) {
 		myTaskCalls.Add(1)
 		return n * 2, nil
 	}, TaskOpts{})
-	taskWithException := NewTask[int, int]("task_with_exception", func(_ context.Context, _ int) (int, error) {
+	taskWithException := NewTask[int, int]("task_with_exception", func(_ runtime.Runtime, _ int) (int, error) {
 		excCalls.Add(1)
 		return 0, errors.New("This is a test exception")
 	}, TaskOpts{})
 	e := NewEntrypoint[int, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, n int, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, n int, _ any, _ bool) (string, error) {
 			if _, err := myTask.Call(ctx, n).Get(ctx); err != nil {
 				return "", err
 			}
@@ -740,7 +741,7 @@ func TestFunctionalPreviousSurvivesInterruptResume(t *testing.T) {
 	var observed []observation
 	e := NewEntrypoint[string, []string, []string](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, in string, prev []string, hasPrev bool) ([]string, error) {
+		func(ctx runtime.Runtime, in string, prev []string, hasPrev bool) ([]string, error) {
 			observed = append(observed, observation{append([]string(nil), prev...), hasPrev})
 			_ = graph.Interrupt(ctx, "continue?")
 			return append(append([]string(nil), prev...), in), nil
@@ -788,7 +789,7 @@ func TestFunctionalPreviousSurvivesInterruptResume(t *testing.T) {
 func TestFunctionalStreamInterruptPassthrough(t *testing.T) {
 	e := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, _ any, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, _ any, _ any, _ bool) (string, error) {
 			v, _ := graph.Interrupt(ctx, "Provide value").(string)
 			return "got " + v, nil
 		})

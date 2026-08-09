@@ -19,17 +19,37 @@ func (c *binaryOperator) Update(values []any) (bool, error) {
 	if len(values) == 0 {
 		return false, nil
 	}
+	seenOverwrite := false
 	for _, v := range values {
 		if !c.set {
-			// The first value seeds the channel; op is not applied.
+			// The first value seeds the channel; op is not applied and
+			// Overwrite detection does not run (mirrors Python: values[0]
+			// is consumed before the Overwrite-detection loop).
 			c.value, c.set = v, true
 			continue
 		}
-		next, err := c.op(c.value, v)
-		if err != nil {
-			return false, err
+		if ow, ok := AsOverwrite(v); ok {
+			if seenOverwrite {
+				return false, &InvalidUpdateError{
+					Channel: "BinaryOperator",
+					Reason:  "can receive only one Overwrite value per super-step",
+				}
+			}
+			// The Overwrite REPLACES the entire accumulated value,
+			// bypassing the reducer. Mirrors Python's binop.update: after
+			// an Overwrite, subsequent non-Overwrite values in the same
+			// super-step are skipped (the `if not seen_overwrite` guard).
+			c.value = ow
+			seenOverwrite = true
+			continue
 		}
-		c.value = next
+		if !seenOverwrite {
+			next, err := c.op(c.value, v)
+			if err != nil {
+				return false, err
+			}
+			c.value = next
+		}
 	}
 	return true, nil
 }

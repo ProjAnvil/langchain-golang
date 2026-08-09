@@ -56,7 +56,7 @@ func TestMessageUtilities(t *testing.T) {
 		System("rules"),
 		Human("hello"),
 		Human("again"),
-		AI("").WithContentBlocks([]ContentBlock{{"type": "text", "text": "answer"}}),
+		AI("").WithContentBlocks([]ContentBlock{TextBlock{Text: "answer"}}),
 		Tool("call-1", "result"),
 	}
 
@@ -81,7 +81,7 @@ func TestMessageUtilities(t *testing.T) {
 }
 
 func TestMessagesDictRoundTripAndClone(t *testing.T) {
-	original := []Message{{Role: RoleAI, ContentBlocks: []ContentBlock{{"type": "text", "text": "x"}}}}
+	original := []Message{{Role: RoleAI, ContentBlocks: []ContentBlock{TextBlock{Text: "x"}}}}
 	dicts, err := MessagesToDict(original)
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestMessagesDictRoundTripAndClone(t *testing.T) {
 		t.Fatalf("decoded text = %q", Text(decoded[0]))
 	}
 	clone := Clone(original[0])
-	clone.ContentBlocks[0]["text"] = "changed"
+	clone.ContentBlocks[0] = TextBlock{Text: "changed"}
 	if Text(original[0]) != "x" {
 		t.Fatal("clone mutation changed original")
 	}

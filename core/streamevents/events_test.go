@@ -13,12 +13,12 @@ func TestChatModelStreamTextDeltas(t *testing.T) {
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 0,
-		Delta: messages.ContentBlock{"type": "text-delta", "text": "Hi"},
+		Delta: messages.NonStandardContentBlock{Type: "text-delta", Value: map[string]any{"text": "Hi"}},
 	})
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 0,
-		Delta: messages.ContentBlock{"type": "text-delta", "text": " there"},
+		Delta: messages.NonStandardContentBlock{Type: "text-delta", Value: map[string]any{"text": " there"}},
 	})
 	stream.Dispatch(Event{Event: EventMessageFinish})
 
@@ -38,7 +38,7 @@ func TestChatModelStreamReasoningDeltas(t *testing.T) {
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 0,
-		Delta: messages.ContentBlock{"type": "reasoning-delta", "reasoning": "think"},
+		Delta: messages.NonStandardContentBlock{Type: "reasoning-delta", Value: map[string]any{"reasoning": "think"}},
 	})
 	stream.Dispatch(Event{Event: EventMessageFinish})
 
@@ -55,11 +55,10 @@ func TestChatModelStreamToolCallFinish(t *testing.T) {
 	stream.Dispatch(Event{
 		Event: EventContentBlockFinish,
 		Index: 0,
-		Content: messages.ContentBlock{
-			"type": "tool_call",
-			"id":   "tc1",
-			"name": "search",
-			"args": map[string]any{"q": "test"},
+		Content: messages.ToolCallBlock{
+			ID:   "tc1",
+			Name: "search",
+			Args: map[string]any{"q": "test"},
 		},
 	})
 	stream.Dispatch(Event{Event: EventMessageFinish})
@@ -82,22 +81,22 @@ func TestChatModelStreamFinishReconcilesTextPerBlock(t *testing.T) {
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 0,
-		Delta: messages.ContentBlock{"type": "text-delta", "text": "aaa"},
+		Delta: messages.NonStandardContentBlock{Type: "text-delta", Value: map[string]any{"text": "aaa"}},
 	})
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 1,
-		Delta: messages.ContentBlock{"type": "text-delta", "text": "bb"},
+		Delta: messages.NonStandardContentBlock{Type: "text-delta", Value: map[string]any{"text": "bb"}},
 	})
 	stream.Dispatch(Event{
 		Event:   EventContentBlockFinish,
 		Index:   0,
-		Content: messages.ContentBlock{"type": "text", "text": "XXX"},
+		Content: messages.TextBlock{Text: "XXX"},
 	})
 	stream.Dispatch(Event{
 		Event:   EventContentBlockFinish,
 		Index:   1,
-		Content: messages.ContentBlock{"type": "text", "text": "bb"},
+		Content: messages.TextBlock{Text: "bb"},
 	})
 	stream.Dispatch(Event{Event: EventMessageFinish})
 
@@ -108,7 +107,7 @@ func TestChatModelStreamFinishReconcilesTextPerBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("output: %v", err)
 	}
-	if got := []any{output.ContentBlocks[0]["text"], output.ContentBlocks[1]["text"]}; !reflect.DeepEqual(got, []any{"XXX", "bb"}) {
+	if got := []any{messages.BlockToMap(output.ContentBlocks[0])["text"], messages.BlockToMap(output.ContentBlocks[1])["text"]}; !reflect.DeepEqual(got, []any{"XXX", "bb"}) {
 		t.Fatalf("blocks: %+v", output.ContentBlocks)
 	}
 }
@@ -118,32 +117,31 @@ func TestChatModelStreamInterleavesTextToolAndReasoningBlocks(t *testing.T) {
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 0,
-		Delta: messages.ContentBlock{"type": "text-delta", "text": "before"},
+		Delta: messages.NonStandardContentBlock{Type: "text-delta", Value: map[string]any{"text": "before"}},
 	})
 	stream.Dispatch(Event{
 		Event:   EventContentBlockFinish,
 		Index:   0,
-		Content: messages.ContentBlock{"type": "text", "text": "before"},
+		Content: messages.TextBlock{Text: "before"},
 	})
 	stream.Dispatch(Event{
 		Event: EventContentBlockFinish,
 		Index: 1,
-		Content: messages.ContentBlock{
-			"type": "tool_call",
-			"id":   "tc1",
-			"name": "search",
-			"args": map[string]any{"q": "x"},
+		Content: messages.ToolCallBlock{
+			ID:   "tc1",
+			Name: "search",
+			Args: map[string]any{"q": "x"},
 		},
 	})
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 2,
-		Delta: messages.ContentBlock{"type": "reasoning-delta", "reasoning": "think"},
+		Delta: messages.NonStandardContentBlock{Type: "reasoning-delta", Value: map[string]any{"reasoning": "think"}},
 	})
 	stream.Dispatch(Event{
 		Event:   EventContentBlockFinish,
 		Index:   2,
-		Content: messages.ContentBlock{"type": "reasoning", "reasoning": "thinking"},
+		Content: messages.ReasoningBlock{Reasoning: "thinking"},
 	})
 	stream.Dispatch(Event{Event: EventMessageFinish})
 
@@ -152,9 +150,9 @@ func TestChatModelStreamInterleavesTextToolAndReasoningBlocks(t *testing.T) {
 		t.Fatalf("output: %v", err)
 	}
 	gotTypes := []any{
-		output.ContentBlocks[0]["type"],
-		output.ContentBlocks[1]["type"],
-		output.ContentBlocks[2]["type"],
+		messages.BlockToMap(output.ContentBlocks[0])["type"],
+		messages.BlockToMap(output.ContentBlocks[1])["type"],
+		messages.BlockToMap(output.ContentBlocks[2])["type"],
 	}
 	if !reflect.DeepEqual(gotTypes, []any{"text", "tool_call", "reasoning"}) {
 		t.Fatalf("block types: %+v", output.ContentBlocks)
@@ -169,11 +167,13 @@ func TestChatModelStreamSweepsMalformedToolCallChunk(t *testing.T) {
 	stream.Dispatch(Event{
 		Event: EventContentBlockDelta,
 		Index: 0,
-		Delta: messages.ContentBlock{
-			"type": "tool_call_chunk",
-			"id":   "call_1",
-			"name": "search",
-			"args": `{"q": `,
+		Delta: messages.NonStandardContentBlock{
+			Type: "tool_call_chunk",
+			Value: map[string]any{
+				"id":   "call_1",
+				"name": "search",
+				"args": `{"q": `,
+			},
 		},
 	})
 	stream.Dispatch(Event{Event: EventMessageFinish})

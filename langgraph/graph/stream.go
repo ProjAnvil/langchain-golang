@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +43,13 @@ const (
 	// StreamCustom yields node-emitted custom payloads: whatever the node
 	// passes to the StreamWriter it obtained via StreamWriterFromContext.
 	StreamCustom StreamMode = "custom"
+	// StreamDelta yields the incremental state diff after the input batch and
+	// after each superstep commit that changed at least one channel — a
+	// map[string]any of just the keys whose values changed since the last
+	// delta/values emission (Go-specific; Python has no equivalent mode). The
+	// first delta chunk in a run carries every key (the full initial state is
+	// the diff against the empty pre-run state).
+	StreamDelta StreamMode = "delta"
 )
 
 // StreamChunk is one streamed unit. Unlike Python, which reshapes output by
@@ -70,6 +78,9 @@ type StreamChunk struct {
 	//   - messages: MessageChunk — a streamed message chunk plus the node's
 	//     langgraph_node/langgraph_step/langgraph_checkpoint_ns metadata.
 	//   - custom: whatever payload the node passed to its StreamWriter.
+	//   - delta: map[string]any of the keys whose values changed since the
+	//     last delta/values emission (incremental state diff). The first
+	//     chunk in a run is the full initial state.
 	Payload any
 }
 
@@ -108,7 +119,7 @@ func (g *CompiledGraph) Stream(ctx context.Context, input map[string]any, opts S
 		}
 		for _, mode := range opts.Modes {
 			switch mode {
-			case StreamValues, StreamUpdates, StreamDebug, StreamMessages, StreamCustom:
+			case StreamValues, StreamUpdates, StreamDebug, StreamMessages, StreamCustom, StreamDelta:
 			default:
 				yield(StreamChunk{}, fmt.Errorf("graph: unknown StreamMode %q", mode))
 				return
@@ -167,6 +178,10 @@ type streamEmitter struct {
 	// ns is this run's emission namespace: "" for the root graph, the node
 	// path ("a", "a/b") for subgraph runs.
 	ns string
+	// prevDelta is the last state snapshot emitted via emitValues, used to
+	// compute the incremental diff for StreamDelta. nil before the first
+	// emission, so the first delta chunk is the full initial state.
+	prevDelta map[string]any
 }
 
 func newStreamEmitter(ctx context.Context, modes []StreamMode, subgraphs bool, send chan<- StreamChunk) *streamEmitter {
@@ -271,9 +286,67 @@ func stripStreamCarriers(ctx context.Context) context.Context {
 	return ctx
 }
 
-// emitValues delivers a values chunk with the given state snapshot.
+// emitValues delivers a values chunk with the given state snapshot. When
+// StreamDelta is active it also delivers a delta chunk — the incremental diff
+// between this state and the last one emitted (every key whose value differs).
+// The first delta chunk in a run is the full initial state (the diff against
+// the empty pre-run state).
 func (e *streamEmitter) emitValues(state map[string]any) {
 	e.emit(StreamValues, state)
+	if e == nil || !e.modes[StreamDelta] {
+		return
+	}
+	diff := computeDelta(e.prevDelta, state)
+	e.prevDelta = cloneState(state)
+	e.emit(StreamDelta, diff)
+}
+
+// computeDelta returns the set of keys in newState whose values differ from
+// prev (nil prev means every key in newState is new).
+func computeDelta(prev, newState map[string]any) map[string]any {
+	if prev == nil {
+		return cloneState(newState)
+	}
+	diff := make(map[string]any)
+	for k, v := range newState {
+		if pv, ok := prev[k]; !ok || !valuesEqual(pv, v) {
+			diff[k] = v
+		}
+	}
+	return diff
+}
+
+// cloneState returns a shallow copy of state (nil-safe).
+func cloneState(state map[string]any) map[string]any {
+	if state == nil {
+		return nil
+	}
+	out := make(map[string]any, len(state))
+	for k, v := range state {
+		out[k] = v
+	}
+	return out
+}
+
+// valuesEqual is a lenient equality check for delta-diff purposes: it uses
+// reflect.DeepEqual but treats nil and empty maps/slices as equal so a key
+// going from absent to empty (or vice versa) is not reported as a change.
+func valuesEqual(a, b any) bool {
+	return reflect.DeepEqual(normalizeEmpty(a), normalizeEmpty(b))
+}
+
+func normalizeEmpty(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		if len(val) == 0 {
+			return nil
+		}
+	case []any:
+		if len(val) == 0 {
+			return nil
+		}
+	}
+	return v
 }
 
 // emitPause delivers the pause pair: the updates interrupt chunk followed by

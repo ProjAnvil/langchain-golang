@@ -283,14 +283,17 @@ func TestRichChatMessageTemplateFormat(t *testing.T) {
 	if message.Role != messages.RoleHuman || len(message.ContentBlocks) != 3 {
 		t.Fatalf("message: %#v", message)
 	}
-	if message.ContentBlocks[0]["type"] != "text" || message.ContentBlocks[0]["text"] != "Describe this image" {
+	b0 := messages.BlockToMap(message.ContentBlocks[0])
+	if b0["type"] != "text" || b0["text"] != "Describe this image" {
 		t.Fatalf("text block: %#v", message.ContentBlocks[0])
 	}
-	image := message.ContentBlocks[1]["image_url"].(map[string]any)
-	if message.ContentBlocks[1]["type"] != "image_url" || image["url"] != "https://example.com/diagram.png" {
+	b1 := messages.BlockToMap(message.ContentBlocks[1])
+	image := b1["image_url"].(map[string]any)
+	if b1["type"] != "image_url" || image["url"] != "https://example.com/diagram.png" {
 		t.Fatalf("image block: %#v", message.ContentBlocks[1])
 	}
-	if message.ContentBlocks[2]["type"] != "input_audio" || message.ContentBlocks[2]["id"] != "a1" {
+	b2 := messages.BlockToMap(message.ContentBlocks[2])
+	if b2["type"] != "input_audio" || b2["id"] != "a1" {
 		t.Fatalf("dict block: %#v", message.ContentBlocks[2])
 	}
 }
@@ -312,7 +315,7 @@ func TestChatPromptTemplateWithRichMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("format messages: %v", err)
 	}
-	if len(got) != 2 || got[1].ContentBlocks[0]["type"] != "image_url" {
+	if len(got) != 2 || messages.BlockToMap(got[1].ContentBlocks[0])["type"] != "image_url" {
 		t.Fatalf("messages: %#v", got)
 	}
 }

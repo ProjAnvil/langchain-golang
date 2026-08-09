@@ -10,6 +10,7 @@ import (
 	"github.com/projanvil/langchain-golang/langchain/tools"
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -38,7 +39,7 @@ func TestAgentLoopWithRealToolNode(t *testing.T) {
 	g := graph.NewStateGraph()
 	g.AddReducer("messages", channels.MessagesReducer)
 
-	g.AddNode("model", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("model", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		modelCalls++
 		msgs, _ := state["messages"].([]messages.Message)
 		if modelCalls == 1 {
@@ -59,7 +60,7 @@ func TestAgentLoopWithRealToolNode(t *testing.T) {
 		return map[string]any{"messages": []messages.Message{final}}, nil
 	})
 
-	g.AddNode("tools", func(ctx context.Context, state map[string]any) (any, error) {
+	g.AddNode("tools", func(ctx runtime.Runtime, state map[string]any) (any, error) {
 		msgs, _ := state["messages"].([]messages.Message)
 		results, err := toolNode.Invoke(ctx, msgs, nil)
 		if err != nil {
@@ -69,7 +70,7 @@ func TestAgentLoopWithRealToolNode(t *testing.T) {
 	})
 
 	g.AddEdge(types.START, "model")
-	g.AddConditionalEdges("model", func(_ context.Context, state map[string]any) ([]any, error) {
+	g.AddConditionalEdges("model", func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		msgs, _ := state["messages"].([]messages.Message)
 		if tools.HasPendingToolCalls(msgs) {
 			return graph.To("tools"), nil

@@ -17,6 +17,7 @@ import (
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -472,10 +473,10 @@ func TestStreamEventsConcurrentFanOutBalanced(t *testing.T) {
 
 	var concurrentNow int32
 	var maxConcurrent int32
-	g.AddNode("fanout", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("fanout", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return nil, nil
 	})
-	g.AddNode("worker", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("worker", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		n := atomic.AddInt32(&concurrentNow, 1)
 		for {
 			old := atomic.LoadInt32(&maxConcurrent)
@@ -489,7 +490,7 @@ func TestStreamEventsConcurrentFanOutBalanced(t *testing.T) {
 		return map[string]any{"out": []string{state["subject"].(string)}}, nil
 	})
 	g.AddEdge(types.START, "fanout")
-	g.AddConditionalEdges("fanout", func(_ context.Context, state map[string]any) ([]any, error) {
+	g.AddConditionalEdges("fanout", func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		subjects := state["subjects"].([]string)
 		dests := make([]any, len(subjects))
 		for i, s := range subjects {
@@ -820,10 +821,11 @@ func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
 		if ev.Type != StreamModelDelta || ev.Delta == nil || ev.Delta.Content == nil {
 			continue
 		}
-		if ev.Delta.Content["type"] != "text" {
+		delta := messages.BlockToMap(ev.Delta.Content)
+		if delta["type"] != "text" {
 			continue
 		}
-		text, ok := ev.Delta.Content["text"].(string)
+		text, ok := delta["text"].(string)
 		if !ok {
 			continue
 		}
@@ -930,8 +932,8 @@ func TestStreamEvents_PIIStreamTransformer_BoundaryStraddle(t *testing.T) {
 					t.Errorf("delta leaked raw PII: %q", ev.Text)
 				}
 			}
-			if ev.Delta != nil && ev.Delta.Content != nil && ev.Delta.Content["type"] == "text" {
-				if text, ok := ev.Delta.Content["text"].(string); ok {
+			if ev.Delta != nil && ev.Delta.Content != nil && messages.BlockToMap(ev.Delta.Content)["type"] == "text" {
+				if text, ok := messages.BlockToMap(ev.Delta.Content)["text"].(string); ok {
 					rawFinishTexts = append(rawFinishTexts, text)
 					if strings.Contains(text, rawPat) {
 						t.Errorf("raw Delta.Content[text] leaked PII: %q", text)

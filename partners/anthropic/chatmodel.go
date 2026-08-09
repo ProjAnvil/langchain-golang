@@ -467,43 +467,38 @@ func (r messagePayload) toMessage() messages.Message {
 			if content.Text != "" {
 				textParts = append(textParts, content.Text)
 			}
-			blocks = append(blocks, messages.ContentBlock{
-				"type": "text",
-				"text": content.Text,
+			blocks = append(blocks, messages.TextBlock{
+				Text: content.Text,
 			})
 		case "tool_use":
-			block := messages.ContentBlock{
-				"type": "tool_call",
-				"id":   content.ID,
-				"name": content.Name,
-				"args": content.Input,
-			}
-			blocks = append(blocks, block)
+			blocks = append(blocks, messages.ToolCallBlock{
+				ID:   content.ID,
+				Name: content.Name,
+				Args: content.Input,
+			})
 			toolCalls = append(toolCalls, messages.ToolCall{
 				ID:   content.ID,
 				Name: content.Name,
 				Args: content.Input,
 			})
 		case "thinking":
-			blocks = append(blocks, messages.ContentBlock{
-				"type":      "reasoning",
-				"reasoning": content.Thinking,
-				"signature": content.Signature,
+			blocks = append(blocks, messages.ReasoningBlock{
+				Reasoning: content.Thinking,
+				Extras:    map[string]any{"signature": content.Signature},
 			})
 		case "redacted_thinking":
-			block := messages.ContentBlock{
-				"type": "reasoning",
-				"data": content.Data,
-			}
+			extras := map[string]any{"data": content.Data}
 			if content.ID != "" {
-				block["id"] = content.ID
+				extras["id"] = content.ID
 			}
-			blocks = append(blocks, block)
+			blocks = append(blocks, messages.ReasoningBlock{
+				Extras: extras,
+			})
 		default:
 			raw, _ := json.Marshal(content)
-			var block messages.ContentBlock
-			_ = json.Unmarshal(raw, &block)
-			blocks = append(blocks, block)
+			var m map[string]any
+			_ = json.Unmarshal(raw, &m)
+			blocks = append(blocks, messages.ParseContentBlock(m))
 		}
 	}
 	message := messages.AI(strings.Join(textParts, ""))

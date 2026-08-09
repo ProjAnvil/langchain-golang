@@ -21,7 +21,7 @@ func TestTodoListMiddlewareWrapModelCallAddsSystemPrompt(t *testing.T) {
 		if request.SystemMessage == nil || len(request.SystemMessage.ContentBlocks) != 1 {
 			t.Fatalf("system message mismatch: %#v", request.SystemMessage)
 		}
-		if !strings.Contains(request.SystemMessage.ContentBlocks[0]["text"].(string), "write_todos") {
+		if !strings.Contains(messages.BlockToMap(request.SystemMessage.ContentBlocks[0])["text"].(string), "write_todos") {
 			t.Fatalf("system prompt missing todo text: %#v", request.SystemMessage.ContentBlocks)
 		}
 		return ModelResponse{}, nil

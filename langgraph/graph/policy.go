@@ -160,6 +160,59 @@ type NodePolicies struct {
 	Retry *RetryPolicy
 	// Cache enables write caching for the node (see CachePolicy).
 	Cache *CachePolicy
+	// Timeout caps a single node attempt's wall-clock and idle time (see
+	// TimeoutPolicy). Mirrors Python's langgraph.types.TimeoutPolicy.
+	Timeout *TimeoutPolicy
+}
+
+// TimeoutPolicy configures per-node attempt timeouts, mirroring Python's
+// langgraph.types.TimeoutPolicy (types.py:450). Installed per node via
+// StateGraph.AddNodeWithPolicies. Both fields are optional; a zero-valued
+// policy disables timeout for the node.
+//
+//   - RunTimeout is a hard wall-clock cap on a single node attempt. It is
+//     never refreshed. Implemented as a context deadline layered on the
+//     node's context, so a node that respects rt.Done()/rt.Err() aborts with
+//     context.DeadlineExceeded when it fires.
+//   - IdleTimeout is the maximum time a single attempt may go without
+//     observable progress. RefreshOn selects the progress signal:
+//     "heartbeat" (default "auto") refreshes on rt.Heartbeat() calls.
+//
+// Cooperative cancellation: Go cannot forcibly kill a goroutine, so a node
+// that blocks without checking rt.Done() will overrun the deadline (the same
+// limitation Python documents for sync work under asyncio). The watchdog
+// goroutine still fires the cancel so well-behaved nodes abort promptly.
+type TimeoutPolicy struct {
+	// RunTimeout is the hard wall-clock cap per attempt. 0 = no run cap.
+	RunTimeout time.Duration
+	// IdleTimeout is the max interval without progress per attempt. 0 = no
+	// idle cap.
+	IdleTimeout time.Duration
+	// RefreshOn selects which signals refresh IdleTimeout: "auto" (default)
+	// or "heartbeat". "auto" currently refreshes on explicit heartbeats and
+	// stream writes (callback-event auto-refresh is a documented follow-up);
+	// "heartbeat" refreshes only on explicit rt.Heartbeat() calls.
+	RefreshOn string
+}
+
+// validate checks the policy's fields, returning a descriptive error for the
+// configurations the executor rejects.
+func (p TimeoutPolicy) validate() error {
+	if p.RunTimeout < 0 {
+		return errors.New("RunTimeout must be >= 0")
+	}
+	if p.IdleTimeout < 0 {
+		return errors.New("IdleTimeout must be >= 0")
+	}
+	if p.RunTimeout == 0 && p.IdleTimeout == 0 {
+		return errors.New("TimeoutPolicy must set RunTimeout or IdleTimeout")
+	}
+	switch p.RefreshOn {
+	case "", "auto", "heartbeat":
+	default:
+		return errors.New(`RefreshOn must be "auto" or "heartbeat"`)
+	}
+	return nil
 }
 
 // CachePolicy configures per-node write caching, mirroring Python's

@@ -17,6 +17,7 @@ import (
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint/serde"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint/sqlite"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -232,7 +233,7 @@ func TestReducerChannelRoundTrip(t *testing.T) {
 		t.Helper()
 		g := graph.NewStateGraph()
 		g.AddReducer("log", channels.AppendSliceReducer)
-		g.AddNode("record", func(_ context.Context, _ map[string]any) (any, error) {
+		g.AddNode("record", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 			calls++
 			return map[string]any{"log": []string{fmt.Sprintf("call-%d", calls)}}, nil
 		})

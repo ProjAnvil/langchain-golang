@@ -312,11 +312,12 @@ func extractTextContent(message messages.Message) string {
 	}
 	var parts []string
 	for _, block := range message.ContentBlocks {
-		if text, ok := block["text"].(string); ok && block["type"] == "text" {
+		m := messages.BlockToMap(block)
+		if text, ok := m["text"].(string); ok && m["type"] == "text" {
 			parts = append(parts, text)
 			continue
 		}
-		if content, ok := block["content"].(string); ok {
+		if content, ok := m["content"].(string); ok {
 			parts = append(parts, content)
 		}
 	}
