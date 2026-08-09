@@ -123,6 +123,12 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	rs := newRunState(g.channelProtos)
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
+	// Seed deltaCounters from the loaded checkpoint so the update checkpoint's
+	// counter advancement continues the per-channel cadence (S3). (For
+	// Source=="update" saveCheckpoint force-snapshots all available delta
+	// channels, so the advanced counters end up zeroed in the saved metadata —
+	// but the advancement still runs for parity with the loop path.)
+	rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
 	if _, err := rs.applyWrites([]taskWrites{{node: asNode, update: values}}); err != nil {
 		return checkpoint.Config{}, err
 	}

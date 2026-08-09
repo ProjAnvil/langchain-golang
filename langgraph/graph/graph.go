@@ -867,6 +867,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// continues from the restored checkpoint.
 		rs.restore(tup.Checkpoint)
 		rs.step = tup.Metadata.Step
+		// Seed deltaCounters from the loaded checkpoint so resume continues
+		// the per-channel cadence (S3). Cloned so rs.deltaCounters is
+		// independent of the (shared) loaded metadata map.
+		rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
 		changed, err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}})
 		if err != nil {
 			return Result{}, err
@@ -1316,11 +1320,52 @@ func plannedTasks(tasks []task) []checkpoint.PlannedTask {
 // its actual predecessor (D3). Planned task IDs bind to the new checkpoint's
 // ID and the superstep the tasks will run in (md.Step + 1).
 func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask) (checkpoint.Config, error) {
+	// Advance the per-delta-channel (updates, supersteps) counters for this
+	// checkpoint, then decide which delta channels snapshot now. Mirrors
+	// Python's _loop._put_checkpoint counter advancement + create_checkpoint
+	// channel_values assembly (langgraph/pregel/_loop.py:1111-1155).
+	newCounters := advanceDeltaCounters(rs.channels, rs.deltaCounters, rs.updatedChannels)
+
+	// A channel snapshots when its cadence fires (DeltaChannelsToSnapshot) or
+	// it received an Overwrite since the last snapshot (deltaOverwriteChs).
+	channelsToSnapshot := channels.DeltaChannelsToSnapshot(rs.channels, newCounters)
+	for k := range rs.deltaOverwriteChs {
+		channelsToSnapshot[k] = true
+	}
+
+	// UpdateState (Source == "update") force-snapshots every available delta
+	// channel. Python keys this on is_fresh_thread (the only UpdateState path
+	// that needs a forced blob because there is no ancestor to replay writes
+	// from); the Go executor does not yet persist per-task writes in the normal
+	// flow (Task 4), so it needs the forced blob on EVERY update, not just
+	// fresh threads. Input/loop checkpoints do NOT force a snapshot — they
+	// rely on input writes (Task 4), never a forced blob here. Matches Python's
+	// create_checkpoint_plan_for_update_state_api (langgraph/pregel/_checkpoint.py:117-146)
+	// + get_delta_channels_from_all_channels.
+	if md.Source == "update" {
+		for name, ch := range rs.channels {
+			if d, ok := channels.AsDelta(ch); ok && d.IsAvailable() {
+				channelsToSnapshot[name] = true
+			}
+		}
+	}
+
+	// Counters reset to zero for channels that snapshot this checkpoint.
+	for k := range channelsToSnapshot {
+		newCounters[k] = [2]int{0, 0}
+	}
+	rs.deltaCounters = newCounters
+	rs.deltaOverwriteChs = make(map[string]bool)
+
+	// Persist only non-zero counters (Python omits the key entirely when all
+	// entries are zero, langgraph/pregel/_loop.py:1158-1162).
+	md.CountersSinceDeltaSnapshot = nonZeroCounters(newCounters)
+
 	cp := checkpoint.Checkpoint{
 		V:               1,
 		ID:              checkpoint.NewID(int(checkpointSeq.Add(1))),
 		TS:              time.Now(),
-		ChannelValues:   rs.channelValues(),
+		ChannelValues:   rs.checkpointValues(channelsToSnapshot),
 		ChannelVersions: maps.Clone(rs.versions),
 		VersionsSeen:    cloneSeen(rs.seen),
 	}
@@ -1333,6 +1378,52 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *ru
 		return checkpoint.Config{}, fmt.Errorf("graph: saving checkpoint for thread %q: %w", opts.ThreadID, err)
 	}
 	return cfg, nil
+}
+
+// advanceDeltaCounters advances the per-channel (updates, supersteps) counters
+// for every delta channel by one superstep (and one update when the channel was
+// written this superstep), returning a fresh map. It mirrors Python's
+// _loop._put_checkpoint counter bump (langgraph/pregel/_loop.py:1111-1124):
+// every DeltaChannel's superstep counter increments unconditionally, the update
+// counter increments only when the channel is in updated. Missing prev entries
+// are treated as {0, 0}. Returns nil when there are no delta channels.
+func advanceDeltaCounters(chs map[string]channels.Channel, prev map[string][2]int, updated map[string]bool) map[string][2]int {
+	out := make(map[string][2]int)
+	for name, ch := range chs {
+		_, ok := channels.AsDelta(ch)
+		if !ok {
+			continue
+		}
+		u, s := 0, 0
+		if c, ok := prev[name]; ok {
+			u, s = c[0], c[1]
+		}
+		s++
+		if updated[name] {
+			u++
+		}
+		out[name] = [2]int{u, s}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// nonZeroCounters returns a copy of counters excluding zero {0, 0} entries,
+// returning nil when nothing remains. Mirrors Python's non-zero filter
+// (langgraph/pregel/_loop.py:1158 and _checkpoint.py:143).
+func nonZeroCounters(counters map[string][2]int) map[string][2]int {
+	out := make(map[string][2]int)
+	for k, v := range counters {
+		if v != [2]int{0, 0} {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // dropJoinKeys strips join barrier channels from a task update or
