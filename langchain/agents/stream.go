@@ -260,7 +260,7 @@ func (s *eventSink) emitModelDelta(ev streamevents.Event) {
 	}
 	text := ""
 	if ev.Delta != nil {
-		if t, ok := ev.Delta["text"].(string); ok {
+		if t, ok := messages.BlockToMap(ev.Delta)["text"].(string); ok {
 			text = t
 		}
 	}
@@ -349,9 +349,9 @@ func (b *streamChunkBridge) push(chunk messages.Message) {
 		b.dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: 0,
-			Delta: messages.ContentBlock{
-				"type": "text-delta",
-				"text": chunk.Content,
+			Delta: messages.NonStandardContentBlock{
+				Type:  "text-delta",
+				Value: map[string]any{"text": chunk.Content},
 			},
 		})
 	}
@@ -363,11 +363,10 @@ func (b *streamChunkBridge) push(chunk messages.Message) {
 		b.dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: idx,
-			Content: messages.ContentBlock{
-				"type": "tool_call",
-				"id":   call.ID,
-				"name": call.Name,
-				"args": call.Args,
+			Content: messages.ToolCallBlock{
+				ID:   call.ID,
+				Name: call.Name,
+				Args: call.Args,
 			},
 		})
 	}
@@ -376,11 +375,9 @@ func (b *streamChunkBridge) push(chunk messages.Message) {
 		b.dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: idx,
-			Content: messages.ContentBlock{
-				"type": "invalid_tool_call",
-				"id":   call.ID,
-				"name": call.Name,
-				"args": call.Args,
+			Content: messages.NonStandardContentBlock{
+				Type: "invalid_tool_call",
+				Value: map[string]any{"id": call.ID, "name": call.Name, "args": call.Args},
 			},
 		})
 	}
@@ -391,7 +388,7 @@ func (b *streamChunkBridge) finish() {
 		b.dispatch(streamevents.Event{
 			Event:   streamevents.EventContentBlockFinish,
 			Index:   0,
-			Content: messages.ContentBlock{"type": "text", "text": b.text},
+			Content: messages.TextBlock{Text: b.text},
 		})
 	}
 	b.dispatch(streamevents.Event{
@@ -416,32 +413,35 @@ func (b *streamChunkBridge) ensureTextStarted() {
 	b.dispatch(streamevents.Event{
 		Event:   streamevents.EventContentBlockStart,
 		Index:   0,
-		Content: messages.ContentBlock{"type": "text", "text": ""},
+		Content: messages.TextBlock{Text: ""},
 	})
 }
 
 func (b *streamChunkBridge) pushBlock(block messages.ContentBlock) {
-	blockType, _ := block["type"].(string)
+	m := messages.BlockToMap(block)
+	blockType, _ := m["type"].(string)
 	switch blockType {
 	case "text":
-		if text, _ := block["text"].(string); text != "" {
+		if text, _ := m["text"].(string); text != "" {
 			b.ensureTextStarted()
 			b.text += text
 			b.dispatch(streamevents.Event{
 				Event: streamevents.EventContentBlockDelta,
 				Index: 0,
-				Delta: messages.ContentBlock{"type": "text-delta", "text": text},
+				Delta: messages.NonStandardContentBlock{Type: "text-delta", Value: map[string]any{"text": text}},
 			})
 		}
 	case "tool_call_chunk":
 		b.dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: b.nextIndex(),
-			Delta: messages.ContentBlock{
-				"type": "tool_call_chunk",
-				"id":   block["id"],
-				"name": block["name"],
-				"args": block["args"],
+			Delta: messages.NonStandardContentBlock{
+				Type: "tool_call_chunk",
+				Value: map[string]any{
+					"id":   m["id"],
+					"name": m["name"],
+					"args": m["args"],
+				},
 			},
 		})
 	default:

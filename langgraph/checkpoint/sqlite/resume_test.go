@@ -8,6 +8,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -25,10 +26,10 @@ func TestResumeChainedInterruptPrefixSurvivesSlotCollapse(t *testing.T) {
 	saver := newSaver(t, dbPath(t))
 
 	g := graph.NewStateGraph()
-	g.AddNode("chain", func(ctx context.Context, _ map[string]any) (any, error) {
-		a := graph.Interrupt(ctx, "q0")
-		b := graph.Interrupt(ctx, "q1")
-		c := graph.Interrupt(ctx, "q2")
+	g.AddNode("chain", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		a := graph.Interrupt(rt, "q0")
+		b := graph.Interrupt(rt, "q1")
+		c := graph.Interrupt(rt, "q2")
 		return map[string]any{"data": fmt.Sprintf("%v,%v,%v", a, b, c)}, nil
 	})
 	g.AddEdge(types.START, "chain")

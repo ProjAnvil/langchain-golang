@@ -1,12 +1,12 @@
 package prebuilt
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/langchain/tools"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -78,7 +78,7 @@ func ToolNode(node *tools.ToolNode, opts ...ToolNodeOption) graph.NodeFunc {
 		panic("prebuilt: ToolNode messages key must not be empty")
 	}
 
-	return func(ctx context.Context, state map[string]any) (any, error) {
+	return func(rt runtime.Runtime, state map[string]any) (any, error) {
 		raw, ok := state[cfg.messagesKey]
 		if !ok {
 			return nil, fmt.Errorf("prebuilt: ToolNode requires state key %q to hold the conversation messages, but it is missing", cfg.messagesKey)
@@ -93,7 +93,7 @@ func ToolNode(node *tools.ToolNode, opts ...ToolNodeOption) graph.NodeFunc {
 			return nil, nil
 		}
 
-		outcomes, err := node.InvokeToolCallsFull(ctx, calls, state)
+		outcomes, err := node.InvokeToolCallsFull(rt, calls, state)
 		if err != nil {
 			return nil, err
 		}

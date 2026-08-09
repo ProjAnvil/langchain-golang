@@ -16,9 +16,9 @@ const (
 	RoleTool   Role = "tool"
 )
 
-// ContentBlock is the normalized representation for multimodal message content.
-// Provider-specific fields can be stored alongside the standard "type" key.
-type ContentBlock map[string]any
+// ContentBlock is now defined in contentblocks.go as a sealed interface with
+// concrete typed structs (TextBlock, ImageBlock, etc.). See contentblocks.go
+// for the full type hierarchy, ParseContentBlock, BlockToMap, and CloneBlock.
 
 // ToolCall describes a model-requested tool invocation.
 type ToolCall struct {
@@ -84,10 +84,15 @@ func Text(message Message) string {
 	}
 	var out strings.Builder
 	for _, block := range message.ContentBlocks {
-		blockType, _ := block["type"].(string)
-		if blockType == "" || blockType == "text" {
-			if text, ok := block["text"].(string); ok {
-				out.WriteString(text)
+		switch b := block.(type) {
+		case TextBlock:
+			out.WriteString(b.Text)
+		case NonStandardContentBlock:
+			// Handle legacy/provider text blocks with empty or "text" type.
+			if b.Type == "" || b.Type == "text" {
+				if text, ok := b.Value["text"].(string); ok {
+					out.WriteString(text)
+				}
 			}
 		}
 	}
@@ -225,14 +230,54 @@ func Trim(values []Message, maxChars int, fromEnd bool) []Message {
 // MarshalJSONStable returns the canonical JSON representation used by golden
 // tests and provider adapters.
 func MarshalJSONStable(message Message) ([]byte, error) {
-	return json.Marshal(message)
+	return message.MarshalJSON()
 }
 
 // UnmarshalJSONStable decodes a message serialized by MarshalJSONStable.
 func UnmarshalJSONStable(data []byte) (Message, error) {
 	var message Message
-	err := json.Unmarshal(data, &message)
+	err := message.UnmarshalJSON(data)
 	return message, err
+}
+
+// MarshalJSON implements json.Marshaler. ContentBlocks (an interface slice)
+// are converted to maps via BlockToMap so the wire format is unchanged from
+// the old map[string]any representation.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type alias Message // prevent recursion
+	tmp := struct {
+		alias
+		ContentBlocks []map[string]any `json:"content_blocks,omitempty"`
+	}{}
+	tmp.alias = alias(m)
+	if len(m.ContentBlocks) > 0 {
+		tmp.ContentBlocks = make([]map[string]any, len(m.ContentBlocks))
+		for i, b := range m.ContentBlocks {
+			tmp.ContentBlocks[i] = BlockToMap(b)
+		}
+	}
+	return json.Marshal(tmp)
+}
+
+// UnmarshalJSON implements json.Unmarshaler. ContentBlocks are decoded as
+// raw maps and then normalized via ParseContentBlock.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type alias Message
+	tmp := struct {
+		alias
+		ContentBlocks []map[string]any `json:"content_blocks,omitempty"`
+	}{}
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*m = Message(tmp.alias)
+	if len(tmp.ContentBlocks) > 0 {
+		m.ContentBlocks = make([]ContentBlock, len(tmp.ContentBlocks))
+		for i, raw := range tmp.ContentBlocks {
+			m.ContentBlocks[i] = ParseContentBlock(raw)
+		}
+	}
+	return nil
 }
 
 func roleLabel(role Role) string {
@@ -296,7 +341,7 @@ func cloneBlocks(values []ContentBlock) []ContentBlock {
 	}
 	out := make([]ContentBlock, len(values))
 	for i, block := range values {
-		out[i] = cloneMap(block)
+		out[i] = CloneBlock(block)
 	}
 	return out
 }

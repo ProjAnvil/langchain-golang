@@ -264,9 +264,8 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 			Index: event.Index,
-			Content: messages.ContentBlock{
-				"type": "text",
-				"text": "",
+			Content: messages.TextBlock{
+				Text: "",
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
@@ -282,22 +281,23 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 			Index: event.Index,
-			Content: messages.ContentBlock{
-				"type": "tool_call",
-				"id":   event.ContentBlock.ID,
-				"name": event.ContentBlock.Name,
-				"args": map[string]any{},
+			Content: messages.ToolCallBlock{
+				ID:   event.ContentBlock.ID,
+				Name: event.ContentBlock.Name,
+				Args: map[string]any{},
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
-		chunk.ContentBlocks = []messages.ContentBlock{{
-			"type":  "tool_use",
-			"id":    event.ContentBlock.ID,
-			"name":  event.ContentBlock.Name,
-			"input": event.ContentBlock.Input,
-			"index": event.Index,
+		chunk.ContentBlocks = []messages.ContentBlock{messages.NonStandardContentBlock{
+			Type: "tool_use",
+			Value: map[string]any{
+				"id":    event.ContentBlock.ID,
+				"name":  event.ContentBlock.Name,
+				"input": event.ContentBlock.Input,
+				"index": event.Index,
+			},
 		}}
 		if err := emitStream(ctx, s.cfg, chunk); err != nil {
 			return messages.Message{}, false, err
@@ -314,9 +314,8 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 			Index: event.Index,
-			Content: messages.ContentBlock{
-				"type":      "reasoning",
-				"reasoning": "",
+			Content: messages.ReasoningBlock{
+				Reasoning: "",
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
@@ -329,9 +328,7 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 			Index: event.Index,
-			Content: messages.ContentBlock{
-				"type": "reasoning",
-			},
+			Content: messages.ReasoningBlock{},
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
@@ -347,9 +344,9 @@ func (s *messageStream) contentBlockDelta(ctx context.Context, event streamEvent
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: event.Index,
-			Delta: messages.ContentBlock{
-				"type": "text-delta",
-				"text": event.Delta.Text,
+			Delta: messages.NonStandardContentBlock{
+				Type:  "text-delta",
+				Value: map[string]any{"text": event.Delta.Text},
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
@@ -366,18 +363,20 @@ func (s *messageStream) contentBlockDelta(ctx context.Context, event streamEvent
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: event.Index,
-			Delta: messages.ContentBlock{
-				"type": "tool_call_chunk",
-				"args": event.Delta.PartialJSON,
+			Delta: messages.NonStandardContentBlock{
+				Type:  "tool_call_chunk",
+				Value: map[string]any{"args": event.Delta.PartialJSON},
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
-		chunk.ContentBlocks = []messages.ContentBlock{{
-			"type":  "tool_use",
-			"input": event.Delta.PartialJSON,
-			"index": event.Index,
+		chunk.ContentBlocks = []messages.ContentBlock{messages.NonStandardContentBlock{
+			Type: "tool_use",
+			Value: map[string]any{
+				"input": event.Delta.PartialJSON,
+				"index": event.Index,
+			},
 		}}
 		if err := emitStream(ctx, s.cfg, chunk); err != nil {
 			return messages.Message{}, false, err
@@ -389,18 +388,17 @@ func (s *messageStream) contentBlockDelta(ctx context.Context, event streamEvent
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: event.Index,
-			Delta: messages.ContentBlock{
-				"type":      "reasoning-delta",
-				"reasoning": event.Delta.Thinking,
+			Delta: messages.NonStandardContentBlock{
+				Type:  "reasoning-delta",
+				Value: map[string]any{"reasoning": event.Delta.Thinking},
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
-		chunk.ContentBlocks = []messages.ContentBlock{{
-			"type":      "reasoning",
-			"reasoning": event.Delta.Thinking,
-			"index":     event.Index,
+		chunk.ContentBlocks = []messages.ContentBlock{messages.ReasoningBlock{
+			Reasoning: event.Delta.Thinking,
+			Index:     event.Index,
 		}}
 		if err := emitStream(ctx, s.cfg, chunk); err != nil {
 			return messages.Message{}, false, err
@@ -418,16 +416,14 @@ func (s *messageStream) contentBlockDelta(ctx context.Context, event streamEvent
 func (s *messageStream) contentBlockStop(ctx context.Context, index int) (messages.Message, bool, error) {
 	if block := s.textBlocks[index]; block != nil {
 		delete(s.textBlocks, index)
-		s.output.ContentBlocks = append(s.output.ContentBlocks, messages.ContentBlock{
-			"type": "text",
-			"text": block.text,
+		s.output.ContentBlocks = append(s.output.ContentBlocks, messages.TextBlock{
+			Text: block.text,
 		})
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: index,
-			Content: messages.ContentBlock{
-				"type": "text",
-				"text": block.text,
+			Content: messages.TextBlock{
+				Text: block.text,
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
@@ -441,20 +437,18 @@ func (s *messageStream) contentBlockStop(ctx context.Context, index int) (messag
 			_ = json.Unmarshal([]byte(block.arguments), &call.Args)
 		}
 		s.output.ToolCalls = append(s.output.ToolCalls, call)
-		s.output.ContentBlocks = append(s.output.ContentBlocks, messages.ContentBlock{
-			"type": "tool_call",
-			"id":   call.ID,
-			"name": call.Name,
-			"args": call.Args,
+		s.output.ContentBlocks = append(s.output.ContentBlocks, messages.ToolCallBlock{
+			ID:   call.ID,
+			Name: call.Name,
+			Args: call.Args,
 		})
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: index,
-			Content: messages.ContentBlock{
-				"type": "tool_call",
-				"id":   call.ID,
-				"name": call.Name,
-				"args": call.Args,
+			Content: messages.ToolCallBlock{
+				ID:   call.ID,
+				Name: call.Name,
+				Args: call.Args,
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
@@ -470,18 +464,15 @@ func (s *messageStream) contentBlockStop(ctx context.Context, index int) (messag
 		delete(s.thinkingBlocks, index)
 		var contentBlock messages.ContentBlock
 		if block.redacted {
-			contentBlock = messages.ContentBlock{
-				"type": "reasoning",
-				"data": block.data,
-			}
+			extras := map[string]any{"data": block.data}
 			if block.id != "" {
-				contentBlock["id"] = block.id
+				extras["id"] = block.id
 			}
+			contentBlock = messages.ReasoningBlock{Extras: extras}
 		} else {
-			contentBlock = messages.ContentBlock{
-				"type":      "reasoning",
-				"reasoning": block.text,
-				"signature": block.signature,
+			contentBlock = messages.ReasoningBlock{
+				Reasoning: block.text,
+				Extras:    map[string]any{"signature": block.signature},
 			}
 		}
 		s.output.ContentBlocks = append(s.output.ContentBlocks, contentBlock)

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
 )
 
@@ -18,7 +19,7 @@ func TestEntrypointWithoutCheckpointer(t *testing.T) {
 	var hasPrevs []bool
 	var prevs []map[string]any
 	e := NewEntrypoint[map[string]any, map[string]any, map[string]any](EntrypointOpts{},
-		func(_ context.Context, in, prev map[string]any, hasPrev bool) (map[string]any, error) {
+		func(_ runtime.Runtime, in, prev map[string]any, hasPrev bool) (map[string]any, error) {
 			hasPrevs = append(hasPrevs, hasPrev)
 			prevs = append(prevs, prev)
 			return map[string]any{"previous": nil, "current": in}, nil
@@ -50,7 +51,7 @@ func TestEntrypointWithoutCheckpointer(t *testing.T) {
 func TestEntrypointStateful(t *testing.T) {
 	e := NewEntrypoint[map[string]any, map[string]any, map[string]any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(_ context.Context, in, prev map[string]any, hasPrev bool) (map[string]any, error) {
+		func(_ runtime.Runtime, in, prev map[string]any, hasPrev bool) (map[string]any, error) {
 			var p any
 			if hasPrev {
 				p = prev
@@ -88,7 +89,7 @@ func TestEntrypointFinalValueSave(t *testing.T) {
 	var prevs [][]string
 	e := NewEntrypointFinal[string, int, []string](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(_ context.Context, in string, prev []string, hasPrev bool) (Final[int, []string], error) {
+		func(_ runtime.Runtime, in string, prev []string, hasPrev bool) (Final[int, []string], error) {
 			hasPrevs = append(hasPrevs, hasPrev)
 			prevs = append(prevs, append([]string(nil), prev...))
 			save := append(append([]string(nil), prev...), in)
@@ -120,7 +121,7 @@ func TestEntrypointFinalValueSave(t *testing.T) {
 // items == [{"foo": {...}}]; the Go node name is the fixed "entrypoint").
 func TestEntrypointStream(t *testing.T) {
 	e := NewEntrypoint[string, string, string](EntrypointOpts{},
-		func(_ context.Context, in, _ string, _ bool) (string, error) {
+		func(_ runtime.Runtime, in, _ string, _ bool) (string, error) {
 			return "done", nil
 		})
 
@@ -155,7 +156,7 @@ func TestEntrypointStream(t *testing.T) {
 func TestEntrypointInterruptResume(t *testing.T) {
 	e := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
-		func(ctx context.Context, _ any, _ any, _ bool) (string, error) {
+		func(ctx runtime.Runtime, _ any, _ any, _ bool) (string, error) {
 			v := graph.Interrupt(ctx, "Provide value")
 			return fmt.Sprintf("got %v", v), nil
 		})
@@ -184,7 +185,7 @@ func TestEntrypointInterruptResume(t *testing.T) {
 func TestEntrypointErrorPropagation(t *testing.T) {
 	boom := errors.New("boom")
 	e := NewEntrypoint[string, string, string](EntrypointOpts{},
-		func(_ context.Context, _, _ string, _ bool) (string, error) {
+		func(_ runtime.Runtime, _, _ string, _ bool) (string, error) {
 			return "", boom
 		})
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -48,7 +49,7 @@ func compileRetryGraph(t *testing.T, fn NodeFunc, policies NodePolicies) *Compil
 
 func TestRetryPolicyFlakyNodeSucceeds(t *testing.T) {
 	var attempts atomic.Int32
-	cg := compileRetryGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileRetryGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		if attempts.Add(1) < 3 {
 			return nil, errFlaky
 		}
@@ -70,7 +71,7 @@ func TestRetryPolicyFlakyNodeSucceeds(t *testing.T) {
 func TestRetryPolicyNonRetryableFailsImmediately(t *testing.T) {
 	var attempts atomic.Int32
 	// RetryOn nil -> DefaultRetryOn, which does not retry a plain error.
-	cg := compileRetryGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileRetryGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		attempts.Add(1)
 		return nil, errFlaky
 	}, NodePolicies{Retry: &RetryPolicy{InitialInterval: time.Millisecond, MaxAttempts: 5, NoJitter: true}})
@@ -86,7 +87,7 @@ func TestRetryPolicyNonRetryableFailsImmediately(t *testing.T) {
 
 func TestRetryPolicyMaxAttemptsExhaustedSurfacesLastError(t *testing.T) {
 	var attempts atomic.Int32
-	cg := compileRetryGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileRetryGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		n := attempts.Add(1)
 		return nil, fmt.Errorf("failure %d", n)
 	}, NodePolicies{Retry: fastRetryPolicy(3)})
@@ -103,7 +104,7 @@ func TestRetryPolicyMaxAttemptsExhaustedSurfacesLastError(t *testing.T) {
 func TestRetryPolicyBackoffIncreases(t *testing.T) {
 	var mu sync.Mutex
 	var attemptTimes []time.Time
-	cg := compileRetryGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileRetryGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		mu.Lock()
 		attemptTimes = append(attemptTimes, time.Now())
 		mu.Unlock()
@@ -148,7 +149,7 @@ func TestRetryPolicyBackoffIncreases(t *testing.T) {
 
 func TestRetryPolicyInterruptIsTerminal(t *testing.T) {
 	var attempts atomic.Int32
-	cg := compileRetryGraph(t, func(ctx context.Context, _ map[string]any) (any, error) {
+	cg := compileRetryGraph(t, func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		attempts.Add(1)
 		Interrupt(ctx, "pause")
 		return nil, nil // unreachable
@@ -168,7 +169,7 @@ func TestRetryPolicyInterruptIsTerminal(t *testing.T) {
 
 func TestRetryPolicyContextCancelDuringBackoff(t *testing.T) {
 	var attempts atomic.Int32
-	cg := compileRetryGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileRetryGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		attempts.Add(1)
 		return nil, errFlaky
 	}, NodePolicies{Retry: &RetryPolicy{
@@ -222,7 +223,7 @@ func (s *retryRecordingSink) count(kind RawEventKind, node string) int {
 
 func TestRetryPolicyEventsBalancedAcrossAttempts(t *testing.T) {
 	var attempts atomic.Int32
-	cg := compileRetryGraph(t, func(_ context.Context, _ map[string]any) (any, error) {
+	cg := compileRetryGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		if attempts.Add(1) < 3 {
 			return nil, errFlaky
 		}
@@ -255,7 +256,7 @@ func TestCompileValidatesRetryPolicy(t *testing.T) {
 	for name, policy := range cases {
 		t.Run(name, func(t *testing.T) {
 			g := NewStateGraph()
-			g.AddNodeWithPolicies("node", func(_ context.Context, _ map[string]any) (any, error) {
+			g.AddNodeWithPolicies("node", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 				return nil, nil
 			}, NodePolicies{Retry: policy})
 			g.AddEdge(types.START, "node")
@@ -332,7 +333,7 @@ func TestAddNodeDelegatesToAddNodeWithPolicies(t *testing.T) {
 	// retryable-matching error must NOT be retried (no policy installed).
 	var attempts atomic.Int32
 	g := NewStateGraph()
-	g.AddNode("node", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("node", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		attempts.Add(1)
 		return nil, context.DeadlineExceeded // DefaultRetryOn-retryable, but no policy
 	})

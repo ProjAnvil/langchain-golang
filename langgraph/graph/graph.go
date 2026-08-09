@@ -58,11 +58,15 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
+	"github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
-// NodeFunc is a graph node, mirroring Python's node callables. It receives
-// the current graph state and returns one of:
+// NodeFunc is a graph node, mirroring Python's node callables. It receives a
+// runtime.Runtime (which itself satisfies context.Context, so existing ctx
+// idioms survive — pass rt wherever a context.Context is expected) and the
+// current graph state, and returns one of:
 //
 //   - nil: no state update.
 //   - map[string]any: a partial state update, merged into state via each
@@ -77,12 +81,21 @@ import (
 //
 // Any other return type is a runtime error. NodeFunc must not mutate the
 // state map it receives (see the package doc comment).
-type NodeFunc func(ctx context.Context, state map[string]any) (any, error)
+//
+// Migrating from the pre-v1 NodeFunc signature: the first parameter changed
+// from `ctx context.Context` to `rt runtime.Runtime`. Since Runtime satisfies
+// context.Context, every ctx usage inside a node body (ctx.Done(), ctx.Err(),
+// ctx.Value(k), Interrupt(ctx, ...), and helpers that take a context.Context)
+// still compiles unchanged when you rename the parameter from ctx to rt. The
+// only change is the declared type of the first parameter.
+type NodeFunc func(rt runtime.Runtime, state map[string]any) (any, error)
 
 // ConditionalEdge routes execution dynamically based on state, mirroring
-// Python's `add_conditional_edges` router callables. Each returned element
-// must be a string (a node name, or types.END) or a *types.Send.
-type ConditionalEdge func(ctx context.Context, state map[string]any) ([]any, error)
+// Python's `add_conditional_edges` router callables. It receives a
+// runtime.Runtime (which satisfies context.Context) and the current graph
+// state; each returned element must be a string (a node name, or types.END)
+// or a *types.Send.
+type ConditionalEdge func(rt runtime.Runtime, state map[string]any) ([]any, error)
 
 // To is a small convenience constructing a ConditionalEdge/Command.Goto
 // destination list from plain node names.
@@ -173,6 +186,12 @@ func (g *StateGraph) AddNodeWithPolicies(name string, fn NodeFunc, policies Node
 	if _, exists := g.nodes[name]; exists {
 		g.setErr(fmt.Errorf("graph: duplicate node %q", name))
 		return g
+	}
+	if policies.Timeout != nil {
+		if err := policies.Timeout.validate(); err != nil {
+			g.setErr(fmt.Errorf("graph: node %q timeout policy: %w", name, err))
+			return g
+		}
 	}
 	g.nodes[name] = fn
 	g.policies[name] = policies
@@ -296,9 +315,11 @@ type CompileOption func(*compileOptions)
 type compileOptions struct {
 	checkpointer    checkpoint.Saver
 	cache           checkpoint.Cache
+	store           store.Store
 	recursionLimit  int
 	interruptBefore map[string]bool
 	interruptAfter  map[string]bool
+	durability      Durability
 }
 
 // WithCheckpointer installs a checkpoint.Saver, enabling Interrupt/Resume
@@ -315,11 +336,49 @@ func WithCache(c checkpoint.Cache) CompileOption {
 	return func(o *compileOptions) { o.cache = c }
 }
 
+// WithStore installs a cross-thread store.Store (the langgraph BaseStore),
+// mirroring Python's `StateGraph.compile(store=...)`. When non-nil, the store
+// is surfaced on Runtime.Store for every node function and conditional edge
+// router (see CompiledGraph.buildRuntime), enabling persistence and memory
+// shared across threads. It is distinct from core/stores.BaseStore[V] (the
+// generic typed KV) and from the checkpoint.Cache backend.
+func WithStore(s store.Store) CompileOption {
+	return func(o *compileOptions) { o.store = s }
+}
+
 // WithRecursionLimit overrides the default superstep limit (100), mirroring
 // Python's `recursion_limit` config option. It guards against unintentional
 // infinite loops in a graph's routing.
 func WithRecursionLimit(limit int) CompileOption {
 	return func(o *compileOptions) { o.recursionLimit = limit }
+}
+
+// Durability selects when the executor flushes checkpoint writes, mirroring
+// Python's langgraph.types.Durability (types.py:87).
+//
+// Only DurabilitySync (the default) is currently wired: the executor persists
+// each checkpoint synchronously before the next superstep. DurabilityAsync and
+// DurabilityExit require deferred/background flush paths that interact with
+// interrupt/resume checkpointing and are not yet implemented; requesting them
+// fails Compile with an explicit unsupported error (project rule: unsupported
+// behavior fails explicitly rather than silently degrading).
+type Durability string
+
+const (
+	// DurabilitySync persists changes synchronously before the next step
+	// starts (the default and currently the only implemented mode).
+	DurabilitySync Durability = "sync"
+	// DurabilityAsync persists changes while the next step executes
+	// (not yet implemented; rejected at Compile).
+	DurabilityAsync Durability = "async"
+	// DurabilityExit persists changes only when the graph exits
+	// (not yet implemented; rejected at Compile).
+	DurabilityExit Durability = "exit"
+)
+
+// WithDurability sets the checkpoint write-flush mode (see Durability).
+func WithDurability(d Durability) CompileOption {
+	return func(o *compileOptions) { o.durability = d }
 }
 
 // WithInterruptBefore registers node names that the graph must pause before
@@ -417,6 +476,9 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	if options.durability == DurabilityAsync || options.durability == DurabilityExit {
+		return nil, fmt.Errorf("graph: durability mode %q is not yet implemented (only %q); deferred-flush paths interacting with interrupt/resume checkpointing are pending", options.durability, DurabilitySync)
+	}
 
 	// Register one barrier channel prototype per waiting edge (Python's
 	// attach_edge, state.py:1546-1561). The clone keeps the builder's own
@@ -447,6 +509,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		entry:           g.entry,
 		checkpointer:    options.checkpointer,
 		cache:           options.cache,
+		store:           options.store,
 		recursionLimit:  options.recursionLimit,
 		interruptBefore: options.interruptBefore,
 		interruptAfter:  options.interruptAfter,
@@ -470,6 +533,7 @@ type CompiledGraph struct {
 	entry           string
 	checkpointer    checkpoint.Saver
 	cache           checkpoint.Cache
+	store           store.Store
 	recursionLimit  int
 	interruptBefore map[string]bool
 	interruptAfter  map[string]bool
@@ -733,6 +797,19 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			children: children,
 		})
 	}
+
+	// Publish the execution meta (current checkpoint position + run options)
+	// so buildRuntime can populate Runtime.ExecutionInfo without threading
+	// them through runTask/runNode signatures. Published for every run —
+	// not just checkpointed ones — so ExecutionInfo is always available to
+	// nodes (fields simply default to empty when there is no checkpointer).
+	// The cfg pointer is shared with the run loop, which advances it between
+	// supersteps; ExecutionInfo reads it at buildRuntime time, so it tracks
+	// the latest save.
+	runCtx = context.WithValue(runCtx, executionMetaKey{}, executionMeta{
+		cfg:  currentCfg,
+		opts: opts,
+	})
 
 	// save persists a checkpoint (see saveCheckpoint) and advances currentCfg
 	// to it, stamping Metadata.Parents with the child namespaces used so far
@@ -1278,7 +1355,8 @@ func (g *CompiledGraph) dropJoinKeys(m map[string]any) map[string]any {
 
 func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state map[string]any) ([]task, error) {
 	if router, ok := g.conditional[nodeName]; ok {
-		dests, err := router(ctx, state)
+		rt := g.buildRuntime(ctx, task{node: nodeName})
+		dests, err := router(rt, state)
 		if err != nil {
 			return nil, err
 		}
@@ -1326,7 +1404,7 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 		retry = &p
 	}
 	for attempt := 1; ; attempt++ {
-		result, intr, cons, rerr := g.runNode(ctx, t, state, resumeQueue)
+		result, intr, cons, rerr := g.runNode(ctx, t, state, resumeQueue, attempt)
 		if intr != nil {
 			return nil, nil, intr, cons, nil
 		}
@@ -1355,7 +1433,7 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 // persist it as a single full-list ReservedResume write. Retry/error paths discard it: an
 // errored task produces no pause checkpoint, so the prefix has nowhere to
 // land.
-func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any) (result any, interrupted *types.Interrupt, consumed []any, err error) {
+func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any, attempt int) (result any, interrupted *types.Interrupt, consumed []any, err error) {
 	fn, ok := g.nodes[t.node]
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("graph: unknown node %q", t.node)
@@ -1368,6 +1446,14 @@ func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]an
 
 	ist := &taskInterruptState{resumeQueue: resumeQueue, nodeName: t.node}
 	nodeCtx := context.WithValue(ctx, interruptCtxKey{}, ist)
+	// Refresh the execution meta's attempt for this invocation so
+	// buildRuntime's ExecutionInfo reflects the current retry attempt (the
+	// run loop publishes attempt=0 as a placeholder; runNode owns the real
+	// value because it runs once per attempt).
+	if m, ok := nodeCtx.Value(executionMetaKey{}).(executionMeta); ok {
+		m.attempt = attempt
+		nodeCtx = context.WithValue(nodeCtx, executionMetaKey{}, m)
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -1384,8 +1470,176 @@ func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]an
 		}
 	}()
 
-	result, err = fn(nodeCtx, input)
+	var timeout *TimeoutPolicy
+	if policies, ok := g.policies[t.node]; ok && policies.Timeout != nil {
+		timeout = policies.Timeout
+	}
+	rt, cancelTimeout := g.buildTimedRuntime(nodeCtx, t, timeout)
+	defer cancelTimeout()
+
+	result, err = fn(rt, input)
 	return
+}
+
+// buildTimedRuntime builds the node's Runtime and, when a non-nil, non-zero
+// TimeoutPolicy is installed, layers the timeout onto the Runtime's backing
+// context so a node that respects rt.Done()/rt.Err() aborts on expiry.
+//
+// RunTimeout is a hard context deadline (context.WithTimeout). IdleTimeout
+// runs a watchdog goroutine that cancels the context if no rt.Heartbeat()
+// arrives within IdleTimeout; rt.Heartbeat is wired to reset the timer
+// (composing with any Heartbeat buildRuntime set). The watchdog exits when
+// the context ends (attempt finished or run deadline), so it does not leak.
+//
+// The returned cancel func MUST be deferred by the caller; it is a no-op when
+// no timeout policy applies. Cooperative cancellation only: Go cannot kill a
+// goroutine, so a node blocking without checking rt.Done() overruns (mirrors
+// Python's sync limitation under asyncio).
+func (g *CompiledGraph) buildTimedRuntime(nodeCtx context.Context, t task, timeout *TimeoutPolicy) (runtime.Runtime, func()) {
+	if timeout == nil || (timeout.RunTimeout == 0 && timeout.IdleTimeout == 0) {
+		return g.buildRuntime(nodeCtx, t), func() {}
+	}
+	ctx, cancel := context.WithCancel(nodeCtx)
+	if timeout.RunTimeout > 0 {
+		var runCancel func()
+		ctx, runCancel = context.WithTimeout(ctx, timeout.RunTimeout)
+		base := cancel
+		cancel = func() { base(); runCancel() }
+	}
+	rt := g.buildRuntime(ctx, t)
+	if timeout.IdleTimeout > 0 {
+		heartbeat := make(chan struct{}, 1)
+		prev := rt.Heartbeat
+		rt.Heartbeat = func() {
+			if prev != nil {
+				prev()
+			}
+			select {
+			case heartbeat <- struct{}{}:
+			default:
+			}
+		}
+		go func() {
+			idle := time.NewTimer(timeout.IdleTimeout)
+			defer idle.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-heartbeat:
+					idle.Reset(timeout.IdleTimeout)
+				case <-idle.C:
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+	return rt, cancel
+}
+
+// buildRuntime constructs the runtime.Runtime passed to node functions and
+// conditional edge routers. It is the single place the executor materializes
+// a Runtime, mirroring Python's task-prep step that populates Runtime from
+// the config + task context.
+//
+// Wiring:
+//
+//   - The backing context.Context (for Deadline/Done/Err/Value delegation)
+//     is ctx, which already carries this node's interrupt state (see
+//     runNode), event sink (see InvokeStream), stream writer (see
+//     nodeContext under StreamCustom), checkpoint/subgraph keys, and any
+//     context_schema values attached by agents.WithContextValues (which
+//     delegates to runtime.ContextWithValues).
+//   - rt.Context is the context_schema values bag (runtime.contextSchemaKey),
+//     populated when present, mirroring Python's Runtime.context.
+//   - rt.StreamWriter is the per-node writer installed by nodeContext when
+//     StreamCustom is active (nil otherwise; consumers nil-check).
+//   - rt.Store is g.store when a store was installed via WithStore (nil
+//     otherwise; consumers nil-check before use).
+//   - rt.ExecutionInfo is populated from the task's identity and the
+//     executor's current checkpoint position when available; nil when no
+//     checkpointer is in use (Python: nil before task prep populates it).
+//   - rt.Control and rt.ServerInfo are nil for now (no server/control plane
+//     in this port yet).
+//
+// The returned Runtime shares ctx by reference (via the unexported ctx
+// field), so a node reading rt.Value(interruptCtxKey{}) still reaches the
+// per-node interrupt state, and existing graph.Interrupt(ctx, ...) calls
+// continue to work because Runtime satisfies context.Context.
+func (g *CompiledGraph) buildRuntime(ctx context.Context, t task) runtime.Runtime {
+	rt := runtime.NewRuntime(ctx)
+	// Mirror Python: Runtime.context is the context_schema values bag. The
+	// values are attached by agents.WithContextValues (which delegates to
+	// runtime.ContextWithValues) at invoke time; buildRuntime surfaces them
+	// on rt.Context so nodes that prefer the typed field (Python parity)
+	// can use it directly. rt.Value(runtime's key) still reaches the same
+	// bag via context.Context delegation, so agents.ContextValue stays
+	// functional on a Runtime.
+	if v := runtime.ValuesFromContext(ctx); v != nil {
+		rt.Context = v
+	}
+	// StreamWriter was attached to ctx by nodeContext under StreamCustom
+	// (see stream.go); surface it on rt.StreamWriter so nodes that prefer
+	// the typed field (Python parity) can use it directly. Nil-check applies.
+	if w := StreamWriterFromContext(ctx); w != nil {
+		rt.StreamWriter = runtime.StreamWriter(w)
+	}
+	// Store: surface the compile-option store (WithStore) so nodes/tasks that
+	// need cross-thread persistence can read rt.Store directly. Guarded nil
+	// so a graph without a store keeps rt.Store nil (consumers nil-check).
+	if g.store != nil {
+		rt.Store = g.store
+	}
+	// ExecutionInfo: populate from the task and the current checkpoint
+	// config when one is available. Python populates ExecutionInfo during
+	// task prep; here we read the checkpoint config the run loop published
+	// on ctx (see CompiledGraph.run).
+	if ei := executionInfoFromContext(ctx, t); ei != nil {
+		rt.ExecutionInfo = ei
+	}
+	return rt
+}
+
+// executionMetaKey is the context.Context key under which the run loop
+// publishes the current checkpoint position + run options, so buildRuntime
+// can populate ExecutionInfo without threading them through runTask/runNode
+// signatures.
+type executionMetaKey struct{}
+
+// executionMeta is the run-scoped checkpoint position + options published on
+// runCtx by CompiledGraph.run. Fields are read-only after publication; the
+// pointer to currentCfg is shared with the run loop, which advances it
+// between supersteps (the ExecutionInfo snapshot reads CheckpointID at
+// buildRuntime time, so it tracks the latest save).
+type executionMeta struct {
+	cfg     *checkpoint.Config
+	opts    Options
+	attempt int // 1-indexed node attempt, set per runNode invocation
+}
+
+// executionInfoFromContext assembles an ExecutionInfo from the run's published
+// execution meta and the task's identity. Returns nil when no meta is
+// published (the plain context.Background() -> Invoke path), matching
+// Python's "nil before task prep populates it."
+func executionInfoFromContext(ctx context.Context, t task) *runtime.ExecutionInfo {
+	m, ok := ctx.Value(executionMetaKey{}).(executionMeta)
+	if !ok {
+		return nil
+	}
+	ei := &runtime.ExecutionInfo{
+		TaskID:      t.id,
+		ThreadID:    m.opts.ThreadID,
+		NodeAttempt: m.attempt,
+	}
+	if m.cfg != nil {
+		ei.CheckpointID = m.cfg.CheckpointID
+		ei.CheckpointNS = m.cfg.CheckpointNS
+	}
+	if ei.NodeAttempt == 0 {
+		ei.NodeAttempt = 1
+	}
+	return ei
 }
 
 type interruptCtxKey struct{}

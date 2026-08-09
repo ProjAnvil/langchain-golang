@@ -139,7 +139,7 @@ func ApproximateTokenCount(msgs []messages.Message) int {
 	for _, msg := range msgs {
 		total += approximateTextTokens(msg.Content)
 		for _, block := range msg.ContentBlocks {
-			for _, value := range block {
+			for _, value := range messages.BlockToMap(block) {
 				if text, ok := value.(string); ok {
 					total += approximateTextTokens(text)
 				}
@@ -182,7 +182,7 @@ func ApproximateTokenCountCharsPerToken(msgs []messages.Message, charsPerToken f
 	for _, msg := range msgs {
 		total += len(msg.Content)
 		for _, block := range msg.ContentBlocks {
-			for _, value := range block {
+			for _, value := range messages.BlockToMap(block) {
 				if text, ok := value.(string); ok {
 					total += len(text)
 				}

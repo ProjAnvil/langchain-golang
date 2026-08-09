@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
-	"github.com/projanvil/langchain-golang/core/stores"
 	"github.com/projanvil/langchain-golang/core/tools"
+	"github.com/projanvil/langchain-golang/langgraph/store"
 )
 
 type ModelRequest struct {
@@ -105,11 +105,11 @@ type ToolCallRequest struct {
 	Tool     tools.Tool
 	State    map[string]any
 	Runtime  any
-	// Store is the agent's cross-thread KV store (Python's `InjectedStore`),
-	// populated when the agent is configured with WithAgentStore. Tools that
-	// need it read it explicitly (Go has no annotation-based injection). nil
-	// when no store is configured.
-	Store stores.BaseStore[any]
+	// Store is the agent's cross-thread semantic store (Python's
+	// `InjectedStore` / langgraph BaseStore), populated when the agent is
+	// configured with WithAgentStore. Tools that need it read it explicitly
+	// (Go has no annotation-based injection). nil when no store is configured.
+	Store store.Store
 }
 
 type ToolCallRequestOverride func(*toolCallRequestOverride)
@@ -124,7 +124,7 @@ type toolCallRequestOverride struct {
 	runtimeSet  bool
 	runtime     any
 	storeSet    bool
-	store       stores.BaseStore[any]
+	store       store.Store
 }
 
 func WithToolCall(toolCall ToolCall) ToolCallRequestOverride {
@@ -155,14 +155,14 @@ func WithToolCallRuntime(runtime any) ToolCallRequestOverride {
 	}
 }
 
-// WithStore installs a cross-thread KV store into the overridden request,
-// mirroring the Store field set by CreateAgent when WithAgentStore is used.
-// Useful for middleware that wants to swap (or clear) the store for the
+// WithStore installs a cross-thread semantic store into the overridden
+// request, mirroring the Store field set by CreateAgent when WithAgentStore is
+// used. Useful for middleware that wants to swap (or clear) the store for the
 // remainder of the tool-call chain.
-func WithStore(store stores.BaseStore[any]) ToolCallRequestOverride {
+func WithStore(s store.Store) ToolCallRequestOverride {
 	return func(override *toolCallRequestOverride) {
 		override.storeSet = true
-		override.store = store
+		override.store = s
 	}
 }
 
@@ -241,11 +241,12 @@ func (r ModelRequest) SystemPromptText() string {
 
 	parts := make([]string, 0, len(r.SystemMessage.ContentBlocks))
 	for _, block := range r.SystemMessage.ContentBlocks {
-		if text, ok := block["text"].(string); ok && block["type"] == "text" {
+		m := messages.BlockToMap(block)
+		if text, ok := m["text"].(string); ok && m["type"] == "text" {
 			parts = append(parts, text)
 			continue
 		}
-		if content, ok := block["content"].(string); ok {
+		if content, ok := m["content"].(string); ok {
 			parts = append(parts, content)
 		}
 	}

@@ -83,13 +83,14 @@ func extractContent(message messages.Message) (string, []string) {
 		parts = append(parts, message.Content)
 	}
 	for _, block := range message.ContentBlocks {
-		switch block["type"] {
+		m := messages.BlockToMap(block)
+		switch m["type"] {
 		case "text":
-			if text, ok := block["text"].(string); ok && text != "" {
+			if text, ok := m["text"].(string); ok && text != "" {
 				parts = append(parts, text)
 			}
 		case "image", "image_url":
-			if image := extractImage(block); image != "" {
+			if image := extractImage(m); image != "" {
 				images = append(images, image)
 			}
 		case "tool_use":
@@ -102,28 +103,28 @@ func extractContent(message messages.Message) (string, []string) {
 
 // extractImage returns the base64 payload for an image content block, handling
 // data: URIs and both v0 (data/source_type) and v1 (base64) block shapes.
-func extractImage(block messages.ContentBlock) string {
-	if base64, ok := block["base64"].(string); ok && base64 != "" {
+func extractImage(m map[string]any) string {
+	if base64, ok := m["base64"].(string); ok && base64 != "" {
 		return stripDataURL(base64)
 	}
-	if data, ok := block["data"].(string); ok && data != "" {
+	if data, ok := m["data"].(string); ok && data != "" {
 		return stripDataURL(data)
 	}
-	source, _ := block["source"].(map[string]any)
+	source, _ := m["source"].(map[string]any)
 	if source != nil {
 		if data, ok := source["data"].(string); ok && data != "" {
 			return stripDataURL(data)
 		}
 	}
-	if imageURL, ok := block["image_url"].(map[string]any); ok {
+	if imageURL, ok := m["image_url"].(map[string]any); ok {
 		if url, ok := imageURL["url"].(string); ok && url != "" {
 			return stripDataURL(url)
 		}
 	}
-	if url, ok := block["image_url"].(string); ok && url != "" {
+	if url, ok := m["image_url"].(string); ok && url != "" {
 		return stripDataURL(url)
 	}
-	if url, ok := block["url"].(string); ok && url != "" {
+	if url, ok := m["url"].(string); ok && url != "" {
 		return stripDataURL(url)
 	}
 	return ""

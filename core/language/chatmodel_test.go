@@ -297,13 +297,13 @@ func TestStreamEventsPreservesUserCallbacks(t *testing.T) {
 
 func TestStreamEventsFallbackMalformedToolCallChunk(t *testing.T) {
 	chunk := messages.AI("")
-	chunk.ContentBlocks = []messages.ContentBlock{{
+	chunk.ContentBlocks = []messages.ContentBlock{messages.ParseContentBlock(map[string]any{
 		"type":  "tool_call_chunk",
 		"id":    "call_1",
 		"name":  "search",
 		"args":  `{"q": `,
 		"index": 0,
-	}}
+	})}
 	model := NewFakeChatModel(WithStreamChunks(chunk))
 
 	stream, err := StreamEvents(context.Background(), model, []messages.Message{
@@ -372,26 +372,26 @@ func (m protocolFakeChatModel) Stream(
 		{
 			Event: streamevents.EventContentBlockStart,
 			Index: 0,
-			Content: messages.ContentBlock{
+			Content: messages.ParseContentBlock(map[string]any{
 				"type": "text",
 				"text": "",
-			},
+			}),
 		},
 		{
 			Event: streamevents.EventContentBlockDelta,
 			Index: 0,
-			Delta: messages.ContentBlock{
+			Delta: messages.ParseContentBlock(map[string]any{
 				"type": "text-delta",
 				"text": "native",
-			},
+			}),
 		},
 		{
 			Event: streamevents.EventContentBlockFinish,
 			Index: 0,
-			Content: messages.ContentBlock{
+			Content: messages.ParseContentBlock(map[string]any{
 				"type": "text",
 				"text": "native",
-			},
+			}),
 		},
 		{Event: streamevents.EventMessageFinish, Output: messages.AI("native")},
 	}

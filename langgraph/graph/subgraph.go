@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -151,8 +152,8 @@ func (g *StateGraph) AddSubgraph(name string, child *CompiledGraph) *StateGraph 
 		g.setErr(fmt.Errorf("graph: subgraph %q must not be nil", name))
 		return g
 	}
-	return g.AddNode(name, func(ctx context.Context, state map[string]any) (any, error) {
-		return invokeSubgraph(ctx, name, child, state)
+	return g.AddNode(name, func(rt runtime.Runtime, state map[string]any) (any, error) {
+		return invokeSubgraph(rt, name, child, state)
 	})
 }
 

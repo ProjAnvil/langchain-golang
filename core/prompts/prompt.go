@@ -220,7 +220,7 @@ func (t TextContentTemplate) FormatContentBlock(values map[string]any) (messages
 	if text == "" {
 		return nil, false, nil
 	}
-	return messages.ContentBlock{"type": "text", "text": text}, true, nil
+	return messages.TextBlock{Text: text}, true, nil
 }
 
 // ImagePromptTemplate renders image_url content.
@@ -289,7 +289,7 @@ func (t ImagePromptTemplate) FormatContentBlock(values map[string]any) (messages
 	if err != nil {
 		return nil, false, err
 	}
-	return messages.ContentBlock{"type": "image_url", "image_url": payload}, true, nil
+	return messages.NonStandardContentBlock{Type: "image_url", Value: map[string]any{"image_url": payload}}, true, nil
 }
 
 // DictContentTemplate renders an arbitrary dictionary content block.
@@ -318,7 +318,7 @@ func (t DictContentTemplate) FormatContentBlock(values map[string]any) (messages
 	if err != nil {
 		return nil, false, err
 	}
-	return messages.ContentBlock(rendered), true, nil
+	return messages.ParseContentBlock(rendered), true, nil
 }
 
 // RichChatMessageTemplate renders multimodal content blocks for one chat

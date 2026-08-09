@@ -193,23 +193,24 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 			Index: event.OutputIndex,
-			Content: messages.ContentBlock{
-				"type": "tool_call",
-				"id":   event.Item.CallID,
-				"name": event.Item.Name,
-				"args": map[string]any{},
+			Content: messages.ToolCallBlock{
+				ID:   event.Item.CallID,
+				Name: event.Item.Name,
+				Args: map[string]any{},
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
-		chunk.ContentBlocks = []messages.ContentBlock{{
-			"type":      "function_call",
-			"id":        event.Item.ID,
-			"call_id":   event.Item.CallID,
-			"name":      event.Item.Name,
-			"arguments": event.Item.Arguments,
-			"index":     event.OutputIndex,
+		chunk.ContentBlocks = []messages.ContentBlock{messages.NonStandardContentBlock{
+			Type: "function_call",
+			Value: map[string]any{
+				"id":        event.Item.ID,
+				"call_id":   event.Item.CallID,
+				"name":      event.Item.Name,
+				"arguments": event.Item.Arguments,
+				"index":     event.OutputIndex,
+			},
 		}}
 		if err := emitStream(ctx, s.cfg, chunk); err != nil {
 			return messages.Message{}, false, err
@@ -221,18 +222,20 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: event.OutputIndex,
-			Delta: messages.ContentBlock{
-				"type": "tool_call_chunk",
-				"args": event.Delta,
+			Delta: messages.NonStandardContentBlock{
+				Type:  "tool_call_chunk",
+				Value: map[string]any{"args": event.Delta},
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
-		chunk.ContentBlocks = []messages.ContentBlock{{
-			"type":      "function_call",
-			"arguments": event.Delta,
-			"index":     event.OutputIndex,
+		chunk.ContentBlocks = []messages.ContentBlock{messages.NonStandardContentBlock{
+			Type: "function_call",
+			Value: map[string]any{
+				"arguments": event.Delta,
+				"index":     event.OutputIndex,
+			},
 		}}
 		if err := emitStream(ctx, s.cfg, chunk); err != nil {
 			return messages.Message{}, false, err
@@ -279,11 +282,10 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 			if err := s.emitProtocol(ctx, streamevents.Event{
 				Event: streamevents.EventContentBlockFinish,
 				Index: event.OutputIndex,
-				Content: messages.ContentBlock{
-					"type": "tool_call",
-					"id":   toolCall.ID,
-					"name": toolCall.Name,
-					"args": toolCall.Args,
+				Content: messages.ToolCallBlock{
+					ID:   toolCall.ID,
+					Name: toolCall.Name,
+					Args: toolCall.Args,
 				},
 			}); err != nil {
 				return messages.Message{}, false, err
@@ -296,10 +298,9 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 			if err := s.emitProtocol(ctx, streamevents.Event{
 				Event: streamevents.EventContentBlockFinish,
 				Index: event.OutputIndex,
-				Content: messages.ContentBlock{
-					"type": "invalid_tool_call",
-					"id":   call.ID,
-					"name": call.Name,
+				Content: messages.NonStandardContentBlock{
+					Type: "invalid_tool_call",
+					Value: map[string]any{"id": call.ID, "name": call.Name},
 				},
 			}); err != nil {
 				return messages.Message{}, false, err
@@ -315,18 +316,17 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: event.OutputIndex,
-			Delta: messages.ContentBlock{
-				"type":      "reasoning-delta",
-				"reasoning": event.Delta,
+			Delta: messages.NonStandardContentBlock{
+				Type:  "reasoning-delta",
+				Value: map[string]any{"reasoning": event.Delta},
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
-		chunk.ContentBlocks = []messages.ContentBlock{{
-			"type":      "reasoning",
-			"reasoning": event.Delta,
-			"index":     event.OutputIndex,
+		chunk.ContentBlocks = []messages.ContentBlock{messages.ReasoningBlock{
+			Reasoning: event.Delta,
+			Index:     event.OutputIndex,
 		}}
 		if err := emitStream(ctx, s.cfg, chunk); err != nil {
 			return messages.Message{}, false, err
@@ -345,9 +345,9 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		}
 		return messages.Message{}, false, nil
 	case "response.refusal.done":
-		block := messages.ContentBlock{
-			"type":    "refusal",
-			"refusal": event.Refusal,
+		block := messages.NonStandardContentBlock{
+			Type: "refusal",
+			Value: map[string]any{"refusal": event.Refusal},
 		}
 		chunk := messages.AI("")
 		chunk.ContentBlocks = []messages.ContentBlock{block}
@@ -488,9 +488,8 @@ func (s *responseStream) emitTextDelta(ctx context.Context, index int, text stri
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 			Index: index,
-			Content: messages.ContentBlock{
-				"type": "text",
-				"text": "",
+			Content: messages.TextBlock{
+				Text: "",
 			},
 		}); err != nil {
 			return err
@@ -500,9 +499,9 @@ func (s *responseStream) emitTextDelta(ctx context.Context, index int, text stri
 	return s.emitProtocol(ctx, streamevents.Event{
 		Event: streamevents.EventContentBlockDelta,
 		Index: index,
-		Delta: messages.ContentBlock{
-			"type": "text-delta",
-			"text": text,
+		Delta: messages.NonStandardContentBlock{
+			Type:  "text-delta",
+			Value: map[string]any{"text": text},
 		},
 	})
 }
@@ -516,9 +515,8 @@ func (s *responseStream) finishTextBlock(ctx context.Context, index int) error {
 	return s.emitProtocol(ctx, streamevents.Event{
 		Event: streamevents.EventContentBlockFinish,
 		Index: index,
-		Content: messages.ContentBlock{
-			"type": "text",
-			"text": block.text,
+		Content: messages.TextBlock{
+			Text: block.text,
 		},
 	})
 }
@@ -554,7 +552,9 @@ func (s *responseStream) emitOutputItemFinish(ctx context.Context, index int, it
 	if item.Type == "reasoning" {
 		if reasoning := s.reasoningBlocks[index]; reasoning != nil {
 			if reasoning.text != "" {
-				block["reasoning"] = reasoning.text
+				m := messages.BlockToMap(block)
+				m["reasoning"] = reasoning.text
+				block = messages.ParseContentBlock(m)
 			}
 			delete(s.reasoningBlocks, index)
 		}
@@ -567,15 +567,15 @@ func (s *responseStream) emitOutputItemFinish(ctx context.Context, index int, it
 }
 
 func contentBlockFromOutputItem(item outputItem, index int) messages.ContentBlock {
-	block := messages.ContentBlock{}
+	m := make(map[string]any, len(item.Raw)+2)
 	for key, value := range item.Raw {
-		block[key] = value
+		m[key] = value
 	}
-	if block["type"] == nil {
-		block["type"] = item.Type
+	if m["type"] == nil {
+		m["type"] = item.Type
 	}
-	block["index"] = index
-	return block
+	m["index"] = index
+	return messages.ParseContentBlock(m)
 }
 
 func isProtocolOutputItem(itemType string) bool {

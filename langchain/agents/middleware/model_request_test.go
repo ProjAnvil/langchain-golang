@@ -70,8 +70,8 @@ func TestModelRequestCreatesWithVariousSystemInputs(t *testing.T) {
 func TestModelRequestSystemPromptWithContentBlocks(t *testing.T) {
 	systemMessage := messages.System("")
 	systemMessage.ContentBlocks = []messages.ContentBlock{
-		{"type": "text", "text": "Part 1"},
-		{"type": "text", "text": "Part 2"},
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": "Part 1"}),
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": "Part 2"}),
 	}
 	request, err := NewModelRequest(ModelRequest{
 		Model:         "fake",

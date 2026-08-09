@@ -330,9 +330,9 @@ func TestProviderStrategyBindingParseContentBlocks(t *testing.T) {
 	binding := ProviderStrategyBindingFromSchemaSpec(NewSchemaSpec(weatherSchema()))
 	msg := messages.AI("")
 	msg.ContentBlocks = []messages.ContentBlock{
-		{"content": `{"temperature":`},
-		{"type": "text", "text": `75,`},
-		{"type": "text", "text": `"condition":"sunny"}`},
+		messages.ParseContentBlock(map[string]any{"content": `{"temperature":`}),
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": `75,`}),
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": `"condition":"sunny"}`}),
 	}
 
 	parsed, err := binding.Parse(msg)

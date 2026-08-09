@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -20,17 +21,17 @@ func TestResumeReplaysGotoOnlySibling(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	var aRuns, bRuns, cRuns int32
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&aRuns, 1)
 		return &types.Command{Goto: To("c")}, nil // routing only, no update
 	})
-	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&bRuns, 1)
 		Interrupt(ctx, "pause-b")
 		return nil, nil
 	})
-	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&cRuns, 1)
 		return map[string]any{"c_ran": true}, nil
 	})
@@ -111,21 +112,21 @@ func TestResumeMultiDestinationGotoAllSurvive(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	var aRuns, bRuns, cRuns, dRuns int32
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&aRuns, 1)
 		return &types.Command{Goto: To("c", "d")}, nil // routing only, no update
 	})
-	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&bRuns, 1)
 		Interrupt(ctx, "pause-b")
 		return nil, nil
 	})
-	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&cRuns, 1)
 		return map[string]any{"c_ran": true}, nil
 	})
-	g.AddNode("d", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("d", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&dRuns, 1)
 		return map[string]any{"d_ran": true}, nil
 	})
@@ -212,11 +213,11 @@ func TestInterruptUpdateStateResumeHITL(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	var draftRuns, reviewRuns int32
-	g.AddNode("draft", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("draft", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&draftRuns, 1)
 		return map[string]any{"draft": "v1"}, nil
 	})
-	g.AddNode("review", func(ctx context.Context, state map[string]any) (any, error) {
+	g.AddNode("review", func(ctx runtime.Runtime, state map[string]any) (any, error) {
 		atomic.AddInt32(&reviewRuns, 1)
 		if state["approved"] == true {
 			return map[string]any{"status": "published"}, nil
@@ -307,11 +308,11 @@ func TestInterruptUpdateStateResumeHITL(t *testing.T) {
 func multiInterruptGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
 	t.Helper()
 	g := NewStateGraph()
-	g.AddNode("prepare", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("prepare", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		count, _ := state["count"].(int)
 		return map[string]any{"count": count + 10}, nil
 	})
-	g.AddNode("multi_interrupt", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("multi_interrupt", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		first := Interrupt(ctx, "First question?")
 		second := Interrupt(ctx, "Second question?")
 		return map[string]any{"data": fmt.Sprintf("%v,%v", first, second)}, nil
@@ -435,7 +436,7 @@ func TestResumePauseCheckpointPersistsResumePrefix(t *testing.T) {
 func TestResumeChainedInterruptPrefixAccumulates(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("chain", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("chain", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		a := Interrupt(ctx, "q0")
 		b := Interrupt(ctx, "q1")
 		c := Interrupt(ctx, "q2")
@@ -543,7 +544,7 @@ func TestResumeNilResumeRepauses(t *testing.T) {
 func TestResumeNilResumeRepausesKeepsPrefix(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("chain", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("chain", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		a := Interrupt(ctx, "q0")
 		b := Interrupt(ctx, "q1")
 		c := Interrupt(ctx, "q2")

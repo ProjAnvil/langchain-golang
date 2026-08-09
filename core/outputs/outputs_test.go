@@ -24,9 +24,9 @@ func TestChatGenerationTextFromBlocks(t *testing.T) {
 	gen := NewChatGeneration(messages.Message{
 		Role: messages.RoleAI,
 		ContentBlocks: []messages.ContentBlock{
-			{"type": "text", "text": "a"},
-			{"text": "b"},
-			{"type": "image", "text": "ignored"},
+			messages.TextBlock{Text: "a"},
+			messages.NonStandardContentBlock{Type: "", Value: map[string]any{"text": "b"}},
+			messages.NonStandardContentBlock{Type: "image", Value: map[string]any{"text": "ignored"}},
 		},
 	}, nil)
 	if gen.Text != "ab" {

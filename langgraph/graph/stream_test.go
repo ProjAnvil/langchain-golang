@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -32,13 +33,13 @@ func collectStream(t *testing.T, seq iter.Seq2[StreamChunk, error]) ([]StreamChu
 func streamLinearGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
 	t.Helper()
 	g := NewStateGraph()
-	g.AddNode("n1", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("n1", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"v": state["v"].(int) + 1}, nil
 	})
-	g.AddNode("n2", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n2", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return nil, nil
 	})
-	g.AddNode("n3", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("n3", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"v": state["v"].(int) + 1}, nil
 	})
 	g.AddEdge(types.START, "n1")
@@ -234,13 +235,13 @@ func TestStreamMultiMode(t *testing.T) {
 func streamFanoutInterruptGraph(t *testing.T) *CompiledGraph {
 	t.Helper()
 	g := NewStateGraph()
-	g.AddNode("start", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"v": state["v"].(int) + 1}, nil
 	})
-	g.AddNode("worker", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("worker", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"w": "done"}, nil
 	})
-	g.AddNode("pause", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("pause", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		v := Interrupt(ctx, "need input")
 		return map[string]any{"p": v}, nil
 	})
@@ -341,7 +342,7 @@ func TestStreamResumeReplaysUpdates(t *testing.T) {
 func streamSubgraphParent(t *testing.T, opts ...CompileOption) *CompiledGraph {
 	t.Helper()
 	child := NewStateGraph()
-	child.AddNode("c1", func(_ context.Context, _ map[string]any) (any, error) {
+	child.AddNode("c1", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"x": "child"}, nil
 	})
 	child.AddEdge(types.START, "c1")
@@ -352,7 +353,7 @@ func streamSubgraphParent(t *testing.T, opts ...CompileOption) *CompiledGraph {
 	}
 
 	parent := NewStateGraph()
-	parent.AddNode("p1", func(_ context.Context, state map[string]any) (any, error) {
+	parent.AddNode("p1", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"v": state["v"].(int) + 1}, nil
 	})
 	parent.AddSubgraph("sub", childCg)
@@ -427,7 +428,7 @@ func TestStreamSubgraphNamespacesWithCheckpointer(t *testing.T) {
 func TestStreamEarlyBreakCancels(t *testing.T) {
 	g := NewStateGraph()
 	var calls atomic.Int64
-	g.AddNode("loop", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("loop", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		n := calls.Add(1)
 		return map[string]any{"n": n}, nil
 	})
@@ -490,7 +491,7 @@ func TestStreamUnknownMode(t *testing.T) {
 func TestStreamWriterAfterRunEnd(t *testing.T) {
 	var writer StreamWriter
 	g := NewStateGraph()
-	g.AddNode("n", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		writer = StreamWriterFromContext(ctx)
 		return nil, nil
 	})
@@ -513,7 +514,7 @@ func TestStreamWriterAfterRunEnd(t *testing.T) {
 func TestStreamNodeError(t *testing.T) {
 	g := NewStateGraph()
 	want := errors.New("boom")
-	g.AddNode("bad", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("bad", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return nil, want
 	})
 	g.AddEdge(types.START, "bad")

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -23,7 +24,7 @@ func TestNewTaskEmptyNamePanics(t *testing.T) {
 			t.Fatalf("recover = %v, want the empty-name panic", r)
 		}
 	}()
-	NewTask[int, int]("", func(context.Context, int) (int, error) { return 0, nil }, TaskOpts{})
+	NewTask[int, int]("", func(runtime.Runtime, int) (int, error) { return 0, nil }, TaskOpts{})
 }
 
 func TestNewTaskNilFuncPanics(t *testing.T) {
@@ -36,7 +37,7 @@ func TestNewTaskNilFuncPanics(t *testing.T) {
 }
 
 func TestCallOutsideEntrypointPanics(t *testing.T) {
-	task := NewTask[int, int]("x", func(_ context.Context, in int) (int, error) { return in, nil }, TaskOpts{})
+	task := NewTask[int, int]("x", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -53,7 +54,7 @@ func TestCallStartsImmediately(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
 	started := make(chan struct{})
-	task := NewTask[int, int]("double", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("double", func(_ runtime.Runtime, in int) (int, error) {
 		close(started)
 		return in * 2, nil
 	}, TaskOpts{})
@@ -73,7 +74,7 @@ func TestCallStartsImmediately(t *testing.T) {
 func TestConcurrentFutures(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
-	task := NewTask[int, int]("sleep", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("sleep", func(_ runtime.Runtime, in int) (int, error) {
 		// Later calls sleep less: an in-order result under a serial
 		// execution would take 20*(5+4+3+2+1) = 300ms.
 		time.Sleep(time.Duration(5-in) * 20 * time.Millisecond)
@@ -103,7 +104,7 @@ func TestConcurrentFutures(t *testing.T) {
 func TestCallCounterDeterministic(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
-	task := NewTask[int, int]("id", func(_ context.Context, in int) (int, error) { return in, nil }, TaskOpts{})
+	task := NewTask[int, int]("id", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
 
 	for i := 0; i < 3; i++ {
 		if v, err := task.Call(ctx, i).Get(ctx); err != nil || v != i {
@@ -128,11 +129,11 @@ func TestNestedTask(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
 	var aPath, bPath string
-	b := NewTask[int, int]("b", func(ctx context.Context, in int) (int, error) {
+	b := NewTask[int, int]("b", func(ctx runtime.Runtime, in int) (int, error) {
 		bPath, _ = ctx.Value(callPathKey{}).(string)
 		return in + 1, nil
 	}, TaskOpts{})
-	a := NewTask[int, int]("a", func(ctx context.Context, in int) (int, error) {
+	a := NewTask[int, int]("a", func(ctx runtime.Runtime, in int) (int, error) {
 		aPath, _ = ctx.Value(callPathKey{}).(string)
 		return b.Call(ctx, in).Get(ctx)
 	}, TaskOpts{})
@@ -165,7 +166,7 @@ func TestRetrySucceedsAfterFailures(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
 	var calls atomic.Int32
-	task := NewTask[int, int]("flaky", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("flaky", func(_ runtime.Runtime, in int) (int, error) {
 		if calls.Add(1) < 3 {
 			return 0, &net.DNSError{IsTimeout: true} // DefaultRetryOn retries net.Error
 		}
@@ -185,7 +186,7 @@ func TestRetryExhaustedReturnsLastError(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
 	var calls atomic.Int32
-	task := NewTask[int, int]("always", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("always", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
 		return 0, &net.DNSError{IsTimeout: true}
 	}, TaskOpts{Retry: &graph.RetryPolicy{MaxAttempts: 2, InitialInterval: time.Millisecond, NoJitter: true}})
@@ -208,7 +209,7 @@ func TestRetryOnFalseNeverRetries(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
 	var calls atomic.Int32
-	task := NewTask[int, int]("once", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("once", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
 		return 0, &net.DNSError{IsTimeout: true}
 	}, TaskOpts{Retry: &graph.RetryPolicy{
@@ -228,7 +229,7 @@ func TestRetryOnFalseNeverRetries(t *testing.T) {
 func TestTaskCache(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var calls atomic.Int32
-	task := NewTask[int, int]("double", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("double", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
 		return in * 2, nil
 	}, TaskOpts{Cache: &graph.CachePolicy{}})
@@ -272,7 +273,7 @@ func TestTaskCache(t *testing.T) {
 func TestCacheKeyFuncReceivesInputMap(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var got map[string]any
-	task := NewTask[int, int]("k", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("k", func(_ runtime.Runtime, in int) (int, error) {
 		return in, nil
 	}, TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(m map[string]any) (string, error) {
 		got = m
@@ -291,7 +292,7 @@ func TestCacheKeyFuncReceivesInputMap(t *testing.T) {
 func TestCacheKeyFuncErrorFailsTask(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	keyErr := errors.New("no key")
-	task := NewTask[int, int]("k", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("k", func(_ runtime.Runtime, in int) (int, error) {
 		return in, nil
 	}, TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(map[string]any) (string, error) {
 		return "", keyErr
@@ -311,7 +312,7 @@ func TestTaskTimeout(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
 	finished := make(chan struct{})
-	task := NewTask[int, int]("slow", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("slow", func(_ runtime.Runtime, in int) (int, error) {
 		time.Sleep(500 * time.Millisecond) // does not honor ctx
 		close(finished)
 		return in, nil
@@ -336,7 +337,7 @@ func TestTaskTimeout(t *testing.T) {
 func TestTaskPanicBecomesError(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
-	task := NewTask[int, int]("x", func(context.Context, int) (int, error) {
+	task := NewTask[int, int]("x", func(runtime.Runtime, int) (int, error) {
 		panic("boom")
 	}, TaskOpts{})
 
@@ -353,7 +354,7 @@ func TestTaskGraphInterruptPassthrough(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
 	gi := &types.GraphInterrupt{Interrupt: types.Interrupt{Value: "q", ID: "n-1"}}
-	task := NewTask[int, int]("intr", func(context.Context, int) (int, error) {
+	task := NewTask[int, int]("intr", func(runtime.Runtime, int) (int, error) {
 		panic(gi)
 	}, TaskOpts{})
 
@@ -377,7 +378,7 @@ func TestRunCancelNotRecorded(t *testing.T) {
 	d := newDispatcher(nil)
 	runCtx, cancel := context.WithCancel(context.Background())
 	ctx := contextWithDispatcher(runCtx, d)
-	task := NewTask[int, int]("block", func(ctx context.Context, _ int) (int, error) {
+	task := NewTask[int, int]("block", func(ctx runtime.Runtime, _ int) (int, error) {
 		<-ctx.Done()
 		return 0, ctx.Err()
 	}, TaskOpts{})
@@ -395,7 +396,7 @@ func TestRunCancelNotRecorded(t *testing.T) {
 func TestSealDropsLateResult(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
-	task := NewTask[int, int]("slow", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("slow", func(_ runtime.Runtime, in int) (int, error) {
 		time.Sleep(100 * time.Millisecond) // does not honor ctx
 		return 7, nil
 	}, TaskOpts{})
@@ -436,7 +437,7 @@ func TestCallReplayReturn(t *testing.T) {
 	id := graph.FnTaskID("cp1", "", 3, "a", "", 0)
 	d := replayDispatcher(t, checkpoint.Write{TaskID: id, Channel: checkpoint.ReservedReturn, Value: 21})
 	var calls atomic.Int32
-	task := NewTask[int, int]("a", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
 		return in * 2, nil
 	}, TaskOpts{})
@@ -460,7 +461,7 @@ func TestCallReplayError(t *testing.T) {
 	id := graph.FnTaskID("cp1", "", 3, "a", "", 0)
 	d := replayDispatcher(t, checkpoint.Write{TaskID: id, Channel: checkpoint.ReservedError, Value: "boom"})
 	var calls atomic.Int32
-	task := NewTask[int, int]("a", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
 		return in, nil
 	}, TaskOpts{})
@@ -481,7 +482,7 @@ func TestCallReplayError(t *testing.T) {
 func TestCallReplayTypeMismatch(t *testing.T) {
 	id := graph.FnTaskID("cp1", "", 3, "a", "", 0)
 	d := replayDispatcher(t, checkpoint.Write{TaskID: id, Channel: checkpoint.ReservedReturn, Value: "oops"})
-	task := NewTask[int, int]("a", func(_ context.Context, in int) (int, error) { return in, nil }, TaskOpts{})
+	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
 
 	_, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
 	if err == nil || !strings.Contains(err.Error(), `replayed result of task "a" has type string`) {
@@ -504,7 +505,7 @@ func TestCallReplayConcurrent(t *testing.T) {
 	}
 	d := replayDispatcher(t, writes...)
 	var calls atomic.Int32
-	task := NewTask[int, int]("a", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
 		return in, nil
 	}, TaskOpts{})
@@ -548,7 +549,7 @@ func TestCallReplayConcurrent(t *testing.T) {
 func TestTaskConcurrentStress(t *testing.T) {
 	d := newDispatcher(nil)
 	ctx := contextWithDispatcher(context.Background(), d)
-	task := NewTask[int, int]("work", func(_ context.Context, in int) (int, error) {
+	task := NewTask[int, int]("work", func(_ runtime.Runtime, in int) (int, error) {
 		time.Sleep(time.Millisecond)
 		return in * 2, nil
 	}, TaskOpts{})

@@ -168,9 +168,9 @@ func TestChatModelMapsImagesFromContentBlocks(t *testing.T) {
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	msg := messages.Human("")
 	msg.ContentBlocks = []messages.ContentBlock{
-		{"type": "text", "text": "describe this"},
-		{"type": "image", "base64": "data:image/png;base64,aGVsbG8="},
-		{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,c3Rhcg=="}},
+		messages.ParseContentBlock(map[string]any{"type": "text", "text": "describe this"}),
+		messages.ParseContentBlock(map[string]any{"type": "image", "base64": "data:image/png;base64,aGVsbG8="}),
+		messages.ParseContentBlock(map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,c3Rhcg=="}}),
 	}
 	_, err := model.Invoke(context.Background(), []messages.Message{msg})
 	if err != nil {

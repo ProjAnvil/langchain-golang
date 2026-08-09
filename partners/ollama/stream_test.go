@@ -129,7 +129,7 @@ func TestChatModelStreamProtocolEvents(t *testing.T) {
 		}
 	}
 	finish := events[4].Chunk.(streamevents.Event)
-	if finish.Content["text"] != "hello" {
+	if messages.BlockToMap(finish.Content)["text"] != "hello" {
 		t.Fatalf("finish content: %+v", finish.Content)
 	}
 	end := filterEvents(recorder.Events(), callbacks.EventChatModelEnd)
@@ -208,7 +208,7 @@ func TestChatModelStreamMultipleToolCalls(t *testing.T) {
 	if len(finishes) != 2 {
 		t.Fatalf("tool finish events: got %d want 2: %+v", len(finishes), finishes)
 	}
-	if finishes[0].Content["name"] != "add" || finishes[1].Content["name"] != "mul" {
+	if messages.BlockToMap(finishes[0].Content)["name"] != "add" || messages.BlockToMap(finishes[1].Content)["name"] != "mul" {
 		t.Fatalf("finish names: %+v %+v", finishes[0].Content, finishes[1].Content)
 	}
 	if finishes[0].Index == finishes[1].Index {
@@ -330,7 +330,7 @@ func TestChatModelStreamReasoning(t *testing.T) {
 		}
 		content += chunk.Content
 		for _, block := range chunk.ContentBlocks {
-			if r, ok := block["reasoning"].(string); ok {
+			if r, ok := messages.BlockToMap(block)["reasoning"].(string); ok {
 				reasoning += r
 			}
 		}
@@ -353,7 +353,7 @@ func TestChatModelStreamReasoning(t *testing.T) {
 	if reasoningFinish.Event == "" {
 		t.Fatal("missing reasoning finish event")
 	}
-	if reasoningFinish.Content["reasoning"] != "counting...rs" {
+	if messages.BlockToMap(reasoningFinish.Content)["reasoning"] != "counting...rs" {
 		t.Fatalf("reasoning finish: %+v", reasoningFinish.Content)
 	}
 }

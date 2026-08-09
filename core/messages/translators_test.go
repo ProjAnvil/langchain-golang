@@ -1,7 +1,6 @@
 package messages
 
 import (
-	"reflect"
 	"testing"
 )
 
@@ -10,7 +9,7 @@ func TestRegisterAndGetTranslator(t *testing.T) {
 	called := false
 	translator := func(msg Message) []ContentBlock {
 		called = true
-		return []ContentBlock{{"type": "text", "text": "translated"}}
+		return []ContentBlock{TextBlock{Text: "translated"}}
 	}
 	RegisterTranslator(provider, translator)
 
@@ -22,7 +21,8 @@ func TestRegisterAndGetTranslator(t *testing.T) {
 	if !called {
 		t.Fatal("translator not called")
 	}
-	if result[0]["text"] != "translated" {
+	m := BlockToMap(result[0])
+	if m["text"] != "translated" {
 		t.Fatalf("unexpected result: %v", result)
 	}
 }
@@ -37,7 +37,7 @@ func TestGetTranslatorMissing(t *testing.T) {
 func TestContentBlocksUsesTranslator(t *testing.T) {
 	provider := "test-prov-" + t.Name()
 	RegisterTranslator(provider, func(msg Message) []ContentBlock {
-		return []ContentBlock{{"type": "text", "text": "from-translator"}}
+		return []ContentBlock{TextBlock{Text: "from-translator"}}
 	})
 
 	msg := Message{
@@ -46,7 +46,7 @@ func TestContentBlocksUsesTranslator(t *testing.T) {
 		ResponseMetadata: map[string]any{"model_provider": provider},
 	}
 	blocks := ContentBlocks(msg)
-	if len(blocks) != 1 || blocks[0]["text"] != "from-translator" {
+	if len(blocks) != 1 || BlockToMap(blocks[0])["text"] != "from-translator" {
 		t.Fatalf("unexpected blocks: %v", blocks)
 	}
 }
@@ -55,11 +55,11 @@ func TestContentBlocksFallbackToExistingBlocks(t *testing.T) {
 	msg := Message{
 		Role: RoleAI,
 		ContentBlocks: []ContentBlock{
-			{"type": "text", "text": "block1"},
+			TextBlock{Text: "block1"},
 		},
 	}
 	blocks := ContentBlocks(msg)
-	if len(blocks) != 1 || blocks[0]["text"] != "block1" {
+	if len(blocks) != 1 || BlockToMap(blocks[0])["text"] != "block1" {
 		t.Fatalf("unexpected blocks: %v", blocks)
 	}
 }
@@ -67,7 +67,7 @@ func TestContentBlocksFallbackToExistingBlocks(t *testing.T) {
 func TestContentBlocksFallbackToContent(t *testing.T) {
 	msg := Message{Role: RoleAI, Content: "hello"}
 	blocks := ContentBlocks(msg)
-	if len(blocks) != 1 || blocks[0]["type"] != "text" || blocks[0]["text"] != "hello" {
+	if len(blocks) != 1 || BlockToMap(blocks[0])["type"] != "text" || BlockToMap(blocks[0])["text"] != "hello" {
 		t.Fatalf("unexpected blocks: %v", blocks)
 	}
 }
@@ -87,7 +87,7 @@ func TestContentBlocksUnknownProviderFallsBack(t *testing.T) {
 		ResponseMetadata: map[string]any{"model_provider": "no-translator-for-this"},
 	}
 	blocks := ContentBlocks(msg)
-	if len(blocks) != 1 || blocks[0]["text"] != "fallback" {
+	if len(blocks) != 1 || BlockToMap(blocks[0])["text"] != "fallback" {
 		t.Fatalf("unexpected blocks: %v", blocks)
 	}
 }
@@ -121,15 +121,15 @@ func TestRegisteredProviders(t *testing.T) {
 func TestRegisterTranslatorOverwrite(t *testing.T) {
 	provider := "test-overwrite-" + t.Name()
 	RegisterTranslator(provider, func(Message) []ContentBlock {
-		return []ContentBlock{{"text": "first"}}
+		return []ContentBlock{TextBlock{Text: "first"}}
 	})
 	RegisterTranslator(provider, func(Message) []ContentBlock {
-		return []ContentBlock{{"text": "second"}}
+		return []ContentBlock{TextBlock{Text: "second"}}
 	})
 
 	tr, _ := GetTranslator(provider)
 	result := tr(Message{})
-	if !reflect.DeepEqual(result, []ContentBlock{{"text": "second"}}) {
+	if len(result) != 1 || BlockToMap(result[0])["text"] != "second" {
 		t.Fatalf("expected second translator to win, got %v", result)
 	}
 }

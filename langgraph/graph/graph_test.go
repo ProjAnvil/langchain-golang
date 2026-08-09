@@ -12,15 +12,16 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 func TestLinearGraph(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("step1", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("step1", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"count": state["count"].(int) + 1}, nil
 	})
-	g.AddNode("step2", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("step2", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"count": state["count"].(int) + 10}, nil
 	})
 	g.AddEdge(types.START, "step1")
@@ -55,7 +56,7 @@ func TestReActLoopShape(t *testing.T) {
 	g.AddReducer("messages", channels.AppendSliceReducer)
 
 	calls := 0
-	g.AddNode("model", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("model", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		calls++
 		msgs, _ := state["messages"].([]string)
 		if len(msgs) >= 2 {
@@ -64,11 +65,11 @@ func TestReActLoopShape(t *testing.T) {
 		}
 		return map[string]any{"messages": []string{fmt.Sprintf("call-tool-%d", calls)}}, nil
 	})
-	g.AddNode("tools", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("tools", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"messages": []string{"tool-result"}}, nil
 	})
 	g.AddEdge(types.START, "model")
-	g.AddConditionalEdges("model", func(_ context.Context, state map[string]any) ([]any, error) {
+	g.AddConditionalEdges("model", func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		msgs, _ := state["messages"].([]string)
 		if len(msgs) > 0 && msgs[len(msgs)-1] == "final answer" {
 			return To(types.END), nil
@@ -100,17 +101,17 @@ func TestReActLoopShape(t *testing.T) {
 
 func TestCommandGotoAndUpdate(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return &types.Command{
 			Update: map[string]any{"visited": "a"},
 			Goto:   To("c"), // bypasses the static edge a->b
 		}, nil
 	})
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		t.Fatal("node b should not run when Command.Goto redirects to c")
 		return nil, nil
 	})
-	g.AddNode("c", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"visited": state["visited"].(string) + ",c"}, nil
 	})
 	g.AddEdge(types.START, "a")
@@ -140,7 +141,7 @@ func TestSendFanOut(t *testing.T) {
 
 	var concurrentNow int32
 	var maxConcurrent int32
-	g.AddNode("generate_joke", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("generate_joke", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		n := atomic.AddInt32(&concurrentNow, 1)
 		for {
 			old := atomic.LoadInt32(&maxConcurrent)
@@ -152,11 +153,11 @@ func TestSendFanOut(t *testing.T) {
 		subject := state["subject"].(string)
 		return map[string]any{"jokes": []string{"joke about " + subject}}, nil
 	})
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return nil, nil
 	})
 	g.AddEdge(types.START, "start")
-	g.AddConditionalEdges("start", func(_ context.Context, state map[string]any) ([]any, error) {
+	g.AddConditionalEdges("start", func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		subjects := state["subjects"].([]string)
 		dests := make([]any, len(subjects))
 		for i, s := range subjects {
@@ -186,7 +187,7 @@ func TestSendFanOut(t *testing.T) {
 func TestInterruptAndResume(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("ask_human", func(ctx context.Context, state map[string]any) (any, error) {
+	g.AddNode("ask_human", func(ctx runtime.Runtime, state map[string]any) (any, error) {
 		answer := Interrupt(ctx, "what is your name?")
 		return map[string]any{"name": answer}, nil
 	})
@@ -236,7 +237,7 @@ func TestInterruptAndResume(t *testing.T) {
 
 func TestResumeWithoutCheckpointerErrors(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("n", func(ctx context.Context, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("n", func(ctx runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddEdge(types.START, "n")
 	g.AddEdge("n", types.END)
 	cg, err := g.Compile()
@@ -254,7 +255,7 @@ func TestCompileErrors(t *testing.T) {
 	}
 
 	g := NewStateGraph()
-	g.AddNode("a", func(context.Context, map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(runtime.Runtime, map[string]any) (any, error) { return nil, nil })
 	g.AddEdge(types.START, "a")
 	g.AddEdge("a", "missing")
 	if _, err := g.Compile(); err == nil {
@@ -262,8 +263,8 @@ func TestCompileErrors(t *testing.T) {
 	}
 
 	dup := NewStateGraph()
-	dup.AddNode("a", func(context.Context, map[string]any) (any, error) { return nil, nil })
-	dup.AddNode("a", func(context.Context, map[string]any) (any, error) { return nil, nil })
+	dup.AddNode("a", func(runtime.Runtime, map[string]any) (any, error) { return nil, nil })
+	dup.AddNode("a", func(runtime.Runtime, map[string]any) (any, error) { return nil, nil })
 	if _, err := dup.Compile(); err == nil {
 		t.Fatal("expected error for duplicate node")
 	}
@@ -271,7 +272,7 @@ func TestCompileErrors(t *testing.T) {
 
 func TestNodeWithNoOutgoingEdgeErrors(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("a", func(context.Context, map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(runtime.Runtime, map[string]any) (any, error) { return nil, nil })
 	g.AddEdge(types.START, "a")
 	cg, err := g.Compile()
 	if err != nil {
@@ -284,7 +285,7 @@ func TestNodeWithNoOutgoingEdgeErrors(t *testing.T) {
 
 func TestUnsupportedCommandGraphErrors(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("a", func(context.Context, map[string]any) (any, error) {
+	g.AddNode("a", func(runtime.Runtime, map[string]any) (any, error) {
 		return &types.Command{Graph: types.ParentGraph}, nil
 	})
 	g.AddEdge(types.START, "a")
@@ -300,7 +301,7 @@ func TestUnsupportedCommandGraphErrors(t *testing.T) {
 
 func TestRecursionLimitExceeded(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("loop", func(context.Context, map[string]any) (any, error) { return nil, nil })
+	g.AddNode("loop", func(runtime.Runtime, map[string]any) (any, error) { return nil, nil })
 	g.AddEdge(types.START, "loop")
 	g.AddEdge("loop", "loop")
 	cg, err := g.Compile(WithRecursionLimit(5))
@@ -316,7 +317,7 @@ func TestRecursionLimitExceeded(t *testing.T) {
 func TestNodeErrorPropagates(t *testing.T) {
 	sentinel := errors.New("boom")
 	g := NewStateGraph()
-	g.AddNode("a", func(context.Context, map[string]any) (any, error) { return nil, sentinel })
+	g.AddNode("a", func(runtime.Runtime, map[string]any) (any, error) { return nil, sentinel })
 	g.AddEdge(types.START, "a")
 	g.AddEdge("a", types.END)
 	cg, err := g.Compile()
@@ -347,11 +348,11 @@ func TestCompiledGraph_InterruptBefore(t *testing.T) {
 	g := NewStateGraph()
 	aRuns := 0
 	bRuns := 0
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		aRuns++
 		return map[string]any{"a_ran": true}, nil
 	})
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		bRuns++
 		return map[string]any{"b_ran": true}, nil
 	})
@@ -413,11 +414,11 @@ func TestCompiledGraph_InterruptAfter(t *testing.T) {
 	g := NewStateGraph()
 	aRuns := 0
 	bRuns := 0
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		aRuns++
 		return map[string]any{"a_ran": true}, nil
 	})
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		bRuns++
 		return map[string]any{"b_ran": true}, nil
 	})
@@ -468,10 +469,10 @@ func TestCompiledGraph_InterruptAfter(t *testing.T) {
 // advancing exactly one boundary.
 func TestCompiledGraph_InterruptBeforeAndAfter(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"a_ran": true}, nil
 	})
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"b_ran": true}, nil
 	})
 	g.AddEdge(types.START, "a")
@@ -531,13 +532,13 @@ func TestCompiledGraph_InterruptBeforeAndAfter(t *testing.T) {
 func TestVersionedCheckpointBookkeeping(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("n1", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n1", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"k1": "v1"}, nil
 	})
-	g.AddNode("n2", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n2", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"k2": "v2"}, nil
 	})
-	g.AddNode("n3", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n3", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"k3": "v3"}, nil
 	})
 	g.AddEdge(types.START, "n1")
@@ -641,13 +642,13 @@ func TestSingleGlobalVersionPerSuperstep(t *testing.T) {
 	g := NewStateGraph()
 	g.AddReducer("ra", channels.AppendSliceReducer)
 	g.AddReducer("rb", channels.AppendSliceReducer)
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("writer", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("writer", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		key := state["key"].(string)
 		return map[string]any{key: []string{"x"}}, nil
 	})
 	g.AddEdge(types.START, "start")
-	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+	g.AddConditionalEdges("start", func(_ runtime.Runtime, _ map[string]any) ([]any, error) {
 		return []any{
 			&types.Send{Node: "writer", Arg: map[string]any{"key": "ra"}},
 			&types.Send{Node: "writer", Arg: map[string]any{"key": "rb"}},
@@ -682,12 +683,12 @@ func TestSingleGlobalVersionPerSuperstep(t *testing.T) {
 // *channels.InvalidUpdateError instead of silently picking a winner.
 func TestLastValueDoubleWriteInOneSuperstepErrors(t *testing.T) {
 	g := NewStateGraph()
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("worker", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("worker", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"out": state["subject"]}, nil
 	})
 	g.AddEdge(types.START, "start")
-	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+	g.AddConditionalEdges("start", func(_ runtime.Runtime, _ map[string]any) ([]any, error) {
 		return []any{
 			&types.Send{Node: "worker", Arg: map[string]any{"subject": "a"}},
 			&types.Send{Node: "worker", Arg: map[string]any{"subject": "b"}},
@@ -714,12 +715,12 @@ func TestLastValueDoubleWriteInOneSuperstepErrors(t *testing.T) {
 func TestReducerFoldOrderDeterministic(t *testing.T) {
 	g := NewStateGraph()
 	g.AddReducer("jokes", channels.AppendSliceReducer)
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("generate_joke", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("generate_joke", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		return map[string]any{"jokes": []string{"joke about " + state["subject"].(string)}}, nil
 	})
 	g.AddEdge(types.START, "start")
-	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+	g.AddConditionalEdges("start", func(_ runtime.Runtime, _ map[string]any) ([]any, error) {
 		dests := make([]any, 0, 4)
 		for _, s := range []string{"a", "b", "c", "d"} {
 			dests = append(dests, &types.Send{Node: "generate_joke", Arg: map[string]any{"subject": s}})
@@ -754,17 +755,17 @@ func TestAddChannelExpiryBetweenSupersteps(t *testing.T) {
 	g := NewStateGraph()
 	g.AddChannel("tmp", channels.NewEphemeral(false))
 	g.AddChannel("feed", channels.NewTopic(false))
-	g.AddNode("n1", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("n1", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"tmp": "t", "feed": "f", "keep": 1}, nil
 	})
 	n2Saw := map[string]bool{}
-	g.AddNode("n2", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("n2", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		_, n2Saw["tmp"] = state["tmp"]
 		_, n2Saw["feed"] = state["feed"]
 		return nil, nil
 	})
 	n3Saw := map[string]bool{}
-	g.AddNode("n3", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("n3", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		_, n3Saw["tmp"] = state["tmp"]
 		_, n3Saw["feed"] = state["feed"]
 		_, n3Saw["keep"] = state["keep"]
@@ -824,7 +825,7 @@ func TestAddChannelExpiryBetweenSupersteps(t *testing.T) {
 func TestCheckpointRetainedAfterCompletion(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"done": true}, nil
 	})
 	g.AddEdge(types.START, "a")
@@ -860,7 +861,7 @@ func TestNewTurnWithInputAfterCompletion(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	aRuns := 0
-	g.AddNode("a", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("a", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		aRuns++
 		return map[string]any{"y": state["x"].(int) + 1}, nil
 	})
@@ -920,12 +921,12 @@ func TestResumeSkipsCompletedSibling(t *testing.T) {
 	g := NewStateGraph()
 	g.AddReducer("log", channels.AppendSliceReducer)
 	var aRuns, bRuns int32
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&aRuns, 1)
 		return map[string]any{"log": []string{"a"}}, nil
 	})
-	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&bRuns, 1)
 		Interrupt(ctx, "pause-b")
 		return map[string]any{"log": []string{"b"}}, nil
@@ -994,23 +995,23 @@ func TestResumeRestoresCompletedTaskRouting(t *testing.T) {
 	g := NewStateGraph()
 	var aRuns, cRuns, dRuns int32
 	var dSawX atomic.Bool
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("a", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&aRuns, 1)
 		return &types.Command{
 			Update: map[string]any{"from": "a"},
 			Goto:   []any{"c", &types.Send{Node: "d", Arg: map[string]any{"x": 1}}},
 		}, nil
 	})
-	g.AddNode("b", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		Interrupt(ctx, "pause-b")
 		return nil, nil
 	})
-	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&cRuns, 1)
 		return map[string]any{"c_ran": true}, nil
 	})
-	g.AddNode("d", func(_ context.Context, state map[string]any) (any, error) {
+	g.AddNode("d", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		atomic.AddInt32(&dRuns, 1)
 		dSawX.Store(state["x"] == 1)
 		return nil, nil
@@ -1083,12 +1084,12 @@ func TestInterruptBeforeResumesAllSiblings(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	var bRuns, cRuns int32
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("b", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&bRuns, 1)
 		return map[string]any{"b_ran": true}, nil
 	})
-	g.AddNode("c", func(_ context.Context, _ map[string]any) (any, error) {
+	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		atomic.AddInt32(&cRuns, 1)
 		return map[string]any{"c_ran": true}, nil
 	})
@@ -1139,15 +1140,15 @@ func TestSameNodeFanOutInterruptsResumeByTaskID(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	var workerRuns int32
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("worker", func(ctx context.Context, state map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("worker", func(ctx runtime.Runtime, state map[string]any) (any, error) {
 		atomic.AddInt32(&workerRuns, 1)
 		k := state["k"].(string)
 		v := Interrupt(ctx, k)
 		return map[string]any{"out_" + k: v}, nil
 	})
 	g.AddEdge(types.START, "start")
-	g.AddConditionalEdges("start", func(_ context.Context, _ map[string]any) ([]any, error) {
+	g.AddConditionalEdges("start", func(_ runtime.Runtime, _ map[string]any) ([]any, error) {
 		return []any{
 			&types.Send{Node: "worker", Arg: map[string]any{"k": "x"}},
 			&types.Send{Node: "worker", Arg: map[string]any{"k": "y"}},
@@ -1208,7 +1209,7 @@ func TestSameNodeFanOutInterruptsResumeByTaskID(t *testing.T) {
 func TestResumeByInterruptIDMap(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("ask", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("ask", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		answer := Interrupt(ctx, "pick a color")
 		return map[string]any{"answer": answer}, nil
 	})
@@ -1244,12 +1245,12 @@ func TestResumeByInterruptIDMap(t *testing.T) {
 func TestResumeMapUnmatchedInterruptRepauses(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("start", func(_ context.Context, _ map[string]any) (any, error) { return nil, nil })
-	g.AddNode("askA", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("askA", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		v := Interrupt(ctx, "a?")
 		return map[string]any{"outA": v}, nil
 	})
-	g.AddNode("askB", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("askB", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		v := Interrupt(ctx, "b?")
 		return map[string]any{"outB": v}, nil
 	})
@@ -1313,7 +1314,7 @@ func TestResumeMapUnmatchedInterruptRepauses(t *testing.T) {
 func TestNilResumeInNodeInterruptRepauses(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	g.AddNode("ask", func(ctx context.Context, _ map[string]any) (any, error) {
+	g.AddNode("ask", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
 		answer := Interrupt(ctx, "pick a color")
 		return map[string]any{"answer": answer}, nil
 	})

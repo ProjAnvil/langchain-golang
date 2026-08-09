@@ -17,12 +17,12 @@ import (
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
-	"github.com/projanvil/langchain-golang/core/stores"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langchain/chatmodels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
+	storepkg "github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/partners/openai"
 )
 
@@ -747,8 +747,8 @@ func TestCreateAgent_InterruptBeforeNode(t *testing.T) {
 // mirroring Python's `create_agent(store=...)` (Go has no annotation-based
 // InjectedStore, so tools read the store explicitly off the request).
 func TestCreateAgent_StoreInjectedIntoTool(t *testing.T) {
-	store := stores.NewInMemoryStore[any]()
-	captured := make(chan stores.BaseStore[any], 1)
+	st := storepkg.NewInMemoryStore()
+	captured := make(chan storepkg.Store, 1)
 
 	tool, err := coretools.NewFunc("reader", "reads the store",
 		schema.Object(map[string]schema.Schema{"k": schema.String("key")}, "k"),
@@ -781,7 +781,7 @@ func TestCreateAgent_StoreInjectedIntoTool(t *testing.T) {
 	agent, err := CreateAgent(
 		model,
 		[]coretools.Tool{tool},
-		WithAgentStore(store),
+		WithAgentStore(st),
 		WithAgentMiddleware(storeCapturingMiddleware{fn: wrap}),
 	)
 	if err != nil {

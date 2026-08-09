@@ -8,6 +8,8 @@ import (
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
+	"github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -19,13 +21,18 @@ const (
 )
 
 // EntrypointOpts bundles the optional Entrypoint backends and policies,
-// mirroring `@entrypoint(checkpointer=..., cache=..., retry_policy=...)`.
-// Python's `store=` (cross-thread BaseStore) is NOT ported — documented
-// divergence.
+// mirroring `@entrypoint(checkpointer=..., store=..., cache=...,
+// retry_policy=...)`.
 type EntrypointOpts struct {
 	// Checkpointer enables cross-invocation state (previous) and
 	// interrupt/resume with task-result replay. Nil disables persistence.
 	Checkpointer checkpoint.Saver
+	// Store is the cross-thread BaseStore, mirroring Python's
+	// `@entrypoint(store=...)`. When non-nil it is installed on the internal
+	// graph via graph.WithStore and surfaced on Runtime.Store for the
+	// entrypoint function and every task it dispatches (see fn.Task). Nil
+	// disables the store; consumers nil-check rt.Store before use.
+	Store store.Store
 	// Cache is the backend for task-level Cache policies (TaskOpts.Cache)
 	// and is simply installed on the internal graph via graph.WithCache.
 	Cache checkpoint.Cache
@@ -55,16 +62,16 @@ type Entrypoint[I, O, S any] struct {
 // Construction panics if f is nil or the internal graph fails to compile
 // (programmer errors; the fixed graph shape cannot otherwise fail).
 func NewEntrypoint[I, O, S any](opts EntrypointOpts,
-	f func(ctx context.Context, in I, prev S, hasPrev bool) (O, error)) *Entrypoint[I, O, S] {
+	f func(rt runtime.Runtime, in I, prev S, hasPrev bool) (O, error)) *Entrypoint[I, O, S] {
 	if f == nil {
 		panic("fn: entrypoint function must be non-nil")
 	}
-	nodeFn := func(ctx context.Context, state map[string]any) (any, error) {
+	nodeFn := func(rt runtime.Runtime, state map[string]any) (any, error) {
 		in, prev, hasPrev, err := entrypointInput[I, S](state)
 		if err != nil {
 			return nil, err
 		}
-		v, err := f(ctx, in, prev, hasPrev)
+		v, err := f(rt, in, prev, hasPrev)
 		if err != nil {
 			return nil, err
 		}
@@ -89,16 +96,16 @@ type Final[O, S any] struct {
 
 // NewEntrypointFinal is NewEntrypoint for functions returning Final[O, S].
 func NewEntrypointFinal[I, O, S any](opts EntrypointOpts,
-	f func(ctx context.Context, in I, prev S, hasPrev bool) (Final[O, S], error)) *Entrypoint[I, O, S] {
+	f func(rt runtime.Runtime, in I, prev S, hasPrev bool) (Final[O, S], error)) *Entrypoint[I, O, S] {
 	if f == nil {
 		panic("fn: entrypoint function must be non-nil")
 	}
-	nodeFn := func(ctx context.Context, state map[string]any) (any, error) {
+	nodeFn := func(rt runtime.Runtime, state map[string]any) (any, error) {
 		in, prev, hasPrev, err := entrypointInput[I, S](state)
 		if err != nil {
 			return nil, err
 		}
-		fin, err := f(ctx, in, prev, hasPrev)
+		fin, err := f(rt, in, prev, hasPrev)
 		if err != nil {
 			return nil, err
 		}
@@ -148,6 +155,9 @@ func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) 
 	var copts []graph.CompileOption
 	if opts.Checkpointer != nil {
 		copts = append(copts, graph.WithCheckpointer(opts.Checkpointer))
+	}
+	if opts.Store != nil {
+		copts = append(copts, graph.WithStore(opts.Store))
 	}
 	if opts.Cache != nil {
 		copts = append(copts, graph.WithCache(opts.Cache))

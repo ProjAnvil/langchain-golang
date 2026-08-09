@@ -45,7 +45,7 @@ type ChatModelStream struct {
 	reasoningDeltas  []string
 	textByBlock      map[int]string
 	reasoningByBlock map[int]string
-	blocks           map[int]messages.ContentBlock
+	blocks           map[int]map[string]any
 
 	toolChunks       map[int]toolChunk
 	toolCalls        []messages.ToolCall
@@ -67,7 +67,7 @@ func NewChatModelStream() *ChatModelStream {
 	return &ChatModelStream{
 		textByBlock:      make(map[int]string),
 		reasoningByBlock: make(map[int]string),
-		blocks:           make(map[int]messages.ContentBlock),
+		blocks:           make(map[int]map[string]any),
 		toolChunks:       make(map[int]toolChunk),
 	}
 }
@@ -163,16 +163,20 @@ func (s *ChatModelStream) Output() (messages.Message, error) {
 }
 
 func (s *ChatModelStream) pushDelta(index int, delta messages.ContentBlock) {
-	switch delta["type"] {
+	if delta == nil {
+		return
+	}
+	m := messages.BlockToMap(delta)
+	switch m["type"] {
 	case "text-delta":
-		text, _ := delta["text"].(string)
+		text, _ := m["text"].(string)
 		if text == "" {
 			return
 		}
 		s.textDeltas = append(s.textDeltas, text)
 		s.textByBlock[index] += text
 	case "reasoning-delta":
-		reasoning, _ := delta["reasoning"].(string)
+		reasoning, _ := m["reasoning"].(string)
 		if reasoning == "" {
 			return
 		}
@@ -180,13 +184,13 @@ func (s *ChatModelStream) pushDelta(index int, delta messages.ContentBlock) {
 		s.reasoningByBlock[index] += reasoning
 	case "tool_call_chunk":
 		chunk := s.toolChunks[index]
-		if id, _ := delta["id"].(string); id != "" && chunk.ID == "" {
+		if id, _ := m["id"].(string); id != "" && chunk.ID == "" {
 			chunk.ID = id
 		}
-		if name, _ := delta["name"].(string); name != "" && chunk.Name == "" {
+		if name, _ := m["name"].(string); name != "" && chunk.Name == "" {
 			chunk.Name = name
 		}
-		if args, _ := delta["args"].(string); args != "" {
+		if args, _ := m["args"].(string); args != "" {
 			chunk.Args += args
 		}
 		s.toolChunks[index] = chunk
@@ -197,34 +201,34 @@ func (s *ChatModelStream) finishBlock(index int, block messages.ContentBlock) {
 	if block == nil {
 		return
 	}
-	block = cloneBlock(block)
-	switch block["type"] {
+	m := cloneBlockMap(messages.BlockToMap(block))
+	switch m["type"] {
 	case "text":
-		if text, _ := block["text"].(string); text != "" {
+		if text, _ := m["text"].(string); text != "" {
 			s.textByBlock[index] = text
 		}
-		block["text"] = s.textByBlock[index]
-		s.blocks[index] = block
+		m["text"] = s.textByBlock[index]
+		s.blocks[index] = m
 	case "reasoning":
-		if reasoning, _ := block["reasoning"].(string); reasoning != "" {
+		if reasoning, _ := m["reasoning"].(string); reasoning != "" {
 			s.reasoningByBlock[index] = reasoning
 		}
 		if reasoning := s.reasoningByBlock[index]; reasoning != "" {
-			block["reasoning"] = reasoning
+			m["reasoning"] = reasoning
 		}
-		s.blocks[index] = block
+		s.blocks[index] = m
 	case "tool_call":
-		call := toolCallFromBlock(block)
+		call := toolCallFromMap(m)
 		s.toolCalls = append(s.toolCalls, call)
 		delete(s.toolChunks, index)
-		s.blocks[index] = block
+		s.blocks[index] = m
 	case "invalid_tool_call":
-		call := toolCallFromBlock(block)
+		call := toolCallFromMap(m)
 		s.invalidToolCalls = append(s.invalidToolCalls, call)
 		delete(s.toolChunks, index)
-		s.blocks[index] = block
+		s.blocks[index] = m
 	default:
-		s.blocks[index] = block
+		s.blocks[index] = m
 	}
 }
 
@@ -256,7 +260,7 @@ func (s *ChatModelStream) sweepToolChunks() {
 		if chunk.Args != "" {
 			if err := json.Unmarshal([]byte(chunk.Args), &call.Args); err != nil {
 				s.invalidToolCalls = append(s.invalidToolCalls, call)
-				s.blocks[index] = messages.ContentBlock{
+				s.blocks[index] = map[string]any{
 					"type": "invalid_tool_call",
 					"id":   chunk.ID,
 					"name": chunk.Name,
@@ -266,7 +270,7 @@ func (s *ChatModelStream) sweepToolChunks() {
 			}
 		}
 		s.toolCalls = append(s.toolCalls, call)
-		s.blocks[index] = messages.ContentBlock{
+		s.blocks[index] = map[string]any{
 			"type": "tool_call",
 			"id":   chunk.ID,
 			"name": chunk.Name,
@@ -287,16 +291,16 @@ func (s *ChatModelStream) orderedBlocks() []messages.ContentBlock {
 	sort.Ints(indexes)
 	blocks := make([]messages.ContentBlock, 0, len(indexes))
 	for _, index := range indexes {
-		blocks = append(blocks, cloneBlock(s.blocks[index]))
+		blocks = append(blocks, messages.ParseContentBlock(cloneBlockMap(s.blocks[index])))
 	}
 	return blocks
 }
 
-func toolCallFromBlock(block messages.ContentBlock) messages.ToolCall {
+func toolCallFromMap(m map[string]any) messages.ToolCall {
 	call := messages.ToolCall{}
-	call.ID, _ = block["id"].(string)
-	call.Name, _ = block["name"].(string)
-	if args, ok := block["args"].(map[string]any); ok {
+	call.ID, _ = m["id"].(string)
+	call.Name, _ = m["name"].(string)
+	if args, ok := m["args"].(map[string]any); ok {
 		call.Args = cloneMap(args)
 	}
 	return call
@@ -324,8 +328,8 @@ func joinStrings(values []string) string {
 }
 
 func cloneEvent(event Event) Event {
-	event.Content = cloneBlock(event.Content)
-	event.Delta = cloneBlock(event.Delta)
+	event.Content = messages.CloneBlock(event.Content)
+	event.Delta = messages.CloneBlock(event.Delta)
 	event.Output = cloneMessage(event.Output)
 	if event.Extra != nil {
 		event.Extra = cloneMap(event.Extra)
@@ -349,16 +353,21 @@ func cloneBlocks(blocks []messages.ContentBlock) []messages.ContentBlock {
 	}
 	out := make([]messages.ContentBlock, len(blocks))
 	for i, block := range blocks {
-		out[i] = cloneBlock(block)
+		out[i] = messages.CloneBlock(block)
 	}
 	return out
 }
 
-func cloneBlock(block messages.ContentBlock) messages.ContentBlock {
-	if block == nil {
+// cloneBlockMap returns a shallow copy of m (nil-safe).
+func cloneBlockMap(m map[string]any) map[string]any {
+	if m == nil {
 		return nil
 	}
-	return messages.ContentBlock(cloneMap(map[string]any(block)))
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 func cloneToolCalls(calls []messages.ToolCall) []messages.ToolCall {
