@@ -38,37 +38,46 @@ func TestDeltaEmpty(t *testing.T) {
 	requireEmpty(t, ch)
 }
 
-// Baseline 1: Sentinel-only checkpoint; state reconstructed by replay.
+// Baseline 1: Checkpoint is a pure sentinel; state is reconstructed by replay.
+// DeltaChannel.Checkpoint always returns (nil, false) — the snapshot decision
+// lives in the executor (create_checkpoint writes a SnapshotBlob). Here we
+// verify the sentinel contract and that FromCheckpoint(sentinel)+ReplayWrites
+// reconstructs the accumulated value.
 func TestDeltaSentinelOnlyCheckpointAndReplay(t *testing.T) {
 	ch := newTestDelta(1000)
-	update(t, ch, []int{1, 2}) // first update; forces snapshot on first Checkpoint
+	update(t, ch, []int{1, 2})
 
-	// First checkpoint forces a snapshot (everSnapshotted == false).
-	cp, ok := ch.Checkpoint()
-	if !ok {
-		t.Fatal("first Checkpoint() ok = false, want true (forced snapshot)")
+	// Checkpoint is always a pure sentinel, regardless of snapshotFrequency.
+	if cp, ok := ch.Checkpoint(); ok {
+		t.Fatalf("Checkpoint() = (%v, true), want (nil, false) (pure sentinel)", cp)
 	}
-	ds, isSnap := asDeltaSnapshot(cp)
+
+	// SnapshotBlob is the executor's forced-snapshot primitive: it returns the
+	// current value as a deltaSnapshot blob without touching any cadence state.
+	blob, ok := ch.SnapshotBlob()
+	if !ok {
+		t.Fatal("SnapshotBlob() ok = false, want true (channel has a value)")
+	}
+	ds, isSnap := asDeltaSnapshot(blob)
 	if !isSnap {
-		t.Fatalf("first Checkpoint() = %T, want deltaSnapshot", cp)
+		t.Fatalf("SnapshotBlob() = %T, want deltaSnapshot", blob)
 	}
 	if !reflect.DeepEqual(ds, []int{1, 2}) {
 		t.Fatalf("snapshot value = %v, want [1 2]", ds)
 	}
 
-	// Subsequent updates within the snapshot frequency window.
+	// Further updates keep Checkpoint a sentinel; SnapshotBlob tracks the value.
 	update(t, ch, []int{3})
 	update(t, ch, []int{4})
-	if _, ok2 := ch.Checkpoint(); ok2 {
-		t.Fatal("second Checkpoint() ok = true, want false (sentinel-only between snapshots)")
+	if _, ok := ch.Checkpoint(); ok {
+		t.Fatal("Checkpoint() after more updates ok = true, want false (pure sentinel)")
 	}
 
-	// Simulate replay: restore from sentinel (nil), then replay writes.
+	// Simulate replay: restore from sentinel (nil), then replay ancestor writes.
 	restored := ch.FromCheckpoint(nil)
 	if restored.IsAvailable() {
 		t.Fatal("FromCheckpoint(nil) should start empty")
 	}
-	// Replay ancestor writes that occurred since the last snapshot.
 	delta := restored.(*DeltaChannel)
 	delta.ReplayWrites([]any{[]int{1, 2}, []int{3}, []int{4}})
 	if got := get(t, delta); !reflect.DeepEqual(got, []int{1, 2, 3, 4}) {
@@ -76,42 +85,40 @@ func TestDeltaSentinelOnlyCheckpointAndReplay(t *testing.T) {
 	}
 }
 
-// Baseline 2: snapshot_frequency triggers full snapshot blob every N updates.
+// Baseline 2: SnapshotBlob always reflects the current accumulated value
+// (snapshot cadence is decided externally by DeltaChannelsToSnapshot, not by
+// the channel), and SnapshotFrequency reports the configured cadence. The
+// per-channel update counter that used to drive Checkpoint no longer exists.
 func TestDeltaSnapshotFrequency(t *testing.T) {
 	ch := newTestDelta(3)
+	if got := ch.SnapshotFrequency(); got != 3 {
+		t.Fatalf("SnapshotFrequency() = %d, want 3", got)
+	}
 	update(t, ch, []int{1})
 
-	// First checkpoint: forced snapshot (everSnapshotted == false).
-	cp1, ok1 := ch.Checkpoint()
+	// Checkpoint is a sentinel; SnapshotBlob carries the value.
+	if _, ok := ch.Checkpoint(); ok {
+		t.Fatal("Checkpoint() ok = true, want false (pure sentinel)")
+	}
+	cp1, ok1 := ch.SnapshotBlob()
 	if !ok1 {
-		t.Fatal("first Checkpoint() ok = false, want true (forced)")
+		t.Fatal("SnapshotBlob() ok = false, want true")
 	}
 	if _, isSnap := asDeltaSnapshot(cp1); !isSnap {
-		t.Fatal("first Checkpoint() is not a deltaSnapshot")
+		t.Fatal("SnapshotBlob() is not a deltaSnapshot")
 	}
 
-	// 2nd update: still within window → sentinel.
+	// More updates: still sentinel via Checkpoint, value tracked via SnapshotBlob.
 	update(t, ch, []int{2})
-	if _, ok := ch.Checkpoint(); ok {
-		t.Fatal("Checkpoint() after 1 update since snapshot ok = true, want false (sentinel)")
-	}
-
-	// 3rd update since snapshot: triggers snapshot.
 	update(t, ch, []int{3})
 	update(t, ch, []int{4})
-	cp3, ok3 := ch.Checkpoint()
-	if !ok3 {
-		t.Fatal("Checkpoint() after 3 updates ok = false, want true (snapshot_frequency hit)")
+	if _, ok := ch.Checkpoint(); ok {
+		t.Fatal("Checkpoint() ok = true, want false (pure sentinel, cadence is external)")
 	}
-	val, _ := asDeltaSnapshot(cp3)
+	blob, _ := ch.SnapshotBlob()
+	val, _ := asDeltaSnapshot(blob)
 	if !reflect.DeepEqual(val, []int{1, 2, 3, 4}) {
 		t.Fatalf("snapshot value = %v, want [1 2 3 4]", val)
-	}
-
-	// Counter resets: next checkpoint after 1 update is sentinel again.
-	update(t, ch, []int{4})
-	if _, ok := ch.Checkpoint(); ok {
-		t.Fatal("Checkpoint() after 1 update since reset ok = true, want false (sentinel)")
 	}
 }
 
@@ -145,18 +152,23 @@ func TestDeltaOverwrite(t *testing.T) {
 	})
 }
 
-// Baseline 4: Fresh thread (no checkpoint) forces a snapshot on first write.
+// Baseline 4: a fresh channel's first write is observable via SnapshotBlob —
+// the primitive the executor's create_checkpoint uses for the fresh-thread
+// forced snapshot. Checkpoint itself stays a pure sentinel.
 func TestDeltaFreshThreadForcedSnapshot(t *testing.T) {
-	ch := newTestDelta(1000) // high frequency so it wouldn't normally fire
+	ch := newTestDelta(1000) // high frequency so cadence would not fire
 	update(t, ch, []int{42})
 
-	cp, ok := ch.Checkpoint()
+	if _, ok := ch.Checkpoint(); ok {
+		t.Fatal("Checkpoint() ok = true, want false (pure sentinel even on first write)")
+	}
+	cp, ok := ch.SnapshotBlob()
 	if !ok {
-		t.Fatal("first Checkpoint() on fresh channel ok = false, want true (forced snapshot)")
+		t.Fatal("SnapshotBlob() ok = false, want true (fresh-thread forced snapshot value)")
 	}
 	val, isSnap := asDeltaSnapshot(cp)
 	if !isSnap {
-		t.Fatalf("first Checkpoint() = %T, want deltaSnapshot", cp)
+		t.Fatalf("SnapshotBlob() = %T, want deltaSnapshot", cp)
 	}
 	if !reflect.DeepEqual(val, []int{42}) {
 		t.Fatalf("forced snapshot value = %v, want [42]", val)
@@ -191,24 +203,31 @@ func TestDeltaOverwriteJSONRoundtrip(t *testing.T) {
 	}
 }
 
-// Baseline 7: updateState metadata/counters survive delta channel
-// reconstruction. Here we verify that FromCheckpoint preserves the snapshot
-// cadence (everSnapshotted is carried forward) so a restored channel does not
-// re-trigger a forced snapshot.
+// Baseline 7: FromCheckpoint restores the accumulated value and preserves the
+// configured snapshot cadence (SnapshotFrequency). The per-channel cadence
+// counter that used to live on the instance (everSnapshotted) is gone —
+// cadence is tracked externally by the executor's per-channel counters — so a
+// restored channel simply carries its value and frequency, and Checkpoint
+// stays a pure sentinel.
 func TestDeltaFromCheckpointPreservesCadence(t *testing.T) {
 	ch := newTestDelta(1000)
 	update(t, ch, []int{1})
-	cp, _ := ch.Checkpoint() // forced snapshot
+	cp, _ := ch.SnapshotBlob() // executor-style forced snapshot blob
 
 	restored := ch.FromCheckpoint(cp)
 	delta := restored.(*DeltaChannel)
-	if !delta.everSnapshotted {
-		t.Fatal("FromCheckpoint(snapshot) everSnapshotted = false, want true")
+	if !delta.IsAvailable() {
+		t.Fatal("FromCheckpoint(snapshot) should be available")
 	}
-	// One update is within window → sentinel, not forced snapshot.
-	update(t, delta, []int{2})
+	if got := delta.SnapshotFrequency(); got != 1000 {
+		t.Fatalf("restored SnapshotFrequency() = %d, want 1000", got)
+	}
+	// The restored value is present; Checkpoint is still a pure sentinel.
+	if got := get(t, delta); !reflect.DeepEqual(got, []int{1}) {
+		t.Fatalf("restored Get() = %v, want [1]", got)
+	}
 	if _, ok := delta.Checkpoint(); ok {
-		t.Fatal("restored channel Checkpoint() after 1 update ok = true, want false (no forced snapshot)")
+		t.Fatal("restored Checkpoint() ok = true, want false (pure sentinel)")
 	}
 }
 
@@ -239,9 +258,9 @@ func TestDeltaPlainValueSeed(t *testing.T) {
 func TestDeltaSnapshotBlobJSONRoundtrip(t *testing.T) {
 	ch := newTestDelta(1000)
 	update(t, ch, []int{1, 2})
-	cp, ok := ch.Checkpoint()
+	cp, ok := ch.SnapshotBlob()
 	if !ok {
-		t.Fatal("Checkpoint() ok = false")
+		t.Fatal("SnapshotBlob() ok = false")
 	}
 	ds := cp.(deltaSnapshot)
 

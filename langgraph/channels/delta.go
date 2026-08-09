@@ -52,24 +52,23 @@ func BatchFromReducer(r Reducer) BatchReducer {
 // reducer channel that stores only a sentinel in checkpoint blobs and
 // reconstructs state by replaying ancestor writes through the reducer.
 //
-// Snapshot cadence: Checkpoint returns a full deltaSnapshot blob when EITHER
-// the channel has never been snapshotted (fresh-thread forced snapshot —
-// without it a fresh thread's sentinel-only checkpoint would have no ancestor
-// writes to replay) OR the per-channel update count reaches
-// SnapshotFrequency. Between snapshots Checkpoint returns (nil, false) so the
-// channel is omitted from ChannelValues; reconstruction walks ancestor writes.
+// Snapshot cadence lives entirely outside the channel: Checkpoint always
+// returns (nil, false) (a pure sentinel), so a DeltaChannel is omitted from a
+// checkpoint's ChannelValues unless the executor decides to snapshot it and
+// writes a SnapshotBlob itself (mirroring Python's create_checkpoint, which
+// writes _DeltaSnapshot(ch.get()) into channel_values independently of
+// DeltaChannel.checkpoint — delta.py:193-202). Between snapshots the channel
+// is sentinel-only; reconstruction walks ancestor writes via the saver.
 //
 // The reducer receives the current accumulated value and a batch of writes in
 // one call: reducer(state, [write1, write2, ...]) -> new_state. This differs
 // from BinaryOperator's one-at-a-time Reducer signature.
 type DeltaChannel struct {
-	reducer              BatchReducer
-	typ                  func() any // zero-value factory; nil → empty []any
-	snapshotFrequency    int
-	value                any
-	set                  bool // value is not MISSING
-	updatesSinceSnapshot int  // updates applied since the last snapshot blob
-	everSnapshotted      bool // has this instance ever emitted a snapshot blob
+	reducer           BatchReducer
+	typ               func() any // zero-value factory; nil → empty []any
+	snapshotFrequency int
+	value             any
+	set               bool // value is not MISSING
 }
 
 // NewDeltaChannel returns a DeltaChannel with the given batch reducer.
@@ -120,7 +119,6 @@ func (c *DeltaChannel) Update(values []any) (bool, error) {
 			c.value = c.typ()
 		}
 		c.set = true
-		c.updatesSinceSnapshot++
 		return true, nil
 	}
 	base := c.typ()
@@ -133,7 +131,6 @@ func (c *DeltaChannel) Update(values []any) (bool, error) {
 	}
 	c.value = next
 	c.set = true
-	c.updatesSinceSnapshot++
 	return true, nil
 }
 
@@ -150,29 +147,15 @@ func (c *DeltaChannel) IsAvailable() bool {
 	return c.set
 }
 
-// Checkpoint returns the serializable snapshot. Between snapshots it returns
-// (nil, false) so the channel is omitted from ChannelValues (sentinel-only
-// storage). A full deltaSnapshot blob is returned when the snapshot cadence
-// fires: on the channel's first-ever checkpoint (fresh-thread forced snapshot)
-// or when updatesSinceSnapshot reaches snapshotFrequency. After returning a
-// snapshot the counters reset.
-//
-// snapshotFrequency <= 1 means snapshot on every checkpoint — the correct mode
-// for the current Go executor, which does not persist per-task writes in the
-// normal flow (only in the interrupt path), so ancestor-write replay is not
-// available and sentinel-only storage would lose data. snapshotFrequency > 1
-// enables sentinel-only storage between snapshots, which requires executor
-// support for write persistence so reconstruction can replay them (a future
-// graph.go change).
+// Checkpoint returns the serializable snapshot: always (nil, false) — a pure
+// sentinel, mirroring Python's DeltaChannel.checkpoint (delta.py:193-202),
+// which always returns MISSING. Snapshot decisions live entirely in the
+// executor (create_checkpoint / saveCheckpoint), which writes a SnapshotBlob
+// into ChannelValues when DeltaChannelsToSnapshot decides this channel should
+// snapshot now. For non-snapshot steps the channel is omitted from
+// ChannelValues; reconstruction walks ancestor writes via the saver's
+// get_delta_channel_history (see graph.reconstructDeltaChannels).
 func (c *DeltaChannel) Checkpoint() (any, bool) {
-	if !c.set {
-		return nil, false
-	}
-	if c.snapshotFrequency <= 1 || !c.everSnapshotted || c.updatesSinceSnapshot >= c.snapshotFrequency {
-		c.everSnapshotted = true
-		c.updatesSinceSnapshot = 0
-		return deltaSnapshot{Value: c.value, Type: deltaSnapshotType}, true
-	}
 	return nil, false
 }
 
@@ -202,6 +185,10 @@ func (c *DeltaChannel) SnapshotFrequency() int { return c.snapshotFrequency }
 // (typed struct or JSON-roundtripped map) restores the value directly. Any
 // other value is a plain-value seed (migration from BinaryOperatorAggregate
 // blobs) used directly.
+//
+// The restored channel carries no cadence state: Checkpoint is a pure sentinel
+// and the snapshot cadence is tracked by the executor's per-channel counters,
+// not on the channel instance.
 func (c *DeltaChannel) FromCheckpoint(value any) Channel {
 	newc := &DeltaChannel{
 		reducer:           c.reducer,
@@ -215,13 +202,11 @@ func (c *DeltaChannel) FromCheckpoint(value any) Channel {
 	if v, ok := asDeltaSnapshot(value); ok {
 		newc.value = v
 		newc.set = true
-		newc.everSnapshotted = true
 		return newc
 	}
 	// Plain value (migration from old BinaryOperatorAggregate blobs).
 	newc.value = value
 	newc.set = true
-	newc.everSnapshotted = true
 	return newc
 }
 

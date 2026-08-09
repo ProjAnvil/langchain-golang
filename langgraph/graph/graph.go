@@ -883,6 +883,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if err := save(checkpoint.Metadata{Source: "input", Step: tup.Metadata.Step}, nil); err != nil {
 			return Result{}, err
 		}
+		// M2.2: persist delta-channel input writes AFTER the input checkpoint
+		// save (so they anchor on it) for ancestor-walk reconstruction.
+		if err := g.persistDeltaInputWrites(ctx, *currentCfg, input); err != nil {
+			return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
+		}
 		tasks = []task{{node: g.entry}}
 	default:
 		// Fresh start: the input is the first write batch.
@@ -896,6 +901,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if checkpointing {
 			if err := save(checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
 				return Result{}, err
+			}
+			// M2.2: persist delta-channel input writes AFTER the input checkpoint
+			// save (so they anchor on it) for ancestor-walk reconstruction.
+			if err := g.persistDeltaInputWrites(ctx, *currentCfg, input); err != nil {
+				return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
 			}
 		}
 		tasks = []task{{node: g.entry}}
@@ -1288,8 +1298,34 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			em.emitValues(merged)
 		}
 		if checkpointing {
+			// Capture the active tasks' planned identities before the save so
+			// each task's writes key under a stable, unique slot (M5: same
+			// plannedTasks+ID pattern as the interrupt path at the in-node
+			// interrupt block above). The loop checkpoint's Next carries the
+			// SUCCESSORS (nextTasks); the active tasks ran this superstep, so
+			// their IDs are stamped separately against the just-saved
+			// checkpoint below.
+			planned := plannedTasks(active)
 			if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step}, plannedTasks(nextTasks)); err != nil {
 				return Result{}, err
+			}
+			// M2.2: persist each active task's writes so a later GetState can
+			// reconstruct delta channels stored as sentinels by replaying
+			// ancestor writes (mirrors Python's per-task put_writes, which
+			// anchors each task's writes on the checkpoint that observed them).
+			for i := range planned {
+				planned[i].ID = TaskID(currentCfg.CheckpointID, rs.step+1, planned[i].Node, planned[i].Arg)
+			}
+			for i := range active {
+				writes, err := completedTaskWrites(outcomes[i].update, outcomes[i].cmd)
+				if err != nil {
+					return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
+				}
+				if len(writes) > 0 {
+					if err := g.checkpointer.PutWrites(ctx, *currentCfg, writes, planned[i].ID, ""); err != nil {
+						return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
+					}
+				}
 			}
 		}
 		tasks = nextTasks
@@ -1311,6 +1347,27 @@ func plannedTasks(tasks []task) []checkpoint.PlannedTask {
 		out = append(out, checkpoint.PlannedTask{Node: t.node, Arg: t.arg})
 	}
 	return out
+}
+
+// persistDeltaInputWrites persists the delta-channel entries of input as
+// pending writes (NullTaskID) against cfg, so a later GetState can reconstruct
+// them via the ancestor walk when the input checkpoint stored them as
+// sentinels (snapshotFrequency > 1, below cadence). Non-delta input keys are
+// always present in ChannelValues, so they need no write. Mirrors Python's
+// put_writes(NULL_TASK_ID, delta_input) (langgraph/pregel/_loop.py:1023-1030).
+// cfg must identify an already-saved checkpoint (PutWrites errors otherwise),
+// so callers invoke this AFTER the input checkpoint save.
+func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cfg checkpoint.Config, input map[string]any) error {
+	var deltaInput []checkpoint.Write
+	for k, v := range input {
+		if proto, ok := g.channelProtos[k]; ok && channels.IsDelta(proto) {
+			deltaInput = append(deltaInput, checkpoint.Write{Channel: k, Value: v})
+		}
+	}
+	if len(deltaInput) == 0 {
+		return nil
+	}
+	return g.checkpointer.PutWrites(ctx, cfg, deltaInput, checkpoint.NullTaskID, "")
 }
 
 // saveCheckpoint persists rs as a new checkpoint for opts.ThreadID with the
