@@ -26,11 +26,14 @@ type taskWrites struct {
 // per-node versions-seen bookkeeping, and the current superstep number
 // (-1 before the first superstep commits, mirroring Python's step counter).
 type runState struct {
-	protos   map[string]channels.Channel
-	channels map[string]channels.Channel
-	versions map[string]int64
-	seen     map[string]map[string]int64
-	step     int
+	protos            map[string]channels.Channel
+	channels          map[string]channels.Channel
+	versions          map[string]int64
+	seen              map[string]map[string]int64
+	step              int
+	deltaCounters     map[string][2]int // counters_since_delta_snapshot; nil if no delta channels
+	deltaOverwriteChs map[string]bool   // delta channels with Overwrite since last snapshot
+	updatedChannels   map[string]bool   // channels bumped this superstep
 }
 
 func newRunState(protos map[string]channels.Channel) *runState {
@@ -109,6 +112,31 @@ func (rs *runState) channelValues() map[string]any {
 	return out
 }
 
+// checkpointValues returns per-channel values for checkpoint storage. Delta
+// channels in channelsToSnapshot write a SnapshotBlob; other delta channels are
+// omitted (sentinel). Non-delta channels use Checkpoint() as before. Mirrors
+// Python's create_checkpoint channel_values assembly (_checkpoint.py:170-205).
+func (rs *runState) checkpointValues(channelsToSnapshot map[string]bool) map[string]any {
+	out := make(map[string]any, len(rs.channels))
+	for key, ch := range rs.channels {
+		if channelsToSnapshot != nil && channelsToSnapshot[key] {
+			if d, ok := channels.AsDelta(ch); ok && d.IsAvailable() {
+				if blob, ok := d.SnapshotBlob(); ok {
+					out[key] = blob
+				}
+			}
+			continue
+		}
+		if _, ok := channels.AsDelta(ch); ok {
+			continue // sentinel — omit non-snapshot delta channel
+		}
+		if v, ok := ch.Checkpoint(); ok {
+			out[key] = v
+		}
+	}
+	return out
+}
+
 // applyWrites commits one superstep's writes to the channels, implementing
 // Python's `apply_writes` algorithm (pregel/_algo.py):
 //
@@ -129,6 +157,12 @@ func (rs *runState) channelValues() map[string]any {
 // not in output_keys, so a superstep that only moved a barrier emits no
 // values chunk). Join channels still get their version bump.
 func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
+	// updatedChannels records the channels bumped this superstep; reset per
+	// call. deltaOverwriteChs is NOT reset here — it accumulates across
+	// supersteps until a snapshot clears it (matching Python's
+	// _delta_channels_with_overwrite, _loop.py:686-690).
+	rs.updatedChannels = make(map[string]bool)
+
 	for _, w := range writes {
 		if rs.seen[w.node] == nil {
 			rs.seen[w.node] = map[string]int64{}
@@ -174,6 +208,7 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 		written[key] = true
 		if changed {
 			rs.versions[key] = nextVersion
+			rs.updatedChannels[key] = true
 			if !isJoinKey(rs.protos, key) {
 				anyChanged = true
 			}
@@ -194,8 +229,26 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 		}
 		if changed {
 			rs.versions[key] = nextVersion
+			rs.updatedChannels[key] = true
 			if !isJoinKey(rs.protos, key) {
 				anyChanged = true
+			}
+		}
+	}
+
+	// Track delta channels that received an Overwrite (force snapshot on the
+	// next checkpoint). Mirrors Python _loop.py:686-690. This set accumulates
+	// across supersteps until a checkpoint clears it.
+	for _, w := range writes {
+		for key, v := range w.update {
+			if _, ok := channels.AsOverwrite(v); !ok {
+				continue
+			}
+			if _, isDelta := channels.AsDelta(rs.channels[key]); isDelta {
+				if rs.deltaOverwriteChs == nil {
+					rs.deltaOverwriteChs = make(map[string]bool)
+				}
+				rs.deltaOverwriteChs[key] = true
 			}
 		}
 	}
