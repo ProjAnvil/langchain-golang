@@ -1,109 +1,100 @@
 # langchain-golang
 
+[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-1382%20passing-brightgreen)]()
+[![Packages](https://img.shields.io/badge/packages-62-blue)]()
+
 **Languages:** English | [简体中文](README.zh-CN.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain) and [LangGraph](https://github.com/langchain-ai/langgraph) — build production-grade LLM agents and applications in pure Go.
 
-A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain) — the Python AI application framework. Build LLM agents and LLM applications in Go using LangChain's abstractions: chat models, tools, prompts, output parsers, messages, vector stores, retrievers, and the `create_agent` factory.
-
-> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality (`v0.3.1`); the public API may still change before `v1.0.0`.
-
-## What this is
-
-A Go port of:
-
-- **`langchain_core`** → `core/` — base abstractions and interfaces.
-- **`langchain`** (the actively-maintained `langchain_v1` package) → `langchain/` — concrete implementations, the agent factory, middleware, tools.
-- **`langchain_text_splitters`** → `textsplitters/`.
-- **`langchain-tests`** → `standardtests/` — shared conformance suites.
-- **`model-profiles`** → `modelprofiles/` + the `cmd/langchain-profiles` CLI.
-
-It is **not** a port of `langchain_classic` (the legacy package), and **not** a full port of `langgraph` — the ported graph runtime (channel objects, versioned checkpoints with history, time travel, subgraphs, stream modes, checkpoint serde, join edges (`AddJoinEdge`), a Postgres checkpoint saver, and the functional API (`fn` package)) lives in the public top-level `langgraph/` packages (see [Not supported](#-not-supported--out-of-scope) and the [graph runtime guide](docs/usage/langgraph.md)).
-
-All tests green: `go test ./...` — 1250+ tests across 52 packages.
+> **Not affiliated with or endorsed by LangChain, Inc.** Preview quality; the public API may change before `v1.0.0`.
 
 ---
 
-## ✅ Supported
+## Why langchain-golang?
 
-### Core (`core/`)
+| | langchain-golang | Python LangChain |
+|---|---|---|
+| **Language** | Go (statically typed, compiled) | Python |
+| **Concurrency** | Goroutines (native) | asyncio / threading |
+| **Deployment** | Single binary, no runtime deps | Python interpreter + venv |
+| **Type safety** | Compile-time checked | Runtime (Pydantic) |
+| **Checkpointer backends** | In-memory, SQLite, PostgreSQL | Same + Redis, MongoDB |
 
-`messages` (unified struct, content blocks, tool calls, trimming, serialization) · `runnables` (composition, batch, stream, fallback, branch, router, JSON/ASCII/Mermaid graph export) · `language` (`ChatModel` / `LLM` interfaces, fake models, **`ChatModel.Stream`**, rate-limiter hooks) · `tools` (base tool, render helpers, retriever-tool adapter) · `prompts` (string + structured + templated, local JSON loading) · `outputparser` (all parser variants, format instructions, partial parsing) · `callbacks` (manager fan-out, stdout/streaming/file handlers, usage aggregation) · `streamevents` (v3 content-block protocol, `ChatModelStream` projection) · `documents` · `documentloaders` · `indexing` (incl. SQL record manager) · `embeddings` · `vectorstores` (in-memory, filtering, MMR, retriever adapters) · `retrievers` · `exampleselectors` · `tracers` (context/root listener, memory, filtering, replay, event streaming, stdout) · `load` · `stores` · `caches` · `ratelimiters` · `retry` · `_api` (deprecation) · `_security` (SSRF protection, transport validation) · `utils` · `chathistory` · `httpclient` · `modelconfig` · `outputs` · `structuredoutput` · `schema`.
+## Features
 
-### LangChain v1 (`langchain/`)
+### 🤖 Agent Framework — `agents.CreateAgent`
 
-- `chatmodels` / `embeddings` — provider registries, parsing, init-spec boundaries.
-- `tools.ToolNode` — concurrent dispatch, unknown-tool errors, configurable error handling, `ToolCallWrapper`.
-- `messages`, `ratelimiters`.
+The Go equivalent of Python's `create_agent`, built on the `langgraph/` runtime:
 
-#### `agents.CreateAgent` — the Go equivalent of Python's `create_agent`
+- **Model ↔ Tools loop** with streaming, interrupts, and checkpointing
+- **17 middleware modules**: human-in-the-loop, context-editing (summarization), model/tool retry, fallback, call limits, PII redaction, shell execution, file search, TODO tracking, tool selection/emulation
+- **Structured output**: tool strategy, provider-native strategy, or auto-detect
+- **Cross-thread memory** via `store.Store` (semantic key-value with namespace hierarchy)
+- **Model-response caching** with per-node `CachePolicy`
+- **Interrupt / resume** round trips with versioned checkpoint history and time travel
 
-A model ↔ tools agent loop built on the public `langgraph/` graph runtime, with:
+### 🔄 Graph Runtime — `langgraph/`
 
-- **Middleware chain** — `WrapModelCall` / `WrapToolCall` (outermost-first), `BeforeModel` / `AfterModel` / `BeforeAgent` / `AfterAgent` hooks, `jump_to` short-circuit convention, `context.Context` on every hook (for interrupt).
-- **15 middleware modules**: human-in-the-loop, model-call-limit, model-fallback, model/tool-retry, tool-call-limit, context-editing, file-search (ripgrep fast path), pii/redaction, provider-tool-search, shell, summarization, todo, tool-emulator, tool-selection.
-- **`system_prompt`** — plain string **and** templated `PromptTemplate` (with per-call variables).
-- **`state_schema`** — custom graph-state fields via `StateField` + reducers (`WithAgentStateFields`).
-- **`context_schema`** — read-only runtime context over Go `context.Context` (`WithContextValues` / `ContextValue`).
-- **`response_format`** — `ToolStrategy`, `ProviderStrategy` (provider-native via `language.StructuredCaller` when the model implements it), and `AutoStrategy` (auto-selects between the two from the model's capabilities).
-- **`store`** — cross-thread KV store, injected into each tool call (`WithAgentStore`).
-- **`cache`** — model-response cache wired into the model-call path (`WithAgentCache`).
-- **`interrupt_before` / `interrupt_after`** — pause at named graph nodes (`WithAgentInterruptBefore` / `WithAgentInterruptAfter`).
-- **`model`** — pass a constructed `language.ChatModel`, **or** a bare `provider:model` string resolved via `chatmodels.Resolve` (`WithAgentModel("openai:gpt-4o")`).
-- **`tools`** — explicit tools, **or** Go callables reflected into tools via `core/tools.FromFunc` (the `@tool` equivalent).
-- **`checkpointer`** — in-memory saver with versioned checkpoints + history; **interrupt / resume** round trips, plus `GetState` / `GetStateHistory` / `UpdateState` and time travel via `Options.CheckpointID` on `Agent.Graph`.
-- `recursion_limit`, `name`, `debug`.
-- **Streaming** — `Agent.StreamEvents`: real per-token streaming (model deltas + tool/node lifecycle events) over `runnables.Stream[StreamEvent]`.
-- **Subagents (agent-as-tool)** — one agent delegates to a named inner agent via a hand-rolled tool whose body calls the inner agent's `InvokeWithState` (mirrors Python's `@tool` + `agent.invoke()`); the nested run is distinguishable by name via `NameFromContext`. A non-streaming nested invoke no longer leaks its events into a streaming parent's stream. See the [Subagents guide](docs/usage/agents.md).
+A Pregel-style state graph executor mirroring Python's LangGraph 1.2.x:
 
-### Text splitters, standard tests, model profiles
+- **StateGraph builder** with typed channels: `LastValue`, `Topic`, `BinaryOperator`, `Ephemeral`, `Barrier`, **`DeltaChannel`** (sentinel-only checkpoint storage with counter-based snapshot cadence), **`Overwrite`** reducer
+- **Checkpointing**: in-memory, SQLite (`modernc.org/sqlite`, pure Go), PostgreSQL (`pgx/v5`) — all sharing a conformance suite
+- **Durability modes**: `sync` (default), `async` (background goroutine writer), `exit` (deferred flush) via `checkpointSink`
+- **Stream API**: `values` / `updates` / `debug` / `messages` / `custom` / `delta` modes
+- **Functional API**: `@entrypoint` / `@task` equivalent (`langgraph/fn`)
+- **Subgraphs**, join edges (`AddJoinEdge`), per-node retry/cache policies
+- **TimeoutPolicy**: `run_timeout` / `idle_timeout` with heartbeat refresh
 
-- `textsplitters/` — full port (character, HTML, Markdown, code, recursive, header; sentence-transformers / NLTK / spaCy / KoNLPy adapter interfaces).
-- `standardtests/` — chat-model / embeddings / retriever / vector-store / runnable conformance suites.
-- `modelprofiles/` — profile registry, Markdown summary, the `langchain-profiles refresh` CLI (merges models.dev data + TOML overrides → `profiles.json`).
+### 🧱 Core Abstractions — `core/`
 
-### Partner packages
+30 packages porting `langchain_core`:
 
-`partners/openai` · `partners/anthropic` · `partners/ollama` (chat models & embeddings) · `partners/chroma` (vector store). `partners/openai` is a full integration — its `ChatModel` (Responses API: Invoke/Stream/tool-calling) implements `language.StructuredCaller` and self-registers into `chatmodels.Resolve`, so `WithAgentModel("openai:gpt-4o")` works out of the box. The others are usable integrations and validation aids; adapter slots for more partners.
+- **Messages**: unified `Message` struct, typed content blocks (text/image/audio/video/file/reasoning/citation/tool-call), tool calls, trimming, serialization
+- **Runnable composition (LCEL)**: `Pipe` / `Parallel` / `Branch` / `Fallbacks` / `Retry` with JSON/ASCII/Mermaid graph export
+- **Chat models**: `ChatModel` / `LLM` interfaces, streaming (`ChatModel.Stream`), rate limiting
+- **Tools**: base tool, `FromFunc` reflection-based tool creation (the `@tool` equivalent), retriever-tool adapter
+- **Prompts**: string, structured, and templated (`PromptTemplate`)
+- **Output parsers**: all variants with format instructions
+- **Vector stores**: in-memory with filtering, MMR, retriever adapters
+- **Callbacks, tracers, document loaders, indexers, embeddings, retrievers, example selectors**
 
----
+### 🔌 Partner Integrations
 
-## ❌ Not supported / out of scope
+| Partner | Chat Model | Embeddings | Vector Store | Self-registered |
+|---------|:---:|:---:|:---:|:---:|
+| **OpenAI** | ✅ | ✅ | — | ✅ (`init()`) |
+| **Anthropic** | ✅ | — | — | ✅ (`init()`) |
+| **Ollama** | ✅ | ✅ | — | ✅ (`init()`) |
+| **Chroma** | — | — | ✅ | — |
 
-### Deliberately not ported
-
-- **`langchain_classic`** — legacy chains, agents, memory, tools, retrievers, vectorstores, storage. The classic `AgentExecutor` is gone; use `agents.CreateAgent`.
-- **A full `langgraph` port**. The ported surface lives in the public top-level `langgraph/` packages (`langgraph/{types,channels,checkpoint,graph,prebuilt,fn}`) and covers the `create_agent` runtime plus: channel objects (`NewLastValue` / `NewTopic` / `NewBinaryOperator` / `NewEphemeral` via `AddChannel`), versioned checkpoints with history (`GetState` / `GetStateHistory` / `UpdateState`), time travel (`Options.CheckpointID`), subgraphs (`AddSubgraph`, parent-targeted `Command{Graph: types.ParentGraph}`), the `CompiledGraph.Stream` API with Python-parity stream modes (`values` / `updates` / `debug` / `messages` / `custom` over `iter.Seq2[StreamChunk, error]`), and checkpoint serde (`checkpoint.Serializer` + `checkpoint/serde`'s JSON serializer with a closed type registry), per-node retry/cache policies (`RetryPolicy` / `CachePolicy` via `AddNodeWithPolicies`, with `WithCache` + `checkpoint.NewInMemoryCache`), multi-parent barrier join edges (`AddJoinEdge`, the waiting-edge equivalent of Python's `add_edge((a, b), c)`), the functional API (`langgraph/fn`: `NewEntrypoint` / `NewEntrypointFinal` / `NewTask`, the `@entrypoint`/`@task` equivalent), Saver interface extensions (`ListOptions.Filter` metadata filtering, `PutWrites` task paths, and the shared `langgraph/checkpoint/savertest` conformance suite), and `prebuilt.ToolNode` (a graph-node adapter over `langchain/tools.ToolNode`); `langchain/internal/agentruntime/` remains only as a deprecated alias shim. Intentionally absent: a graph-level default retry policy, the langgraph CLI/SDK, `defer=True` nodes (`NamedBarrierValueAfterFinish`), Shallow saver variants, the delta channel history fast path, and the functional API's `store` parameter (Python's `@entrypoint(checkpointer=..., store=...)` cross-thread BaseStore is not ported). A SQLite checkpoint backend DOES exist as the nested module `langgraph/checkpoint/sqlite` (its own `go.mod`; the port's first third-party dependency, `modernc.org/sqlite`; test via `make test-sqlite`). A persistent Postgres checkpoint backend also DOES exist as the nested module `langgraph/checkpoint/postgres` (its own `go.mod`; the port's second third-party dependency, `pgx/v5`; explicit `Setup` runs the migrations; test via `make test-postgres`, which spins up an embedded Postgres and runs the shared `savertest` conformance suite). See the [graph runtime guide](docs/usage/langgraph.md).
-- **Subagent transformer (`transformers` / `run.subagents`)** — not exposed. `transformers` is a langgraph stream-mode construct built on Python's shape-shifting stream output, which the Go `Stream` API deliberately replaces with explicitly-typed `StreamChunk`s. The motivating feature — **PII streaming-delta redaction** — IS delivered, via a bounded middleware delta layer (`WrapModelStreamHook` + `PIIStreamTransformer`'s lookback buffer); batch redaction also works.
-
-### Limited partner coverage
-
-- Only `openai`, `anthropic`, `ollama`, `chroma`. **No Google/Gemini, AWS, Azure, Pinecone, etc.** — community contributions welcome.
-- `langchain/chatmodels` parses a model name to a `ChatModelSpec` **and** resolves it to a constructed partner `ChatModel` via the Go provider registry (`Resolve` + `RegisterProvider`); `WithAgentModel("openai:gpt-4o")` works end-to-end. (anthropic/ollama/chroma are not yet registered as real Go factories — pass a constructed `language.ChatModel` for those.)
-- `langchain/tools.ToolNode` does **not** support `Send` returned from tools, or reflection-based `InjectedState` / `InjectedStore` / `ToolRuntime` argument injection. A tool CAN signal graph control flow by placing a `*types.Command` in its `Result.Artifact` (surfaced by `ToolNode.InvokeToolCallsFull`); `langgraph/prebuilt.ToolNode` applies that convention to graph state — see the [graph runtime guide](docs/usage/langgraph.md).
-
-### Other gaps
-
-- `core/prompts` does not load YAML, Jinja templates, or `lc://` Hub prompts (string + local JSON only).
-- `core/runnables` PNG graph rendering is unsupported (JSON/ASCII/Mermaid are).
-- Python-style dynamic provider import / instance construction is unsupported — construct concrete models in Go.
-- **File tools** (`Read`/`Write`/`Edit`/`Bash`) and **sandboxing** are out of scope — those are provided by [`claude-agent-sdk-golang`](https://github.com/ProjAnvil/claude-agent-sdk-golang), not by LangChain.
-
-The support / gap tables above are the canonical compatibility reference. Open an issue if you need detail on a specific gap.
+All three chat-model providers self-register via `init()`, so `WithAgentModel("openai:gpt-4o")` resolves end-to-end. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`).
 
 ---
 
 ## Installation
 
 ```bash
-go get github.com/projanvil/langchain-golang@v0.3.1
+go get github.com/projanvil/langchain-golang
 ```
 
-Requires Go 1.23+.
+Requires **Go 1.23+**.
 
-## Quick start
+For checkpoint backends:
 
-A minimal runnable example using the in-tree fake model (swap in a partner `ChatModel` for production):
+```bash
+# SQLite (pure Go, no CGO)
+go get github.com/projanvil/langchain-golang/langgraph/checkpoint/sqlite
+
+# PostgreSQL
+go get github.com/projanvil/langchain-golang/langgraph/checkpoint/postgres
+```
+
+---
+
+## Quick Start
 
 ```go
 package main
@@ -118,25 +109,26 @@ import (
 )
 
 func main() {
+	// Use a fake model for this example; swap with a real provider for production:
+	//   agents.WithAgentModel("openai:gpt-4o")
 	model := language.NewFakeChatModel(
 		language.WithResponses(messages.AI("It's sunny in Shanghai.")),
 	)
 
 	agent, err := agents.CreateAgent(model, nil,
 		agents.WithAgentSystemPrompt("You are a helpful assistant."),
-		agents.WithAgentName("my-agent"),
 	)
 	if err != nil {
 		panic(err)
 	}
 
-	// Non-streaming:
+	// Invoke:
 	reply, _ := agent.Invoke(context.Background(), []messages.Message{
 		messages.User("What's the weather?"),
 	})
 	fmt.Println(reply[len(reply)-1].Content)
 
-	// Streaming:
+	// Stream:
 	stream, _ := agent.StreamEvents(context.Background(), []messages.Message{
 		messages.User("Tell me a story."),
 	})
@@ -152,40 +144,177 @@ func main() {
 }
 ```
 
-For a real model, either construct a `language.ChatModel` from a partner package (e.g. `partners/openai`, `partners/anthropic`, `partners/ollama`) and pass it positionally, **or** resolve one from a bare name string: `agents.CreateAgent(nil, nil, agents.WithAgentModel("openai:gpt-4o"))` (configure via `OPENAI_API_KEY` / `OPENAI_BASE_URL` env vars).
+### With Tools
+
+```go
+getWeather := coretools.FromFunc("get_weather",
+	"Get the weather for a city",
+	func(ctx context.Context, city string) (string, error) {
+		return "Sunny, 25°C", nil
+	})
+
+agent, _ := agents.CreateAgent(model, []language.Tool{getWeather},
+	agents.WithAgentSystemPrompt("Use tools to answer questions."))
+```
+
+### With Checkpointing + Interrupts
+
+```go
+saver := checkpoint.NewMemorySaver()
+agent, _ := agents.CreateAgent(model, tools,
+	agents.WithAgentCheckpointer(saver),
+	agents.WithAgentInterruptBefore("tools"))
+
+// First invoke pauses before tools:
+result, _ := agent.Invoke(ctx, msgs, agents.Options{ThreadID: "t1"})
+// result.Interrupts is non-empty
+
+// Resume:
+result, _ = agent.Invoke(ctx, nil, agents.Options{ThreadID: "t1"})
+
+// Inspect state at any time:
+state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
+```
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│                   agents.CreateAgent                   │
+│         (model ↔ tools loop + middleware chain)        │
+├──────────────────────────────────────────────────────┤
+│                    langgraph/                          │
+│  ┌──────────┐  ┌────────────┐  ┌───────────────────┐  │
+│  │ StateGraph│  │ checkpoint │  │   channels         │  │
+│  │  builder  │→ │  (memory / │  │ LastValue/Topic/  │  │
+│  │  + Pregel │  │  sqlite /  │  │ BinOp/Delta/      │  │
+│  │  executor │  │  postgres) │  │ Overwrite/Barrier │  │
+│  └──────────┘  └────────────┘  └───────────────────┘  │
+├──────────────────────────────────────────────────────┤
+│                     core/                             │
+│  messages · runnables · language · tools · prompts    │
+│  outputparser · callbacks · vectorstores · tracers    │
+├──────────────────────────────────────────────────────┤
+│              partners/ (openai, anthropic, ...)        │
+└──────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Documentation
 
-Usage guides live under [`docs/`](docs/) — example-driven, with every snippet offline-friendly (using the in-tree fake model unless noted):
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/usage/getting-started.md) | Install, configure a provider, run your first agent |
+| [Runnable Composition (LCEL)](docs/usage/composition.md) | `Pipe` / `Parallel` / `Branch` / `Fallbacks` — the Go LCEL |
+| [Agents — CreateAgent](docs/usage/agents.md) | System prompts, tools, middleware, structured output, interrupts |
+| [Streaming](docs/usage/streaming.md) | Per-token model deltas + tool/node lifecycle events |
+| [Graph Runtime](docs/usage/langgraph.md) | Stream modes, DeltaChannel, checkpoint serde, SQLite/Postgres savers |
 
-- [Getting started](docs/usage/getting-started.md) — install, configure a provider, run your first agent.
-- [Composing runnables (LCEL)](docs/usage/composition.md) — `Pipe` / `Pipe3-6` / `Parallel` / `Branch` / `Fallbacks` / `Retry`, the Go equivalent of Python's `prompt | model | parser`.
-- [Agents — `CreateAgent`](docs/usage/agents.md) — system prompts, tools, the 15-module middleware chain, structured output, interrupts.
-- [Streaming](docs/usage/streaming.md) — `Agent.StreamEvents`: per-token model deltas + tool/node lifecycle events.
-- [Graph runtime (`langgraph/`)](docs/usage/langgraph.md) — `CompiledGraph.Stream` stream modes, checkpoint serde, the SQLite and Postgres checkpoint savers, per-node retry/cache policies, join edges (`AddJoinEdge`), the functional API (`langgraph/fn`), `prebuilt.ToolNode`.
+API reference: [pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang)
 
-For the full API reference, see the package docs at [pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang). Compile-checked examples also live in each package's `example_test.go`.
+---
 
-## Repository layout
+## Repository Layout
 
 ```
 langchain-golang/
-├── core/                  # langchain_core port
-├── langgraph/             # langgraph port: StateGraph builder, Pregel executor, channel objects, versioned checkpoints + history, time travel, subgraphs, Stream API (values/updates/debug/messages/custom), checkpoint serde, per-node retry/cache policies, join edges (AddJoinEdge), functional API (fn), Postgres checkpoint saver, prebuilt.ToolNode
-│   ├── checkpoint/sqlite/ # nested Go module: SQLite checkpoint saver (modernc.org/sqlite, pure Go); test it with `make test-sqlite`
-│   ├── checkpoint/postgres/ # nested Go module: Postgres checkpoint saver (pgx/v5); test it with make test-postgres
-│   ├── checkpoint/savertest/ # shared checkpoint.Saver conformance suite (mirrors the standardtests/ philosophy)
-│   └── fn/                # functional API: NewEntrypoint / NewTask (Python @entrypoint/@task)
-├── langchain/             # langchain (v1) port
-│   ├── agents/            # CreateAgent + 15 middleware
-│   ├── chatmodels/ embeddings/ messages/ tools/ ratelimiters/
-│   └── internal/agentruntime/   # deprecated alias shim over langgraph/
-├── textsplitters/         # langchain_text_splitters port
-├── standardtests/         # langchain-tests conformance port
-├── modelprofiles/         # model-profiles port
-├── partners/              # openai, anthropic, ollama, chroma
-└── cmd/langchain-profiles # profiles refresh CLI
+├── core/                      # langchain_core port (30 packages)
+├── langgraph/                 # langgraph port
+│   ├── channels/              # LastValue, Topic, BinOp, Delta, Overwrite, Barrier, Ephemeral
+│   ├── checkpoint/            # Saver interface + MemorySaver
+│   │   ├── sqlite/            # nested module: pure-Go SQLite saver
+│   │   ├── postgres/          # nested module: PostgreSQL saver (pgx/v5)
+│   │   ├── savertest/         # shared conformance suite
+│   │   └── serde/             # JSON serializer + type registry
+│   ├── graph/                 # StateGraph builder + Pregel executor + checkpointSink
+│   ├── runtime/               # Runtime[ContextT] (context + store + heartbeat + stream)
+│   ├── store/                 # cross-thread BaseStore (semantic KV + InMemoryStore)
+│   ├── fn/                    # functional API (@entrypoint / @task)
+│   ├── prebuilt/              # ToolNode graph adapter
+│   └── types/                 # Send, Command, Interrupt, Durability, Overwrite
+├── langchain/                 # langchain (v1) port
+│   ├── agents/                # CreateAgent + 17 middleware modules
+│   │   └── middleware/        # context-editing, summarization, retry, PII, shell, ...
+│   ├── chatmodels/            # provider registry (Resolve / RegisterProvider)
+│   ├── tools/                 # ToolNode (concurrent dispatch)
+│   └── messages/              # langchain-level message helpers
+├── partners/                  # openai, anthropic, ollama, chroma
+├── textsplitters/             # langchain_text_splitters port
+├── standardtests/             # conformance suites
+├── modelprofiles/             # model-profiles registry + CLI
+├── cmd/langchain-profiles     # profiles refresh CLI
+├── docs/                      # bilingual usage guides (EN + zh-CN)
+└── integration/               # integration tests
 ```
+
+---
+
+## Python Alignment
+
+This is a **faithful port** — every design decision defaults to "what Python does." The codebase tracks:
+
+- **langchain-core** 1.4.9
+- **langchain** v1 1.3.13
+- **langgraph** 1.2.10
+- **langgraph-checkpoint** 4.2.0
+
+### Key design decisions
+
+| Area | Go approach | Python equivalent |
+|------|------------|-------------------|
+| Node function signature | `func(rt runtime.Runtime, state map[string]any) (any, error)` | `def node(state, runtime):` |
+| Context passing | `runtime.Runtime` (satisfies `context.Context`) | `RunnableConfig` configurable |
+| Streaming | `iter.Seq2[StreamChunk, error]` (explicit types) | async generator |
+| Checkpoint serde | `Serializer` interface + JSON type registry | `JsonPlusSerializer` |
+| Durability modes | `checkpointSink` (single worker goroutine) | `PregelLoop` futures |
+| Content blocks | Sealed interface + concrete types | Pydantic union |
+
+### Not ported (by design)
+
+- `langchain_classic` (legacy chains/agents/memory) — replaced by `CreateAgent`
+- langgraph CLI / SDK / Server
+- `defer=True` nodes (`NamedBarrierValueAfterFinish`)
+- Dynamic provider import (`init_chat_model` dynamic chain)
+- YAML / Jinja / Hub prompts (string + local JSON only)
+
+---
+
+## Testing
+
+```bash
+# Full suite with race detector
+go test -race ./...
+
+# Checkpoint backends
+make test-sqlite       # pure-Go SQLite saver
+make test-postgres     # embedded PostgreSQL saver
+```
+
+1382 tests across 62 packages, all passing with `-race`.
+
+---
+
+## Contributing
+
+Contributions welcome — especially new partner integrations (Google Gemini, AWS Bedrock, Pinecone, etc.).
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feat/your-feature`)
+3. Ensure `go build ./... && go vet ./... && go test -race ./...` passes
+4. Match the existing code style and Python-parity conventions
+5. Submit a pull request
+
+### Conventions
+
+- **Python is authoritative**: when in doubt, check what the Python source does
+- **Trust `go build/vet/test`**, not editor diagnostics (gopls may show false positives)
+- Every package should have compile-checked examples in `example_test.go`
+- Bilingual docs: add both `guide.md` and `guide.zh-CN.md`
+
+---
 
 ## Acknowledgments
 
