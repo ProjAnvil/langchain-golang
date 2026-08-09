@@ -704,7 +704,7 @@ var checkpointSeq atomic.Int64
 // save points, and observes context cancellation at superstep boundaries. A
 // nil emitter makes every hook a no-op, so Invoke/InvokeStream keep their
 // exact prior behavior.
-func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink) (Result, error) {
+func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink) (result Result, err error) {
 	em := emitterFromContext(ctx)
 	runCtx := ctx
 	if sink != nil {
@@ -812,10 +812,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		cpSink = newCheckpointSink(g.checkpointer, g.durability, runCtx, tup)
 		defer func() {
 			cpSink.setFlushContext(ctx, opts, rs, *currentCfg, checkpoint.Metadata{Source: "loop", Step: rs.step})
-			if err := cpSink.flush(); err != nil {
-				// Surface flush error as a non-fatal warning — the invoke
-				// result is already computed; persistence failure should not
-				// discard it. The caller can detect via GetState.
+			// Surface flush errors via the named return. Only assign when the
+			// invoke itself succeeded (err == nil): a flush failure must not
+			// mask the actual run error. Using flushErr avoids shadowing the
+			// named err inside this closure.
+			if flushErr := cpSink.flush(); flushErr != nil && err == nil {
+				err = flushErr
 			}
 		}()
 	} else {
@@ -850,7 +852,6 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// (no value to feed back). Fresh (non-empty) input with an existing
 	// checkpoint starts a NEW turn instead (D2): the input applies on top of
 	// the latest state and execution restarts from the entry point.
-	var err error
 	var replayWrites []taskWrites
 	switch {
 	case opts.Resume != nil:

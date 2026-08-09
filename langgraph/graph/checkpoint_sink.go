@@ -271,9 +271,16 @@ func (s *checkpointSink) flushExit() error {
 		}
 	}
 
-	// 3. Anchor selection (mirrors Python _loop.py:1253-1281)
+	// 3. Anchor selection (mirrors Python _loop.py:1253-1281).
+	// When a parent checkpoint already exists, accumulated delta writes must
+	// anchor on that persisted parent (initialCfg) — NOT on the final
+	// checkpoint (flushCfg), which is only persisted in step 5 below.
+	// PutWrites against the not-yet-persisted flushCfg errors ("no checkpoint"),
+	// aborting flushExit before the final checkpoint is saved.
 	anchorCfg := s.flushCfg
-	if !s.hasPersistedParent && len(pending) > 0 {
+	if s.hasPersistedParent {
+		anchorCfg = s.initialCfg
+	} else if len(pending) > 0 {
 		stubCp := checkpoint.Checkpoint{
 			V:               1,
 			ID:              checkpoint.NewID(0),
