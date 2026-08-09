@@ -142,7 +142,11 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	// position links of the checkpoint it builds on. S6: the update checkpoint
 	// steps past the checkpoint it builds on (Python main.py:1734).
 	md := checkpoint.Metadata{Source: "update", Step: tup.Metadata.Step + 1, Parents: tup.Metadata.Parents}
+	// UpdateState always persists synchronously (not subject to async/exit
+	// durability — it's a manual operation outside the invoke loop).
+	updateSink := newCheckpointSink(g.checkpointer, DurabilitySync, ctx, tup)
 	return g.saveCheckpoint(ctx,
+		updateSink,
 		Options{ThreadID: cfg.ThreadID, checkpointNS: cfg.CheckpointNS}, rs, tup.Config,
 		md, plannedTasks(dests))
 }

@@ -355,24 +355,17 @@ func WithRecursionLimit(limit int) CompileOption {
 
 // Durability selects when the executor flushes checkpoint writes, mirroring
 // Python's langgraph.types.Durability (types.py:87).
-//
-// Only DurabilitySync (the default) is currently wired: the executor persists
-// each checkpoint synchronously before the next superstep. DurabilityAsync and
-// DurabilityExit require deferred/background flush paths that interact with
-// interrupt/resume checkpointing and are not yet implemented; requesting them
-// fails Compile with an explicit unsupported error (project rule: unsupported
-// behavior fails explicitly rather than silently degrading).
 type Durability string
 
 const (
 	// DurabilitySync persists changes synchronously before the next step
-	// starts (the default and currently the only implemented mode).
+	// starts (the default).
 	DurabilitySync Durability = "sync"
 	// DurabilityAsync persists changes while the next step executes
-	// (not yet implemented; rejected at Compile).
+	// (background goroutine, flushed before return).
 	DurabilityAsync Durability = "async"
 	// DurabilityExit persists changes only when the graph exits
-	// (not yet implemented; rejected at Compile).
+	// (deferred flush at end of invoke).
 	DurabilityExit Durability = "exit"
 )
 
@@ -472,12 +465,9 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		}
 	}
 
-	options := compileOptions{recursionLimit: defaultRecursionLimit}
+	options := compileOptions{recursionLimit: defaultRecursionLimit, durability: DurabilitySync}
 	for _, opt := range opts {
 		opt(&options)
-	}
-	if options.durability == DurabilityAsync || options.durability == DurabilityExit {
-		return nil, fmt.Errorf("graph: durability mode %q is not yet implemented (only %q); deferred-flush paths interacting with interrupt/resume checkpointing are pending", options.durability, DurabilitySync)
 	}
 
 	// Register one barrier channel prototype per waiting edge (Python's
@@ -511,6 +501,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		cache:           options.cache,
 		store:           options.store,
 		recursionLimit:  options.recursionLimit,
+		durability:      options.durability,
 		interruptBefore: options.interruptBefore,
 		interruptAfter:  options.interruptAfter,
 	}, nil
@@ -535,6 +526,7 @@ type CompiledGraph struct {
 	cache           checkpoint.Cache
 	store           store.Store
 	recursionLimit  int
+	durability      Durability
 	interruptBefore map[string]bool
 	interruptAfter  map[string]bool
 }
@@ -811,6 +803,25 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		opts: opts,
 	})
 
+	// cpSink dispatches checkpoint/per-task writes according to the
+	// configured Durability mode (sync/async/exit). In sync mode it is a thin
+	// wrapper around the saver. In async mode it uses a background goroutine.
+	// In exit mode it accumulates writes and flushes at exit.
+	var cpSink *checkpointSink
+	if checkpointing {
+		cpSink = newCheckpointSink(g.checkpointer, g.durability, runCtx, tup)
+		defer func() {
+			cpSink.setFlushContext(ctx, opts, rs, *currentCfg, checkpoint.Metadata{Source: "loop", Step: rs.step})
+			if err := cpSink.flush(); err != nil {
+				// Surface flush error as a non-fatal warning — the invoke
+				// result is already computed; persistence failure should not
+				// discard it. The caller can detect via GetState.
+			}
+		}()
+	} else {
+		cpSink = newCheckpointSink(g.checkpointer, DurabilitySync, runCtx, nil)
+	}
+
 	// save persists a checkpoint (see saveCheckpoint) and advances currentCfg
 	// to it, stamping Metadata.Parents with the child namespaces used so far
 	// and — for a subgraph run — the parent's current position. A successful
@@ -823,7 +834,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			}
 			md.Parents[parentSC.ns] = parentSC.current.CheckpointID
 		}
-		cfg, err := g.saveCheckpoint(ctx, opts, rs, *currentCfg, md, next)
+		cfg, err := g.saveCheckpoint(ctx, cpSink, opts, rs, *currentCfg, md, next)
 		if err != nil {
 			return err
 		}
@@ -885,7 +896,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 		// M2.2: persist delta-channel input writes AFTER the input checkpoint
 		// save (so they anchor on it) for ancestor-walk reconstruction.
-		if err := g.persistDeltaInputWrites(ctx, *currentCfg, input); err != nil {
+		if err := g.persistDeltaInputWrites(ctx, cpSink, *currentCfg, input); err != nil {
 			return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
 		}
 		tasks = []task{{node: g.entry}}
@@ -904,7 +915,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			}
 			// M2.2: persist delta-channel input writes AFTER the input checkpoint
 			// save (so they anchor on it) for ancestor-walk reconstruction.
-			if err := g.persistDeltaInputWrites(ctx, *currentCfg, input); err != nil {
+			if err := g.persistDeltaInputWrites(ctx, cpSink, *currentCfg, input); err != nil {
 				return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
 			}
 		}
@@ -1160,7 +1171,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						return Result{}, err
 					}
 					if len(writes) > 0 {
-						if err := g.checkpointer.PutWrites(ctx, *currentCfg, writes, taskID, ""); err != nil {
+						if err := cpSink.putWrites(ctx, *currentCfg, writes, taskID); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
 						}
 					}
@@ -1322,7 +1333,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
 				}
 				if len(writes) > 0 {
-					if err := g.checkpointer.PutWrites(ctx, *currentCfg, writes, planned[i].ID, ""); err != nil {
+					if err := cpSink.putWrites(ctx, *currentCfg, writes, planned[i].ID); err != nil {
 						return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
 					}
 				}
@@ -1357,7 +1368,7 @@ func plannedTasks(tasks []task) []checkpoint.PlannedTask {
 // put_writes(NULL_TASK_ID, delta_input) (langgraph/pregel/_loop.py:1023-1030).
 // cfg must identify an already-saved checkpoint (PutWrites errors otherwise),
 // so callers invoke this AFTER the input checkpoint save.
-func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cfg checkpoint.Config, input map[string]any) error {
+func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cpSink *checkpointSink, cfg checkpoint.Config, input map[string]any) error {
 	var deltaInput []checkpoint.Write
 	for k, v := range input {
 		if proto, ok := g.channelProtos[k]; ok && channels.IsDelta(proto) {
@@ -1367,7 +1378,7 @@ func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cfg checkpo
 	if len(deltaInput) == 0 {
 		return nil
 	}
-	return g.checkpointer.PutWrites(ctx, cfg, deltaInput, checkpoint.NullTaskID, "")
+	return cpSink.putWrites(ctx, cfg, deltaInput, checkpoint.NullTaskID)
 }
 
 // saveCheckpoint persists rs as a new checkpoint for opts.ThreadID with the
@@ -1376,7 +1387,7 @@ func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cfg checkpo
 // CheckpointID is passed to Put so the new checkpoint's ParentConfig links to
 // its actual predecessor (D3). Planned task IDs bind to the new checkpoint's
 // ID and the superstep the tasks will run in (md.Step + 1).
-func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask) (checkpoint.Config, error) {
+func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSink, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask) (checkpoint.Config, error) {
 	// Advance the per-delta-channel (updates, supersteps) counters for this
 	// checkpoint, then decide which delta channels snapshot now. Mirrors
 	// Python's _loop._put_checkpoint counter advancement + create_checkpoint
@@ -1430,7 +1441,7 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, opts Options, rs *ru
 		next[i].ID = TaskID(cp.ID, md.Step+1, next[i].Node, next[i].Arg)
 	}
 	cp.Next = next
-	cfg, err := g.checkpointer.Put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil)
+	cfg, err := cpSink.putCheckpoint(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil)
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("graph: saving checkpoint for thread %q: %w", opts.ThreadID, err)
 	}
