@@ -19,11 +19,14 @@ import (
 
 const defaultBaseURL = "https://api.openai.com/v1"
 
-// ChatModel adapts LangChain chat calls to OpenAI's Responses API.
+// ChatModel adapts LangChain chat calls to OpenAI's APIs. By default it uses
+// the Responses API; WithChatCompletions switches it to the Chat Completions
+// API (the classic `/chat/completions` endpoint, Python's default).
 type ChatModel struct {
 	config           modelconfig.Config
 	boundTools       []tools.Tool
 	structuredOutput *structuredoutput.JSONSchema
+	chatCompletions  bool
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -122,6 +125,14 @@ func (m ChatModel) BindTools(boundTools []tools.Tool) (language.ChatModel, error
 	return next, nil
 }
 
+// WithChatCompletions returns a copy of the model that targets the Chat
+// Completions API (`/chat/completions`) instead of the Responses API.
+func (m ChatModel) WithChatCompletions() ChatModel {
+	next := m
+	next.chatCompletions = true
+	return next
+}
+
 // WithStructuredOutput returns a copy of the model configured for provider-native
 // JSON-schema output.
 func (m ChatModel) WithStructuredOutput(
@@ -175,6 +186,9 @@ func (m ChatModel) createResponse(
 	ctx context.Context,
 	input []messages.Message,
 ) (responsePayload, error) {
+	if m.chatCompletions {
+		return m.createChatCompletionsResponse(ctx, input)
+	}
 	ctx, cancel := context.WithTimeout(ctx, m.config.Timeout)
 	defer cancel()
 	resp, err := postJSON[responsePayload](ctx, m.config, "/responses", m.buildRequest(input))

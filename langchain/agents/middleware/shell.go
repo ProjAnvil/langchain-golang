@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -81,16 +82,27 @@ type ShellToolMiddleware struct {
 	Env              map[string]string
 	Tools            []tools.Tool
 	OwnsWorkspace    bool
+	// Persistent, when true, keeps a single long-lived shell subprocess across
+	// commands (mirroring Python's persistent ShellSession) instead of one
+	// process per command. Defaults to false (existing behavior).
+	Persistent bool
+	// ExecutionPolicy builds the argv used to launch the shell (host / docker /
+	// codex sandbox). Defaults to HostExecutionPolicy.
+	ExecutionPolicy ExecutionPolicy
+
+	sessionMu sync.Mutex
+	session   *ShellSession
 }
 
 func NewShellToolMiddleware(workspaceRoot string, opts ...ShellToolOption) (*ShellToolMiddleware, error) {
 	policy := DefaultShellExecutionPolicy()
 	m := &ShellToolMiddleware{
-		WorkspaceRoot: workspaceRoot,
-		Policy:        policy,
-		ToolName:      ShellToolName,
-		ShellCommand:  []string{"/bin/sh", "-c"},
-		Env:           map[string]string{},
+		WorkspaceRoot:   workspaceRoot,
+		Policy:          policy,
+		ToolName:        ShellToolName,
+		ShellCommand:    []string{"/bin/sh", "-c"},
+		Env:             map[string]string{},
+		ExecutionPolicy: HostExecutionPolicy{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -192,6 +204,21 @@ func WithShellShutdownCommands(commands ...string) ShellToolOption {
 	}
 }
 
+// WithShellPersistentSession enables a single long-lived shell subprocess that
+// keeps its working directory and environment across commands.
+func WithShellPersistentSession() ShellToolOption {
+	return func(m *ShellToolMiddleware) {
+		m.Persistent = true
+	}
+}
+
+// WithShellExecutionPolicy sets the execution policy used to launch the shell.
+func WithShellExecutionPolicyRunner(policy ExecutionPolicy) ShellToolOption {
+	return func(m *ShellToolMiddleware) {
+		m.ExecutionPolicy = policy
+	}
+}
+
 func (m *ShellToolMiddleware) BeforeAgent(ctx context.Context, state map[string]any) (map[string]any, error) {
 	resources, err := m.GetOrCreateResources(ctx, state)
 	if err != nil {
@@ -210,6 +237,9 @@ func (m *ShellToolMiddleware) AfterAgent(ctx context.Context, state map[string]a
 	}
 	resources.ShutdownRan = len(m.ShutdownCommands) > 0
 	resources.Closed = true
+	if m.Persistent {
+		m.stopPersistentSession(m.Policy.TerminationTimeout)
+	}
 	if resources.OwnsWorkspace {
 		_ = os.RemoveAll(resources.WorkspaceRoot)
 	}
@@ -280,6 +310,9 @@ func (m *ShellToolMiddleware) run(ctx context.Context, workspace string, command
 }
 
 func (m *ShellToolMiddleware) runInWorkspace(ctx context.Context, workspace string, command string, timeout time.Duration) (CommandExecutionResult, error) {
+	if m.Persistent {
+		return m.runInPersistentSession(ctx, workspace, command, timeout)
+	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -290,7 +323,9 @@ func (m *ShellToolMiddleware) runInWorkspace(ctx context.Context, workspace stri
 		args = append(args, "-c")
 	}
 	args = append(args, command)
-	cmd := exec.CommandContext(runCtx, args[0], args[1:]...)
+	// Apply the execution policy to the constructed argv (host/docker/codex).
+	argv := m.ExecutionPolicy.BuildCommand(args, workspace)
+	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	cmd.Dir = workspace
 	cmd.Env = os.Environ()
 	for key, value := range m.Env {
@@ -328,6 +363,43 @@ func (m *ShellToolMiddleware) runInWorkspace(ctx context.Context, workspace stri
 		result.Output = "Command timed out."
 	}
 	return result, nil
+}
+
+// runInPersistentSession lazily starts (and reuses) a long-lived shell for the
+// middleware and executes command in it, so cwd/env state persists across calls.
+func (m *ShellToolMiddleware) runInPersistentSession(ctx context.Context, workspace string, command string, timeout time.Duration) (CommandExecutionResult, error) {
+	m.sessionMu.Lock()
+	defer m.sessionMu.Unlock()
+
+	if m.session == nil {
+		m.session = NewShellSession(workspace, m.ShellCommand, m.Env)
+		if err := m.session.Start(ctx); err != nil {
+			return CommandExecutionResult{}, fmt.Errorf("start persistent shell: %w", err)
+		}
+	}
+
+	result, err := m.session.Execute(ctx, command, timeout)
+	if err != nil {
+		return CommandExecutionResult{}, err
+	}
+	output, redactionErr := m.applyRedaction(result.Output)
+	if redactionErr != nil {
+		return CommandExecutionResult{}, redactionErr
+	}
+	truncated := truncateShellOutput(output, m.Policy)
+	truncated.ExitCode = result.ExitCode
+	truncated.TimedOut = result.TimedOut
+	return truncated, nil
+}
+
+// stopPersistentSession terminates the long-lived shell, if any.
+func (m *ShellToolMiddleware) stopPersistentSession(timeout time.Duration) {
+	m.sessionMu.Lock()
+	defer m.sessionMu.Unlock()
+	if m.session != nil {
+		_ = m.session.Stop(timeout)
+		m.session = nil
+	}
 }
 
 func shellResourcesFromState(state map[string]any) (*ShellSessionResources, bool) {
