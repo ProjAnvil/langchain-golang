@@ -28,20 +28,18 @@ type Token struct {
 
 // IsExpired reports whether the token is past (or within skew of) expiry.
 func (t Token) IsExpired(skew time.Duration) bool {
-	if skew <= 0 {
-		skew = 30 * time.Second
-	}
 	return time.Now().Add(skew).After(t.ExpiresAt)
 }
 
 // TokenProvider returns a current access token, refreshing it via the OAuth
 // token endpoint when it nears expiry. Concurrent callers are serialized.
 type TokenProvider struct {
-	mu         sync.Mutex
-	token      Token
-	tokenURL   string
-	clientID   string
-	httpClient *http.Client
+	mu          sync.Mutex
+	token       Token
+	tokenURL    string
+	clientID    string
+	httpClient  *http.Client
+	refreshSkew time.Duration
 }
 
 // NewTokenProvider builds a provider around an initial token bundle.
@@ -49,14 +47,21 @@ func NewTokenProvider(token Token, tokenURL, clientID string) *TokenProvider {
 	if tokenURL == "" {
 		tokenURL = defaultChatGPTTokenURL
 	}
-	return &TokenProvider{token: token, tokenURL: tokenURL, clientID: clientID, httpClient: http.DefaultClient}
+	return &TokenProvider{
+		token:       token,
+		tokenURL:    tokenURL,
+		clientID:    clientID,
+		httpClient:  http.DefaultClient,
+		refreshSkew: 30 * time.Second,
+	}
 }
 
-// AccessToken returns a valid access token, refreshing when expired.
+// AccessToken returns a valid access token, refreshing when expired (within
+// the refresh skew).
 func (p *TokenProvider) AccessToken(ctx context.Context) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.token.IsExpired(0) {
+	if !p.token.IsExpired(p.refreshSkew) {
 		return p.token.AccessToken, nil
 	}
 	refreshed, err := p.refresh(ctx)
