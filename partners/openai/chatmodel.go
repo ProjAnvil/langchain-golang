@@ -350,9 +350,20 @@ type contentOutput struct {
 }
 
 type usagePayload struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens         int                  `json:"input_tokens"`
+	OutputTokens        int                  `json:"output_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	InputTokensDetails  *inputTokensDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *outputTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
+type inputTokensDetails struct {
+	CachedTokens        int `json:"cached_tokens"`
+	CacheCreationTokens int `json:"cache_creation_tokens"`
+}
+
+type outputTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 func (r responsePayload) toMessage() messages.Message {
@@ -398,6 +409,17 @@ func (r responsePayload) toMessage() messages.Message {
 		InputTokens:  r.Usage.InputTokens,
 		OutputTokens: r.Usage.OutputTokens,
 		TotalTokens:  r.Usage.TotalTokens,
+	}
+	if details := r.Usage.InputTokensDetails; details != nil {
+		message.UsageMetadata.InputTokenDetails = &messages.InputTokenDetails{
+			CacheReadInputTokens:     details.CachedTokens,
+			CacheCreationInputTokens: details.CacheCreationTokens,
+		}
+	}
+	if details := r.Usage.OutputTokensDetails; details != nil && details.ReasoningTokens > 0 {
+		message.UsageMetadata.OutputTokenDetails = &messages.OutputTokenDetails{
+			ReasoningOutputTokens: details.ReasoningTokens,
+		}
 	}
 	return message
 }

@@ -185,3 +185,62 @@ func TestConvertToOpenAIMessagesContentBlocks(t *testing.T) {
 		t.Fatalf("content[1] = %#v", content[1])
 	}
 }
+
+// Dict-with-name / developer / tool_call_id / tool_calls scenarios mirroring
+// Python's test_base.py `_convert_dict_to_message_*` tests.
+
+func TestConvertToMessagesDictWithName(t *testing.T) {
+	msgs, err := ConvertToMessages([]any{map[string]any{
+		"role": "human", "content": "hi", "name": "alice",
+	}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages: %v", err)
+	}
+	if msgs[0].Name != "alice" {
+		t.Fatalf("name = %q, want alice", msgs[0].Name)
+	}
+}
+
+func TestConvertToMessagesDictDeveloperRole(t *testing.T) {
+	msgs, err := ConvertToMessages([]any{map[string]any{
+		"role": "developer", "content": "instructions",
+	}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages: %v", err)
+	}
+	if msgs[0].Role != RoleSystem {
+		t.Fatalf("role = %q, want system (developer alias)", msgs[0].Role)
+	}
+}
+
+func TestConvertToMessagesDictToolCallID(t *testing.T) {
+	msgs, err := ConvertToMessages([]any{map[string]any{
+		"role": "tool", "content": "result", "tool_call_id": "call-1",
+	}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages: %v", err)
+	}
+	if msgs[0].Role != RoleTool || msgs[0].ToolCallID != "call-1" {
+		t.Fatalf("message = %#v", msgs[0])
+	}
+}
+
+func TestConvertToMessagesDictAIToolCalls(t *testing.T) {
+	msgs, err := ConvertToMessages([]any{map[string]any{
+		"role": "ai", "content": "",
+		"tool_calls": []any{map[string]any{
+			"id": "c1", "type": "function",
+			"function": map[string]any{"name": "search", "arguments": `{"q":"x"}`},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages: %v", err)
+	}
+	if len(msgs[0].ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(msgs[0].ToolCalls))
+	}
+	tc := msgs[0].ToolCalls[0]
+	if tc.ID != "c1" || tc.Name != "search" || tc.Args["q"] != "x" {
+		t.Fatalf("tool call = %#v", tc)
+	}
+}

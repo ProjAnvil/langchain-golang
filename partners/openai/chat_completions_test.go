@@ -107,6 +107,44 @@ func TestChatCompletionsToolResultSerialization(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsUsageMetadataCacheTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-usage",
+			"model":"gpt-test",
+			"choices":[{"message":{"role":"assistant","content":"ok"}}],
+			"usage":{
+				"input_tokens":10,"output_tokens":20,"total_tokens":30,
+				"input_tokens_details":{"cached_tokens":4,"cache_creation_tokens":6},
+				"output_tokens_details":{"reasoning_tokens":5}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	).WithChatCompletions()
+
+	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	um := resp.UsageMetadata
+	if um.InputTokens != 10 || um.OutputTokens != 20 || um.TotalTokens != 30 {
+		t.Fatalf("usage = %#v", um)
+	}
+	if um.InputTokenDetails == nil ||
+		um.InputTokenDetails.CacheReadInputTokens != 4 ||
+		um.InputTokenDetails.CacheCreationInputTokens != 6 {
+		t.Fatalf("input token details = %#v", um.InputTokenDetails)
+	}
+	if um.OutputTokenDetails == nil || um.OutputTokenDetails.ReasoningOutputTokens != 5 {
+		t.Fatalf("output token details = %#v", um.OutputTokenDetails)
+	}
+}
+
 func TestDefaultStillResponsesAPI(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
