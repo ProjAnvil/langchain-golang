@@ -18,6 +18,7 @@ type chatCompletionsRequest struct {
 	Tools       []toolSpec    `json:"tools,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
 }
 
 type chatMessage struct {

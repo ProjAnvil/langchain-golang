@@ -82,6 +82,29 @@ func TestShellSessionExitCode(t *testing.T) {
 	}
 }
 
+func TestShellSessionCapturesStderr(t *testing.T) {
+	dir, err := os.MkdirTemp("", "lgshell-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	dir, _ = filepath.EvalSymlinks(dir)
+
+	s := NewShellSession(dir, []string{"/bin/sh"}, map[string]string{})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop(5 * time.Second)
+
+	r, err := s.Execute(context.Background(), "echo to-stderr >&2", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(r.Output, "to-stderr") {
+		t.Fatalf("stderr not captured: output = %q", r.Output)
+	}
+}
+
 func TestShellSessionNotStarted(t *testing.T) {
 	s := NewShellSession("/tmp", []string{"/bin/sh"}, nil)
 	if _, err := s.Execute(context.Background(), "pwd", time.Second); err == nil {

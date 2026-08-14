@@ -94,7 +94,13 @@ func (m ChatModel) Stream(
 	if err := emit(ctx, cfg, callbacks.EventChatModelStart, input, nil, nil); err != nil {
 		return nil, err
 	}
-	stream, err := m.createResponseStream(ctx, input, cfg)
+	var stream runnables.Stream[messages.Message]
+	var err error
+	if m.chatCompletions {
+		stream, err = m.createChatCompletionsStream(ctx, input, cfg)
+	} else {
+		stream, err = m.createResponseStream(ctx, input, cfg)
+	}
 	if err != nil {
 		_ = emit(ctx, cfg, callbacks.EventChatModelError, nil, nil, err)
 		return nil, err

@@ -19,8 +19,9 @@ import (
 // the shell's stdin; a unique done-marker printed to stdout delimits each
 // command's output and carries its exit status.
 //
-// The persistent session captures stdout (where the marker is written);
-// stderr is drained to a buffer and appended best-effort after each command.
+// The persistent session merges the shell's stdout and stderr into a single
+// pipe (the equivalent of `2>&1`), so a single ordered reader captures both
+// streams and the done-marker protocol delimits each command's full output.
 type ShellSession struct {
 	mu sync.Mutex
 
@@ -33,9 +34,6 @@ type ShellSession struct {
 	env       map[string]string
 	started   bool
 	markerSeq int
-
-	stderrMu  sync.Mutex
-	stderrBuf bytes.Buffer
 }
 
 // NewShellSession builds a session around a long-lived shell argv (e.g.
@@ -80,30 +78,26 @@ func (s *ShellSession) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Merge stdout and stderr into one pipe (2>&1) so a single ordered reader
+	// captures both streams and the marker always delimits the full output.
+	pr, pw, err := os.Pipe()
 	if err != nil {
 		return err
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
+	cmd.Stdout = pw
+	cmd.Stderr = pw
 	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
+		_ = pr.Close()
 		return err
 	}
+	// The child holds a copy of pw; close ours so the reader sees EOF when the
+	// child exits.
+	_ = pw.Close()
 
 	s.cmd = cmd
 	s.stdin = stdin
-	s.stdout = bufio.NewReader(stdout)
-
-	go func() {
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, stderr)
-		s.stderrMu.Lock()
-		s.stderrBuf = buf
-		s.stderrMu.Unlock()
-	}()
-
+	s.stdout = bufio.NewReader(pr)
 	s.started = true
 	return nil
 }
@@ -167,17 +161,7 @@ func (s *ShellSession) Execute(ctx context.Context, command string, timeout time
 
 	select {
 	case r := <-ch:
-		output := r.output
-		s.stderrMu.Lock()
-		if s.stderrBuf.Len() > 0 {
-			if output != "" && !strings.HasSuffix(output, "\n") {
-				output += "\n"
-			}
-			output += s.stderrBuf.String()
-			s.stderrBuf.Reset()
-		}
-		s.stderrMu.Unlock()
-		return CommandExecutionResult{Output: output, ExitCode: r.exitCode}, nil
+		return CommandExecutionResult{Output: r.output, ExitCode: r.exitCode}, nil
 	case err := <-errCh:
 		return CommandExecutionResult{}, fmt.Errorf("read shell output: %w", err)
 	case <-ctx.Done():
