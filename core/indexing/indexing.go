@@ -2,7 +2,9 @@ package indexing
 
 import (
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -166,6 +168,10 @@ type Options struct {
 	ForceUpdate      bool
 	SourceIDKey      string
 	Cleanup          CleanupMode
+	// KeyEncoder selects the hash algorithm used to derive each document's
+	// deduplication key. Empty defaults to KeyEncoderSHA256, matching the
+	// pre-existing HashDocument behavior and Python's default.
+	KeyEncoder KeyEncoder
 }
 
 // IndexDocuments indexes documents into a vector store while skipping records
@@ -314,7 +320,7 @@ func indexBatch(
 	groupIDs := make([]string, 0, len(batch))
 	seenKeys := map[string]bool{}
 	for i, doc := range batch {
-		key, err := HashDocument(doc)
+		key, err := HashDocumentWithAlgorithm(doc, options.KeyEncoder)
 		if err != nil {
 			return err
 		}
@@ -454,6 +460,27 @@ func mapKeys(values map[string]bool) []string {
 
 // HashDocument returns a stable SHA-256 hash for page content and metadata.
 func HashDocument(doc documents.Document) (string, error) {
+	return HashDocumentWithAlgorithm(doc, KeyEncoderSHA256)
+}
+
+// KeyEncoder selects the hash algorithm used to derive a document's
+// deduplication key, mirroring Python's `index(..., key_encoder=...)`
+// parameter (langchain_core.indexing.api._calculate_hash). SHA-1 is kept for
+// parity but SHA-256 is the default; blake2b requires golang.org/x/crypto and
+// is therefore not supported here (a clear error is returned).
+type KeyEncoder string
+
+const (
+	KeyEncoderSHA1    KeyEncoder = "sha1"
+	KeyEncoderSHA256  KeyEncoder = "sha256"
+	KeyEncoderSHA512  KeyEncoder = "sha512"
+	KeyEncoderBlake2b KeyEncoder = "blake2b"
+)
+
+// HashDocumentWithAlgorithm returns a stable hash of the document's page
+// content and metadata using the given algorithm. An empty algorithm is
+// treated as SHA-256 (the default).
+func HashDocumentWithAlgorithm(doc documents.Document, algorithm KeyEncoder) (string, error) {
 	payload := struct {
 		PageContent string         `json:"page_content"`
 		Metadata    map[string]any `json:"metadata,omitempty"`
@@ -465,6 +492,19 @@ func HashDocument(doc documents.Document) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	switch algorithm {
+	case "", KeyEncoderSHA256:
+		sum := sha256.Sum256(data)
+		return hex.EncodeToString(sum[:]), nil
+	case KeyEncoderSHA1:
+		sum := sha1.Sum(data)
+		return hex.EncodeToString(sum[:]), nil
+	case KeyEncoderSHA512:
+		sum := sha512.Sum512(data)
+		return hex.EncodeToString(sum[:]), nil
+	case KeyEncoderBlake2b:
+		return "", fmt.Errorf("indexing: key_encoder %q is not supported (requires golang.org/x/crypto/blake2b)", algorithm)
+	default:
+		return "", fmt.Errorf("indexing: unknown key_encoder %q", algorithm)
+	}
 }

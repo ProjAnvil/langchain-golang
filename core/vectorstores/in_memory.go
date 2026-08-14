@@ -145,6 +145,34 @@ func (s *InMemory) SimilaritySearchWithScore(
 	return s.SimilaritySearchWithScoreFilter(ctx, query, k, nil)
 }
 
+// SimilaritySearchWithRelevanceScores returns the top k documents paired with
+// relevance scores in [0, 1], where 1 is most similar. When scoreThreshold is
+// non-nil, results whose relevance score is below the threshold are omitted.
+//
+// InMemory stores cosine similarity (1 == identical), while CosineRelevanceScore
+// converts cosine distance to relevance. The similarity is therefore converted
+// to its equivalent distance (1 - similarity) before the helper is applied.
+func (s *InMemory) SimilaritySearchWithRelevanceScores(
+	ctx context.Context,
+	query string,
+	k int,
+	scoreThreshold *float64,
+) ([]SearchResult, error) {
+	results, err := s.SimilaritySearchWithScore(ctx, query, k)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SearchResult, 0, len(results))
+	for _, result := range results {
+		relevance := CosineRelevanceScore(1.0 - result.Score)
+		if scoreThreshold != nil && relevance < *scoreThreshold {
+			continue
+		}
+		out = append(out, SearchResult{Document: result.Document, Score: relevance})
+	}
+	return out, nil
+}
+
 // SimilaritySearchWithScoreFilter returns top documents matching a filter.
 func (s *InMemory) SimilaritySearchWithScoreFilter(
 	ctx context.Context,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,6 +135,57 @@ func TestCreateAgentToolLoop(t *testing.T) {
 	}
 	if len(model.invocations) != 2 {
 		t.Fatalf("expected 2 model invocations, got %d", len(model.invocations))
+	}
+}
+
+// TestCreateAgentDictToolSpecs covers the dict tool form (Python's
+// `tools: Sequence[... | dict]`): WithAgentToolSpecs converts each
+// map[string]any spec into a tool whose name/description/args schema come from
+// the dict, and binds them to the model alongside the positional tool list.
+func TestCreateAgentDictToolSpecs(t *testing.T) {
+	specs := []map[string]any{
+		{
+			"name":        "get_weather",
+			"description": "Get the weather for a location",
+			"parameters": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"location": map[string]any{"type": "string"}},
+				"required":   []any{"location"},
+			},
+		},
+		{
+			"name":        "get_time",
+			"description": "Get the current time",
+		},
+	}
+
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+
+	agent, err := CreateAgent(model, nil, WithAgentToolSpecs(specs...))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if len(model.boundTools) != 2 {
+		t.Fatalf("expected 2 dict-spec tools bound to the model, got %d", len(model.boundTools))
+	}
+	if got := model.boundTools[0].Name(); got != "get_weather" {
+		t.Fatalf("expected tool 0 name %q, got %q", "get_weather", got)
+	}
+	if got := model.boundTools[0].Description(); got != "Get the weather for a location" {
+		t.Fatalf("expected tool 0 description %q, got %q", "Get the weather for a location", got)
+	}
+	if got := model.boundTools[1].Name(); got != "get_time" {
+		t.Fatalf("expected tool 1 name %q, got %q", "get_time", got)
+	}
+	if got := model.boundTools[1].Description(); got != "Get the current time" {
+		t.Fatalf("expected tool 1 description %q, got %q", "Get the current time", got)
+	}
+	if !reflect.DeepEqual(model.boundTools[0].ArgsSchema(), schema.Schema(specs[0]["parameters"].(map[string]any))) {
+		t.Fatalf("expected tool 0 args schema to carry the dict parameters, got %#v", model.boundTools[0].ArgsSchema())
 	}
 }
 
@@ -386,6 +438,65 @@ func TestCreateAgentRejectsUnsupportedResponseFormat(t *testing.T) {
 	model := &sequenceModel{responses: []messages.Message{messages.AI("hi")}}
 	if _, err := CreateAgent(model, nil, WithAgentResponseFormat("not-a-strategy")); err == nil {
 		t.Fatal("expected error for unsupported ResponseFormat type")
+	}
+}
+
+// TestCreateAgentRawDictResponseFormat covers the raw-dict `response_format`
+// overload (Python's `create_agent(response_format=dict)` form): a plain
+// map[string]any JSON schema is treated as structured-output intent and
+// auto-resolved against the model's capabilities (ToolCalling here), so the
+// schema is bound to the model as a structured-output tool.
+func TestCreateAgentRawDictResponseFormat(t *testing.T) {
+	rawSchema := map[string]any{
+		"type":        "object",
+		"title":       "Answer",
+		"description": "the answer",
+		"properties":  map[string]any{"text": map[string]any{"type": "string"}},
+		"required":    []any{"text"},
+	}
+
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+
+	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(rawSchema))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if len(model.boundTools) != 1 {
+		t.Fatalf("expected 1 structured-output tool bound to the model, got %d", len(model.boundTools))
+	}
+	bound := model.boundTools[0]
+	if bound.Name() != "Answer" {
+		t.Fatalf("expected structured-output tool name %q, got %q", "Answer", bound.Name())
+	}
+	if !reflect.DeepEqual(bound.ArgsSchema(), schema.Schema(rawSchema)) {
+		t.Fatalf("expected bound tool args schema to carry the raw schema verbatim, got %#v", bound.ArgsSchema())
+	}
+}
+
+// TestCreateAgentSchemaResponseFormat covers the same raw-schema overload for
+// the schema.Schema spelling (the type the strategy constructors accept).
+func TestCreateAgentSchemaResponseFormat(t *testing.T) {
+	sch := answerSchema()
+
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+
+	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(sch))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if len(model.boundTools) != 1 || model.boundTools[0].Name() != "Answer" {
+		t.Fatalf("expected one bound Answer tool, got %#v", model.boundTools)
+	}
+	if !reflect.DeepEqual(model.boundTools[0].ArgsSchema(), sch) {
+		t.Fatalf("expected bound tool args schema to carry the schema, got %#v", model.boundTools[0].ArgsSchema())
 	}
 }
 
@@ -1154,8 +1265,10 @@ func (m *erroringModel) Stream(context.Context, []messages.Message, ...runnables
 	return nil, fmt.Errorf("erroringModel: Stream should not be called when ModelString is set")
 }
 
-func (m *erroringModel) InputSchema() schema.Schema  { return schema.Object(map[string]schema.Schema{}) }
-func (m *erroringModel) OutputSchema() schema.Schema { return schema.Object(map[string]schema.Schema{}) }
+func (m *erroringModel) InputSchema() schema.Schema { return schema.Object(map[string]schema.Schema{}) }
+func (m *erroringModel) OutputSchema() schema.Schema {
+	return schema.Object(map[string]schema.Schema{})
+}
 
 func (m *erroringModel) BindTools([]coretools.Tool) (language.ChatModel, error) {
 	m.invoked = true

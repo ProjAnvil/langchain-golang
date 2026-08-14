@@ -31,3 +31,6 @@ Thumbs.db
 
 # Integration test secrets (.env.example is committed; .env is not)
 .env
+
+# Profiles CLI binary (built at repo root by some go build invocations)
+/langchain-profiles

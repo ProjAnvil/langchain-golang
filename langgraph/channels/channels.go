@@ -65,22 +65,45 @@ func AppendSliceReducer(existing any, update any) (any, error) {
 }
 
 // MessagesReducer merges message lists by ID, mirroring Python's
-// `add_messages` (minus its `RemoveMessage`/`REMOVE_ALL_MESSAGES` deletion
-// support and OpenAI content-format conversion, both out of scope here): a
-// message in update whose ID matches a message already in existing replaces
-// it in place; messages with new or empty IDs are appended in order. Both
-// arguments must be []messages.Message (or nil).
+// `add_messages` (minus its OpenAI content-format conversion, which is out of
+// scope here): a message in update whose ID matches a message already in
+// existing replaces it in place; messages with new or empty IDs are appended
+// in order. update may also contain messages.RemoveMessage sentinels, which
+// delete the matching message by ID (an empty ID removes all messages). The
+// existing argument must be []messages.Message (or nil); update must be
+// []messages.Message, []messages.RemoveMessage, or []messages.MessageUpdate
+// (or nil).
 func MessagesReducer(existing any, update any) (any, error) {
 	existingMsgs, err := asMessageSlice(existing, "existing")
 	if err != nil {
 		return nil, err
 	}
-	updateMsgs, err := asMessageSlice(update, "update")
+	updates, err := asMessageUpdates(update, "update")
 	if err != nil {
 		return nil, err
 	}
 
-	merged := make([]messages.Message, len(existingMsgs), len(existingMsgs)+len(updateMsgs))
+	// A RemoveMessage with an empty ID is the remove-all sentinel. Mirroring
+	// Python's add_messages, the result is the update messages that follow the
+	// LAST such sentinel; everything before it (and the existing list) is
+	// dropped.
+	removeAllIdx := -1
+	for i, u := range updates {
+		if rm, ok := u.(messages.RemoveMessage); ok && rm.ID == "" {
+			removeAllIdx = i
+		}
+	}
+	if removeAllIdx >= 0 {
+		out := make([]messages.Message, 0, len(updates)-removeAllIdx-1)
+		for _, u := range updates[removeAllIdx+1:] {
+			if m, ok := u.(messages.Message); ok {
+				out = append(out, m)
+			}
+		}
+		return out, nil
+	}
+
+	merged := make([]messages.Message, len(existingMsgs), len(existingMsgs)+len(updates))
 	copy(merged, existingMsgs)
 	indexByID := make(map[string]int, len(merged))
 	for i, m := range merged {
@@ -89,20 +112,66 @@ func MessagesReducer(existing any, update any) (any, error) {
 		}
 	}
 
-	for _, m := range updateMsgs {
-		if m.ID != "" {
-			if idx, ok := indexByID[m.ID]; ok {
-				merged[idx] = m
-				continue
+	idsToRemove := make(map[string]bool)
+	for _, u := range updates {
+		switch v := u.(type) {
+		case messages.RemoveMessage:
+			if _, ok := indexByID[v.ID]; ok {
+				idsToRemove[v.ID] = true
+			} else {
+				return nil, fmt.Errorf("channels: MessagesReducer attempting to delete a message with an ID that doesn't exist ('%s')", v.ID)
 			}
-		}
-		merged = append(merged, m)
-		if m.ID != "" {
-			indexByID[m.ID] = len(merged) - 1
+		case messages.Message:
+			m := v
+			if m.ID != "" {
+				if idx, ok := indexByID[m.ID]; ok {
+					merged[idx] = m
+					delete(idsToRemove, m.ID)
+					continue
+				}
+			}
+			merged = append(merged, m)
+			if m.ID != "" {
+				indexByID[m.ID] = len(merged) - 1
+			}
 		}
 	}
 
+	if len(idsToRemove) > 0 {
+		kept := make([]messages.Message, 0, len(merged))
+		for _, m := range merged {
+			if !idsToRemove[m.ID] {
+				kept = append(kept, m)
+			}
+		}
+		merged = kept
+	}
+
 	return merged, nil
+}
+
+func asMessageUpdates(value any, label string) ([]messages.MessageUpdate, error) {
+	if value == nil {
+		return nil, nil
+	}
+	switch v := value.(type) {
+	case []messages.MessageUpdate:
+		return v, nil
+	case []messages.Message:
+		out := make([]messages.MessageUpdate, len(v))
+		for i, m := range v {
+			out[i] = m
+		}
+		return out, nil
+	case []messages.RemoveMessage:
+		out := make([]messages.MessageUpdate, len(v))
+		for i, r := range v {
+			out[i] = r
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("channels: MessagesReducer requires []messages.Message, []messages.RemoveMessage, or []messages.MessageUpdate for %s, got %T", label, value)
+	}
 }
 
 func asMessageSlice(value any, label string) ([]messages.Message, error) {

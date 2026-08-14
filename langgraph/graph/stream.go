@@ -32,6 +32,14 @@ const (
 	StreamValues StreamMode = "values"
 	// StreamUpdates yields each task's state writes as they are collected.
 	StreamUpdates StreamMode = "updates"
+	// StreamCheckpoints yields a StateSnapshot whenever a checkpoint is
+	// created, in the same format GetState returns (Python's "checkpoints"
+	// mode).
+	StreamCheckpoints StreamMode = "checkpoints"
+	// StreamTasks yields events when tasks start (TaskEvent) and finish
+	// (TaskResultEvent), including their results and errors (Python's
+	// "tasks" mode).
+	StreamTasks StreamMode = "tasks"
 	// StreamDebug yields task dispatch/completion and checkpoint events.
 	StreamDebug StreamMode = "debug"
 	// StreamMessages yields per-token LLM message chunks (MessageChunk
@@ -72,6 +80,10 @@ type StreamChunk struct {
 	//   - updates: map[string]any{nodeName: map[string]any{channel: value}}
 	//     per task; the interrupt chunk is
 	//     map[string]any{"__interrupt__": []types.Interrupt{...}}.
+	//   - checkpoints: StateSnapshot, the same shape GetState returns (one
+	//     per saved checkpoint).
+	//   - tasks: TaskEvent (task start) or TaskResultEvent (task completion),
+	//     mirroring Python's tasks mode.
 	//   - debug: map[string]any{"step": int, "timestamp": string,
 	//     "type": "task"|"task_result"|"checkpoint", "payload": ...} (see
 	//     debugPayload).
@@ -82,6 +94,40 @@ type StreamChunk struct {
 	//     last delta/values emission (incremental state diff). The first
 	//     chunk in a run is the full initial state.
 	Payload any
+}
+
+// TaskEvent is the StreamTasks payload for a task-start event, mirroring
+// Python's `TaskPayload` (produced by `map_debug_tasks` in pregel/debug.py):
+// the dispatched task's identity, the input it was passed, and its triggers.
+type TaskEvent struct {
+	// ID is the task's planned ID when the task came from a resumed
+	// checkpoint; empty otherwise (see debugTask).
+	ID string
+	// Name is the node name being executed.
+	Name string
+	// Input is the state the task was passed: the full pre-superstep state
+	// snapshot, or the Send argument for Send-driven tasks.
+	Input map[string]any
+	// Triggers names what caused the task to execute; approximated as the
+	// node's own name (see debugTask).
+	Triggers []string
+}
+
+// TaskResultEvent is the StreamTasks payload for a task-completion event,
+// mirroring Python's `TaskResultPayload` (produced by
+// `map_debug_task_results` in pregel/debug.py): the completed task's identity,
+// its result writes, and any error or interrupts it produced.
+type TaskResultEvent struct {
+	// ID is the task's planned ID (see TaskEvent.ID).
+	ID string
+	// Name is the node name that executed.
+	Name string
+	// Error is the task's error string; empty on success.
+	Error string
+	// Result is the task's state writes ({channel: value}).
+	Result map[string]any
+	// Interrupts are the interrupts the task raised; nil when none.
+	Interrupts []types.Interrupt
 }
 
 // StreamOptions configures a Stream call. The embedded Options keep their
@@ -119,7 +165,7 @@ func (g *CompiledGraph) Stream(ctx context.Context, input map[string]any, opts S
 		}
 		for _, mode := range opts.Modes {
 			switch mode {
-			case StreamValues, StreamUpdates, StreamDebug, StreamMessages, StreamCustom, StreamDelta:
+			case StreamValues, StreamUpdates, StreamCheckpoints, StreamTasks, StreamDebug, StreamMessages, StreamCustom, StreamDelta:
 			default:
 				yield(StreamChunk{}, fmt.Errorf("graph: unknown StreamMode %q", mode))
 				return
@@ -382,53 +428,80 @@ func (e *streamEmitter) emitDebug(step int, typ string, payload map[string]any) 
 	})
 }
 
-// debugTask emits the dispatch event for one task. `triggers` is approximate
-// in this edge-driven executor — Python records the triggering channel/branch
-// names, which this executor does not track; the predecessor node name would
-// be used where known, and since it is never known here, the node name
-// itself stands in (documented approximation). `id` is the task's planned ID
-// when the task comes from a resumed checkpoint, else "" (planned IDs are
-// minted only at checkpoint-save time). The task `input` field is the full
-// pre-superstep state snapshot (or the Send arg for Send tasks); Python passes
-// the task's actual input — a documented approximation.
+// debugTask emits the dispatch event for one task: a debug "task" envelope
+// and, when StreamTasks is active, a TaskEvent chunk. `triggers` is
+// approximate in this edge-driven executor — Python records the triggering
+// channel/branch names, which this executor does not track; the predecessor
+// node name would be used where known, and since it is never known here, the
+// node name itself stands in (documented approximation). `id` is the task's
+// planned ID when the task comes from a resumed checkpoint, else "" (planned
+// IDs are minted only at checkpoint-save time). The task `input` field is the
+// full pre-superstep state snapshot (or the Send arg for Send tasks); Python
+// passes the task's actual input — a documented approximation.
 func (e *streamEmitter) debugTask(step int, t task, state map[string]any) {
-	if e == nil || !e.modes[StreamDebug] {
+	if e == nil {
 		return
 	}
 	input := state
 	if t.arg != nil {
 		input = t.arg
 	}
-	e.emitDebug(step, "task", map[string]any{
-		"id":       t.id,
-		"name":     t.node,
-		"input":    input,
-		"triggers": []string{t.node},
-	})
+	if e.modes[StreamDebug] {
+		e.emitDebug(step, "task", map[string]any{
+			"id":       t.id,
+			"name":     t.node,
+			"input":    input,
+			"triggers": []string{t.node},
+		})
+	}
+	if e.modes[StreamTasks] {
+		e.emit(StreamTasks, TaskEvent{
+			ID:       t.id,
+			Name:     t.node,
+			Input:    input,
+			Triggers: []string{t.node},
+		})
+	}
 }
 
-// debugTaskResult emits the completion event for one task outcome. result is
-// the task's state update; error is the task's error string (nil on success);
-// interrupts lists the interrupts the task raised.
+// debugTaskResult emits the completion event for one task outcome: a debug
+// "task_result" envelope and, when StreamTasks is active, a TaskResultEvent
+// chunk. result is the task's state update; error is the task's error string
+// (nil on success); interrupts lists the interrupts the task raised.
 func (e *streamEmitter) debugTaskResult(step int, t task, result map[string]any, taskErr error, interrupts []types.Interrupt) {
-	if e == nil || !e.modes[StreamDebug] {
+	if e == nil {
 		return
 	}
-	var errStr any
-	if taskErr != nil {
-		errStr = taskErr.Error()
+	if e.modes[StreamDebug] {
+		var errAny any
+		if taskErr != nil {
+			errAny = taskErr.Error()
+		}
+		var interruptsAny any
+		if len(interrupts) > 0 {
+			interruptsAny = interrupts
+		}
+		e.emitDebug(step, "task_result", map[string]any{
+			"id":         t.id,
+			"name":       t.node,
+			"error":      errAny,
+			"result":     result,
+			"interrupts": interruptsAny,
+		})
 	}
-	var interruptsAny any
-	if len(interrupts) > 0 {
-		interruptsAny = interrupts
+	if e.modes[StreamTasks] {
+		var errStr string
+		if taskErr != nil {
+			errStr = taskErr.Error()
+		}
+		e.emit(StreamTasks, TaskResultEvent{
+			ID:         t.id,
+			Name:       t.node,
+			Error:      errStr,
+			Result:     result,
+			Interrupts: interrupts,
+		})
 	}
-	e.emitDebug(step, "task_result", map[string]any{
-		"id":         t.id,
-		"name":       t.node,
-		"error":      errStr,
-		"result":     result,
-		"interrupts": interruptsAny,
-	})
 }
 
 // debugCheckpoint emits the checkpoint event after a save. Divergence from
@@ -448,5 +521,34 @@ func (e *streamEmitter) debugCheckpoint(md checkpoint.Metadata, cfg checkpoint.C
 		"values":        values,
 		"metadata":      md,
 		"next":          next,
+	})
+}
+
+// emitCheckpointSnapshot delivers a StreamCheckpoints chunk: a StateSnapshot
+// in the same shape GetState returns (Python's "checkpoints" mode, which its
+// docstring describes as the `get_state()` format). values is the live graph
+// state (rs.snapshot() at the save point); next is the checkpoint's planned
+// next tasks. CreatedAt is stamped here — the same instant saveCheckpoint
+// stamps the checkpoint's TS with time.Now().
+func (e *streamEmitter) emitCheckpointSnapshot(md checkpoint.Metadata, cfg checkpoint.Config, parent checkpoint.Config, values map[string]any, next []checkpoint.PlannedTask) {
+	if e == nil || !e.modes[StreamCheckpoints] {
+		return
+	}
+	var parentCfg *checkpoint.Config
+	if parent.CheckpointID != "" {
+		pc := parent
+		parentCfg = &pc
+	}
+	nodeNames := make([]string, 0, len(next))
+	for _, pt := range next {
+		nodeNames = append(nodeNames, pt.Node)
+	}
+	e.emit(StreamCheckpoints, StateSnapshot{
+		Values:       values,
+		Next:         nodeNames,
+		Config:       cfg,
+		Metadata:     md,
+		CreatedAt:    time.Now(),
+		ParentConfig: parentCfg,
 	})
 }

@@ -33,6 +33,22 @@ type StateSnapshot struct {
 	Interrupts []types.Interrupt
 }
 
+// BulkUpdate is a single state update within a bulk superstep, mirroring one
+// `(values, as_node, task_id)` tuple of Python's `StateUpdate` passed to
+// `graph.bulk_update_state`.
+type BulkUpdate struct {
+	// Values are the state writes to apply, attributed to AsNode.
+	Values map[string]any
+	// AsNode names the registered node the update is attributed to; it may be
+	// left empty only when the graph has exactly one node (see UpdateState).
+	AsNode string
+	// TaskID is reserved for pending-write task-path addressing, mirroring
+	// Python's optional `task_id` (which is secondary to the values/as_node
+	// pair). The current single-update UpdateState path does not support
+	// task-path pending writes, so TaskID is accepted but not used yet.
+	TaskID string
+}
+
 // GetState returns the snapshot of the checkpoint identified by cfg — the
 // checkpoint pinned by cfg.CheckpointID, or the thread's latest when it is
 // empty — mirroring Python's `graph.get_state(config)`. It requires a
@@ -149,6 +165,47 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 		updateSink,
 		Options{ThreadID: cfg.ThreadID, checkpointNS: cfg.CheckpointNS}, rs, tup.Config,
 		md, plannedTasks(dests))
+}
+
+// BulkUpdateState applies a sequence of state-update supersteps to the
+// checkpoint identified by cfg and returns the Config of the final resulting
+// checkpoint, mirroring Python's `graph.bulk_update_state(config, supersteps)`.
+// Each superstep is a list of BulkUpdate entries applied sequentially: every
+// update delegates to UpdateState with its Values/AsNode pair, and the Config
+// returned by one update feeds the next, so the checkpoint is stepped forward
+// once per update.
+//
+// BulkUpdate.TaskID is reserved (mirroring Python's optional `task_id`, which
+// is secondary to the values/as_node pair): the single-update UpdateState path
+// does not yet support task-path pending writes, so TaskID is accepted but not
+// used.
+//
+// BulkUpdateState requires a checkpointer (see WithCheckpointer) and at least
+// one non-empty superstep.
+func (g *CompiledGraph) BulkUpdateState(ctx context.Context, cfg checkpoint.Config, supersteps [][]BulkUpdate) (checkpoint.Config, error) {
+	if g.checkpointer == nil {
+		return checkpoint.Config{}, fmt.Errorf("graph: BulkUpdateState requires a checkpointer (see WithCheckpointer)")
+	}
+	if len(supersteps) == 0 {
+		return checkpoint.Config{}, fmt.Errorf("graph: BulkUpdateState: no supersteps provided")
+	}
+	for _, superstep := range supersteps {
+		if len(superstep) == 0 {
+			return checkpoint.Config{}, fmt.Errorf("graph: BulkUpdateState: no updates provided")
+		}
+	}
+
+	curCfg := cfg
+	for _, superstep := range supersteps {
+		for _, u := range superstep {
+			next, err := g.UpdateState(ctx, curCfg, u.Values, u.AsNode)
+			if err != nil {
+				return checkpoint.Config{}, err
+			}
+			curCfg = next
+		}
+	}
+	return curCfg, nil
 }
 
 // snapshotFromTuple projects a checkpoint tuple into its StateSnapshot view:

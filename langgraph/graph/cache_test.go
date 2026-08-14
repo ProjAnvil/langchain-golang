@@ -2,6 +2,8 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -39,21 +41,39 @@ func TestDefaultCacheKeyDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultCacheKey() error = %v", err)
 	}
-	if k1 != k2 {
-		t.Fatalf("DefaultCacheKey() not key-order deterministic: %q vs %q", k1, k2)
+	if k1.Key != k2.Key {
+		t.Fatalf("DefaultCacheKey() not key-order deterministic: %q vs %q", k1.Key, k2.Key)
 	}
-	if len(k1) != 64 { // sha256 hex
-		t.Fatalf("DefaultCacheKey() = %q, want a 64-char sha256 hex digest", k1)
+	if len(k1.Key) != 64 { // sha256 hex
+		t.Fatalf("DefaultCacheKey() = %q, want a 64-char sha256 hex digest", k1.Key)
 	}
 	k3, err := DefaultCacheKey(map[string]any{"a": 2})
 	if err != nil {
 		t.Fatalf("DefaultCacheKey() error = %v", err)
 	}
-	if k3 == k1 {
-		t.Fatalf("DefaultCacheKey() collision between different inputs: %q", k3)
+	if k3.Key == k1.Key {
+		t.Fatalf("DefaultCacheKey() collision between different inputs: %q", k3.Key)
 	}
 	if _, err := DefaultCacheKey(map[string]any{"f": func() {}}); err == nil {
 		t.Fatalf("DefaultCacheKey() of a non-JSON value error = nil, want an error")
+	}
+}
+
+func TestDefaultCacheKeyReturnsCacheKey(t *testing.T) {
+	ck, err := DefaultCacheKey(map[string]any{"a": 1, "b": "x"})
+	if err != nil {
+		t.Fatalf("DefaultCacheKey() error = %v", err)
+	}
+	// encoding/json sorts map keys, so the canonical form is {"a":1,"b":"x"}.
+	sum := sha256.Sum256([]byte(`{"a":1,"b":"x"}`))
+	if ck.Key != hex.EncodeToString(sum[:]) {
+		t.Fatalf("DefaultCacheKey().Key = %q, want the sha256 digest of the canonical JSON", ck.Key)
+	}
+	if len(ck.Namespace) != 0 {
+		t.Fatalf("DefaultCacheKey().Namespace = %v, want empty (caller picks the default)", ck.Namespace)
+	}
+	if ck.TTL != 0 {
+		t.Fatalf("DefaultCacheKey().TTL = %v, want 0 (no override)", ck.TTL)
 	}
 }
 
@@ -146,6 +166,96 @@ func TestClearCacheForcesReexecution(t *testing.T) {
 	}
 	if got := runs.Load(); got != 2 {
 		t.Fatalf("node ran %d times, want 2 (ClearCache must force re-execution)", got)
+	}
+}
+
+// recordingCache wraps a checkpoint.Cache, recording the namespace and TTL of
+// every Get/Set so a test can assert a CachePolicy.KeyFunc's CacheKey
+// namespace and TTL actually drive the executor's cache calls.
+type recordingCache struct {
+	checkpoint.Cache
+	getNS  []string
+	setNS  []string
+	setTTL []time.Duration
+}
+
+func (r *recordingCache) Get(ctx context.Context, ns, key string) ([]checkpoint.Write, bool, error) {
+	r.getNS = append(r.getNS, ns)
+	return r.Cache.Get(ctx, ns, key)
+}
+
+func (r *recordingCache) Set(ctx context.Context, ns, key string, writes []checkpoint.Write, ttl time.Duration) error {
+	r.setNS = append(r.setNS, ns)
+	r.setTTL = append(r.setTTL, ttl)
+	return r.Cache.Set(ctx, ns, key, writes, ttl)
+}
+
+func TestCacheKeyNamespaceAndTTLUsed(t *testing.T) {
+	rec := &recordingCache{Cache: checkpoint.NewInMemoryCache()}
+	var runs atomic.Int32
+	cg := compileCacheGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		runs.Add(1)
+		return map[string]any{"done": true}, nil
+	}, &CachePolicy{
+		// A 1h policy TTL: if the executor ignored the KeyFunc's TTL, the
+		// entry would be stored with this instead of the key's 2h.
+		TTL: time.Hour,
+		KeyFunc: func(_ map[string]any) (types.CacheKey, error) {
+			return types.CacheKey{Namespace: []string{"x"}, Key: "k", TTL: 2 * time.Hour}, nil
+		},
+	}, rec)
+	ctx := context.Background()
+
+	if _, err := cg.Invoke(ctx, map[string]any{"q": 1}); err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("node ran %d times, want 1", got)
+	}
+
+	// The lookup and store used the KeyFunc's namespace, not the default.
+	for _, ns := range rec.getNS {
+		if ns != "x" {
+			t.Fatalf("cache Get namespace = %q, want %q (the KeyFunc namespace)", ns, "x")
+		}
+	}
+	for _, ns := range rec.setNS {
+		if ns != "x" {
+			t.Fatalf("cache Set namespace = %q, want %q (the KeyFunc namespace)", ns, "x")
+		}
+	}
+	if len(rec.setNS) == 0 || len(rec.setTTL) == 0 {
+		t.Fatalf("expected one cache Set, got %d", len(rec.setNS))
+	}
+	if got := rec.setTTL[0]; got != 2*time.Hour {
+		t.Fatalf("cache Set ttl = %v, want 2h (the KeyFunc TTL must override CachePolicy.TTL)", got)
+	}
+
+	// A hit uses the custom namespace: clearing the default "writes/node" is
+	// a no-op, while clearing "x" evicts.
+	if _, err := cg.Invoke(ctx, map[string]any{"q": 1}); err != nil {
+		t.Fatalf("second Invoke() error = %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("node ran %d times, want 1 (second run must hit)", got)
+	}
+	if err := cg.ClearCache(ctx, "writes/node"); err != nil {
+		t.Fatalf("ClearCache(writes/node) error = %v", err)
+	}
+	if _, err := cg.Invoke(ctx, map[string]any{"q": 1}); err != nil {
+		t.Fatalf("third Invoke() error = %v", err)
+	}
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("node ran %d times, want 1 (clearing the default namespace must not evict)", got)
+	}
+	if err := cg.ClearCache(ctx, "x"); err != nil {
+		t.Fatalf("ClearCache(x) error = %v", err)
+	}
+	if _, err := cg.Invoke(ctx, map[string]any{"q": 1}); err != nil {
+		t.Fatalf("fourth Invoke() error = %v", err)
+	}
+	if got := runs.Load(); got != 2 {
+		t.Fatalf("node ran %d times, want 2 (clearing the custom namespace must evict)", got)
 	}
 }
 
@@ -273,7 +383,7 @@ func TestCacheInterruptResumeBypassesCache(t *testing.T) {
 		return map[string]any{"answer": v}, nil
 	}, NodePolicies{Cache: &CachePolicy{
 		// Key on "x" only, so the "auto" and "human" runs share one cache key.
-		KeyFunc: func(input map[string]any) (string, error) {
+		KeyFunc: func(input map[string]any) (types.CacheKey, error) {
 			return DefaultCacheKey(map[string]any{"x": input["x"]})
 		},
 	}})

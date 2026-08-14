@@ -80,6 +80,30 @@ type SearchOptions struct {
 	Offset int
 }
 
+// ListNamespacesOptions configures a ListNamespaces call, mirroring the keyword
+// arguments of Python's `BaseStore.list_namespaces` (prefix/suffix/max_depth/
+// limit/offset).
+type ListNamespacesOptions struct {
+	// Prefix filters namespaces that start with this path, element-wise (nil
+	// or empty matches every namespace). Mirrors Python's `prefix` argument.
+	Prefix []string
+	// Suffix filters namespaces that end with this path, element-wise (nil or
+	// empty matches every namespace). Mirrors Python's `suffix` argument.
+	Suffix []string
+	// MaxDepth truncates each returned namespace to this many leading segments
+	// (truncated duplicates are deduped). nil means no truncation. Mirrors
+	// Python's `max_depth` argument, including its truncate-then-dedupe
+	// behavior.
+	MaxDepth *int
+	// Limit caps the number of namespaces returned. Defaults to 100 when zero
+	// or negative (mirroring Python's default limit=100; Go uses zero as the
+	// "not specified" sentinel).
+	Limit int
+	// Offset is the number of matching namespaces to skip before returning
+	// results.
+	Offset int
+}
+
 // Store is the cross-thread persistent key-value store interface, mirroring
 // Python's `langgraph.store.base.BaseStore` convenience surface (get/put/
 // delete/search). Stores enable persistence and memory shared across threads,
@@ -112,6 +136,14 @@ type Store interface {
 	// (the non-query path: Query-based semantic ranking is not supported by
 	// the InMemoryStore in this package).
 	Search(ctx context.Context, namespacePrefix []string, opts SearchOptions) ([]SearchItem, error)
+
+	// ListNamespaces returns the distinct namespaces present in the store,
+	// filtered by opts.Prefix (element-wise prefix) and opts.Suffix
+	// (element-wise suffix), truncated to opts.MaxDepth when set (truncated
+	// duplicates are deduped), sorted lexicographically by namespace segments,
+	// then paginated by opts.Offset/opts.Limit (Limit defaults to 100 when
+	// zero/negative). Mirrors Python's BaseStore.list_namespaces.
+	ListNamespaces(ctx context.Context, opts ListNamespacesOptions) ([][]string, error)
 }
 
 // ErrInvalidNamespace is returned by Put when namespace fails validation,
@@ -160,6 +192,22 @@ func namespaceHasPrefix(ns, prefix []string) bool {
 	}
 	for i, p := range prefix {
 		if ns[i] != p {
+			return false
+		}
+	}
+	return true
+}
+
+// namespaceHasSuffix reports whether ns ends with suffix element-wise. An empty
+// suffix matches every namespace. Mirrors the suffix branch of Python's
+// `_does_match` (which zips reversed(key) with reversed(path)).
+func namespaceHasSuffix(ns, suffix []string) bool {
+	if len(ns) < len(suffix) {
+		return false
+	}
+	off := len(ns) - len(suffix)
+	for i, s := range suffix {
+		if ns[off+i] != s {
 			return false
 		}
 	}

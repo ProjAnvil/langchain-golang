@@ -7,7 +7,10 @@
 // `langgraph.constants` and `langgraph.errors` (GraphInterrupt).
 package types
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // START and END are sentinel node names, matching Python's
 // `langgraph.constants.START`/`END`.
@@ -79,4 +82,26 @@ type GraphInterrupt struct {
 
 func (e *GraphInterrupt) Error() string {
 	return fmt.Sprintf("types: interrupted with value %v (id=%s)", e.Interrupt.Value, e.Interrupt.ID)
+}
+
+// CacheKey is the structured cache key a CachePolicy.KeyFunc returns,
+// mirroring Python's `langgraph.types.CacheKey` (a NamedTuple of
+// ns: tuple[str, ...], key: str, ttl: int | None). Unlike a bare string key,
+// it lets a key function specify the cache namespace and per-entry TTL
+// alongside the key.
+type CacheKey struct {
+	// Namespace is the hierarchical entry namespace, joined with "/" by the
+	// cache consumer. Empty selects the consumer's default namespace
+	// ("writes/<node>" in the graph executor, "__fn_writes/<task>" in fn).
+	Namespace []string
+	// Key is the flat string cache key.
+	Key string
+	// TTL is the entry lifetime. 0 means "no override": the consumer falls
+	// back to its CachePolicy.TTL, which itself means "never expires" when 0.
+	TTL time.Duration
+}
+
+// NewCacheKey returns a CacheKey with the given namespace, key, and ttl.
+func NewCacheKey(ns []string, key string, ttl time.Duration) CacheKey {
+	return CacheKey{Namespace: ns, Key: key, TTL: ttl}
 }

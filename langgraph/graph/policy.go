@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 // RetryPolicy configures per-node automatic retry with exponential backoff,
@@ -236,7 +237,11 @@ type CachePolicy struct {
 	// snapshot). Nil means DefaultCacheKey. A KeyFunc error fails the task
 	// with a wrapped error (Python parity: `key_func` errors propagate as
 	// task errors).
-	KeyFunc func(input map[string]any) (string, error)
+	//
+	// The returned CacheKey may also pin the cache namespace (joined with "/"
+	// by the executor; empty falls back to "writes/<node>") and a per-entry
+	// TTL (non-zero overrides CachePolicy.TTL; zero falls back to it).
+	KeyFunc func(input map[string]any) (types.CacheKey, error)
 	// TTL is how long a cached entry lives; 0 means it never expires.
 	TTL time.Duration
 }
@@ -245,12 +250,14 @@ type CachePolicy struct {
 // of the canonical JSON encoding of input. encoding/json marshals maps with
 // sorted keys, so the digest is deterministic for JSON-representable values;
 // non-JSON values (funcs, channels, cyclic structures, NaN) produce an
-// error, which the executor surfaces as the task's error.
-func DefaultCacheKey(input map[string]any) (string, error) {
+// error, which the executor surfaces as the task's error. The returned
+// CacheKey leaves Namespace empty (the executor picks its default) and TTL 0
+// (the policy TTL applies).
+func DefaultCacheKey(input map[string]any) (types.CacheKey, error) {
 	data, err := json.Marshal(input)
 	if err != nil {
-		return "", err
+		return types.CacheKey{}, err
 	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	return types.CacheKey{Key: hex.EncodeToString(sum[:])}, nil
 }

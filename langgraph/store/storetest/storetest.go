@@ -42,6 +42,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("namespaces_hierarchical", func(t *testing.T) { testNamespacesHierarchical(t, newStore) })
 	t.Run("put_rejects_invalid_namespace", func(t *testing.T) { testPutRejectsInvalidNamespace(t, newStore) })
 	t.Run("concurrent_put_get", func(t *testing.T) { testConcurrentPutGet(t, newStore) })
+	t.Run("list_namespaces", func(t *testing.T) { testListNamespaces(t, newStore) })
 }
 
 // testPutGetRoundTrip: an item Put under (namespace, key) is returned by Get
@@ -476,6 +477,146 @@ func testConcurrentPutGet(t *testing.T, newStore func(t *testing.T) store.Store)
 			t.Errorf("g%d: %d items, want %d", g, len(results), putsPerGoroutine)
 		}
 	}
+}
+
+// testListNamespaces: ListNamespaces returns the distinct namespaces in the
+// store in deterministic lexicographic order, honoring prefix/suffix filters,
+// max_depth truncation (which also dedupes), and offset/limit pagination.
+func testListNamespaces(t *testing.T, newStore func(t *testing.T) store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	s := newStore(t)
+
+	// Seed one item per namespace. The store's map iteration order is random,
+	// so the assertions below also pin down the deterministic sort.
+	seed := [][]string{
+		{"a", "b", "c"},
+		{"a", "b", "d"},
+		{"a", "b", "e", "f"},
+		{"a", "c", "d"},
+		{"z", "b", "c"},
+	}
+	for i, ns := range seed {
+		if err := s.Put(ctx, ns, fmt.Sprintf("k%d", i), map[string]any{"i": i}, nil); err != nil {
+			t.Fatalf("Put %v: %v", ns, err)
+		}
+	}
+
+	depth := func(d int) *int { return &d }
+
+	cases := []struct {
+		name string
+		opts store.ListNamespacesOptions
+		want [][]string
+	}{
+		{
+			name: "all",
+			want: [][]string{
+				{"a", "b", "c"},
+				{"a", "b", "d"},
+				{"a", "b", "e", "f"},
+				{"a", "c", "d"},
+				{"z", "b", "c"},
+			},
+		},
+		{
+			name: "prefix",
+			opts: store.ListNamespacesOptions{Prefix: []string{"a", "b"}},
+			want: [][]string{
+				{"a", "b", "c"},
+				{"a", "b", "d"},
+				{"a", "b", "e", "f"},
+			},
+		},
+		{
+			name: "suffix",
+			opts: store.ListNamespacesOptions{Suffix: []string{"d"}},
+			want: [][]string{
+				{"a", "b", "d"},
+				{"a", "c", "d"},
+			},
+		},
+		{
+			name: "prefix_and_suffix",
+			opts: store.ListNamespacesOptions{Prefix: []string{"a", "b"}, Suffix: []string{"d"}},
+			want: [][]string{
+				{"a", "b", "d"},
+			},
+		},
+		{
+			name: "max_depth_truncates_and_dedupes",
+			opts: store.ListNamespacesOptions{Prefix: []string{"a", "b"}, MaxDepth: depth(3)},
+			want: [][]string{
+				{"a", "b", "c"},
+				{"a", "b", "d"},
+				{"a", "b", "e"},
+			},
+		},
+		{
+			name: "max_depth_dedupes",
+			opts: store.ListNamespacesOptions{MaxDepth: depth(2)},
+			want: [][]string{
+				{"a", "b"},
+				{"a", "c"},
+				{"z", "b"},
+			},
+		},
+		{
+			name: "limit",
+			opts: store.ListNamespacesOptions{Limit: 2},
+			want: [][]string{
+				{"a", "b", "c"},
+				{"a", "b", "d"},
+			},
+		},
+		{
+			name: "offset",
+			opts: store.ListNamespacesOptions{Offset: 2},
+			want: [][]string{
+				{"a", "b", "e", "f"},
+				{"a", "c", "d"},
+				{"z", "b", "c"},
+			},
+		},
+		{
+			name: "offset_and_limit",
+			opts: store.ListNamespacesOptions{Offset: 1, Limit: 2},
+			want: [][]string{
+				{"a", "b", "d"},
+				{"a", "b", "e", "f"},
+			},
+		},
+		{
+			name: "offset_past_end",
+			opts: store.ListNamespacesOptions{Offset: 100},
+			want: [][]string{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := s.ListNamespaces(ctx, c.opts)
+			if err != nil {
+				t.Fatalf("ListNamespaces: %v", err)
+			}
+			if !namespacesEqual(got, c.want) {
+				t.Errorf("ListNamespaces(%+v) = %v, want %v", c.opts, got, c.want)
+			}
+		})
+	}
+}
+
+// namespacesEqual reports whether two namespace slices-of-slices are equal,
+// element by element (ignoring nil-vs-empty for the outer slice).
+func namespacesEqual(a, b [][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !reflect.DeepEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // keysOf joins the keys of the search results (in order) with commas, for

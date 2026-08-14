@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -100,7 +101,7 @@ func (t *Task[I, O]) Call(ctx context.Context, in I) *Future[O] {
 		}
 	}
 	// 2. Cache lookup (independent second mechanism; only with a backend).
-	key := ""
+	var key types.CacheKey
 	if t.opts.Cache != nil && d.cache != nil {
 		fut, k, ok := cachedCall(ctx, d, t, parentPath, callIdx, in)
 		if ok {
@@ -174,7 +175,7 @@ func replayedCall[O any](ctx context.Context, d *dispatcher, name, parentPath st
 // the run-scoped fields (Context, Store, StreamWriter, ...) into the task; the
 // backing ctx is swapped to the task's derived context (call path / timeout)
 // at call time so t.f observes the same surface a node does.
-func startTask[I, O any](d *dispatcher, ctx context.Context, parentRt runtime.Runtime, t *Task[I, O], parentPath string, callIdx int, in I, key string) *Future[O] {
+func startTask[I, O any](d *dispatcher, ctx context.Context, parentRt runtime.Runtime, t *Task[I, O], parentPath string, callIdx int, in I, key types.CacheKey) *Future[O] {
 	fut := &Future[O]{done: make(chan struct{})}
 	taskPath := t.name + "@" + strconv.Itoa(callIdx) // root call: "a@0" (no leading /)
 	if parentPath != "" {
@@ -318,19 +319,23 @@ func callSafely[I, O any](ctx context.Context, parentRt runtime.Runtime, t *Task
 // consumed count), so a cached task whose function also calls Interrupt
 // would misalign the node's shared resume queue — Python's baseline never
 // combines cache_policy with interrupt-in-task (documented divergence).
-func cachedCall[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], parentPath string, callIdx int, in I) (*Future[O], string, bool) {
+func cachedCall[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], parentPath string, callIdx int, in I) (*Future[O], types.CacheKey, bool) {
 	key, err := cacheKey(t, in)
 	if err != nil {
 		d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: err.Error()})
 		var zero O
-		return resolvedFuture[O](zero, err, nil), "", true
+		return resolvedFuture[O](zero, err, nil), types.CacheKey{}, true
 	}
-	writes, ok, err := d.cache.Get(ctx, fnCacheNS(t.name), key)
+	ns := fnCacheNS(t.name)
+	if len(key.Namespace) > 0 {
+		ns = strings.Join(key.Namespace, "/")
+	}
+	writes, ok, err := d.cache.Get(ctx, ns, key.Key)
 	if err != nil {
 		werr := fmt.Errorf("fn: task %q cache get: %w", t.name, err)
 		d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: werr.Error()})
 		var zero O
-		return resolvedFuture[O](zero, werr, nil), "", true
+		return resolvedFuture[O](zero, werr, nil), types.CacheKey{}, true
 	}
 	if !ok || len(writes) == 0 || writes[0].Channel != checkpoint.ReservedReturn {
 		return nil, key, false
@@ -340,20 +345,28 @@ func cachedCall[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], par
 		var zero O
 		err := fmt.Errorf("fn: cached result of task %q has type %T, want the declared output type", t.name, writes[0].Value)
 		d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, isErr: true, errMsg: err.Error()})
-		return resolvedFuture[O](zero, err, nil), "", true
+		return resolvedFuture[O](zero, err, nil), types.CacheKey{}, true
 	}
 	d.record(taskResult{name: t.name, parentPath: parentPath, callIdx: callIdx, value: val})
-	return resolvedFuture[O](val, nil, nil), "", true
+	return resolvedFuture[O](val, nil, nil), types.CacheKey{}, true
 }
 
 // cacheStore stores a successful result under the key cachedCall already
 // derived for this Call. A Set failure fails the task with a wrapped error
 // (graph node-cache parity); the caller records that error.
-func cacheStore[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], key string, val O) error {
+func cacheStore[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], key types.CacheKey, val O) error {
 	if t.opts.Cache == nil || d.cache == nil {
 		return nil
 	}
-	if err := d.cache.Set(ctx, fnCacheNS(t.name), key, []checkpoint.Write{{Channel: checkpoint.ReservedReturn, Value: val}}, t.opts.Cache.TTL); err != nil {
+	ns := fnCacheNS(t.name)
+	if len(key.Namespace) > 0 {
+		ns = strings.Join(key.Namespace, "/")
+	}
+	ttl := t.opts.Cache.TTL
+	if key.TTL != 0 {
+		ttl = key.TTL
+	}
+	if err := d.cache.Set(ctx, ns, key.Key, []checkpoint.Write{{Channel: checkpoint.ReservedReturn, Value: val}}, ttl); err != nil {
 		return fmt.Errorf("fn: task %q cache set: %w", t.name, err)
 	}
 	return nil
@@ -361,14 +374,14 @@ func cacheStore[I, O any](ctx context.Context, d *dispatcher, t *Task[I, O], key
 
 // cacheKey derives the cache key for a call, wrapping KeyFunc errors (nil
 // KeyFunc means graph.DefaultCacheKey).
-func cacheKey[I, O any](t *Task[I, O], in I) (string, error) {
+func cacheKey[I, O any](t *Task[I, O], in I) (types.CacheKey, error) {
 	keyFunc := t.opts.Cache.KeyFunc
 	if keyFunc == nil {
 		keyFunc = graph.DefaultCacheKey
 	}
 	key, err := keyFunc(map[string]any{"input": in})
 	if err != nil {
-		return "", fmt.Errorf("fn: task %q cache key: %w", t.name, err)
+		return types.CacheKey{}, fmt.Errorf("fn: task %q cache key: %w", t.name, err)
 	}
 	return key, nil
 }

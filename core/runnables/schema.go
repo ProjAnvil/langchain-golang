@@ -85,3 +85,35 @@ type ConfigurableFieldSpec struct {
 	// before this one (for ordered initialization).
 	Dependencies []string
 }
+
+// ConfigurableField describes one field that a Runnable makes configurable at
+// invocation time. It is the Go equivalent of Python's ConfigurableField from
+// langchain_core.runnables.utils, used with ConfigurableFields.
+type ConfigurableField struct {
+	// ID is the unique field identifier (typically lowercase with underscores).
+	// It is the key used in Config.Configurable to override the value.
+	ID string
+	// Annotation is a human-readable type hint for the field.
+	Annotation string
+	// Name is an optional human-readable display name.
+	Name string
+	// Description is an optional human-readable description.
+	Description string
+	// Default is the value used when the field is not set at runtime.
+	Default any
+	// IsShared indicates whether the field is shared across all instances of
+	// the Runnable within a single chain.
+	IsShared bool
+}
+
+// Spec converts the field to a ConfigurableFieldSpec.
+func (f ConfigurableField) Spec() ConfigurableFieldSpec {
+	return ConfigurableFieldSpec{
+		ID:          f.ID,
+		Annotation:  f.Annotation,
+		Name:        f.Name,
+		Description: f.Description,
+		Default:     f.Default,
+		IsShared:    f.IsShared,
+	}
+}

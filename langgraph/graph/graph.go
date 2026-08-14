@@ -827,7 +827,8 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// save persists a checkpoint (see saveCheckpoint) and advances currentCfg
 	// to it, stamping Metadata.Parents with the child namespaces used so far
 	// and — for a subgraph run — the parent's current position. A successful
-	// save emits the stream layer's debug checkpoint chunk.
+	// save emits the stream layer's debug checkpoint chunk and, when active,
+	// the checkpoints chunk (a StateSnapshot).
 	save := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
 		md.Parents = children.snapshot()
 		if isSubgraph && parentSC.current != nil && parentSC.current.CheckpointID != "" {
@@ -841,6 +842,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			return err
 		}
 		em.debugCheckpoint(md, cfg, *currentCfg, g.dropJoinKeys(rs.channelValues()), next)
+		em.emitCheckpointSnapshot(md, cfg, *currentCfg, rs.snapshot(), next)
 		*currentCfg = cfg
 		return nil
 	}
@@ -1015,7 +1017,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// execute (neither sees the other's entry yet) — Python parity.
 		execute := make([]bool, len(active))
 		missed := make([]bool, len(active)) // cache miss: store writes after execution
+		storeNS := make([]string, len(active))
 		storeKey := make([]string, len(active))
+		storeTTL := make([]time.Duration, len(active))
 		for i, t := range active {
 			policy, ok := g.policies[t.node]
 			if g.cache == nil || !ok || policy.Cache == nil {
@@ -1039,7 +1043,18 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				outcomes[i].err = fmt.Errorf("graph: node %q cache key: %w", t.node, err)
 				continue
 			}
-			writes, hit, err := g.cache.Get(ctx, cacheWritesNS(t.node), key)
+			// The KeyFunc may pin a namespace and a per-entry TTL; empty
+			// namespace falls back to "writes/<node>", zero TTL to the policy
+			// TTL.
+			ns := cacheWritesNS(t.node)
+			if len(key.Namespace) > 0 {
+				ns = strings.Join(key.Namespace, "/")
+			}
+			ttl := policy.Cache.TTL
+			if key.TTL != 0 {
+				ttl = key.TTL
+			}
+			writes, hit, err := g.cache.Get(ctx, ns, key.Key)
 			if err != nil {
 				outcomes[i].err = fmt.Errorf("graph: node %q cache get: %w", t.node, err)
 				continue
@@ -1050,7 +1065,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			}
 			execute[i] = true
 			missed[i] = true
-			storeKey[i] = key
+			storeNS[i] = ns
+			storeKey[i] = key.Key
+			storeTTL[i] = ttl
 		}
 
 		var wg sync.WaitGroup
@@ -1094,7 +1111,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			if err != nil {
 				return Result{}, fmt.Errorf("graph: node %q cache writes: %w", active[i].node, err)
 			}
-			if err := g.cache.Set(ctx, cacheWritesNS(active[i].node), storeKey[i], writes, g.policies[active[i].node].Cache.TTL); err != nil {
+			if err := g.cache.Set(ctx, storeNS[i], storeKey[i], writes, storeTTL[i]); err != nil {
 				return Result{}, fmt.Errorf("graph: node %q cache set: %w", active[i].node, err)
 			}
 		}

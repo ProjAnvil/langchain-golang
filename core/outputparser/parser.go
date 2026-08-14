@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/projanvil/langchain-golang/core/lcerrors"
 	"github.com/projanvil/langchain-golang/core/outputs"
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/utils"
@@ -64,7 +65,11 @@ func (p JSONParser[T]) Parse(_ context.Context, text string) (T, error) {
 	decoder := json.NewDecoder(strings.NewReader(extractJSONMarkdown(text)))
 	decoder.UseNumber()
 	if err := decoder.Decode(&out); err != nil {
-		return out, fmt.Errorf("parse json output: %w", err)
+		return out, &lcerrors.OutputParserException{
+			Message:   fmt.Sprintf("parse json output: %v", err),
+			LLMOutput: text,
+			Err:       err,
+		}
 	}
 	return out, nil
 }
@@ -208,7 +213,11 @@ func (p XMLParser) Parse(_ context.Context, text string) (map[string]any, error)
 	xmlText := extractXML(text)
 	root, err := parseXMLNode(xmlText)
 	if err != nil {
-		return nil, fmt.Errorf("parse xml output: %w", err)
+		return nil, &lcerrors.OutputParserException{
+			Message:   fmt.Sprintf("parse xml output: %v", err),
+			LLMOutput: text,
+			Err:       err,
+		}
 	}
 	return map[string]any{root.Name: root.Value()}, nil
 }

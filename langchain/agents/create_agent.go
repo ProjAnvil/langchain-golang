@@ -45,9 +45,9 @@ package agents
 // update["messages"], if present, reshapes only the *local* view of the
 // conversation used to build this model call (e.g. `SummarizationMiddleware`
 // collapsing older messages into a summary); it is intentionally NOT
-// persisted into the graph's committed state, since langgraph/channels'
-// MessagesReducer (unlike Python's `add_messages`) has no
-// RemoveMessage/REMOVE_ALL_MESSAGES support to express "replace history."
+// persisted into the graph's committed state (MessagesReducer now supports
+// RemoveMessage, including the empty-ID remove-all sentinel, but a
+// BeforeModelHook "messages" update is deliberately kept local-only).
 // AfterModel "messages" updates are additive (new tool/AI messages) and are
 // persisted normally.
 
@@ -192,8 +192,10 @@ type AgentOptions struct {
 	Debug bool
 	// ResponseFormat configures structured output, mirroring Python's
 	// `create_agent(response_format=...)`. Accepted values are ToolStrategy
-	// (or *ToolStrategy) and ProviderStrategy (or *ProviderStrategy); see
-	// WithAgentResponseFormat and the package doc comment for scope.
+	// (or *ToolStrategy), ProviderStrategy (or *ProviderStrategy), AutoStrategy
+	// (or *AutoStrategy), and a raw JSON-schema map[string]any / schema.Schema
+	// (Python's `response_format: dict` overload, resolved as AutoStrategy);
+	// see WithAgentResponseFormat and the package doc comment for scope.
 	ResponseFormat any
 	// StateFields registers custom graph-state fields, mirroring Python's
 	// `create_agent(state_schema=...)`. See WithAgentStateFields and
@@ -233,6 +235,11 @@ type AgentOptions struct {
 	// chatmodels.ParseModelString + chatmodels.Resolve into the ChatModel the
 	// agent uses. See WithAgentModel for the full precedence rule.
 	ModelString string
+	// ToolSpecs are provider-native dict tool specs (Python's
+	// `tools: Sequence[... | dict]` form), converted into core/tools tools and
+	// appended after the positional tool list at CreateAgent time. See
+	// WithAgentToolSpecs for the accepted dict shape and semantics.
+	ToolSpecs []map[string]any
 }
 
 // AgentOption applies a functional option to AgentOptions.
@@ -370,8 +377,19 @@ func WithAgentInterruptAfter(nodes ...string) AgentOption {
 
 // WithAgentResponseFormat configures structured output, mirroring Python's
 // `create_agent(response_format=...)`. format must be a ToolStrategy,
-// *ToolStrategy, ProviderStrategy, *ProviderStrategy, AutoStrategy, or
-// *AutoStrategy; CreateAgent returns an error for any other type.
+// *ToolStrategy, ProviderStrategy, *ProviderStrategy, AutoStrategy,
+// *AutoStrategy, or a raw JSON schema (a plain map[string]any or a
+// schema.Schema — Python's `response_format: dict` overload); CreateAgent
+// returns an error for any other type.
+//
+// A raw schema is interpreted exactly as Python treats a raw dict: it is
+// wrapped in an AutoStrategy and resolved eagerly at CreateAgent time against
+// the agent's bound model into a ToolStrategy or ProviderStrategy (ToolStrategy
+// when the model declares ToolCalling, else ProviderStrategy when it declares
+// StructuredOutput), so the schema is auto-detected rather than pinned to one
+// strategy. This is how `type[ResponseT]` (Pydantic model class) is covered in
+// the Go port: Go has no runtime type→JSON-schema reflection comparable to
+// Pydantic, so callers pass the equivalent JSON schema directly.
 //
 // ToolStrategy is fully wired into the model loop: each of its SchemaSpecs is
 // bound to the model as an extra callable tool, and a matching tool call in
@@ -426,6 +444,29 @@ func WithAgentResponseFormat(format any) AgentOption {
 // package.
 func WithAgentModel(spec string) AgentOption {
 	return func(o *AgentOptions) { o.ModelString = spec }
+}
+
+// WithAgentToolSpecs appends provider-native dict tool specs to the agent's
+// tool list, mirroring Python's `create_agent(tools=[..., {...}])` dict form
+// (`tools: Sequence[BaseTool | Callable | dict]`). Each spec is a
+// map[string]any carrying a non-empty string "name", an optional string
+// "description", and an optional JSON-schema object under "parameters" (also
+// accepted under "input_schema" or "args_schema", the names used by other
+// tool representations); when no schema key is present the args schema
+// defaults to an empty object schema. Each spec is converted into a
+// core/tools.Func via tools.NewFunc at CreateAgent time and appended after the
+// positional tool list, so the dict tools are bound to the model alongside
+// regular tools.
+//
+// Semantics note: a dict spec declares a provider-native tool (a schema + name
+// + description), not a Go callable. Its converted Func therefore has no
+// executable implementation — it is bound to the model so the model can emit
+// tool calls for it, and any such call that reaches the tools node produces an
+// explanatory tool error rather than running a real function. This is the Go
+// equivalent of Python keeping dict (built-in) tools out of the ToolNode and
+// handing them to the provider's bind_tools for server-side execution.
+func WithAgentToolSpecs(specs ...map[string]any) AgentOption {
+	return func(o *AgentOptions) { o.ToolSpecs = append(o.ToolSpecs, specs...) }
 }
 
 // Agent wraps a compiled model<->tools graph, mirroring Python's
@@ -501,6 +542,18 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 
 	if model == nil {
 		return nil, fmt.Errorf("agents: model is required")
+	}
+
+	// Convert any dict tool specs (Python's `tools: [... | dict]` form) into
+	// core/tools tools and append them after the positional tool list, so they
+	// are bound to the model and routed through the tools node exactly like
+	// positional tools. See WithAgentToolSpecs for the accepted dict shape.
+	if len(options.ToolSpecs) > 0 {
+		specTools, err := toolsFromToolSpecs(options.ToolSpecs)
+		if err != nil {
+			return nil, err
+		}
+		toolList = append(append([]coretools.Tool(nil), toolList...), specTools...)
 	}
 
 	toolStrategy, providerStrategy, err := resolveResponseFormat(options.ResponseFormat, model)
@@ -793,6 +846,73 @@ func toolsFromAny(list []any) ([]coretools.Tool, error) {
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// toolsFromToolSpecs converts provider-native dict tool specs (Python's
+// `tools: Sequence[... | dict]` form) into core/tools tools via toolFromSpec.
+func toolsFromToolSpecs(specs []map[string]any) ([]coretools.Tool, error) {
+	out := make([]coretools.Tool, 0, len(specs))
+	for i, spec := range specs {
+		tool, err := toolFromSpec(spec)
+		if err != nil {
+			return nil, fmt.Errorf("agents: tool spec %d: %w", i, err)
+		}
+		out = append(out, tool)
+	}
+	return out, nil
+}
+
+// toolFromSpec converts a single dict tool spec into a core/tools.Tool (a
+// tools.Func) with its name, description, and args JSON schema taken from the
+// dict. See WithAgentToolSpecs for the accepted dict shape.
+func toolFromSpec(spec map[string]any) (coretools.Tool, error) {
+	name, _ := spec["name"].(string)
+	if name == "" {
+		return nil, fmt.Errorf("tool spec requires a non-empty string \"name\"")
+	}
+	description, _ := spec["description"].(string)
+
+	argsSchema, err := toolSpecArgsSchema(spec, name)
+	if err != nil {
+		return nil, err
+	}
+
+	return coretools.NewFunc(name, description, argsSchema,
+		func(context.Context, map[string]any) (coretools.Result, error) {
+			return coretools.Result{}, fmt.Errorf("agents: tool %q was declared as a dict spec and has no executable implementation", name)
+		})
+}
+
+// toolSpecArgsSchema extracts the args JSON schema from a dict tool spec,
+// checking the "parameters", "input_schema", and "args_schema" keys (in that
+// order of precedence). A missing key defaults to an empty object schema,
+// mirroring a provider tool with no parameters.
+func toolSpecArgsSchema(spec map[string]any, name string) (schema.Schema, error) {
+	for _, key := range []string{"parameters", "input_schema", "args_schema"} {
+		raw, ok := spec[key]
+		if !ok {
+			continue
+		}
+		if s, ok := asSchema(raw); ok {
+			return s, nil
+		}
+		return nil, fmt.Errorf("tool spec %q: %s must be a JSON-schema object, got %T", name, key, raw)
+	}
+	return schema.Object(map[string]schema.Schema{}), nil
+}
+
+// asSchema coerces a raw schema value into a schema.Schema. It accepts both a
+// plain map[string]any and the schema.Schema spelling, since a JSON-decoded
+// dict is the former while schema package constructors return the latter.
+func asSchema(v any) (schema.Schema, bool) {
+	switch s := v.(type) {
+	case schema.Schema:
+		return s, true
+	case map[string]any:
+		return schema.Schema(s), true
+	default:
+		return nil, false
+	}
 }
 
 // hasHook reports whether any middleware in mws implements hookType (used as
@@ -1124,8 +1244,17 @@ func resolveResponseFormat(format any, model language.ChatModel) (*ToolStrategy,
 			return nil, nil, err
 		}
 		return resolveResponseFormat(resolved, model)
+	// Raw JSON schema (Python's `response_format: dict` overload): wrap in an
+	// AutoStrategy to preserve auto-detection intent, matching Python, then
+	// resolve against the bound model. Both the plain map spelling and the
+	// schema.Schema spelling (the type the strategy constructors take) are
+	// accepted.
+	case map[string]any:
+		return resolveResponseFormat(NewAutoStrategy(schema.Schema(v)), model)
+	case schema.Schema:
+		return resolveResponseFormat(NewAutoStrategy(v), model)
 	default:
-		return nil, nil, fmt.Errorf("agents: unsupported ResponseFormat type %T (expected ToolStrategy, ProviderStrategy, or AutoStrategy)", format)
+		return nil, nil, fmt.Errorf("agents: unsupported ResponseFormat type %T (expected ToolStrategy, ProviderStrategy, AutoStrategy, or a raw JSON schema)", format)
 	}
 }
 

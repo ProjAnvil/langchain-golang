@@ -181,6 +181,77 @@ func (s *InMemoryStore) Search(_ context.Context, namespacePrefix []string, opts
 	return out, nil
 }
 
+// ListNamespaces returns the distinct namespaces present in the store, filtered
+// by opts.Prefix (element-wise prefix) and opts.Suffix (element-wise suffix),
+// truncated to opts.MaxDepth when set (truncated duplicates are deduped),
+// sorted lexicographically by namespace segments, then paginated by
+// opts.Offset/opts.Limit. A zero/negative Limit defaults to 100 (Python
+// parity: Python's default limit is 100). Returned namespace slices are
+// defensive copies.
+func (s *InMemoryStore) ListNamespaces(_ context.Context, opts ListNamespacesOptions) ([][]string, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	s.mu.RLock()
+	// Collect distinct namespaces (one per non-empty data bucket) and apply
+	// prefix/suffix filters. A map keyed by the (possibly truncated) joined
+	// namespace dedupes, which is only ever needed after truncation — each
+	// stored namespace is already distinct — but applying it unconditionally
+	// keeps the code uniform and matches Python's set-based dedupe.
+	unique := make(map[string][]string)
+	for _, ns := range s.nsOf {
+		if len(opts.Prefix) > 0 && !namespaceHasPrefix(ns, opts.Prefix) {
+			continue
+		}
+		if len(opts.Suffix) > 0 && !namespaceHasSuffix(ns, opts.Suffix) {
+			continue
+		}
+		key := ns
+		if opts.MaxDepth != nil {
+			d := *opts.MaxDepth
+			if d < 0 {
+				d = 0
+			}
+			if d < len(ns) {
+				key = ns[:d]
+			}
+		}
+		unique[joinNS(key)] = key
+	}
+	s.mu.RUnlock()
+
+	namespaces := make([][]string, 0, len(unique))
+	for _, ns := range unique {
+		namespaces = append(namespaces, ns)
+	}
+	// Deterministic order: Python sorts the (truncated) namespace tuples
+	// lexicographically; joinNS comparison reproduces that element-wise.
+	sort.Slice(namespaces, func(i, j int) bool {
+		return strings.Compare(joinNS(namespaces[i]), joinNS(namespaces[j])) < 0
+	})
+
+	if offset >= len(namespaces) {
+		return [][]string{}, nil
+	}
+	namespaces = namespaces[offset:]
+	if limit < len(namespaces) {
+		namespaces = namespaces[:limit]
+	}
+	out := make([][]string, len(namespaces))
+	for i, ns := range namespaces {
+		cp := make([]string, len(ns))
+		copy(cp, ns)
+		out[i] = cp
+	}
+	return out, nil
+}
+
 // cloneValue returns a shallow copy of m so the store does not alias the
 // caller's map (a Put must not be affected by the caller later mutating its
 // value). Nested maps/slices are still shared — mirroring Python, which stores

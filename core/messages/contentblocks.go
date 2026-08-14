@@ -225,6 +225,56 @@ func (InvalidToolCallBlock) BlockType() string { return "invalid_tool_call" }
 // isContentBlock seals InvalidToolCallBlock.
 func (InvalidToolCallBlock) isContentBlock() {}
 
+// ServerToolCall mirrors Python's ServerToolCall (type="server_tool_call"):
+// a tool call executed server-side (e.g. code execution, web search).
+type ServerToolCall struct {
+	ID     string         `json:"id,omitempty"`
+	Name   string         `json:"name"`
+	Args   map[string]any `json:"args,omitempty"`
+	Index  any            `json:"index,omitempty"`
+	Extras map[string]any `json:"-"`
+}
+
+// BlockType returns "server_tool_call".
+func (ServerToolCall) BlockType() string { return "server_tool_call" }
+
+// isContentBlock seals ServerToolCall.
+func (ServerToolCall) isContentBlock() {}
+
+// ServerToolCallChunk mirrors Python's ServerToolCallChunk
+// (type="server_tool_call_chunk"): a chunk of a server-side tool call yielded
+// while streaming.
+type ServerToolCallChunk struct {
+	ID     string         `json:"id,omitempty"`
+	Name   string         `json:"name,omitempty"`
+	Args   string         `json:"args,omitempty"`
+	Index  any            `json:"index,omitempty"`
+	Extras map[string]any `json:"-"`
+}
+
+// BlockType returns "server_tool_call_chunk".
+func (ServerToolCallChunk) BlockType() string { return "server_tool_call_chunk" }
+
+// isContentBlock seals ServerToolCallChunk.
+func (ServerToolCallChunk) isContentBlock() {}
+
+// ServerToolResult mirrors Python's ServerToolResult (type="server_tool_result"):
+// the result of a server-side tool call.
+type ServerToolResult struct {
+	ID         string         `json:"id,omitempty"`
+	ToolCallID string         `json:"tool_call_id"`
+	Status     string         `json:"status"`
+	Output     any            `json:"output,omitempty"`
+	Index      any            `json:"index,omitempty"`
+	Extras     map[string]any `json:"-"`
+}
+
+// BlockType returns "server_tool_result".
+func (ServerToolResult) BlockType() string { return "server_tool_result" }
+
+// isContentBlock seals ServerToolResult.
+func (ServerToolResult) isContentBlock() {}
+
 // --- Escape hatch ---
 
 // NonStandardContentBlock holds provider-specific or unrecognized block data.
@@ -255,6 +305,9 @@ var (
 	_ ContentBlock = ToolCallBlock{}
 	_ ContentBlock = ToolCallChunkBlock{}
 	_ ContentBlock = InvalidToolCallBlock{}
+	_ ContentBlock = ServerToolCall{}
+	_ ContentBlock = ServerToolCallChunk{}
+	_ ContentBlock = ServerToolResult{}
 	_ ContentBlock = NonStandardContentBlock{}
 )
 
@@ -309,6 +362,12 @@ func ParseContentBlock(m map[string]any) ContentBlock {
 		return parseToolCallChunkBlock(m)
 	case "invalid_tool_call":
 		return parseInvalidToolCallBlock(m)
+	case "server_tool_call":
+		return parseServerToolCall(m)
+	case "server_tool_call_chunk":
+		return parseServerToolCallChunk(m)
+	case "server_tool_result":
+		return parseServerToolResult(m)
 	default:
 		// Unknown / provider-specific: escape hatch.
 		return NonStandardContentBlock{Type: typ, Value: cloneMap(stripType(m))}
@@ -429,6 +488,48 @@ func BlockToMap(b ContentBlock) map[string]any {
 		}
 		if v.Error != "" {
 			out["error"] = v.Error
+		}
+		if v.Index != nil {
+			out["index"] = v.Index
+		}
+		mergeExtras(out, v.Extras)
+		return out
+	case ServerToolCall:
+		out := map[string]any{"type": "server_tool_call", "name": v.Name}
+		if v.ID != "" {
+			out["id"] = v.ID
+		}
+		if v.Args != nil {
+			out["args"] = v.Args
+		}
+		if v.Index != nil {
+			out["index"] = v.Index
+		}
+		mergeExtras(out, v.Extras)
+		return out
+	case ServerToolCallChunk:
+		out := map[string]any{"type": "server_tool_call_chunk"}
+		if v.ID != "" {
+			out["id"] = v.ID
+		}
+		if v.Name != "" {
+			out["name"] = v.Name
+		}
+		if v.Args != "" {
+			out["args"] = v.Args
+		}
+		if v.Index != nil {
+			out["index"] = v.Index
+		}
+		mergeExtras(out, v.Extras)
+		return out
+	case ServerToolResult:
+		out := map[string]any{"type": "server_tool_result", "tool_call_id": v.ToolCallID, "status": v.Status}
+		if v.ID != "" {
+			out["id"] = v.ID
+		}
+		if v.Output != nil {
+			out["output"] = v.Output
 		}
 		if v.Index != nil {
 			out["index"] = v.Index
@@ -573,6 +674,31 @@ func CloneBlock(b ContentBlock) ContentBlock {
 			Index:  v.Index,
 			Extras: cloneMap(v.Extras),
 		}
+	case ServerToolCall:
+		return ServerToolCall{
+			ID:     v.ID,
+			Name:   v.Name,
+			Args:   cloneMap(v.Args),
+			Index:  v.Index,
+			Extras: cloneMap(v.Extras),
+		}
+	case ServerToolCallChunk:
+		return ServerToolCallChunk{
+			ID:     v.ID,
+			Name:   v.Name,
+			Args:   v.Args,
+			Index:  v.Index,
+			Extras: cloneMap(v.Extras),
+		}
+	case ServerToolResult:
+		return ServerToolResult{
+			ID:         v.ID,
+			ToolCallID: v.ToolCallID,
+			Status:     v.Status,
+			Output:     cloneAny(v.Output),
+			Index:      v.Index,
+			Extras:     cloneMap(v.Extras),
+		}
 	case NonStandardContentBlock:
 		return NonStandardContentBlock{
 			Type:  v.Type,
@@ -691,6 +817,39 @@ func parseInvalidToolCallBlock(m map[string]any) InvalidToolCallBlock {
 	b.Error, _ = m["error"].(string)
 	b.Index = m["index"]
 	b.Extras = extractExtras(m, "type", "id", "name", "args", "error", "index")
+	return b
+}
+
+func parseServerToolCall(m map[string]any) ServerToolCall {
+	b := ServerToolCall{}
+	b.ID, _ = m["id"].(string)
+	b.Name, _ = m["name"].(string)
+	if args, ok := m["args"].(map[string]any); ok {
+		b.Args = args
+	}
+	b.Index = m["index"]
+	b.Extras = extractExtras(m, "type", "id", "name", "args", "index")
+	return b
+}
+
+func parseServerToolCallChunk(m map[string]any) ServerToolCallChunk {
+	b := ServerToolCallChunk{}
+	b.ID, _ = m["id"].(string)
+	b.Name, _ = m["name"].(string)
+	b.Args, _ = m["args"].(string)
+	b.Index = m["index"]
+	b.Extras = extractExtras(m, "type", "id", "name", "args", "index")
+	return b
+}
+
+func parseServerToolResult(m map[string]any) ServerToolResult {
+	b := ServerToolResult{}
+	b.ID, _ = m["id"].(string)
+	b.ToolCallID, _ = m["tool_call_id"].(string)
+	b.Status, _ = m["status"].(string)
+	b.Output = m["output"]
+	b.Index = m["index"]
+	b.Extras = extractExtras(m, "type", "id", "tool_call_id", "status", "output", "index")
 	return b
 }
 

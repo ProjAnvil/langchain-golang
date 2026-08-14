@@ -119,19 +119,37 @@ func (p PydanticParser[T]) Parse(_ context.Context, text string) (T, error) {
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.UseNumber()
 	if err := decoder.Decode(&raw); err != nil {
-		return zero, fmt.Errorf("parse pydantic json output: %w", err)
+		return zero, &lcerrors.OutputParserException{
+			Message:   fmt.Sprintf("parse pydantic json output: %v", err),
+			LLMOutput: text,
+			Err:       err,
+		}
 	}
 	if err := validateSchema(raw, p.OutputSchema, "$"); err != nil {
 		data, _ := json.Marshal(raw)
-		return zero, fmt.Errorf("%w: failed to parse output from completion %s: %v", lcerrors.ErrSchemaValidation, data, err)
+		wrapped := fmt.Errorf("%w: failed to parse output from completion %s: %v", lcerrors.ErrSchemaValidation, data, err)
+		return zero, &lcerrors.OutputParserException{
+			Message:   wrapped.Error(),
+			LLMOutput: text,
+			Err:       wrapped,
+		}
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
-		return zero, err
+		return zero, &lcerrors.OutputParserException{
+			Message:   err.Error(),
+			LLMOutput: text,
+			Err:       err,
+		}
 	}
 	var out T
 	if err := json.Unmarshal(data, &out); err != nil {
-		return zero, fmt.Errorf("%w: decode typed pydantic output: %v", lcerrors.ErrSchemaValidation, err)
+		wrapped := fmt.Errorf("%w: decode typed pydantic output: %v", lcerrors.ErrSchemaValidation, err)
+		return zero, &lcerrors.OutputParserException{
+			Message:   wrapped.Error(),
+			LLMOutput: text,
+			Err:       wrapped,
+		}
 	}
 	return out, nil
 }

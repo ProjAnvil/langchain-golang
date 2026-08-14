@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
-	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -275,9 +275,9 @@ func TestCacheKeyFuncReceivesInputMap(t *testing.T) {
 	var got map[string]any
 	task := NewTask[int, int]("k", func(_ runtime.Runtime, in int) (int, error) {
 		return in, nil
-	}, TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(m map[string]any) (string, error) {
+	}, TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(m map[string]any) (types.CacheKey, error) {
 		got = m
-		return "k1", nil
+		return types.CacheKey{Key: "k1"}, nil
 	}}})
 
 	d := newDispatcher(cache)
@@ -294,8 +294,8 @@ func TestCacheKeyFuncErrorFailsTask(t *testing.T) {
 	keyErr := errors.New("no key")
 	task := NewTask[int, int]("k", func(_ runtime.Runtime, in int) (int, error) {
 		return in, nil
-	}, TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(map[string]any) (string, error) {
-		return "", keyErr
+	}, TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(map[string]any) (types.CacheKey, error) {
+		return types.CacheKey{}, keyErr
 	}}})
 
 	d := newDispatcher(cache)
