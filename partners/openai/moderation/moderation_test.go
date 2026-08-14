@@ -66,6 +66,52 @@ func TestMiddlewareBeforeModelFlagsHuman(t *testing.T) {
 	}
 }
 
+func TestMiddlewareBeforeModelFlagsToolMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"flagged":true,"categories":{"sexual":true},"category_scores":{"sexual":0.8}}]}`))
+	}))
+	defer server.Close()
+
+	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL)))
+	m.CheckToolResults = true
+
+	state := map[string]any{"messages": []messages.Message{
+		messages.AI("assistant"),
+		messages.Tool("call-1", "flagged tool output"),
+	}}
+	_, err := m.BeforeModel(context.Background(), state)
+	var ve *ViolationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected ViolationError, got %v", err)
+	}
+	if ve.Stage != "tool" {
+		t.Fatalf("stage = %q, want tool", ve.Stage)
+	}
+}
+
+func TestMiddlewareBeforeModelSkipsToolMessagesByDefault(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"results":[{"flagged":true,"categories":{"sexual":true},"category_scores":{"sexual":0.8}}]}`))
+	}))
+	defer server.Close()
+
+	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL)))
+	// Default: CheckToolResults=false, so only the (absent) human message is
+	// checked; the tool message should NOT be moderated.
+	state := map[string]any{"messages": []messages.Message{
+		messages.AI("assistant"),
+		messages.Tool("call-1", "tool output"),
+	}}
+	if _, err := m.BeforeModel(context.Background(), state); err != nil {
+		t.Fatalf("BeforeModel: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("expected no moderation calls, got %d", calls)
+	}
+}
+
 func TestMiddlewareBeforeModelCleanPasses(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"results":[{"flagged":false,"categories":{},"category_scores":{}}]}`))
