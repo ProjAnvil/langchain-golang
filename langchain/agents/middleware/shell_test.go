@@ -45,7 +45,9 @@ func TestShellToolMiddlewareValidatesPayload(t *testing.T) {
 
 func TestShellToolMiddlewareTimeoutAndTruncation(t *testing.T) {
 	policy := DefaultShellExecutionPolicy()
-	policy.CommandTimeout = 10 * time.Millisecond
+	// Generous enough for the truncation run's shell spawn to complete under
+	// load, well under the `sleep 1` used to exercise the timeout path.
+	policy.CommandTimeout = 500 * time.Millisecond
 	policy.MaxOutputLines = 1
 	policy.MaxOutputBytes = 5
 	middleware, err := NewShellToolMiddleware(t.TempDir(), WithShellExecutionPolicy(policy))
