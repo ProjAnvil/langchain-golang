@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/schema"
 )
 
 // Chat Completions API types and conversion. The Chat Completions request and
@@ -15,10 +16,25 @@ import (
 type chatCompletionsRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
-	Tools       []toolSpec    `json:"tools,omitempty"`
+	Tools       []chatToolDef `json:"tools,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
+}
+
+// chatToolDef is the Chat Completions tools entry: the function descriptor
+// is NESTED under "function", unlike the Responses API's flat toolSpec.
+// OpenAI-compatible gateways (DeepSeek and friends) reject the flat shape
+// with "missing field `function`".
+type chatToolDef struct {
+	Type     string           `json:"type"`
+	Function chatFunctionSpec `json:"function"`
+}
+
+type chatFunctionSpec struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Parameters  schema.Schema `json:"parameters,omitempty"`
 }
 
 type chatMessage struct {
@@ -61,7 +77,7 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) chatCom
 	payload := chatCompletionsRequest{
 		Model:    m.config.Model,
 		Messages: make([]chatMessage, 0, len(input)),
-		Tools:    make([]toolSpec, 0, len(m.boundTools)),
+		Tools:    make([]chatToolDef, 0, len(m.boundTools)),
 	}
 	if m.config.Temperature != nil {
 		payload.Temperature = m.config.Temperature
@@ -95,11 +111,13 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) chatCom
 	}
 
 	for _, tool := range m.boundTools {
-		payload.Tools = append(payload.Tools, toolSpec{
-			Type:        "function",
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			Parameters:  tool.ArgsSchema(),
+		payload.Tools = append(payload.Tools, chatToolDef{
+			Type: "function",
+			Function: chatFunctionSpec{
+				Name:        tool.Name(),
+				Description: tool.Description(),
+				Parameters:  tool.ArgsSchema(),
+			},
 		})
 	}
 	if len(payload.Tools) == 0 {

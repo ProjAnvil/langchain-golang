@@ -9,6 +9,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
+	coretools "github.com/projanvil/langchain-golang/core/tools"
 )
 
 func TestChatCompletionsInvoke(t *testing.T) {
@@ -162,5 +163,50 @@ func TestDefaultStillResponsesAPI(t *testing.T) {
 	}
 	if gotPath != "/responses" {
 		t.Fatalf("path = %q, want /responses (default unchanged)", gotPath)
+	}
+}
+
+func TestChatCompletionsToolsNestedFunctionShape(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-789",
+			"model":"gpt-test",
+			"choices":[{"message":{"role":"assistant","content":"ok"}}],
+			"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	).WithChatCompletions()
+	tool, err := coretools.FromFunc("search", "search the web", func(ctx context.Context, args struct{ Q string }) (coretools.Result, error) {
+		return coretools.Result{Content: args.Q}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := model.BindTools([]coretools.Tool{tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %v", gotBody["tools"])
+	}
+	entry, _ := tools[0].(map[string]any)
+	fn, ok := entry["function"].(map[string]any)
+	if !ok || fn["name"] != "search" {
+		t.Fatalf("tools[0] must nest the descriptor under function (Chat Completions shape), got %v", entry)
+	}
+	if _, flat := entry["name"]; flat {
+		t.Fatalf("flat Responses-style toolSpec leaked into Chat Completions: %v", entry)
 	}
 }
