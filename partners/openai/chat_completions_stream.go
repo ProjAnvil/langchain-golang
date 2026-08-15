@@ -129,6 +129,18 @@ func (s *chatCompletionsStream) Next(ctx context.Context) (messages.Message, boo
 		}
 		delta := event.Choices[0].Delta
 
+		if reasoning := delta.reasoningText(); reasoning != "" {
+			// DeepSeek-style reasoning_content / OpenRouter-style reasoning
+			// deltas become ReasoningBlock chunks (mirroring the Anthropic
+			// adapter's thinking_delta handling) so consumers can surface the
+			// model's chain of thought.
+			chunk := messages.AI("")
+			chunk.ContentBlocks = []messages.ContentBlock{messages.ReasoningBlock{Reasoning: reasoning}}
+			if err := emitStream(ctx, s.cfg, chunk); err != nil {
+				return messages.Message{}, false, err
+			}
+			return chunk, true, nil
+		}
 		if delta.Content != "" {
 			chunk := messages.AI(delta.Content)
 			if err := emitStream(ctx, s.cfg, chunk); err != nil {
@@ -195,6 +207,19 @@ type chatCompletionsStreamChoice struct {
 type chatCompletionsStreamDelta struct {
 	Content   string               `json:"content"`
 	ToolCalls []chatStreamToolCall `json:"tool_calls"`
+	// ReasoningContent is the chain-of-thought delta on OpenAI-compatible
+	// gateways that expose it (DeepSeek's reasoner models, GLM with thinking
+	// enabled); Reasoning is OpenRouter's spelling of the same field.
+	ReasoningContent string `json:"reasoning_content"`
+	Reasoning        string `json:"reasoning"`
+}
+
+// reasoningText returns the reasoning delta under either field spelling.
+func (d chatCompletionsStreamDelta) reasoningText() string {
+	if d.ReasoningContent != "" {
+		return d.ReasoningContent
+	}
+	return d.Reasoning
 }
 
 type chatStreamToolCall struct {

@@ -20,6 +20,10 @@ type chatCompletionsRequest struct {
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
+	// ReasoningEffort (low|medium|high) steers reasoning models' effort on
+	// the Chat Completions API (OpenAI o-series / gpt-5 family). Ignored by
+	// non-reasoning models and gateways that don't know the field.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // chatToolDef is the Chat Completions tools entry: the function descriptor
@@ -84,6 +88,9 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) chatCom
 	}
 	if m.config.MaxTokens != nil {
 		payload.MaxTokens = m.config.MaxTokens
+	}
+	if m.reasoningEffort != "" {
+		payload.ReasoningEffort = m.reasoningEffort
 	}
 
 	for _, message := range input {

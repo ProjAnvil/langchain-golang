@@ -27,6 +27,7 @@ type ChatModel struct {
 	boundTools       []tools.Tool
 	structuredOutput *structuredoutput.JSONSchema
 	chatCompletions  bool
+	reasoningEffort  string
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -136,6 +137,16 @@ func (m ChatModel) BindTools(boundTools []tools.Tool) (language.ChatModel, error
 func (m ChatModel) WithChatCompletions() ChatModel {
 	next := m
 	next.chatCompletions = true
+	return next
+}
+
+// WithReasoningEffort returns a copy of the model that sends reasoning_effort
+// (low|medium|high) on Chat Completions requests, steering how hard reasoning
+// models (OpenAI o-series / gpt-5 family) think before answering. Non-reasoning
+// models and gateways that don't know the field ignore it.
+func (m ChatModel) WithReasoningEffort(effort string) ChatModel {
+	next := m
+	next.reasoningEffort = effort
 	return next
 }
 
