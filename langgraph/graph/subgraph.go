@@ -186,6 +186,15 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 		}
 	}
 
+	// Propagate the parent run's per-invoke RecursionLimit override into the
+	// child Options, mirroring Python's config propagation into subgraphs.
+	// The parent's override is published on the context by the run loop (see
+	// executionMeta); 0 keeps the child's own compiled default. Applies with
+	// or without checkpointing, so the rebuilt Options above carry it too.
+	if m, ok := ctx.Value(executionMetaKey{}).(executionMeta); ok {
+		opts.RecursionLimit = m.opts.RecursionLimit
+	}
+
 	// Streaming: propagate the emission layer to the child run. The child's
 	// emission namespace derives from the node path (see StreamChunk), NOT
 	// from checkpoint config, so subgraph chunks are namespaced with or

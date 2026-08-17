@@ -4,7 +4,8 @@
 // between graph nodes and the Pregel-style executor in langgraph/graph.
 //
 // This package corresponds to Python's `langgraph.types` plus
-// `langgraph.constants` and `langgraph.errors` (GraphInterrupt).
+// `langgraph.constants` and `langgraph.errors` (GraphInterrupt,
+// GraphRecursionError).
 package types
 
 import (
@@ -82,6 +83,21 @@ type GraphInterrupt struct {
 
 func (e *GraphInterrupt) Error() string {
 	return fmt.Sprintf("types: interrupted with value %v (id=%s)", e.Interrupt.Value, e.Interrupt.ID)
+}
+
+// GraphRecursionError reports that a run exceeded its recursion limit (the
+// maximum number of supersteps) before reaching a terminal state, mirroring
+// Python's langgraph.errors.GraphRecursionError.
+type GraphRecursionError struct {
+	// Limit is the effective recursion limit the run tripped.
+	Limit int
+	// Node names the node about to be dispatched when the limit tripped,
+	// when a single next node is known; empty otherwise. Diagnostic only.
+	Node string
+}
+
+func (e *GraphRecursionError) Error() string {
+	return fmt.Sprintf("graph: recursion limit (%d) exceeded", e.Limit)
 }
 
 // CacheKey is the structured cache key a CachePolicy.KeyFunc returns,

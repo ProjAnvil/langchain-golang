@@ -604,6 +604,13 @@ type Options struct {
 	//     interrupt-ID map instead.
 	Resume any
 
+	// RecursionLimit overrides the compiled recursion limit for this single
+	// invocation: > 0 takes precedence over the compile-time
+	// WithRecursionLimit value; 0 (or negative) means use the compiled
+	// default. Mirrors Python's runtime config {"recursion_limit": N}.
+	// Propagated into subgraph runs (see StateGraph.AddSubgraph).
+	RecursionLimit int
+
 	// checkpointNS namespaces the run's checkpoints within the thread. It is
 	// set only internally, by the StateGraph.AddSubgraph node wrapper, to run
 	// a child graph under <parentNS>/<name> (see joinCheckpointNS); callers
@@ -930,6 +937,14 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		em.emitUpdate(w.node, g.dropJoinKeys(w.update))
 	}
 
+	// Effective recursion limit for this invocation: a positive
+	// Options.RecursionLimit overrides the compiled WithRecursionLimit value,
+	// mirroring Python's runtime config {"recursion_limit": N}.
+	recursionLimit := g.recursionLimit
+	if opts.RecursionLimit > 0 {
+		recursionLimit = opts.RecursionLimit
+	}
+
 	steps := 0
 	for {
 		// A streaming run (emitter installed) observes cancellation — an
@@ -978,8 +993,14 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		resumingNode = "" // resume-only skip applies solely to the first superstep
 
 		steps++
-		if steps > g.recursionLimit {
-			return Result{}, fmt.Errorf("graph: recursion limit (%d) exceeded", g.recursionLimit)
+		if steps > recursionLimit {
+			// Best-effort diagnostics: name the pending node when exactly
+			// one task is about to dispatch; leave Node empty when ambiguous.
+			node := ""
+			if len(active) == 1 {
+				node = active[0].node
+			}
+			return Result{}, &types.GraphRecursionError{Limit: recursionLimit, Node: node}
 		}
 
 		type outcome struct {
