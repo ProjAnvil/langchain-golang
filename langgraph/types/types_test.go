@@ -40,6 +40,33 @@ func TestGraphInterruptErrorsAs(t *testing.T) {
 	}
 }
 
+func TestGraphRecursionErrorMessage(t *testing.T) {
+	// Node is diagnostic only and must not leak into the message, keeping
+	// the text byte-identical to the pre-typed-error fmt.Errorf.
+	err := &GraphRecursionError{Limit: 25, Node: "agent"}
+	if got, want := err.Error(), "graph: recursion limit (25) exceeded"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	if got, want := (&GraphRecursionError{Limit: 3}).Error(), "graph: recursion limit (3) exceeded"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestGraphRecursionErrorErrorsAs(t *testing.T) {
+	// The graph executor wraps node/subgraph failures with %w; callers must
+	// be able to recognize the recursion error through those wrappings.
+	inner := &GraphRecursionError{Limit: 10, Node: "loop"}
+	wrapped := fmt.Errorf("graph: subgraph %q: %w", "inner", inner)
+
+	var target *GraphRecursionError
+	if !errors.As(wrapped, &target) {
+		t.Fatal("errors.As should unwrap a GraphRecursionError")
+	}
+	if target.Limit != 10 || target.Node != "loop" {
+		t.Errorf("unwrapped error = %+v, want {Limit:10 Node:loop}", *target)
+	}
+}
+
 func TestNewCacheKey(t *testing.T) {
 	ns := []string{"a", "b"}
 	ttl := 5 * time.Minute
