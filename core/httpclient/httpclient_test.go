@@ -183,3 +183,116 @@ func TestRetryAfterHeader(t *testing.T) {
 		t.Fatalf("absent = %v", d)
 	}
 }
+
+func TestRetryAfterEdgeCases(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+
+	resp.Header.Set("Retry-After", "-5")
+	if d := RetryAfter(resp); d != 0 {
+		t.Fatalf("negative delta-seconds = %v, want 0", d)
+	}
+
+	resp.Header.Set("Retry-After", "not-a-date")
+	if d := RetryAfter(resp); d != 0 {
+		t.Fatalf("unparseable = %v, want 0", d)
+	}
+
+	future := time.Now().Add(time.Minute).UTC().Format(http.TimeFormat)
+	resp.Header.Set("Retry-After", future)
+	if d := RetryAfter(resp); d <= 0 || d > time.Minute {
+		t.Fatalf("future HTTP-date = %v, want within (0, 1m]", d)
+	}
+
+	past := time.Now().Add(-time.Minute).UTC().Format(http.TimeFormat)
+	resp.Header.Set("Retry-After", past)
+	if d := RetryAfter(resp); d != 0 {
+		t.Fatalf("past HTTP-date = %v, want 0", d)
+	}
+}
+
+func TestPostJSONMarshalError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("server must not be reached when the payload cannot be marshaled")
+	}))
+	defer server.Close()
+
+	_, err := PostJSON[widget](context.Background(), "openai", cfg(server.URL, 3), "/x",
+		make(chan int), nil)
+	if err == nil {
+		t.Fatal("expected marshal error")
+	}
+}
+
+func TestPostJSONInvalidEndpointURL(t *testing.T) {
+	// A '%' in BaseURL produces a URL the request constructor rejects.
+	c := modelconfig.New(modelconfig.WithBaseURL("%"), modelconfig.WithMaxRetries(3))
+	_, err := PostJSON[widget](context.Background(), "openai", c, "/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected URL construction error")
+	}
+	if IsRetryable(err) {
+		t.Fatal("URL construction error must not be retried")
+	}
+}
+
+func TestPostJSONDecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{not json"))
+	}))
+	defer server.Close()
+
+	_, err := PostJSON[widget](context.Background(), "openai", cfg(server.URL, 0), "/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if errors.Is(err, lcerrors.ErrProvider) {
+		t.Fatalf("decode failure must not be a provider error: %v", err)
+	}
+}
+
+// errReader fails on every Read to exercise the response-body error paths.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("read failure") }
+func (errReader) Close() error             { return nil }
+
+type errBodyTransport struct{}
+
+func (errBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       errReader{},
+		Request:    req,
+	}, nil
+}
+
+func TestPostJSONBodyReadError(t *testing.T) {
+	c := modelconfig.New(
+		modelconfig.WithBaseURL("http://example.invalid"),
+		modelconfig.WithMaxRetries(0),
+	)
+	c.HTTPClient = &http.Client{Transport: errBodyTransport{}}
+
+	_, err := PostJSON[widget](context.Background(), "openai", c, "/x", nil, nil)
+	if err == nil {
+		t.Fatal("expected body read error")
+	}
+}
+
+func TestResponseErrorBodyReadError(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Header:     http.Header{},
+		Body:       errReader{},
+	}
+	err := ResponseError("openai", "/x", resp)
+	if err == nil {
+		t.Fatal("expected error from unreadable body")
+	}
+	var pe *lcerrors.ProviderError
+	if errors.As(err, &pe) {
+		t.Fatalf("read failure must not become a ProviderError: %v", err)
+	}
+}

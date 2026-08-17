@@ -517,3 +517,565 @@ func (l *recordingLimiter) Acquire(_ context.Context, blocking bool) (bool, erro
 	}
 	return true, nil
 }
+
+func TestFakeChatModelBatch(t *testing.T) {
+	// Batch runs the invokes concurrently, so per-input outputs must come from
+	// the deterministic echo path rather than the shared response cursor.
+	model := NewFakeChatModel()
+
+	got, err := model.Batch(context.Background(), [][]messages.Message{
+		{messages.Human("a")},
+		{messages.Human("b")},
+		{messages.Human("c")},
+	})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	want := []string{"fake response: a", "fake response: b", "fake response: c"}
+	if len(got) != len(want) {
+		t.Fatalf("batch len: got %d want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Content != want[i] {
+			t.Fatalf("batch[%d]: got %q want %q", i, got[i].Content, want[i])
+		}
+	}
+}
+
+func TestFakeChatModelBatchPropagatesErrors(t *testing.T) {
+	wantErr := errors.New("rate limited")
+	// Batch invokes concurrently, so use a stateless limiter to stay race-free.
+	model := NewFakeChatModel(WithRateLimiter(staticErrorLimiter{err: wantErr}))
+
+	_, err := model.Batch(context.Background(), [][]messages.Message{
+		{messages.Human("a")},
+		{messages.Human("b")},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err=%v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeChatModelSchemasAndCapabilities(t *testing.T) {
+	model := NewFakeChatModel(WithCapabilities(ChatModelCapabilities{
+		ToolCalling: true,
+		Streaming:   true,
+	}))
+
+	input := model.InputSchema()
+	if input["type"] != "array" {
+		t.Fatalf("input schema: %#v", input)
+	}
+	output := model.OutputSchema()
+	if output["type"] != "object" {
+		t.Fatalf("output schema: %#v", output)
+	}
+	props, ok := output["properties"].(map[string]any)
+	if !ok || props["role"] == nil || props["content"] == nil {
+		t.Fatalf("output schema properties: %#v", output)
+	}
+	capabilities := model.Capabilities()
+	if !capabilities.ToolCalling || !capabilities.Streaming {
+		t.Fatalf("capabilities: %+v", capabilities)
+	}
+}
+
+func TestFakeChatModelModelProfileFromCapabilities(t *testing.T) {
+	model := NewFakeChatModel(WithCapabilities(ChatModelCapabilities{
+		ToolCalling: true,
+		Streaming:   true,
+	}))
+
+	profile := model.ModelProfile()
+	if profile["tool_calling"] != true || profile["tool_call_streaming"] != true {
+		t.Fatalf("profile: %#v", profile)
+	}
+}
+
+func TestFakeChatModelStreamFallsBackToInvoke(t *testing.T) {
+	model := NewFakeChatModel(WithResponses(messages.AI("streamed response")))
+
+	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	chunk, ok, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if !ok || chunk.Content != "streamed response" {
+		t.Fatalf("chunk: ok=%v content=%q", ok, chunk.Content)
+	}
+	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+		t.Fatalf("expected exhausted stream, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFakeChatModelStreamRateLimiterError(t *testing.T) {
+	wantErr := errors.New("rate limited")
+	model := NewFakeChatModel(
+		WithRateLimiter(&recordingLimiter{err: wantErr}),
+		WithStreamChunks(messages.AI("chunk")),
+	)
+
+	_, err := model.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err=%v, want %v", err, wantErr)
+	}
+
+	// Without configured chunks, Stream delegates to Invoke, which must surface
+	// the same limiter error.
+	noChunks := NewFakeChatModel(WithRateLimiter(&recordingLimiter{err: wantErr}))
+	_, err = noChunks.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("fallback stream err=%v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeChatModelInvokeCallbackError(t *testing.T) {
+	wantErr := errors.New("callback failed")
+
+	startModel := NewFakeChatModel(WithResponses(messages.AI("ok")))
+	_, err := startModel.Invoke(
+		context.Background(),
+		[]messages.Message{messages.Human("hello")},
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+			kind: callbacks.EventChatModelStart,
+			err:  wantErr,
+		})),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("start err=%v, want %v", err, wantErr)
+	}
+
+	endHandler := failOnKindHandler{kind: callbacks.EventChatModelEnd, err: wantErr}
+
+	// End-event failure on the configured-response path.
+	endModel := NewFakeChatModel(WithResponses(messages.AI("ok")))
+	_, err = endModel.Invoke(
+		context.Background(),
+		[]messages.Message{messages.Human("hello")},
+		runnables.WithCallbacks(callbacks.NewManager(endHandler)),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("end err=%v, want %v", err, wantErr)
+	}
+
+	// End-event failure on the echo path (no configured responses).
+	echoModel := NewFakeChatModel()
+	_, err = echoModel.Invoke(
+		context.Background(),
+		[]messages.Message{messages.Human("hello")},
+		runnables.WithCallbacks(callbacks.NewManager(endHandler)),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("echo end err=%v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeChatModelStreamStartCallbackError(t *testing.T) {
+	wantErr := errors.New("callback failed")
+	model := NewFakeChatModel(WithStreamChunks(messages.AI("chunk")))
+
+	_, err := model.Stream(
+		context.Background(),
+		[]messages.Message{messages.Human("hello")},
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+			kind: callbacks.EventChatModelStart,
+			err:  wantErr,
+		})),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err=%v, want %v", err, wantErr)
+	}
+}
+
+func TestCallbackStreamErrorPaths(t *testing.T) {
+	wantErr := errors.New("boom")
+
+	t.Run("inner stream error emits error event", func(t *testing.T) {
+		recorder := callbacks.NewRecorder()
+		stream := newCallbackStream(
+			context.Background(),
+			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(recorder))),
+			errorMessageStream{err: wantErr},
+		)
+
+		_, ok, err := stream.Next(context.Background())
+		if !errors.Is(err, wantErr) || ok {
+			t.Fatalf("next: ok=%v err=%v", ok, err)
+		}
+
+		events := recorder.Events()
+		if len(events) != 1 || events[0].Kind != callbacks.EventChatModelError {
+			t.Fatalf("events: %+v", events)
+		}
+		if events[0].Error != wantErr.Error() {
+			t.Fatalf("event error: got %q want %q", events[0].Error, wantErr)
+		}
+	})
+
+	t.Run("end event failure propagates once", func(t *testing.T) {
+		stream := newCallbackStream(
+			context.Background(),
+			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+				kind: callbacks.EventChatModelEnd,
+				err:  wantErr,
+			}))),
+			runnables.NewSliceStream([]messages.Message{}),
+		)
+
+		_, ok, err := stream.Next(context.Background())
+		if !errors.Is(err, wantErr) || ok {
+			t.Fatalf("next: ok=%v err=%v", ok, err)
+		}
+		// The end event must only be emitted once; a second Next is a clean stop.
+		if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+			t.Fatalf("second next: ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("stream event failure propagates", func(t *testing.T) {
+		stream := newCallbackStream(
+			context.Background(),
+			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+				kind: callbacks.EventChatModelStream,
+				err:  wantErr,
+			}))),
+			runnables.NewSliceStream([]messages.Message{messages.AI("chunk")}),
+		)
+
+		_, ok, err := stream.Next(context.Background())
+		if !errors.Is(err, wantErr) || ok {
+			t.Fatalf("next: ok=%v err=%v", ok, err)
+		}
+	})
+}
+
+func TestStreamEventsModelStreamError(t *testing.T) {
+	wantErr := errors.New("stream unavailable")
+	model := stubChatModel{streamErr: wantErr}
+
+	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+		messages.Human("hello"),
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err=%v, want %v", err, wantErr)
+	}
+	if _, outErr := stream.Output(); !errors.Is(outErr, wantErr) {
+		t.Fatalf("output err=%v, want %v", outErr, wantErr)
+	}
+}
+
+func TestStreamEventsStreamNextError(t *testing.T) {
+	wantErr := errors.New("chunk decode failed")
+	model := stubChatModel{nextErr: wantErr}
+
+	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+		messages.Human("hello"),
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err=%v, want %v", err, wantErr)
+	}
+	if _, outErr := stream.Output(); !errors.Is(outErr, wantErr) {
+		t.Fatalf("output err=%v, want %v", outErr, wantErr)
+	}
+}
+
+func TestStreamEventsFallbackContentBlocks(t *testing.T) {
+	chunk := messages.AI("")
+	chunk.ContentBlocks = []messages.ContentBlock{
+		messages.TextBlock{Text: "block text"},
+		messages.TextBlock{Text: ""}, // empty text blocks produce no delta
+		messages.ReasoningBlock{Reasoning: "step one", Index: 1},
+		messages.ReasoningBlock{Reasoning: "step two", Index: float64(2)},
+		messages.ParseContentBlock(map[string]any{
+			"type": "tool_call_chunk",
+			"id":   "call_1",
+			"name": "search",
+			"args": `{"q":"go"}`,
+		}),
+		messages.NonStandardContentBlock{Type: "custom_block", Value: map[string]any{"foo": "bar"}},
+		messages.NonStandardContentBlock{Type: "", Value: map[string]any{"ignored": true}},
+	}
+	model := NewFakeChatModel(WithStreamChunks(chunk))
+
+	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+		messages.Human("hello"),
+	})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+
+	if got := stream.Text(); got != "block text" {
+		t.Fatalf("text: got %q", got)
+	}
+	if got := stream.Reasoning(); got != "step onestep two" {
+		t.Fatalf("reasoning: got %q", got)
+	}
+	if got := stream.ToolCalls(); len(got) != 1 || got[0].Name != "search" {
+		t.Fatalf("tool calls: %+v", got)
+	}
+
+	var sawTextDelta, sawReasoningDelta, sawCustomFinish bool
+	for _, event := range stream.Events() {
+		switch event.Event {
+		case streamevents.EventContentBlockDelta:
+			if block, ok := event.Delta.(messages.NonStandardContentBlock); ok {
+				if block.Type == "text-delta" {
+					sawTextDelta = true
+				}
+				if block.Type == "reasoning-delta" {
+					sawReasoningDelta = true
+				}
+			}
+		case streamevents.EventContentBlockFinish:
+			if block, ok := event.Content.(messages.NonStandardContentBlock); ok && block.Type == "custom_block" {
+				sawCustomFinish = true
+			}
+		}
+	}
+	if !sawTextDelta || !sawReasoningDelta || !sawCustomFinish {
+		t.Fatalf("events: textDelta=%v reasoningDelta=%v customFinish=%v",
+			sawTextDelta, sawReasoningDelta, sawCustomFinish)
+	}
+}
+
+func TestStreamEventsFallbackToolCalls(t *testing.T) {
+	chunk := messages.AI("")
+	chunk.ToolCalls = []messages.ToolCall{{
+		ID:   "call_1",
+		Name: "search",
+		Args: map[string]any{"q": "go"},
+	}}
+	chunk.InvalidToolCalls = []messages.ToolCall{{
+		ID:   "call_2",
+		Name: "broken",
+		Args: map[string]any{"raw": `{"q":`},
+	}}
+	model := NewFakeChatModel(WithStreamChunks(chunk))
+
+	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+		messages.Human("search"),
+	})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+
+	if got := stream.ToolCalls(); len(got) != 1 || got[0].Name != "search" {
+		t.Fatalf("tool calls: %+v", got)
+	}
+	if got := stream.InvalidToolCalls(); len(got) != 1 || got[0].Name != "broken" {
+		t.Fatalf("invalid tool calls: %+v", got)
+	}
+	// No text was streamed, so the fallback must not emit a text finish block.
+	for _, event := range stream.Events() {
+		if event.Event == streamevents.EventContentBlockFinish {
+			if _, ok := event.Content.(messages.TextBlock); ok {
+				t.Fatalf("unexpected text finish block: %+v", event)
+			}
+		}
+	}
+	output, err := stream.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if output.Content != "" {
+		t.Fatalf("output content: got %q want empty", output.Content)
+	}
+}
+
+func TestStreamEventsEmptyStream(t *testing.T) {
+	model := stubChatModel{}
+
+	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+		messages.Human("hello"),
+	})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+
+	events := stream.Events()
+	if len(events) != 1 || events[0].Event != streamevents.EventMessageFinish {
+		t.Fatalf("events: %+v", events)
+	}
+}
+
+func TestStreamEventsIgnoresMalformedProtocolEvent(t *testing.T) {
+	model := badProtocolChatModel{chunks: []messages.Message{messages.AI("legacy")}}
+
+	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+		messages.Human("hello"),
+	})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+
+	// A protocol event whose chunk is not a streamevents.Event must be ignored,
+	// so the legacy chunk bridge still projects the text.
+	if got := stream.Text(); got != "legacy" {
+		t.Fatalf("text: got %q", got)
+	}
+}
+
+// failOnKindHandler returns its error for events of a single kind.
+type failOnKindHandler struct {
+	kind callbacks.EventKind
+	err  error
+}
+
+func (h failOnKindHandler) HandleEvent(_ context.Context, event callbacks.Event) error {
+	if event.Kind == h.kind {
+		return h.err
+	}
+	return nil
+}
+
+// errorMessageStream fails on the first Next call.
+type errorMessageStream struct {
+	err error
+}
+
+func (s errorMessageStream) Next(context.Context) (messages.Message, bool, error) {
+	return messages.Message{}, false, s.err
+}
+
+func (s errorMessageStream) Close() error { return nil }
+
+// stubChatModel streams fixed chunks (or fails) without emitting callbacks.
+type stubChatModel struct {
+	chunks    []messages.Message
+	streamErr error
+	nextErr   error
+}
+
+func (m stubChatModel) Invoke(context.Context, []messages.Message, ...runnables.Option) (messages.Message, error) {
+	return messages.AI("stub"), nil
+}
+
+func (m stubChatModel) Batch(_ context.Context, inputs [][]messages.Message, _ ...runnables.Option) ([]messages.Message, error) {
+	out := make([]messages.Message, len(inputs))
+	for i := range out {
+		out[i] = messages.AI("stub")
+	}
+	return out, nil
+}
+
+func (m stubChatModel) Stream(
+	_ context.Context,
+	_ []messages.Message,
+	_ ...runnables.Option,
+) (runnables.Stream[messages.Message], error) {
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
+	if m.nextErr != nil {
+		return errorMessageStream{err: m.nextErr}, nil
+	}
+	return runnables.NewSliceStream(m.chunks), nil
+}
+
+func (m stubChatModel) InputSchema() schema.Schema {
+	return schema.Schema{"type": "array"}
+}
+
+func (m stubChatModel) OutputSchema() schema.Schema {
+	return schema.Schema{"type": "object"}
+}
+
+func (m stubChatModel) BindTools([]tools.Tool) (ChatModel, error) {
+	return m, nil
+}
+
+func (m stubChatModel) Capabilities() ChatModelCapabilities {
+	return ChatModelCapabilities{Streaming: true}
+}
+
+// badProtocolChatModel emits a protocol event with a chunk of the wrong type
+// before streaming legacy chunks.
+type badProtocolChatModel struct {
+	chunks []messages.Message
+}
+
+func (m badProtocolChatModel) Invoke(context.Context, []messages.Message, ...runnables.Option) (messages.Message, error) {
+	return messages.AI("stub"), nil
+}
+
+func (m badProtocolChatModel) Batch(_ context.Context, inputs [][]messages.Message, _ ...runnables.Option) ([]messages.Message, error) {
+	out := make([]messages.Message, len(inputs))
+	for i := range out {
+		out[i] = messages.AI("stub")
+	}
+	return out, nil
+}
+
+func (m badProtocolChatModel) Stream(
+	ctx context.Context,
+	_ []messages.Message,
+	opts ...runnables.Option,
+) (runnables.Stream[messages.Message], error) {
+	cfg := runnables.NewConfig(opts...)
+	if err := cfg.Callbacks.Emit(ctx, callbacks.Event{
+		Kind:  callbacks.EventChatModelProtocol,
+		Chunk: "not-a-protocol-event",
+	}); err != nil {
+		return nil, err
+	}
+	return runnables.NewSliceStream(m.chunks), nil
+}
+
+func (m badProtocolChatModel) InputSchema() schema.Schema {
+	return schema.Schema{"type": "array"}
+}
+
+func (m badProtocolChatModel) OutputSchema() schema.Schema {
+	return schema.Schema{"type": "object"}
+}
+
+func (m badProtocolChatModel) BindTools([]tools.Tool) (ChatModel, error) {
+	return m, nil
+}
+
+func (m badProtocolChatModel) Capabilities() ChatModelCapabilities {
+	return ChatModelCapabilities{Streaming: true}
+}
+
+func TestFakeChatModelStreamWithoutCallbacks(t *testing.T) {
+	model := NewFakeChatModel(WithStreamChunks(
+		messages.AI("he"),
+		messages.AI("llo"),
+	))
+
+	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var text string
+	for {
+		chunk, ok, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		text += chunk.Content
+	}
+	if text != "hello" {
+		t.Fatalf("streamed text: got %q want %q", text, "hello")
+	}
+}
+
+// staticErrorLimiter always fails Acquire with the same error and keeps no
+// mutable state, so it is safe under concurrent Batch invokes.
+type staticErrorLimiter struct {
+	err error
+}
+
+func (l staticErrorLimiter) Acquire(context.Context, bool) (bool, error) {
+	return false, l.err
+}

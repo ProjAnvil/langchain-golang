@@ -1,11 +1,14 @@
 package postgres
 
 import (
+	"context"
 	"maps"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint/serde"
@@ -222,4 +225,143 @@ func TestListQuery(t *testing.T) {
 			t.Fatal("listQuery with a func filter value returned nil error")
 		}
 	})
+}
+
+func TestNewPanicsOnNilArgs(t *testing.T) {
+	ser := serde.NewJSONSerializer()
+	t.Run("nil pool", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Error("New(nil, serde) did not panic")
+			}
+		}()
+		New(nil, ser)
+	})
+	t.Run("nil serde", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Error("New(pool, nil) did not panic")
+			}
+		}()
+		New(&pgxpool.Pool{}, nil)
+	})
+}
+
+func TestNewFromConnStringBadDSN(t *testing.T) {
+	s, err := NewFromConnString(context.Background(), "postgres://%zz", serde.NewJSONSerializer())
+	if err == nil {
+		t.Fatalf("NewFromConnString with an unparsable DSN = (%v, nil), want an error", s)
+	}
+}
+
+// TestPutEncodeErrors pins the pre-batch encode failures: every one must
+// surface a wrapped error BEFORE any SQL is issued (the saver here has a nil
+// pool, so reaching the database would panic instead).
+func TestPutEncodeErrors(t *testing.T) {
+	s := newTestSaver()
+	ctx := context.Background()
+	md := checkpoint.Metadata{}
+
+	t.Run("unversioned composite channel", func(t *testing.T) {
+		cp := checkpoint.Checkpoint{
+			V:             1,
+			ID:            "cp-1",
+			ChannelValues: map[string]any{"bad": func() {}}, // unencodable, no version anywhere
+		}
+		_, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, cp, md, nil)
+		if err == nil || !strings.Contains(err.Error(), `unversioned channel "bad"`) {
+			t.Fatalf("Put error = %v, want an unversioned-channel encode error", err)
+		}
+	})
+
+	t.Run("next task arg", func(t *testing.T) {
+		cp := checkpoint.Checkpoint{
+			V:  1,
+			ID: "cp-1",
+			Next: []checkpoint.PlannedTask{
+				{ID: "task-1", Node: "node-a", Arg: map[string]any{"a": func() {}}},
+			},
+		}
+		_, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, cp, md, nil)
+		if err == nil || !strings.Contains(err.Error(), `encode checkpoint "cp-1"`) {
+			t.Fatalf("Put error = %v, want a checkpoint encode error", err)
+		}
+	})
+
+	t.Run("versioned blob channel", func(t *testing.T) {
+		cp := checkpoint.Checkpoint{
+			V:             1,
+			ID:            "cp-1",
+			ChannelValues: map[string]any{"big": func() {}}, // unencodable, versioned
+		}
+		_, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, cp, md, map[string]int64{"big": 1})
+		if err == nil || !strings.Contains(err.Error(), `encode channel "big"`) {
+			t.Fatalf("Put error = %v, want a blob channel encode error", err)
+		}
+	})
+}
+
+// TestPutWritesEmptyBatch: an empty writes slice is a no-op (Python's
+// executemany with an empty batch) and never touches the database — the nil
+// pool here proves it.
+func TestPutWritesEmptyBatch(t *testing.T) {
+	s := newTestSaver()
+	if err := s.PutWrites(context.Background(), checkpoint.Config{ThreadID: "t1"}, nil, "task-1", ""); err != nil {
+		t.Fatalf("PutWrites with no writes = %v, want nil", err)
+	}
+}
+
+func TestEncodeCheckpointTaskArgError(t *testing.T) {
+	s := newTestSaver()
+	cp := checkpoint.Checkpoint{
+		V:  1,
+		ID: "cp-1",
+		Next: []checkpoint.PlannedTask{
+			{ID: "task-1", Node: "node-a", Arg: map[string]any{"a": func() {}}},
+		},
+	}
+	_, err := s.encodeCheckpoint(cp, nil)
+	if err == nil || !strings.Contains(err.Error(), `next task "task-1" arg "a"`) {
+		t.Fatalf("encodeCheckpoint error = %v, want a next-task arg encode error", err)
+	}
+}
+
+func TestDecodeCheckpointErrors(t *testing.T) {
+	s := newTestSaver()
+	cases := []struct {
+		name    string
+		blob    string
+		wantErr string
+	}{
+		{"malformed JSON", `{not json`, ""},
+		{
+			// An inline object that is not a storedValue envelope (no type
+			// tag) can never come from Put — fail loud rather than silently
+			// returning the raw map.
+			"inline object without type tag",
+			`{"v":1,"id":"cp-1","channel_values":{"k":{"plain":1}}}`,
+			`decode inline envelope "k"`,
+		},
+		{
+			"inline envelope with unknown type tag",
+			`{"v":1,"id":"cp-1","channel_values":{"k":{"type":"bogus","data":"e30="}}}`,
+			`decode inline channel "k"`,
+		},
+		{
+			"next task arg with unknown type tag",
+			`{"v":1,"id":"cp-1","next":[{"id":"task-1","node":"node-a","arg":{"a":{"type":"bogus","data":"e30="}}}]}`,
+			`next task "task-1" arg "a"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.decodeCheckpoint([]byte(tc.blob))
+			if err == nil {
+				t.Fatal("decodeCheckpoint succeeded, want an error")
+			}
+			if tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("decodeCheckpoint error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
 }

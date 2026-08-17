@@ -398,3 +398,207 @@ func TestDeltaBatchReducerBatchingInvariant(t *testing.T) {
 		t.Fatalf("batching invariant violated: separate=%v vs concatenated=%v", got1, got2)
 	}
 }
+
+// BatchFromReducer adapts a binary Reducer into a BatchReducer by folding
+// left-to-right; reducer errors propagate.
+func TestBatchFromReducer(t *testing.T) {
+	batch := BatchFromReducer(AppendSliceReducer)
+
+	got, err := batch([]int{1}, []any{[]int{2}, []int{3, 4}})
+	if err != nil {
+		t.Fatalf("BatchFromReducer fold error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []int{1, 2, 3, 4}) {
+		t.Fatalf("BatchFromReducer fold = %v, want [1 2 3 4]", got)
+	}
+
+	// nil existing is treated as the zero value by the underlying reducer.
+	got, err = batch(nil, []any{[]int{7}})
+	if err != nil {
+		t.Fatalf("BatchFromReducer(nil existing) error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []int{7}) {
+		t.Fatalf("BatchFromReducer(nil existing) = %v, want [7]", got)
+	}
+
+	// Empty batch returns the existing value unchanged.
+	got, err = batch([]int{9}, nil)
+	if err != nil {
+		t.Fatalf("BatchFromReducer(empty batch) error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []int{9}) {
+		t.Fatalf("BatchFromReducer(empty batch) = %v, want [9]", got)
+	}
+
+	// A reducer error mid-fold propagates.
+	if _, err := batch([]int{1}, []any{[]int{2}, "not-a-slice"}); err == nil {
+		t.Fatal("BatchFromReducer(type mismatch) error = nil, want error")
+	}
+}
+
+// NewDeltaChannel with a nil typFactory defaults the zero value to []any{}.
+func TestNewDeltaChannelNilFactory(t *testing.T) {
+	ch := NewDeltaChannel(BatchFromReducer(AppendSliceReducer), nil, 1)
+	if update(t, ch, []any{"a"}) != true {
+		t.Fatal("Update() changed = false, want true")
+	}
+	if got := get(t, ch); !reflect.DeepEqual(got, []any{"a"}) {
+		t.Fatalf("Get() = %v, want [a]", got)
+	}
+
+	// An Overwrite(nil) resets to the default zero value []any{}.
+	if _, err := ch.Update([]any{NewOverwrite(nil)}); err != nil {
+		t.Fatalf("Update(Overwrite(nil)) error = %v", err)
+	}
+	if got := get(t, ch); !reflect.DeepEqual(got, []any{}) {
+		t.Fatalf("after Overwrite(nil) Get() = %v, want []", got)
+	}
+}
+
+// An Overwrite carrying a nil value resets the channel to its zero value.
+func TestDeltaOverwriteNilValueResetsToZero(t *testing.T) {
+	ch := newTestDelta(1000)
+	update(t, ch, []int{1, 2})
+	if _, err := ch.Update([]any{NewOverwrite(nil)}); err != nil {
+		t.Fatalf("Update(Overwrite(nil)) error = %v", err)
+	}
+	if got := get(t, ch); !reflect.DeepEqual(got, []int{}) {
+		t.Fatalf("after Overwrite(nil) Get() = %v, want []", got)
+	}
+}
+
+// ReplayWrites: a nil-valued Overwrite resets the base to the zero value and
+// only writes after it are replayed.
+func TestDeltaReplayWritesNilOverwrite(t *testing.T) {
+	ch := newTestDelta(1000)
+	restored := ch.FromCheckpoint(nil)
+	delta := restored.(*DeltaChannel)
+	delta.ReplayWrites([]any{
+		[]int{1},
+		NewOverwrite(nil),
+		[]int{5},
+	})
+	if got := get(t, delta); !reflect.DeepEqual(got, []int{5}) {
+		t.Fatalf("replay with nil Overwrite Get() = %v, want [5]", got)
+	}
+}
+
+// ReplayWrites: on a reducer error the channel keeps the last-known base
+// rather than dropping state.
+func TestDeltaReplayWritesReducerError(t *testing.T) {
+	ch := newTestDelta(1000)
+	restored := ch.FromCheckpoint(nil)
+	delta := restored.(*DeltaChannel)
+	delta.ReplayWrites([]any{[]int{1}, "not-an-int-slice"})
+	// The failing write is dropped; the base accumulated so far is kept.
+	if got := get(t, delta); !reflect.DeepEqual(got, []int{}) {
+		t.Fatalf("replay with reducer error Get() = %v, want [] (last-known base)", got)
+	}
+	if !delta.IsAvailable() {
+		t.Fatal("after replay with reducer error IsAvailable() = false, want true")
+	}
+}
+
+// UnwrapDeltaSnapshot recognizes typed struct, pointer, and JSON-map forms
+// and passes non-snapshot values through with ok=false.
+func TestUnwrapDeltaSnapshot(t *testing.T) {
+	inner := []int{1, 2}
+
+	if got, ok := UnwrapDeltaSnapshot(deltaSnapshot{Value: inner, Type: deltaSnapshotType}); !ok || !reflect.DeepEqual(got, inner) {
+		t.Fatalf("UnwrapDeltaSnapshot(struct) = (%v, %v), want ([1 2], true)", got, ok)
+	}
+	if got, ok := UnwrapDeltaSnapshot(&deltaSnapshot{Value: inner, Type: deltaSnapshotType}); !ok || !reflect.DeepEqual(got, inner) {
+		t.Fatalf("UnwrapDeltaSnapshot(pointer) = (%v, %v), want ([1 2], true)", got, ok)
+	}
+	m := map[string]any{"type": deltaSnapshotType, "value": inner}
+	if got, ok := UnwrapDeltaSnapshot(m); !ok || !reflect.DeepEqual(got, inner) {
+		t.Fatalf("UnwrapDeltaSnapshot(map) = (%v, %v), want ([1 2], true)", got, ok)
+	}
+	if _, ok := UnwrapDeltaSnapshot("plain"); ok {
+		t.Fatal("UnwrapDeltaSnapshot(plain) ok = true, want false")
+	}
+}
+
+// asDeltaSnapshot rejects the forms that only look similar to a snapshot blob.
+func TestAsDeltaSnapshotRejectsLookalikes(t *testing.T) {
+	cases := []any{
+		(*deltaSnapshot)(nil),                       // nil pointer
+		map[string]any{"type": deltaSnapshotType},   // missing "value" key
+		map[string]any{"type": "other", "value": 1}, // wrong discriminator
+		map[string]any{"value": 1},                  // missing discriminator
+		42,                                          // not a snapshot at all
+		nil,
+	}
+	for i, v := range cases {
+		if _, ok := asDeltaSnapshot(v); ok {
+			t.Fatalf("case %d: asDeltaSnapshot(%v) ok = true, want false", i, v)
+		}
+	}
+}
+
+// cloneValue shallow-copies slices and maps so Overwrite values are not
+// aliased into channel state; other kinds pass through unchanged.
+func TestCloneValue(t *testing.T) {
+	if got := cloneValue(nil); got != nil {
+		t.Fatalf("cloneValue(nil) = %v, want nil", got)
+	}
+
+	// Map: mutating the clone must not affect the original.
+	src := map[string]int{"a": 1}
+	cloned := cloneValue(src).(map[string]int)
+	cloned["a"] = 99
+	if src["a"] != 1 {
+		t.Fatalf("cloneValue(map) aliases original: src = %v", src)
+	}
+
+	// Slice: mutating the clone must not affect the original.
+	srcSlice := []int{1, 2}
+	clonedSlice := cloneValue(srcSlice).([]int)
+	clonedSlice[0] = 99
+	if srcSlice[0] != 1 {
+		t.Fatalf("cloneValue(slice) aliases original: src = %v", srcSlice)
+	}
+
+	// Value types are returned unchanged.
+	if got := cloneValue(42); got != 42 {
+		t.Fatalf("cloneValue(42) = %v, want 42", got)
+	}
+	if got := cloneValue("s"); got != "s" {
+		t.Fatalf("cloneValue(%q) = %v, want %q", "s", got, "s")
+	}
+}
+
+// Overwrite values are cloned, not aliased, into channel state.
+func TestDeltaOverwriteDoesNotAliasValue(t *testing.T) {
+	ch := newTestDelta(1000)
+	ow := []int{1, 2}
+	update(t, ch, NewOverwrite(ow))
+	ow[0] = 99 // mutate the caller's slice after the write
+	if got := get(t, ch); !reflect.DeepEqual(got, []int{1, 2}) {
+		t.Fatalf("Get() = %v, want [1 2] (Overwrite value must be cloned)", got)
+	}
+}
+
+func TestDeltaString(t *testing.T) {
+	ch := newTestDelta(7)
+	got := ch.String()
+	want := "DeltaChannel(snapshotFrequency=7)"
+	if got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+}
+
+// ReplayWrites ending on an Overwrite: the overwrite value is the final state,
+// with no trailing writes to fold.
+func TestDeltaReplayWritesEndsWithOverwrite(t *testing.T) {
+	ch := newTestDelta(1000)
+	restored := ch.FromCheckpoint(nil)
+	delta := restored.(*DeltaChannel)
+	delta.ReplayWrites([]any{
+		[]int{1},
+		NewOverwrite([]int{9}),
+	})
+	if got := get(t, delta); !reflect.DeepEqual(got, []int{9}) {
+		t.Fatalf("replay ending with Overwrite Get() = %v, want [9]", got)
+	}
+}

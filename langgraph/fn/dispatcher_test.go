@@ -141,3 +141,21 @@ func TestLoadReplayGate2RequiresFnWrites(t *testing.T) {
 		t.Fatalf("replay table = %v, want nil (input source but no fn writes)", d.replay)
 	}
 }
+
+// Savers round-tripping through JSON serde decode the __fn_consumed__ count
+// as float64; loadReplay must accept it alongside the memory saver's int.
+func TestLoadReplayConsumedFloat64(t *testing.T) {
+	tup := replayTuple("input", nil)
+	tup.PendingWrites = []checkpoint.Write{
+		{TaskID: "a", Channel: checkpoint.ReservedReturn, Value: 5},
+		{TaskID: "a", Channel: checkpoint.ReservedFnConsumed, Value: float64(2)},
+	}
+	d := newDispatcher(nil)
+	d.loadReplay(tup, graph.Options{})
+	if d.replay == nil {
+		t.Fatal("replay table is nil, want gate 2 hit")
+	}
+	if got := d.replayConsumed("a"); got != 2 {
+		t.Fatalf("replayConsumed(\"a\") = %d, want 2 (float64 serde decode)", got)
+	}
+}

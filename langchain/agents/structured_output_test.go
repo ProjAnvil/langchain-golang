@@ -494,3 +494,112 @@ func TestProviderStrategyUsesStructuredCallerWithTools(t *testing.T) {
 		t.Fatalf("expected structured_response.condition=sunny, got %#v", state["structured_response"])
 	}
 }
+
+func TestStructuredOutputValidationErrorUnwrap(t *testing.T) {
+	source := fmt.Errorf("bad payload")
+	err := NewStructuredOutputValidationError("weather_schema", source, messages.AI("{}"))
+	if !errors.Is(err, source) {
+		t.Fatalf("expected Unwrap to expose the source error; errors.Is failed")
+	}
+	var target *StructuredOutputValidationError
+	if !errors.As(err, &target) || target.ToolName != "weather_schema" {
+		t.Fatalf("errors.As failed: %#v", target)
+	}
+}
+
+func TestToolStrategyWithHandleErrors(t *testing.T) {
+	strategy := NewToolStrategy(weatherSchema(), WithHandleErrors(false))
+	if strategy.HandleErrors != false {
+		t.Fatalf("expected HandleErrors=false, got %#v", strategy.HandleErrors)
+	}
+	strategy = NewToolStrategy(weatherSchema(), WithHandleErrors([]string{"ValueError"}))
+	list, ok := strategy.HandleErrors.([]string)
+	if !ok || len(list) != 1 || list[0] != "ValueError" {
+		t.Fatalf("expected HandleErrors list, got %#v", strategy.HandleErrors)
+	}
+	// Default remains true when the option is not supplied.
+	if def := NewToolStrategy(weatherSchema()); def.HandleErrors != true {
+		t.Fatalf("expected default HandleErrors=true, got %#v", def.HandleErrors)
+	}
+}
+
+func TestStructuredOutputUnsupportedErrorMessage(t *testing.T) {
+	nilModelErr := NewStructuredOutputUnsupportedError(nil)
+	if !strings.Contains(nilModelErr.Error(), "neither tool calling nor structured output") {
+		t.Fatalf("unexpected message for nil model: %q", nilModelErr.Error())
+	}
+
+	modelErr := NewStructuredOutputUnsupportedError(language.NewFakeChatModel())
+	if !strings.Contains(modelErr.Error(), "FakeChatModel") {
+		t.Fatalf("expected model type in message, got %q", modelErr.Error())
+	}
+
+	// A nil receiver must not panic and reads like the nil-model case.
+	var nilErr *StructuredOutputUnsupportedError
+	if got := nilErr.Error(); !strings.Contains(got, "neither tool calling nor structured output") {
+		t.Fatalf("unexpected message for nil receiver: %q", got)
+	}
+}
+
+func TestOutputToolBindingFromSchemaSpecEmptyName(t *testing.T) {
+	spec := NewSchemaSpec(weatherSchema(), WithSchemaName(""))
+	if _, err := OutputToolBindingFromSchemaSpec(spec); err == nil {
+		t.Fatal("expected error for empty tool name, got nil")
+	}
+}
+
+func TestOutputToolBindingToolIsInvocable(t *testing.T) {
+	binding, err := OutputToolBindingFromSchemaSpec(NewSchemaSpec(weatherSchema()))
+	if err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	// The structured-output tool is a parse target only: invoking it is a
+	// no-op that returns an empty result without error.
+	result, err := binding.Tool.Invoke(context.Background(), map[string]any{"temperature": 75})
+	if err != nil {
+		t.Fatalf("tool invoke: %v", err)
+	}
+	if result.Content != "" {
+		t.Fatalf("expected empty result content, got %q", result.Content)
+	}
+}
+
+func TestSchemaSpecsFromSchemaOneOfMapVariants(t *testing.T) {
+	raw := schema.Schema{
+		"oneOf": []any{
+			map[string]any{"type": "object", "title": "variant_a", "properties": map[string]any{}},
+			schema.Schema{"type": "object", "title": "variant_b", "properties": map[string]any{}},
+			"not-a-schema", // non-map variants are skipped
+		},
+	}
+	specs := schemaSpecsFromSchema(raw)
+	if len(specs) != 2 {
+		t.Fatalf("expected 2 specs (non-map variant skipped), got %d: %#v", len(specs), specs)
+	}
+	if specs[0].Name != "variant_a" || specs[1].Name != "variant_b" {
+		t.Fatalf("spec names mismatch: %#v", specs)
+	}
+}
+
+func TestSchemaNameFallbackWithoutTitle(t *testing.T) {
+	if got := schemaName(schema.Schema{"type": "object"}); got != "response_format" {
+		t.Fatalf("expected fallback name, got %q", got)
+	}
+	if got := schemaName(schema.Schema{"title": ""}); got != "response_format" {
+		t.Fatalf("expected fallback name for empty title, got %q", got)
+	}
+	if got := schemaName(schema.Schema{"title": "custom"}); got != "custom" {
+		t.Fatalf("expected title, got %q", got)
+	}
+}
+
+func TestToolStrategyEmptySchemaNameFailsCreateAgent(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	strategy := ToolStrategy{
+		Schema:      weatherSchema(),
+		SchemaSpecs: []SchemaSpec{NewSchemaSpec(weatherSchema(), WithSchemaName(""))},
+	}
+	if _, err := CreateAgent(model, nil, WithAgentResponseFormat(strategy)); err == nil {
+		t.Fatal("expected CreateAgent to fail for a schema spec with an empty name")
+	}
+}

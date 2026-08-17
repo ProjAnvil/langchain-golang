@@ -125,6 +125,23 @@ func TestMessagesReducerNilHandling(t *testing.T) {
 	}
 }
 
+func TestMessagesReducerRemoveMessageSliceUpdate(t *testing.T) {
+	// asMessageUpdates must also accept a bare []messages.RemoveMessage
+	// (not wrapped in []messages.MessageUpdate).
+	existing := []messages.Message{
+		withID(messages.Human("hi"), "1"),
+		withID(messages.AI("hello"), "2"),
+	}
+	got, err := MessagesReducer(existing, []messages.RemoveMessage{{ID: "1"}})
+	if err != nil {
+		t.Fatalf("MessagesReducer() error = %v", err)
+	}
+	merged := got.([]messages.Message)
+	if len(merged) != 1 || merged[0].ID != "2" {
+		t.Fatalf("expected only message id=2 to remain, got %+v", merged)
+	}
+}
+
 func TestMessagesReducerTypeMismatch(t *testing.T) {
 	if _, err := MessagesReducer("not messages", nil); err == nil {
 		t.Fatal("expected error for non-message existing value")

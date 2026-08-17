@@ -71,6 +71,63 @@ func TestOutputParserExceptionSatisfiesErrorsAPI(t *testing.T) {
 	}
 }
 
+// TestNewOutputParserExceptionFromErrorNil verifies the documented contract
+// that wrapping a nil error returns nil instead of a non-nil exception.
+func TestNewOutputParserExceptionFromErrorNil(t *testing.T) {
+	if got := lcerrors.NewOutputParserExceptionFromError(nil); got != nil {
+		t.Fatalf("NewOutputParserExceptionFromError(nil) = %v, want nil", got)
+	}
+}
+
+// TestLangChainException exercises the constructor and Error method, and
+// checks that the value satisfies the error interface for errors.As.
+func TestLangChainException(t *testing.T) {
+	err := lcerrors.NewLangChainException("something went wrong")
+	if err == nil {
+		t.Fatal("NewLangChainException returned nil")
+	}
+	if got := err.Error(); got != "something went wrong" {
+		t.Fatalf("Error() = %q, want %q", got, "something went wrong")
+	}
+
+	var target *lcerrors.LangChainException
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As into *LangChainException = false, want true")
+	}
+	if target.Message != "something went wrong" {
+		t.Fatalf("Message = %q, want %q", target.Message, "something went wrong")
+	}
+}
+
+// TestContextOverflowError exercises the constructor and Error method, and
+// checks that the value satisfies the error interface for errors.As.
+func TestContextOverflowError(t *testing.T) {
+	err := lcerrors.NewContextOverflowError("input exceeds context window")
+	if err == nil {
+		t.Fatal("NewContextOverflowError returned nil")
+	}
+	if got := err.Error(); got != "input exceeds context window" {
+		t.Fatalf("Error() = %q, want %q", got, "input exceeds context window")
+	}
+
+	var target *lcerrors.ContextOverflowError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As into *ContextOverflowError = false, want true")
+	}
+	if target.Message != "input exceeds context window" {
+		t.Fatalf("Message = %q, want %q", target.Message, "input exceeds context window")
+	}
+}
+
+// TestTracerException verifies that TracerException reports its message
+// through the error interface.
+func TestTracerException(t *testing.T) {
+	err := &lcerrors.TracerException{Message: "tracer failed"}
+	if got := err.Error(); got != "tracer failed" {
+		t.Fatalf("Error() = %q, want %q", got, "tracer failed")
+	}
+}
+
 // TestJSONParserReturnsOutputParserException ensures that a JSON parse failure
 // surfaces as *lcerrors.OutputParserException carrying the raw model output and
 // the underlying parse error.

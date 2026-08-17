@@ -14,6 +14,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
+	"github.com/projanvil/langchain-golang/core/streamevents"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
@@ -977,5 +978,298 @@ func TestStreamEvents_PIIStreamTransformer_BoundaryStraddle(t *testing.T) {
 	}
 	if !strings.HasSuffix(modelEndText, "trail") {
 		t.Errorf("model_end truncated: %q", modelEndText)
+	}
+}
+
+// failingStream is a runnables.Stream whose first Next returns an error, used
+// to exercise the mid-stream error path in invokeModelStreaming.
+type failingStream struct{ err error }
+
+func (s failingStream) Next(ctx context.Context) (messages.Message, bool, error) {
+	return messages.Message{}, false, s.err
+}
+
+func (s failingStream) Close() error { return nil }
+
+// failingStreamModel streams a stream that errors on the first chunk.
+type failingStreamModel struct{ *streamSequenceModel }
+
+func (m *failingStreamModel) Stream(ctx context.Context, input []messages.Message, opts ...runnables.Option) (runnables.Stream[messages.Message], error) {
+	return failingStream{err: fmt.Errorf("stream boom")}, nil
+}
+
+func TestStreamEventsRequiresGraph(t *testing.T) {
+	var nilAgent *Agent
+	if _, err := nilAgent.StreamEvents(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil agent")
+	}
+	if _, err := (&Agent{}).StreamEvents(context.Background(), nil); err == nil {
+		t.Fatal("expected error for agent without a compiled graph")
+	}
+}
+
+func TestStreamEventsDebugLogging(t *testing.T) {
+	model := &streamSequenceModel{
+		responses:    []messages.Message{messages.AI("hello")},
+		streamChunks: [][]messages.Message{{messages.AI("he"), messages.AI("llo")}},
+	}
+	agent, err := CreateAgent(model, nil, WithAgentDebug(true), WithAgentName("debug-agent"))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	events := drainStream(t, stream)
+	end := requireTerminalEnd(t, events)
+	if end.Err != nil {
+		t.Fatalf("unexpected terminal error: %v", end.Err)
+	}
+	if end.Message == nil || end.Message.Content != "hello" {
+		t.Fatalf("expected assembled message on terminal event, got %#v", end.Message)
+	}
+}
+
+func TestStreamEventsModelErrorTerminatesWithErr(t *testing.T) {
+	// No queued responses: model.Stream fails immediately with a non-context
+	// error, which must surface as a terminal StreamEnd event carrying Err.
+	model := &streamSequenceModel{}
+	agent, err := CreateAgent(model, nil)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	events := drainStream(t, stream)
+	end := requireTerminalEnd(t, events)
+	if end.Err == nil {
+		t.Fatal("expected terminal event to carry the model error")
+	}
+}
+
+func TestStreamEventsStreamChunkErrorTerminatesWithErr(t *testing.T) {
+	model := &failingStreamModel{streamSequenceModel: &streamSequenceModel{}}
+	agent, err := CreateAgent(model, nil)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	events := drainStream(t, stream)
+	end := requireTerminalEnd(t, events)
+	if end.Err == nil {
+		t.Fatal("expected terminal event to carry the stream error")
+	}
+}
+
+func TestEventStreamNextHonorsContextCancellation(t *testing.T) {
+	model := &blockingStreamModel{}
+	agent, err := CreateAgent(model, nil)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	defer stream.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := stream.Next(ctx); err == nil {
+		t.Fatal("expected Next to return the context error for a cancelled ctx")
+	}
+}
+
+func TestEventSinkNilReceiverNoOps(t *testing.T) {
+	var sink *eventSink
+	// None of these may panic on a nil receiver.
+	sink.emitModelDelta(streamevents.Event{})
+	sink.emitModelEnd(messages.AI("x"))
+	sink.emitToolStart(messages.ToolCall{ID: "c1", Name: "t"})
+	sink.emitToolEnd(messages.ToolCall{ID: "c1", Name: "t"}, nil)
+}
+
+func TestEmitRawEventIgnoresUnknownKind(t *testing.T) {
+	ch := make(chan StreamEvent, 1)
+	sink := &eventSink{ch: ch, done: make(chan struct{})}
+	sink.EmitRawEvent(graph.RawEvent{Kind: "something_else", Node: "model"})
+	select {
+	case ev := <-ch:
+		t.Fatalf("expected no event for an unknown raw kind, got %#v", ev)
+	default:
+	}
+}
+
+// foreignEventSink is a graph.NodeEventSink that is not the agents package's
+// own *eventSink, so sinkFromContext must ignore it.
+type foreignEventSink struct{}
+
+func (foreignEventSink) EmitRawEvent(graph.RawEvent) {}
+
+func TestSinkFromContextWithForeignOrSuppressedSink(t *testing.T) {
+	ctx := graph.ContextWithEventSink(context.Background(), foreignEventSink{})
+	if sinkFromContext(ctx) != nil {
+		t.Fatal("expected nil for a non-agents event sink")
+	}
+
+	suppressed := context.WithValue(ctx, suppressStreamSinkCtxKey{}, true)
+	if sinkFromContext(suppressed) != nil {
+		t.Fatal("expected nil when the suppress key is present")
+	}
+}
+
+func TestStreamChunkBridgeContentBlocks(t *testing.T) {
+	chunks := []messages.Message{
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.TextBlock{Text: "hello"},
+			messages.ToolCallChunkBlock{ID: "tc1", Name: "search", Args: `{"q":`},
+		}},
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.NonStandardContentBlock{Type: "reasoning", Value: map[string]any{"reasoning": "thinking"}},
+		}, InvalidToolCalls: []messages.ToolCall{
+			{ID: "bad1", Name: "broken", Args: map[string]any{"raw": "{"}},
+		}},
+	}
+	model := &streamSequenceModel{
+		responses:    []messages.Message{messages.AI("hello")},
+		streamChunks: [][]messages.Message{chunks},
+	}
+	agent, err := CreateAgent(model, nil)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	events := drainStream(t, stream)
+	end := requireTerminalEnd(t, events)
+	if end.Err != nil {
+		t.Fatalf("unexpected terminal error: %v", end.Err)
+	}
+
+	var sawTextDelta, sawToolCallChunk, sawReasoningFinish, sawInvalidToolCall bool
+	for _, ev := range events {
+		if ev.Type != StreamModelDelta || ev.Delta == nil {
+			continue
+		}
+		switch ev.Delta.Event {
+		case streamevents.EventContentBlockDelta:
+			if ev.Delta.Delta != nil {
+				m := messages.BlockToMap(ev.Delta.Delta)
+				if m["type"] == "text-delta" {
+					sawTextDelta = true
+				}
+				if m["type"] == "tool_call_chunk" {
+					sawToolCallChunk = true
+				}
+			}
+		case streamevents.EventContentBlockFinish:
+			if ev.Delta.Content != nil {
+				m := messages.BlockToMap(ev.Delta.Content)
+				if m["type"] == "reasoning" {
+					sawReasoningFinish = true
+				}
+				if m["type"] == "invalid_tool_call" {
+					sawInvalidToolCall = true
+				}
+			}
+		}
+	}
+	if !sawTextDelta || !sawToolCallChunk || !sawReasoningFinish || !sawInvalidToolCall {
+		t.Fatalf("missing expected deltas: text=%v tool_call_chunk=%v reasoning=%v invalid_tool_call=%v",
+			sawTextDelta, sawToolCallChunk, sawReasoningFinish, sawInvalidToolCall)
+	}
+}
+
+func TestStreamEventsRejectsNonChatModel(t *testing.T) {
+	model := &streamSequenceModel{
+		responses:    []messages.Message{messages.AI("hello")},
+		streamChunks: [][]messages.Message{{messages.AI("hello")}},
+	}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncWrapModelCall(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
+			request.Model = "not-a-model"
+			return handler(ctx, request)
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	end := requireTerminalEnd(t, drainStream(t, stream))
+	if end.Err == nil {
+		t.Fatal("expected terminal error for non-ChatModel request.Model")
+	}
+}
+
+func TestStreamEventsRejectsNonTool(t *testing.T) {
+	model := &streamSequenceModel{
+		responses:    []messages.Message{messages.AI("hello")},
+		streamChunks: [][]messages.Message{{messages.AI("hello")}},
+	}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncWrapModelCall(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
+			request.Tools = []any{"not-a-tool"}
+			return handler(ctx, request)
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	end := requireTerminalEnd(t, drainStream(t, stream))
+	if end.Err == nil {
+		t.Fatal("expected terminal error for non-Tool request.Tools entry")
+	}
+}
+
+func TestStreamEventsBindToolsError(t *testing.T) {
+	model := &failBindModel{sequenceModel: &sequenceModel{responses: []messages.Message{messages.AI("done")}}}
+	agent, err := CreateAgent(model, []coretools.Tool{newEchoTool(t)})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	end := requireTerminalEnd(t, drainStream(t, stream))
+	if end.Err == nil {
+		t.Fatal("expected terminal error for BindTools failure")
+	}
+}
+
+func TestStreamEventsWithSystemPrompt(t *testing.T) {
+	model := &streamSequenceModel{
+		responses:    []messages.Message{messages.AI("hello")},
+		streamChunks: [][]messages.Message{{messages.AI("hello")}},
+	}
+	agent, err := CreateAgent(model, nil, WithAgentSystemPrompt("you are helpful"))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	end := requireTerminalEnd(t, drainStream(t, stream))
+	if end.Err != nil {
+		t.Fatalf("unexpected terminal error: %v", end.Err)
+	}
+	if len(model.invocations) != 1 || len(model.invocations[0]) != 2 || model.invocations[0][0].Role != messages.RoleSystem {
+		t.Fatalf("expected system message prepended to the streamed call, got %#v", model.invocations)
 	}
 }

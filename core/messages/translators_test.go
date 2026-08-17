@@ -147,3 +147,27 @@ func isSortedSubset(sorted []string, first, second string) bool {
 	}
 	return i1 != -1 && i2 != -1 && i1 < i2
 }
+
+func TestContentBlocksInvalidProviderMetadataFallsBack(t *testing.T) {
+	// Non-string model_provider values are ignored and best-effort parsing applies.
+	nonString := Message{
+		Role:             RoleAI,
+		Content:          "fallback",
+		ResponseMetadata: map[string]any{"model_provider": 123},
+	}
+	blocks := ContentBlocks(nonString)
+	if len(blocks) != 1 || BlockToMap(blocks[0])["text"] != "fallback" {
+		t.Fatalf("unexpected blocks for non-string provider: %v", blocks)
+	}
+
+	// Empty provider strings are ignored too.
+	empty := Message{
+		Role:             RoleAI,
+		Content:          "fallback",
+		ResponseMetadata: map[string]any{"model_provider": ""},
+	}
+	blocks = ContentBlocks(empty)
+	if len(blocks) != 1 || BlockToMap(blocks[0])["text"] != "fallback" {
+		t.Fatalf("unexpected blocks for empty provider: %v", blocks)
+	}
+}

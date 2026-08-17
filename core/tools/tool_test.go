@@ -197,3 +197,158 @@ func TestValidateArgsSchemaRejectsNonObject(t *testing.T) {
 		t.Fatal("expected schema validation error")
 	}
 }
+
+func TestNewSimpleErrors(t *testing.T) {
+	fn := func(context.Context, string) (Result, error) { return Result{}, nil }
+	if _, err := NewSimple("", "desc", fn); err == nil {
+		t.Fatal("expected error for empty name")
+	}
+	if _, err := NewSimple("x", "desc", nil); err == nil {
+		t.Fatal("expected error for nil function")
+	}
+}
+
+func TestNewFuncErrors(t *testing.T) {
+	fn := func(context.Context, map[string]any) (Result, error) { return Result{}, nil }
+	valid := schema.Object(map[string]schema.Schema{"a": schema.String("a")})
+	if _, err := NewFunc("", "desc", valid, fn); err == nil {
+		t.Fatal("expected error for empty name")
+	}
+	if _, err := NewFunc("x", "desc", valid, nil); err == nil {
+		t.Fatal("expected error for nil function")
+	}
+	// properties must be an object when present.
+	bad := schema.Schema{"type": "object", "properties": "not-a-map"}
+	if _, err := NewFunc("x", "desc", bad, fn); err == nil {
+		t.Fatal("expected error for non-object properties")
+	}
+}
+
+func TestSimpleInvokeStringRequiresFunction(t *testing.T) {
+	var tool Simple
+	if _, err := tool.InvokeString(context.Background(), "hi"); err == nil {
+		t.Fatal("expected missing function error")
+	}
+}
+
+func TestValidateArgsSchema(t *testing.T) {
+	if err := ValidateArgsSchema(nil); err != nil {
+		t.Fatalf("nil schema should be valid, got %v", err)
+	}
+	if err := ValidateArgsSchema(schema.Object(nil)); err != nil {
+		t.Fatalf("object schema should be valid, got %v", err)
+	}
+	ok := schema.Schema{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}
+	if err := ValidateArgsSchema(ok); err != nil {
+		t.Fatalf("object properties should be valid, got %v", err)
+	}
+	if err := ValidateArgsSchema(schema.String("nope")); err == nil {
+		t.Fatal("expected error for non-object type")
+	}
+	badProps := schema.Schema{"type": "object", "properties": 42}
+	if err := ValidateArgsSchema(badProps); err == nil {
+		t.Fatal("expected error for non-object properties")
+	}
+}
+
+// unmarshalableSchemaTool returns a schema that encoding/json cannot marshal,
+// exercising the "{}" fallback in RenderTextDescriptionAndArgs.
+type unmarshalableSchemaTool struct{}
+
+func (unmarshalableSchemaTool) Name() string        { return "bad" }
+func (unmarshalableSchemaTool) Description() string { return "unmarshalable schema" }
+func (unmarshalableSchemaTool) ArgsSchema() schema.Schema {
+	return schema.Schema{"type": "object", "bad": make(chan int)}
+}
+func (unmarshalableSchemaTool) Invoke(context.Context, map[string]any) (Result, error) {
+	return Result{}, nil
+}
+
+func TestRenderTextDescriptionAndArgsFallback(t *testing.T) {
+	got := RenderTextDescriptionAndArgs([]Tool{unmarshalableSchemaTool{}})
+	if !strings.Contains(got, "bad - unmarshalable schema, args: {}") {
+		t.Fatalf("expected {} fallback, got %q", got)
+	}
+}
+
+func TestToFunctionSpecErrors(t *testing.T) {
+	if _, err := ToFunctionSpec(nil); err == nil {
+		t.Fatal("expected error for nil tool")
+	}
+	// A tool whose name fails function-name validation propagates the error.
+	tool, err := NewFunc("bad name!", "desc", nil,
+		func(context.Context, map[string]any) (Result, error) { return Result{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ToFunctionSpec(tool); err == nil {
+		t.Fatal("expected error for invalid function name")
+	}
+	if _, err := ToOpenAIToolSpec(tool); err == nil {
+		t.Fatal("expected ToOpenAIToolSpec to propagate the spec error")
+	}
+	if _, err := ToOpenAIToolSpec(nil); err == nil {
+		t.Fatal("expected error for nil tool")
+	}
+}
+
+// errRetriever always fails, exercising the retriever-error path.
+type errRetriever struct{ err error }
+
+func (r errRetriever) GetRelevantDocuments(context.Context, string) ([]documents.Document, error) {
+	return nil, r.err
+}
+
+func TestCreateRetrieverToolValidation(t *testing.T) {
+	if _, err := CreateRetrieverTool(nil, "x", "x", RetrieverToolOptions{}); err == nil {
+		t.Fatal("expected error for nil retriever")
+	}
+	tool, err := CreateRetrieverTool(retrievers.Static{}, "lookup", "desc", RetrieverToolOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, input := range map[string]map[string]any{
+		"missing query": {},
+		"empty query":   {"query": ""},
+		"non-string":    {"query": 3},
+	} {
+		if _, err := tool.Invoke(context.Background(), input); err == nil {
+			t.Fatalf("expected query validation error for %s", name)
+		}
+	}
+}
+
+func TestCreateRetrieverToolErrorPropagation(t *testing.T) {
+	want := fmt.Errorf("backend down")
+	tool, err := CreateRetrieverTool(errRetriever{err: want}, "lookup", "desc", RetrieverToolOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Invoke(context.Background(), map[string]any{"query": "q"}); err == nil {
+		t.Fatal("expected retriever error to propagate")
+	}
+}
+
+func TestCreateRetrieverToolDefaults(t *testing.T) {
+	retriever := retrievers.Static{Documents: []documents.Document{
+		documents.New("alpha", nil),
+		documents.New("beta", nil),
+	}}
+	tool, err := CreateRetrieverTool(retriever, "lookup", "desc", RetrieverToolOptions{
+		FormatDocument: func(doc documents.Document) string { return "<" + doc.PageContent + ">" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tool.Invoke(context.Background(), map[string]any{"query": "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Default separator is "\n\n" and the custom formatter is applied.
+	if got.Content != "<alpha>\n\n<beta>" {
+		t.Fatalf("Content = %q", got.Content)
+	}
+	if got.Artifact != nil {
+		t.Fatalf("Artifact should be nil without IncludeArtifact, got %v", got.Artifact)
+	}
+}

@@ -152,3 +152,21 @@ func TestInvokeStructuredPrefersNativePath(t *testing.T) {
 		t.Fatalf("content: got %q want %q", msg.Content, want)
 	}
 }
+
+func TestInvokeStructuredModelError(t *testing.T) {
+	wantErr := errors.New("model unavailable")
+	model := NewFakeChatModel(WithRateLimiter(&recordingLimiter{err: wantErr}))
+
+	_, err := InvokeStructured(
+		context.Background(),
+		model,
+		[]messages.Message{messages.Human("describe Ada")},
+		personSchema(),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error: got %v, want wrapped %v", err, wantErr)
+	}
+	if errors.Is(err, ErrSchemaViolation) {
+		t.Fatalf("error: got %v, must not be ErrSchemaViolation", err)
+	}
+}

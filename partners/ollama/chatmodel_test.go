@@ -551,3 +551,163 @@ func optionNumber(t *testing.T, options map[string]any, key string) float64 {
 	}
 	return value
 }
+
+func TestNewChatModelDefaults(t *testing.T) {
+	model := NewChatModel()
+	if model.config.BaseURL != defaultBaseURL {
+		t.Fatalf("base URL: got %q want %q", model.config.BaseURL, defaultBaseURL)
+	}
+	if model.config.Model != "llama3" {
+		t.Fatalf("model: got %q", model.config.Model)
+	}
+	if model.config.Timeout == 0 {
+		t.Fatal("expected a default timeout")
+	}
+}
+
+func TestChatModelFormatOptions(t *testing.T) {
+	var got chatRequest
+	server := newChatServer(t, &got, `{"model":"llama3","message":{"role":"assistant","content":"{}"},"done":true,"done_reason":"stop"}`)
+	defer server.Close()
+
+	customFormat := map[string]any{"type": "object"}
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), WithFormat(customFormat))
+	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	format, ok := got.Format.(map[string]any)
+	if !ok || format["type"] != "object" {
+		t.Fatalf("format: got %#v", got.Format)
+	}
+
+	jsonModel := NewChatModel(modelconfig.WithBaseURL(server.URL), WithJSONMode())
+	if _, err := jsonModel.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if got.Format != "json" {
+		t.Fatalf("json mode format: got %#v want %q", got.Format, "json")
+	}
+}
+
+func TestChatModelInvokeStructuredWithTitle(t *testing.T) {
+	var got chatRequest
+	server := newChatServer(t, &got, `{"model":"llama3","message":{"role":"assistant","content":"{\"name\":\"Ada\"}"},"done":true,"done_reason":"stop"}`)
+	defer server.Close()
+
+	sch := schema.Object(map[string]schema.Schema{
+		"name": schema.String("person name"),
+	}, "name")
+	sch["title"] = "Person"
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
+	response, err := model.InvokeStructured(context.Background(), []messages.Message{messages.Human("extract")}, sch)
+	if err != nil {
+		t.Fatalf("invoke structured: %v", err)
+	}
+	if response.Content != `{"name":"Ada"}` {
+		t.Fatalf("content: got %q", response.Content)
+	}
+	format, ok := got.Format.(map[string]any)
+	if !ok || format["title"] != "Person" {
+		t.Fatalf("format: got %#v", got.Format)
+	}
+}
+
+func TestChatModelMalformedJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`this is not json`))
+	}))
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithMaxRetries(0))
+	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+}
+
+func TestChatModelCallbackStartErrorFailsInvoke(t *testing.T) {
+	server := newChatServer(t, nil, `{"model":"llama3","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
+	_, err := model.Invoke(
+		context.Background(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{kind: callbacks.EventChatModelStart})),
+	)
+	if err == nil {
+		t.Fatal("expected callback start error")
+	}
+}
+
+func TestChatModelCallbackEndErrorFailsInvoke(t *testing.T) {
+	server := newChatServer(t, nil, `{"model":"llama3","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
+	_, err := model.Invoke(
+		context.Background(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{kind: callbacks.EventChatModelEnd})),
+	)
+	if err == nil {
+		t.Fatal("expected callback end error")
+	}
+}
+
+func TestChatModelStreamCallbackStartError(t *testing.T) {
+	server := newChatServer(t, nil, `{"model":"llama3","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
+	_, err := model.Stream(
+		context.Background(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{kind: callbacks.EventChatModelStart})),
+	)
+	if err == nil {
+		t.Fatal("expected callback start error")
+	}
+}
+
+func TestChatModelCallbackEventsCarryMetadata(t *testing.T) {
+	server := newChatServer(t, nil, `{"model":"llama3","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`)
+	defer server.Close()
+
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
+	_, err := model.Invoke(
+		context.Background(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)),
+		runnables.WithMetadata("request_id", "req-1"),
+	)
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	events := recorder.Events()
+	if len(events) == 0 {
+		t.Fatal("expected callback events")
+	}
+	for _, event := range events {
+		if event.Metadata["request_id"] != "req-1" {
+			t.Fatalf("event metadata: %+v", event.Metadata)
+		}
+	}
+}
+
+func TestChatModelResponseTypeMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Valid JSON, but "done" has the wrong type: decoding must fail inside
+		// chatResponse.UnmarshalJSON, not at the transport layer.
+		_, _ = w.Write([]byte(`{"model":"llama3","done":"yes"}`))
+	}))
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithMaxRetries(0))
+	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+}

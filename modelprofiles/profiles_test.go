@@ -129,6 +129,56 @@ func TestFormatValueAndDescriptors(t *testing.T) {
 	}
 }
 
+func TestFormatValueEdgeCases(t *testing.T) {
+	cases := []struct {
+		Name  string
+		Field string
+		Value any
+		Want  string
+	}{
+		{"float token", "max_input_tokens", 128000.0, "128,000"},
+		{"int64 token", "max_output_tokens", int64(8192), "8,192"},
+		{"small token", "max_input_tokens", 999, "999"},
+		{"negative token", "max_input_tokens", -12345, "-12,345"},
+		{"non-integral float token", "max_input_tokens", 128000.5, "128000.5"},
+		{"string token", "max_input_tokens", "unknown", "`unknown`"},
+		{"generic value", "limits", []string{"a", "b"}, "[a b]"},
+		{"non-token bool", "image_inputs", true, "yes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			if got := FormatValue(tc.Field, tc.Value); got != tc.Want {
+				t.Fatalf("FormatValue(%q, %#v) = %q, want %q", tc.Field, tc.Value, got, tc.Want)
+			}
+		})
+	}
+}
+
+func TestDescribeFieldChange(t *testing.T) {
+	cases := []struct {
+		Name  string
+		Field string
+		Old   any
+		New   any
+		Want  string
+	}{
+		{"added capability", "tool_calling", false, true, "added tool calling"},
+		{"removed capability", "tool_calling", true, false, "removed tool calling"},
+		{"bool stays true", "tool_calling", true, true, "tool calling yes -> yes"},
+		{"unknown field label", "custom_field", "a", "b", "custom_field `a` -> `b`"},
+		{"token change", "max_input_tokens", 8192, 200000, "max input tokens 8,192 -> 200,000"},
+		{"unset to value", "name", nil, "GPT", "display name unset -> `GPT`"},
+		{"old bool new string", "tool_calling", true, "yes", "removed tool calling"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			if got := DescribeFieldChange(tc.Field, tc.Old, tc.New); got != tc.Want {
+				t.Fatalf("DescribeFieldChange(%q, %#v, %#v) = %q, want %q", tc.Field, tc.Old, tc.New, got, tc.Want)
+			}
+		})
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	rows := make([]string, maxRows+1)
 	for i := range rows {

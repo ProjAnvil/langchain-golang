@@ -139,3 +139,60 @@ func TestEmbeddingsCountMismatch(t *testing.T) {
 		t.Fatal("expected count mismatch error")
 	}
 }
+
+func TestNewEmbeddingsDefaults(t *testing.T) {
+	embeddings := NewEmbeddings()
+	if embeddings.config.BaseURL != defaultBaseURL {
+		t.Fatalf("base URL: got %q want %q", embeddings.config.BaseURL, defaultBaseURL)
+	}
+	if embeddings.config.Model != "llama3" {
+		t.Fatalf("model: got %q", embeddings.config.Model)
+	}
+	if embeddings.config.Timeout == 0 {
+		t.Fatal("expected a default timeout")
+	}
+}
+
+func TestEmbeddingsTemperatureOption(t *testing.T) {
+	var got embedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1]]}`))
+	}))
+	defer server.Close()
+
+	embeddings := NewEmbeddings(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithTemperature(0.3),
+	)
+	if _, err := embeddings.EmbedDocuments(context.Background(), []string{"hi"}); err != nil {
+		t.Fatalf("embed documents: %v", err)
+	}
+	if got.Options["temperature"] != 0.3 {
+		t.Fatalf("temperature: got %v", got.Options["temperature"])
+	}
+}
+
+func TestEmbeddingsTemperatureMergesWithSamplingOptions(t *testing.T) {
+	var got embedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"model":"nomic-embed-text","embeddings":[[0.1]]}`))
+	}))
+	defer server.Close()
+
+	embeddings := NewEmbeddings(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithTemperature(0.3),
+		WithTopP(0.8),
+	)
+	if _, err := embeddings.EmbedDocuments(context.Background(), []string{"hi"}); err != nil {
+		t.Fatalf("embed documents: %v", err)
+	}
+	if got.Options["temperature"] != 0.3 {
+		t.Fatalf("temperature: got %v", got.Options["temperature"])
+	}
+	if got.Options["top_p"] != 0.8 {
+		t.Fatalf("top_p: got %v", got.Options["top_p"])
+	}
+}

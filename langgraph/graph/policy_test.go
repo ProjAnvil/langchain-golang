@@ -313,6 +313,7 @@ func TestDefaultRetryOn(t *testing.T) {
 		{"net.Error", &net.DNSError{Err: "timeout", Name: "example.com", IsTimeout: true}, true},
 		{"wrapped net.Error", fmt.Errorf("call: %w", &net.DNSError{Err: "timeout", Name: "example.com", IsTimeout: true}), true},
 		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("call: %w", context.DeadlineExceeded), true},
 		{"context.Canceled", context.Canceled, false},
 		{"HTTP 500", httpStatusErr{500}, true},
 		{"HTTP 503", httpStatusErr{503}, true},
@@ -348,5 +349,79 @@ func TestAddNodeDelegatesToAddNodeWithPolicies(t *testing.T) {
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("attempts = %d, want 1 (AddNode installs no retry policy)", got)
+	}
+}
+
+func TestRetryPolicyResolvedAppliesDefaults(t *testing.T) {
+	resolved := RetryPolicy{}.Resolved()
+	if resolved.InitialInterval != defaultInitialInterval ||
+		resolved.BackoffFactor != defaultBackoffFactor ||
+		resolved.MaxInterval != defaultMaxInterval ||
+		resolved.MaxAttempts != defaultMaxAttempts {
+		t.Fatalf("Resolved() = %+v, want all defaults applied", resolved)
+	}
+	if resolved.RetryOn == nil {
+		t.Fatal("Resolved().RetryOn = nil, want DefaultRetryOn")
+	}
+
+	// Set fields are preserved.
+	custom := RetryPolicy{InitialInterval: time.Second, MaxAttempts: 7, NoJitter: true}
+	resolved = custom.Resolved()
+	if resolved.InitialInterval != time.Second || resolved.MaxAttempts != 7 || !resolved.NoJitter {
+		t.Fatalf("Resolved() = %+v, want set fields preserved", resolved)
+	}
+}
+
+func TestRetryPolicyBackoffDelay(t *testing.T) {
+	p := RetryPolicy{
+		InitialInterval: 10 * time.Millisecond,
+		BackoffFactor:   2,
+		MaxInterval:     25 * time.Millisecond,
+		NoJitter:        true,
+	}
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{1, 10 * time.Millisecond},
+		{2, 20 * time.Millisecond},
+		{3, 25 * time.Millisecond}, // clamped to MaxInterval
+		{9, 25 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		if got := p.BackoffDelay(tc.attempt); got != tc.want {
+			t.Errorf("BackoffDelay(%d) = %v, want %v", tc.attempt, got, tc.want)
+		}
+	}
+}
+
+func TestTimeoutPolicyRejectsNegativeIdleTimeout(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNodeWithPolicies("node", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return nil, nil
+	}, NodePolicies{Timeout: &TimeoutPolicy{RunTimeout: time.Second, IdleTimeout: -time.Second}})
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	if _, err := g.Compile(); err == nil || !strings.Contains(err.Error(), "IdleTimeout") {
+		t.Fatalf("Compile() error = %v, want an IdleTimeout validation error", err)
+	}
+}
+
+// deadlineOnlyViaIs matches context.DeadlineExceeded through a custom Is
+// method without itself (or its chain) implementing net.Error, exercising
+// DefaultRetryOn's errors.Is branch (context.DeadlineExceeded itself
+// implements net.Error, so it is caught by the earlier net.Error branch).
+type deadlineOnlyViaIs struct{ error }
+
+func (deadlineOnlyViaIs) Is(err error) bool { return err == context.DeadlineExceeded }
+
+func TestDefaultRetryOnDeadlineExceededViaCustomIs(t *testing.T) {
+	err := deadlineOnlyViaIs{errFlaky}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		t.Fatal("test setup broken: deadlineOnlyViaIs must not match net.Error")
+	}
+	if !DefaultRetryOn(err) {
+		t.Fatalf("DefaultRetryOn(%v) = false, want true (matches DeadlineExceeded via custom Is)", err)
 	}
 }

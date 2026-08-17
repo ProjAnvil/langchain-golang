@@ -2,6 +2,7 @@ package runnables
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -83,5 +84,72 @@ func TestConfigurableFieldsConfigSchema(t *testing.T) {
 	props := schemaProperties(configurable)
 	if props["temperature"]["default"] != 0.7 {
 		t.Fatalf("temperature default: %#v", props["temperature"])
+	}
+}
+
+func TestConfigurableFieldsBatchStreamAndSchemas(t *testing.T) {
+	var mu sync.Mutex
+	var seen []Config
+	inner := NewFunc(func(_ context.Context, input string, opts ...Option) (string, error) {
+		mu.Lock()
+		seen = append(seen, NewConfig(opts...))
+		mu.Unlock()
+		return input + "!", nil
+	}, schema.String("in"), schema.String("out"))
+
+	wrapped, err := ConfigurableFields[string, string](inner, ConfigurableField{
+		ID:      "temperature",
+		Default: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("configurable fields: %v", err)
+	}
+
+	got, err := wrapped.Batch(context.Background(), []string{"a", "b"}, WithRunID("root"))
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if got[0] != "a!" || got[1] != "b!" {
+		t.Fatalf("batch got %#v", got)
+	}
+	// The child run carries the parent run ID, an empty run ID, the wrapper
+	// name, and the applied field default.
+	child := seen[0]
+	if child.Name != "configurable_fields" || child.ParentID != "root" || child.RunID != "" {
+		t.Fatalf("child identity: %#v", child)
+	}
+	if child.Configurable["temperature"] != 0.7 {
+		t.Fatalf("child configurable: %#v", child.Configurable)
+	}
+
+	stream, err := wrapped.Stream(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+	chunk, ok, err := stream.Next(context.Background())
+	if err != nil || !ok || chunk != "x!" {
+		t.Fatalf("chunk=%q ok=%v err=%v", chunk, ok, err)
+	}
+
+	if wrapped.InputSchema()["description"] != "in" {
+		t.Fatalf("input schema: %#v", wrapped.InputSchema())
+	}
+	if wrapped.OutputSchema()["description"] != "out" {
+		t.Fatalf("output schema: %#v", wrapped.OutputSchema())
+	}
+}
+
+func TestConfigurableFieldsConfigSchemaWithoutAnnotation(t *testing.T) {
+	inner := NewFunc(func(_ context.Context, input string, _ ...Option) (string, error) {
+		return input, nil
+	}, schema.String(""), schema.String(""))
+	wrapped, err := ConfigurableFields[string, string](inner, ConfigurableField{ID: "flag"})
+	if err != nil {
+		t.Fatalf("configurable fields: %v", err)
+	}
+	prop := configurableProperty(t, wrapped.ConfigSchema(), "flag")
+	if prop["type"] != "any" {
+		t.Fatalf("flag property: %#v", prop)
 	}
 }

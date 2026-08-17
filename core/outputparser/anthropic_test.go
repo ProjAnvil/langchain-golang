@@ -85,3 +85,81 @@ func TestAnthropicToolsOutputParserInvalidBlock(t *testing.T) {
 		t.Fatal("expected missing name error")
 	}
 }
+
+func TestAnthropicToolsOutputParserArgsOnlyList(t *testing.T) {
+	msg := messages.AI("")
+	msg.ContentBlocks = []messages.ContentBlock{
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{
+			"id": "toolu_1", "name": "search", "input": map[string]any{"query": "go"},
+		}},
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{
+			"id": "toolu_2", "name": "lookup", "input": map[string]any{"id": "2"},
+		}},
+	}
+
+	got, err := (AnthropicToolsOutputParser{ArgsOnly: true}).ParseMessage(msg)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	args := got.([]map[string]any)
+	if len(args) != 2 || args[0]["query"] != "go" || args[1]["id"] != "2" {
+		t.Fatalf("args: %#v", args)
+	}
+}
+
+func TestAnthropicToolsOutputParserFirstOnlyCall(t *testing.T) {
+	msg := messages.AI("")
+	msg.ContentBlocks = []messages.ContentBlock{
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{
+			"id": "toolu_1", "name": "search", "input": map[string]any{"query": "go"},
+		}},
+	}
+
+	got, err := (AnthropicToolsOutputParser{FirstToolOnly: true}).ParseMessage(msg)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	call := got.(AnthropicToolCall)
+	if call.Name != "search" || call.Args["query"] != "go" {
+		t.Fatalf("call: %#v", call)
+	}
+}
+
+func TestAnthropicToolsOutputParserArgsOnlyFirstEmpty(t *testing.T) {
+	msg := messages.AI("plain")
+	got, err := (AnthropicToolsOutputParser{ArgsOnly: true, FirstToolOnly: true}).ParseMessage(msg)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil, got %#v", got)
+	}
+}
+
+func TestAnthropicToolUseArgsEdgeCases(t *testing.T) {
+	// Missing input yields empty args.
+	msg := messages.AI("")
+	msg.ContentBlocks = []messages.ContentBlock{
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{
+			"id": "toolu_1", "name": "search",
+		}},
+	}
+	got, err := (AnthropicToolsOutputParser{}).ParseMessage(msg)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	calls := got.([]AnthropicToolCall)
+	if len(calls) != 1 || len(calls[0].Args) != 0 {
+		t.Fatalf("calls: %#v", calls)
+	}
+
+	// Non-object input is rejected.
+	msg.ContentBlocks = []messages.ContentBlock{
+		messages.NonStandardContentBlock{Type: "tool_use", Value: map[string]any{
+			"id": "toolu_1", "name": "search", "input": "not an object",
+		}},
+	}
+	if _, err := (AnthropicToolsOutputParser{}).ParseMessage(msg); err == nil {
+		t.Fatal("expected input type error")
+	}
+}

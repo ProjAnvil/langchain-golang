@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/projanvil/langchain-golang/langgraph/store"
 )
 
 // TestRuntimeSatisfiesContext is the compile-time assertion that Runtime
@@ -225,6 +227,237 @@ func TestPatchExecutionInfo(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestExecutionInfoOverrides covers the ExecutionInfoOverride constructors not
+// exercised elsewhere, verifying each one replaces exactly its own field.
+func TestExecutionInfoOverrides(t *testing.T) {
+	first := time.Now()
+	info := ExecutionInfo{
+		CheckpointID:         "cp-0",
+		CheckpointNS:         "ns-0",
+		TaskID:               "task-0",
+		ThreadID:             "thread-0",
+		RunID:                "run-0",
+		NodeAttempt:          1,
+		NodeFirstAttemptTime: nil,
+	}
+	out := info.Patch(
+		WithCheckpointNS("ns-1"),
+		WithTaskID("task-1"),
+		WithThreadID("thread-1"),
+		WithRunID("run-1"),
+		WithNodeFirstAttemptTime(&first),
+	)
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"CheckpointNS", out.CheckpointNS, "ns-1"},
+		{"TaskID", out.TaskID, "task-1"},
+		{"ThreadID", out.ThreadID, "thread-1"},
+		{"RunID", out.RunID, "run-1"},
+		// Untouched fields survive.
+		{"CheckpointID", out.CheckpointID, "cp-0"},
+		{"NodeAttempt", out.NodeAttempt, 1},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
+		}
+	}
+	if out.NodeFirstAttemptTime != &first {
+		t.Errorf("NodeFirstAttemptTime = %v, want the patched pointer", out.NodeFirstAttemptTime)
+	}
+	// Original is not mutated (value receiver).
+	if info.CheckpointNS != "ns-0" || info.TaskID != "task-0" || info.ThreadID != "thread-0" || info.RunID != "run-0" {
+		t.Errorf("original ExecutionInfo mutated by Patch: %+v", info)
+	}
+}
+
+// TestZeroRuntimeContextMethods verifies Deadline/Done/Err/Value are safe on a
+// zero-value Runtime (nil backing ctx) and return the documented sentinels.
+func TestZeroRuntimeContextMethods(t *testing.T) {
+	var rt Runtime
+	if dl, ok := rt.Deadline(); ok || !dl.IsZero() {
+		t.Errorf("zero Runtime Deadline() = (%v, %v), want zero/false", dl, ok)
+	}
+	if ch := rt.Done(); ch != nil {
+		t.Errorf("zero Runtime Done() = %v, want nil", ch)
+	}
+	if err := rt.Err(); err != nil {
+		t.Errorf("zero Runtime Err() = %v, want nil", err)
+	}
+	if got := rt.Value("key"); got != nil {
+		t.Errorf("zero Runtime Value() = %v, want nil", got)
+	}
+}
+
+// TestMergeRemainingFields covers the Merge branches for Store, Heartbeat,
+// ExecutionInfo, ServerInfo, and Control: other wins when set, self is kept
+// when other's field is nil.
+func TestMergeRemainingFields(t *testing.T) {
+	selfStore := store.NewInMemoryStore()
+	otherStore := store.NewInMemoryStore()
+	selfInfo := &ExecutionInfo{TaskID: "self-task"}
+	otherInfo := &ExecutionInfo{TaskID: "other-task"}
+	selfServer := &ServerInfo{AssistantID: "self-asst"}
+	otherServer := &ServerInfo{AssistantID: "other-asst"}
+	selfControl := NewRunControl()
+	otherControl := NewRunControl()
+	selfHeartbeat := func() {}
+	otherHeartbeat := func() {}
+
+	t.Run("OtherWinsWhenSet", func(t *testing.T) {
+		self := NewRuntime(context.Background()).Override(
+			WithRuntimeStore(selfStore),
+			WithRuntimeHeartbeat(selfHeartbeat),
+			WithRuntimeExecutionInfo(selfInfo),
+			WithRuntimeServerInfo(selfServer),
+			WithRuntimeControl(selfControl),
+		)
+		other := NewRuntime(context.Background()).Override(
+			WithRuntimeStore(otherStore),
+			WithRuntimeHeartbeat(otherHeartbeat),
+			WithRuntimeExecutionInfo(otherInfo),
+			WithRuntimeServerInfo(otherServer),
+			WithRuntimeControl(otherControl),
+		)
+		merged := self.Merge(other)
+		if merged.Store != Store(otherStore) {
+			t.Errorf("Store: want other's store")
+		}
+		if !heartbeatSet(merged.Heartbeat) {
+			t.Errorf("Heartbeat = nil, want other's heartbeat")
+		}
+		if merged.ExecutionInfo != otherInfo {
+			t.Errorf("ExecutionInfo = %v, want other's pointer", merged.ExecutionInfo)
+		}
+		if merged.ServerInfo != otherServer {
+			t.Errorf("ServerInfo = %v, want other's pointer", merged.ServerInfo)
+		}
+		if merged.Control != otherControl {
+			t.Errorf("Control = %v, want other's pointer", merged.Control)
+		}
+	})
+	t.Run("SelfKeepsWhenOtherUnset", func(t *testing.T) {
+		self := NewRuntime(context.Background()).Override(
+			WithRuntimeStore(selfStore),
+			WithRuntimeHeartbeat(selfHeartbeat),
+			WithRuntimeExecutionInfo(selfInfo),
+			WithRuntimeServerInfo(selfServer),
+			WithRuntimeControl(selfControl),
+		)
+		other := NewRuntime(context.Background()) // all fields nil
+		merged := self.Merge(other)
+		if merged.Store != Store(selfStore) {
+			t.Errorf("Store: want self's store (other was nil)")
+		}
+		if !heartbeatSet(merged.Heartbeat) {
+			t.Errorf("Heartbeat = nil, want self's heartbeat (other was nil)")
+		}
+		if merged.ExecutionInfo != selfInfo {
+			t.Errorf("ExecutionInfo = %v, want self's pointer (other was nil)", merged.ExecutionInfo)
+		}
+		if merged.ServerInfo != selfServer {
+			t.Errorf("ServerInfo = %v, want self's pointer (other was nil)", merged.ServerInfo)
+		}
+		if merged.Control != selfControl {
+			t.Errorf("Control = %v, want self's pointer (other was nil)", merged.Control)
+		}
+	})
+}
+
+// TestWithRuntimeCtx verifies WithRuntimeCtx swaps the backing context.Context
+// and ignores a nil replacement.
+func TestWithRuntimeCtx(t *testing.T) {
+	type k struct{}
+	rt := NewRuntime(context.Background()).Override(WithRuntimeContext("static"))
+	derived := context.WithValue(context.Background(), k{}, "derived")
+	swapped := rt.Override(WithRuntimeCtx(derived))
+	if got := swapped.Value(k{}); got != "derived" {
+		t.Errorf("Value after WithRuntimeCtx = %v, want %q", got, "derived")
+	}
+	// Other fields are preserved across the ctx swap.
+	if swapped.Context != "static" {
+		t.Errorf("Context = %v, want static (preserved across ctx swap)", swapped.Context)
+	}
+	// The original runtime is untouched (Override copies).
+	if got := rt.Value(k{}); got != nil {
+		t.Errorf("original Value = %v, want nil (original ctx unchanged)", got)
+	}
+	// A nil ctx is ignored: the previous backing ctx survives.
+	ctx2, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt2 := NewRuntime(ctx2).Override(WithRuntimeCtx(nil))
+	cancel()
+	if err := rt2.Err(); !errors.Is(err, context.Canceled) {
+		t.Errorf("Err after WithRuntimeCtx(nil) = %v, want context.Canceled (nil ctx ignored)", err)
+	}
+}
+
+// TestContextSchemaValues covers ContextWithValues / ValuesFromContext /
+// ValueFromRuntime — the context_schema data flow shared with the agents and
+// graph packages.
+func TestContextSchemaValues(t *testing.T) {
+	t.Run("RoundTrip", func(t *testing.T) {
+		values := map[string]any{"user_id": "u-1", "db_conn": "conn"}
+		ctx := ContextWithValues(context.Background(), values)
+		got := ValuesFromContext(ctx)
+		if got["user_id"] != "u-1" || got["db_conn"] != "conn" {
+			t.Errorf("ValuesFromContext = %v, want %v", got, values)
+		}
+	})
+	t.Run("NoValuesAttached", func(t *testing.T) {
+		if got := ValuesFromContext(context.Background()); got != nil {
+			t.Errorf("ValuesFromContext on bare ctx = %v, want nil", got)
+		}
+	})
+	t.Run("NilContext", func(t *testing.T) {
+		//nolint:staticcheck // deliberately probing nil-ctx safety
+		if got := ValuesFromContext(nil); got != nil {
+			t.Errorf("ValuesFromContext(nil) = %v, want nil", got)
+		}
+	})
+	t.Run("ValueFromRuntime", func(t *testing.T) {
+		rt := NewRuntime(context.Background()).Override(
+			WithRuntimeContext(map[string]any{"user_id": "u-1"}),
+		)
+		if v, ok := ValueFromRuntime(rt, "user_id"); !ok || v != "u-1" {
+			t.Errorf("ValueFromRuntime(user_id) = (%v, %v), want (u-1, true)", v, ok)
+		}
+		if v, ok := ValueFromRuntime(rt, "missing"); ok || v != nil {
+			t.Errorf("ValueFromRuntime(missing) = (%v, %v), want (nil, false)", v, ok)
+		}
+	})
+	t.Run("ValueFromRuntimeNonMapContext", func(t *testing.T) {
+		// A non-map Context (including nil) yields (nil, false).
+		if v, ok := ValueFromRuntime(NewRuntime(context.Background()), "k"); ok || v != nil {
+			t.Errorf("ValueFromRuntime with nil Context = (%v, %v), want (nil, false)", v, ok)
+		}
+		rt := NewRuntime(context.Background()).Override(WithRuntimeContext("not-a-map"))
+		if v, ok := ValueFromRuntime(rt, "k"); ok || v != nil {
+			t.Errorf("ValueFromRuntime with string Context = (%v, %v), want (nil, false)", v, ok)
+		}
+	})
+}
+
+// TestOverrideStoreAndServerInfo covers the Override options not exercised
+// elsewhere (WithRuntimeStore, WithRuntimeServerInfo).
+func TestOverrideStoreAndServerInfo(t *testing.T) {
+	st := store.NewInMemoryStore()
+	si := &ServerInfo{AssistantID: "asst-1", GraphID: "graph-1", User: "user-1"}
+	rt := NewRuntime(context.Background()).Override(
+		WithRuntimeStore(st),
+		WithRuntimeServerInfo(si),
+	)
+	if rt.Store != Store(st) {
+		t.Errorf("Store = %v, want the installed store", rt.Store)
+	}
+	if rt.ServerInfo != si {
+		t.Errorf("ServerInfo = %v, want the installed pointer", rt.ServerInfo)
+	}
 }
 
 // TestExecutionInfoPatch mirrors Python's ExecutionInfo.patch (replace).

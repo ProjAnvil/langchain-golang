@@ -2,6 +2,7 @@ package structuredoutput
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/language"
@@ -63,6 +64,118 @@ func TestBindJSONParsesTypedOutput(t *testing.T) {
 	}
 }
 
+func TestNewJSONSchemaKeepsExplicitName(t *testing.T) {
+	cfg := NewJSONSchema("person", schema.Object(map[string]schema.Schema{
+		"name": schema.String("name"),
+	}, "name"), false)
+
+	if cfg.Name != "person" {
+		t.Fatalf("name: got %q", cfg.Name)
+	}
+	if cfg.Strict {
+		t.Fatal("expected non-strict mode")
+	}
+}
+
+func TestBindJSONPropagatesModelError(t *testing.T) {
+	invokeErr := errors.New("model blew up")
+	model := testStructuredModel{
+		err: invokeErr,
+		capabilities: language.ChatModelCapabilities{
+			StructuredOutput: true,
+		},
+	}
+
+	runnable, err := BindJSON[testStructuredModel, person](
+		model,
+		"person",
+		schema.Object(map[string]schema.Schema{
+			"name": schema.String("person name"),
+		}, "name"),
+		true,
+	)
+	if err != nil {
+		t.Fatalf("bind json: %v", err)
+	}
+
+	_, err = runnable.Invoke(context.Background(), []messages.Message{
+		messages.Human("extract person"),
+	})
+	if !errors.Is(err, invokeErr) {
+		t.Fatalf("expected invoke error, got %v", err)
+	}
+}
+
+func TestBindJSONReturnsParseErrorForMalformedOutput(t *testing.T) {
+	model := testStructuredModel{
+		response: messages.AI(`{"name":"Ada","age":`),
+		capabilities: language.ChatModelCapabilities{
+			StructuredOutput: true,
+		},
+	}
+
+	runnable, err := BindJSON[testStructuredModel, person](
+		model,
+		"person",
+		schema.Object(map[string]schema.Schema{
+			"name": schema.String("person name"),
+		}, "name"),
+		false,
+	)
+	if err != nil {
+		t.Fatalf("bind json: %v", err)
+	}
+
+	_, err = runnable.Invoke(context.Background(), []messages.Message{
+		messages.Human("extract person"),
+	})
+	if err == nil {
+		t.Fatal("expected parse error for malformed JSON")
+	}
+}
+
+func TestBindJSONConfiguresModelWithArguments(t *testing.T) {
+	recorded := &structuredCall{}
+	model := testStructuredModel{
+		response: messages.AI(`{"name":"Ada","age":37}`),
+		capabilities: language.ChatModelCapabilities{
+			StructuredOutput: true,
+		},
+		recorded: recorded,
+	}
+	outputSchema := schema.Object(map[string]schema.Schema{
+		"name": schema.String("person name"),
+		"age":  schema.Integer("person age"),
+	}, "name", "age")
+
+	runnable, err := BindJSON[testStructuredModel, person](
+		model,
+		"person",
+		outputSchema,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("bind json: %v", err)
+	}
+
+	if _, err := runnable.Invoke(context.Background(), []messages.Message{
+		messages.Human("extract person"),
+	}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if recorded.name != "person" || !recorded.strict {
+		t.Fatalf("structured output args: name=%q strict=%v",
+			recorded.name, recorded.strict)
+	}
+	if recorded.schema["type"] != outputSchema["type"] {
+		t.Fatalf("structured output schema: %+v", recorded.schema)
+	}
+	if runnable.InputSchema()["type"] != "array" {
+		t.Fatalf("input schema: %+v", runnable.InputSchema())
+	}
+}
+
 func TestBindJSONRejectsUnsupportedModel(t *testing.T) {
 	_, err := BindJSON[testStructuredModel, person](
 		testStructuredModel{},
@@ -87,7 +200,15 @@ type person struct {
 
 type testStructuredModel struct {
 	response     messages.Message
+	err          error
 	capabilities language.ChatModelCapabilities
+	recorded     *structuredCall
+}
+
+type structuredCall struct {
+	name   string
+	schema schema.Schema
+	strict bool
 }
 
 func (m testStructuredModel) Invoke(
@@ -95,6 +216,9 @@ func (m testStructuredModel) Invoke(
 	_ []messages.Message,
 	_ ...runnables.Option,
 ) (messages.Message, error) {
+	if m.err != nil {
+		return messages.Message{}, m.err
+	}
 	return m.response, nil
 }
 
@@ -145,9 +269,12 @@ func (m testStructuredModel) Capabilities() language.ChatModelCapabilities {
 }
 
 func (m testStructuredModel) WithStructuredOutput(
-	_ string,
-	_ schema.Schema,
-	_ bool,
+	name string,
+	outputSchema schema.Schema,
+	strict bool,
 ) testStructuredModel {
+	if m.recorded != nil {
+		*m.recorded = structuredCall{name: name, schema: outputSchema, strict: strict}
+	}
 	return m
 }

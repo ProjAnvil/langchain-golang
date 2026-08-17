@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -603,5 +604,77 @@ func TestSubgraphInterruptDescriptiveError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `subgraph "sub"`) || !strings.Contains(err.Error(), "interrupt") {
 		t.Fatalf("error = %v, want it to name the subgraph and the interrupt", err)
+	}
+}
+
+// TestSubgraphChildRunErrorWraps verifies that a plain child run failure is
+// wrapped with the subgraph node's name.
+func TestSubgraphChildRunErrorWraps(t *testing.T) {
+	want := errors.New("child boom")
+	child := NewStateGraph()
+	child.AddNode("inner", func(runtime.Runtime, map[string]any) (any, error) { return nil, want })
+	child.AddEdge(types.START, "inner")
+	child.AddEdge("inner", types.END)
+	compiledChild, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	g := NewStateGraph()
+	g.AddSubgraph("sub", compiledChild)
+	g.AddEdge(types.START, "sub")
+	g.AddEdge("sub", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	_, err = cg.Invoke(context.Background(), map[string]any{})
+	if !errors.Is(err, want) || !strings.Contains(err.Error(), `subgraph "sub"`) {
+		t.Fatalf("Invoke() error = %v, want it to wrap %v naming subgraph %q", err, want, "sub")
+	}
+}
+
+// failSecondNSTupleSaver fails the second GetTuple call that carries a
+// non-empty checkpoint namespace: the first is the child run's own load, the
+// second is the wrapper's post-run position lookup.
+type failSecondNSTupleSaver struct {
+	checkpoint.Saver
+	calls atomic.Int64
+}
+
+func (s *failSecondNSTupleSaver) GetTuple(ctx context.Context, cfg checkpoint.Config) (*checkpoint.Tuple, error) {
+	if cfg.CheckpointNS != "" && s.calls.Add(1) == 2 {
+		return nil, errSaverBoom
+	}
+	return s.Saver.GetTuple(ctx, cfg)
+}
+
+// TestSubgraphChildCheckpointLookupError verifies that a failure loading the
+// child's final checkpoint position (for Metadata.Parents bookkeeping)
+// surfaces as a subgraph error.
+func TestSubgraphChildCheckpointLookupError(t *testing.T) {
+	child := NewStateGraph()
+	child.AddNode("inner", func(runtime.Runtime, map[string]any) (any, error) {
+		return map[string]any{"inner": true}, nil
+	})
+	child.AddEdge(types.START, "inner")
+	child.AddEdge("inner", types.END)
+	compiledChild, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	saver := &failSecondNSTupleSaver{Saver: checkpoint.NewMemorySaver()}
+	g := NewStateGraph()
+	g.AddSubgraph("sub", compiledChild)
+	g.AddEdge(types.START, "sub")
+	g.AddEdge("sub", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	_, err = cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"})
+	if !errors.Is(err, errSaverBoom) || !strings.Contains(err.Error(), `subgraph "sub"`) {
+		t.Fatalf("InvokeWithOptions() error = %v, want it to wrap %v naming subgraph %q", err, errSaverBoom, "sub")
 	}
 }

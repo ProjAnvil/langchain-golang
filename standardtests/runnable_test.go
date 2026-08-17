@@ -125,3 +125,107 @@ type standardRunnableError string
 func (e standardRunnableError) Error() string { return string(e) }
 
 const errMissingConfig = standardRunnableError("missing configurable value")
+
+func TestRunRunnableSchemaBasicsMismatch(t *testing.T) {
+	inputSchema := schema.String("input")
+	outputSchema := schema.String("output")
+	configSchema := schema.Object(map[string]schema.Schema{
+		"configurable": schema.Object(map[string]schema.Schema{
+			"mode": schema.String("mode"),
+		}),
+	})
+
+	expectConformanceFailure(t, "schema mismatches are reported", func(t *testing.T) {
+		RunRunnableSchemaBasics(
+			t,
+			func(testing.TB) runnables.Runnable[string, string] {
+				return standardRunnable{
+					inputSchema:  inputSchema,
+					outputSchema: outputSchema,
+					configSchema: configSchema,
+				}
+			},
+			schema.String("wrong input"),
+			schema.String("wrong output"),
+			schema.String("wrong config"),
+		)
+	})
+}
+
+func TestRunRunnableConfigPropagationMismatch(t *testing.T) {
+	expectConformanceFailure(t, "missing configurable values are reported", func(t *testing.T) {
+		RunRunnableConfigPropagation(
+			t,
+			func(testing.TB) runnables.Runnable[string, string] {
+				return standardRunnable{wantConfigKey: "mode", wantConfigValue: "fast"}
+			},
+			"input",
+			"mode",
+			"slow",
+		)
+	})
+}
+
+// errNextRunnable streams values whose iteration always fails.
+type errNextRunnable struct {
+	standardRunnable
+}
+
+func (r errNextRunnable) Stream(
+	ctx context.Context,
+	input string,
+	opts ...runnables.Option,
+) (runnables.Stream[string], error) {
+	if _, err := r.Invoke(ctx, input, opts...); err != nil {
+		return nil, err
+	}
+	return errNextStream{}, nil
+}
+
+type errNextStream struct{}
+
+func (errNextStream) Next(context.Context) (string, bool, error) {
+	return "", false, errMissingConfig
+}
+
+func (errNextStream) Close() error { return nil }
+
+func TestRunRunnableConfigPropagationStreamError(t *testing.T) {
+	expectConformanceFailure(t, "stream iteration errors are reported", func(t *testing.T) {
+		RunRunnableConfigPropagation(
+			t,
+			func(testing.TB) runnables.Runnable[string, string] {
+				return errNextRunnable{}
+			},
+			"input",
+			"mode",
+			"fast",
+		)
+	})
+}
+
+// badMetadataGraphRunnable exports a graph whose node metadata cannot be
+// marshaled to JSON.
+type badMetadataGraphRunnable struct {
+	standardRunnable
+}
+
+func (badMetadataGraphRunnable) Graph() runnables.Graph {
+	return runnables.Graph{Nodes: []runnables.GraphNode{{
+		ID:       "node",
+		Name:     "node",
+		Type:     "node",
+		Metadata: map[string]any{"unmarshalable": func() {}},
+	}}}
+}
+
+func TestRunRunnableGraphExportMarshalError(t *testing.T) {
+	expectConformanceFailure(t, "graph marshal errors are reported", func(t *testing.T) {
+		RunRunnableGraphExport(
+			t,
+			func(testing.TB) runnables.Runnable[string, string] {
+				return badMetadataGraphRunnable{}
+			},
+		)
+	})
+}

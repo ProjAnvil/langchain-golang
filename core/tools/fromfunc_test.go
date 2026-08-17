@@ -414,3 +414,322 @@ func containsString(s []string, target string) bool {
 	}
 	return false
 }
+
+func TestFromFunc_RejectsInvalidMapArg(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   any
+	}{
+		{"non-string key", func(ctx context.Context, a map[int]any) (Result, error) { return Result{}, nil }},
+		{"non-any value", func(ctx context.Context, a map[string]string) (Result, error) { return Result{}, nil }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := FromFunc("x", "x", c.fn); err == nil {
+				t.Fatalf("expected error for %s", c.name)
+			} else if !errors.Is(err, ErrInvalidSignature) {
+				t.Errorf("expected ErrInvalidSignature for %s, got %v", c.name, err)
+			}
+		})
+	}
+}
+
+func TestFromFunc_PointerArg(t *testing.T) {
+	tool, err := FromFunc("ptr", "pointer args", func(ctx context.Context, a *echoArgs) (Result, error) {
+		if a == nil {
+			return Result{}, errors.New("expected non-nil args")
+		}
+		return Result{Content: a.Query}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	s := tool.ArgsSchema()
+	if s["type"] != "object" {
+		t.Errorf("schema type = %v, want object", s["type"])
+	}
+	res, err := tool.Invoke(context.Background(), map[string]any{"query": "hi", "limit": 1})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Content != "hi" {
+		t.Errorf("content = %q, want hi", res.Content)
+	}
+}
+
+func TestFromFunc_ScalarFieldKinds(t *testing.T) {
+	type scalarArgs struct {
+		Ratio  float64 `json:"ratio"`
+		Active bool    `json:"active"`
+		Count  uint    `json:"count"`
+	}
+	tool, err := FromFunc("scalars", "scalar fields", func(ctx context.Context, a scalarArgs) (Result, error) {
+		return Result{}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	props, _ := tool.ArgsSchema()["properties"].(map[string]any)
+	want := map[string]string{"ratio": "number", "active": "boolean", "count": "integer"}
+	for name, typ := range want {
+		prop, ok := props[name].(schema.Schema)
+		if !ok {
+			t.Fatalf("property %q missing or wrong type: %#v", name, props[name])
+		}
+		if prop["type"] != typ {
+			t.Errorf("property %q type = %v, want %v", name, prop["type"], typ)
+		}
+	}
+}
+
+func TestFromFunc_MapFieldSchemas(t *testing.T) {
+	type mapArgs struct {
+		Counts map[string]int `json:"counts"`
+		Labels map[string]any `json:"labels"`
+	}
+	tool, err := FromFunc("maps", "map fields", func(ctx context.Context, a mapArgs) (Result, error) {
+		return Result{}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	props, _ := tool.ArgsSchema()["properties"].(map[string]any)
+	counts, ok := props["counts"].(schema.Schema)
+	if !ok {
+		t.Fatalf("counts property missing or wrong type: %#v", props["counts"])
+	}
+	if counts["type"] != "object" {
+		t.Errorf("counts type = %v, want object", counts["type"])
+	}
+	addl, ok := counts["additionalProperties"].(schema.Schema)
+	if !ok {
+		t.Fatalf("counts additionalProperties missing: %#v", counts)
+	}
+	if addl["type"] != "integer" {
+		t.Errorf("counts additionalProperties type = %v, want integer", addl["type"])
+	}
+	labels, ok := props["labels"].(schema.Schema)
+	if !ok {
+		t.Fatalf("labels property missing or wrong type: %#v", props["labels"])
+	}
+	if labels["type"] != "object" {
+		t.Errorf("labels type = %v, want object", labels["type"])
+	}
+	// map[string]any stays open-ended: no additionalProperties constraint.
+	if _, ok := labels["additionalProperties"]; ok {
+		t.Errorf("labels should have no additionalProperties, got %#v", labels)
+	}
+}
+
+func TestFromFunc_UnsupportedFieldTypes(t *testing.T) {
+	t.Run("non-string map key", func(t *testing.T) {
+		type badArgs struct {
+			M map[int]string `json:"m"`
+		}
+		if _, err := FromFunc("x", "x", func(ctx context.Context, a badArgs) (Result, error) {
+			return Result{}, nil
+		}); err == nil {
+			t.Fatal("expected error for non-string map key")
+		} else if !errors.Is(err, ErrUnsupportedType) {
+			t.Errorf("expected ErrUnsupportedType, got %v", err)
+		}
+	})
+	t.Run("unsupported map value", func(t *testing.T) {
+		type badArgs struct {
+			M map[string]chan int `json:"m"`
+		}
+		if _, err := FromFunc("x", "x", func(ctx context.Context, a badArgs) (Result, error) {
+			return Result{}, nil
+		}); err == nil {
+			t.Fatal("expected error for unsupported map value")
+		} else if !errors.Is(err, ErrUnsupportedType) {
+			t.Errorf("expected ErrUnsupportedType, got %v", err)
+		}
+	})
+	t.Run("unsupported slice element", func(t *testing.T) {
+		type badArgs struct {
+			Chans []chan int `json:"chans"`
+		}
+		if _, err := FromFunc("x", "x", func(ctx context.Context, a badArgs) (Result, error) {
+			return Result{}, nil
+		}); err == nil {
+			t.Fatal("expected error for unsupported slice element")
+		} else if !errors.Is(err, ErrUnsupportedType) {
+			t.Errorf("expected ErrUnsupportedType, got %v", err)
+		}
+	})
+}
+
+func TestFromFunc_DeeplyNestedStructRejected(t *testing.T) {
+	type level4 struct {
+		Leaf string `json:"leaf"`
+	}
+	type level3 struct {
+		F level4 `json:"f"`
+	}
+	type level2 struct {
+		F level3 `json:"f"`
+	}
+	type level1 struct {
+		F level2 `json:"f"`
+	}
+	type root struct {
+		F level1 `json:"f"`
+	}
+	if _, err := FromFunc("x", "x", func(ctx context.Context, a root) (Result, error) {
+		return Result{}, nil
+	}); err == nil {
+		t.Fatal("expected error for struct nested deeper than maxStructDepth")
+	} else if !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("expected ErrUnsupportedType, got %v", err)
+	}
+}
+
+func TestFromFunc_JSONTagSkip(t *testing.T) {
+	type skipArgs struct {
+		Shown  string `json:"shown"`
+		Hidden string `json:"-"`
+	}
+	tool, err := FromFunc("skip", "skip fields", func(ctx context.Context, a skipArgs) (Result, error) {
+		return Result{Content: a.Shown}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	props, _ := tool.ArgsSchema()["properties"].(map[string]any)
+	if _, ok := props["shown"]; !ok {
+		t.Errorf("expected shown property, got %v", props)
+	}
+	if _, ok := props["Hidden"]; ok {
+		t.Errorf("json:\"-\" field should be skipped, got %v", props)
+	}
+	if _, ok := props["-"]; ok {
+		t.Errorf("skip tag must not become a property key, got %v", props)
+	}
+	required, _ := tool.ArgsSchema()["required"].([]string)
+	if containsString(required, "Hidden") || containsString(required, "-") {
+		t.Errorf("skipped field should not be required, got %v", required)
+	}
+}
+
+func TestFromFunc_UnexportedFieldsIgnored(t *testing.T) {
+	// Unexported fields are invisible to the reflector and must not appear in
+	// the schema, mirroring encoding/json's behaviour.
+	type mixedVisArgs struct {
+		Shown  string `json:"shown"`
+		hidden string
+	}
+	tool, err := FromFunc("vis", "visibility", func(ctx context.Context, a mixedVisArgs) (Result, error) {
+		return Result{Content: a.Shown}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	props, _ := tool.ArgsSchema()["properties"].(map[string]any)
+	if len(props) != 1 {
+		t.Fatalf("expected exactly one property, got %v", props)
+	}
+	if _, ok := props["shown"]; !ok {
+		t.Errorf("expected shown property, got %v", props)
+	}
+}
+
+func TestFromFunc_InvokeFuncError(t *testing.T) {
+	want := errors.New("boom")
+	tool, err := FromFunc("failer", "fails", func(ctx context.Context, a echoArgs) (Result, error) {
+		return Result{}, want
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	if _, err := tool.Invoke(context.Background(), map[string]any{"query": "q", "limit": 1}); !errors.Is(err, want) {
+		t.Fatalf("expected fn error to propagate, got %v", err)
+	}
+}
+
+func TestFromFunc_InvokeArgErrors(t *testing.T) {
+	tool, err := FromFunc("echo", "echo", func(ctx context.Context, a echoArgs) (Result, error) {
+		return Result{Content: a.Query}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	// Unmarshal failure: query is a string field but receives a JSON object.
+	if _, err := tool.Invoke(context.Background(), map[string]any{
+		"query": map[string]any{"nested": true},
+	}); err == nil {
+		t.Fatal("expected unmarshal error for mismatched field type")
+	}
+	// Marshal failure: input contains a value encoding/json cannot represent.
+	if _, err := tool.Invoke(context.Background(), map[string]any{
+		"query": make(chan int),
+	}); err == nil {
+		t.Fatal("expected marshal error for unrepresentable input value")
+	}
+}
+
+func TestFromFunc_AnyReturnBytesNilAndResult(t *testing.T) {
+	cases := []struct {
+		name    string
+		fn      any
+		want    string
+		wantErr bool
+	}{
+		{"bytes", func(ctx context.Context) (any, error) { return []byte("raw"), nil }, "raw", false},
+		{"nil", func(ctx context.Context) (any, error) { return nil, nil }, "", false},
+		{"result passthrough", func(ctx context.Context) (any, error) {
+			return Result{Content: "direct"}, nil
+		}, "direct", false},
+		{"json array cannot coerce", func(ctx context.Context) (any, error) {
+			return []any{1, 2}, nil
+		}, "", true},
+		{"unmarshalable value", func(ctx context.Context) (any, error) {
+			return func() {}, nil
+		}, "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tool, err := FromFunc("anyret", "x", c.fn)
+			if err != nil {
+				t.Fatalf("FromFunc: %v", err)
+			}
+			res, err := tool.Invoke(context.Background(), nil)
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("expected coercion error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			if res.Content != c.want {
+				t.Errorf("content = %q, want %q", res.Content, c.want)
+			}
+		})
+	}
+}
+
+func TestFromFunc_AnyReturnStructRoundTrip(t *testing.T) {
+	// A struct with json tags round-trips into Result fields.
+	type payload struct {
+		Content  string         `json:"content"`
+		Metadata map[string]any `json:"metadata"`
+	}
+	tool, err := FromFunc("structret", "x", func(ctx context.Context) (any, error) {
+		return payload{Content: "body", Metadata: map[string]any{"k": "v"}}, nil
+	})
+	if err != nil {
+		t.Fatalf("FromFunc: %v", err)
+	}
+	res, err := tool.Invoke(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if res.Content != "body" {
+		t.Errorf("content = %q, want body", res.Content)
+	}
+	if res.Metadata["k"] != "v" {
+		t.Errorf("metadata = %v, want k=v", res.Metadata)
+	}
+}

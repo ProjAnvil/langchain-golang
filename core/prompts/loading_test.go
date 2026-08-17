@@ -127,3 +127,224 @@ func TestStructuredPromptRequiresSchema(t *testing.T) {
 		t.Fatal("expected missing schema error")
 	}
 }
+
+func TestLoadPromptFileErrors(t *testing.T) {
+	if _, err := LoadPrompt(filepath.Join(t.TempDir(), "missing.json"), false); err == nil {
+		t.Fatal("expected missing file error")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPrompt(path, false); err == nil {
+		t.Fatal("expected invalid JSON error")
+	}
+}
+
+func TestLoadPromptFromConfigTypes(t *testing.T) {
+	if _, err := LoadPromptFromConfig(map[string]any{"_type": "unknown"}, LoadPromptOptions{}); err == nil {
+		t.Fatal("expected unsupported type error")
+	}
+
+	loaded, err := LoadPromptFromConfig(map[string]any{"template": "Hi {{.name}}"}, LoadPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := loaded.Format(map[string]any{"name": "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Hi Ada" {
+		t.Fatalf("Format = %q", got)
+	}
+}
+
+func TestLoadPromptTemplateValidation(t *testing.T) {
+	if _, err := LoadPromptFromConfig(map[string]any{
+		"_type":           "prompt",
+		"template":        "Hi",
+		"template_format": "jinja2",
+	}, LoadPromptOptions{}); err == nil {
+		t.Fatal("expected jinja2 error")
+	}
+
+	if _, err := LoadPromptFromConfig(map[string]any{"_type": "prompt"}, LoadPromptOptions{}); err == nil {
+		t.Fatal("expected missing template error")
+	}
+
+	if _, err := LoadPromptFromConfig(map[string]any{
+		"_type":         "prompt",
+		"template":      "Hi",
+		"template_path": "template.txt",
+	}, LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "both") {
+		t.Fatalf("expected both path and value error, got %v", err)
+	}
+
+	if _, err := LoadPromptFromConfig(map[string]any{
+		"_type":         "prompt",
+		"template_path": "template.md",
+	}, LoadPromptOptions{AllowDangerousPaths: true}); err == nil || !strings.Contains(err.Error(), "unsupported template file format") {
+		t.Fatalf("expected extension error, got %v", err)
+	}
+
+	dir := t.TempDir()
+	if _, err := LoadPromptFromConfig(map[string]any{
+		"_type":         "prompt",
+		"template_path": "missing.txt",
+	}, LoadPromptOptions{BaseDir: dir}); err == nil {
+		t.Fatal("expected missing template file error")
+	}
+}
+
+func TestLoadPromptTemplatePartials(t *testing.T) {
+	loaded, err := LoadPromptFromConfig(map[string]any{
+		"_type":    "prompt",
+		"template": "Hello {{.name}} from {{.place}}",
+		"partial_variables": map[string]any{
+			"place": "Go",
+		},
+	}, LoadPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := loaded.Format(map[string]any{"name": "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Hello Ada from Go" {
+		t.Fatalf("Format = %q", got)
+	}
+}
+
+func TestLoadPromptAbsolutePaths(t *testing.T) {
+	dir := t.TempDir()
+	templatePath := filepath.Join(dir, "template.txt")
+	if err := os.WriteFile(templatePath, []byte("Hi {{.name}}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := map[string]any{
+		"_type":         "prompt",
+		"template_path": templatePath,
+	}
+	if _, err := LoadPromptFromConfig(config, LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("expected absolute path error, got %v", err)
+	}
+	loaded, err := LoadPromptFromConfig(config, LoadPromptOptions{AllowDangerousPaths: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := loaded.Format(map[string]any{"name": "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Hi Ada" {
+		t.Fatalf("Format = %q", got)
+	}
+}
+
+func fewShotConfig(overrides map[string]any) map[string]any {
+	config := map[string]any{
+		"_type": "few_shot",
+		"example_prompt": map[string]any{
+			"_type":    "prompt",
+			"template": "Q: {{.q}}\nA: {{.a}}",
+		},
+		"examples": []map[string]any{{"q": "1+1", "a": "2"}},
+		"prefix":   "Answer.",
+		"suffix":   "Q: {{.q}}\nA:",
+	}
+	for key, value := range overrides {
+		config[key] = value
+	}
+	return config
+}
+
+func TestLoadFewShotPromptWithInlineExamples(t *testing.T) {
+	loaded, err := LoadPromptFromConfig(fewShotConfig(nil), LoadPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := loaded.Format(map[string]any{"q": "2+2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "Q: 1+1\nA: 2") {
+		t.Fatalf("Format = %q", got)
+	}
+}
+
+func TestLoadFewShotPromptTemplatePathErrors(t *testing.T) {
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"prefix_path": "prefix.txt",
+	}), LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "both") {
+		t.Fatalf("expected prefix path conflict, got %v", err)
+	}
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"prefix":      nil,
+		"suffix_path": "suffix.txt",
+	}), LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "both") {
+		t.Fatalf("expected suffix path conflict, got %v", err)
+	}
+}
+
+func TestLoadFewShotPromptExamplePromptErrors(t *testing.T) {
+	config := fewShotConfig(nil)
+	delete(config, "example_prompt")
+	if _, err := LoadPromptFromConfig(config, LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "example_prompt") {
+		t.Fatalf("expected example_prompt required error, got %v", err)
+	}
+
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"example_prompt": map[string]any{"_type": "prompt", "template": "{{.q"},
+	}), LoadPromptOptions{}); err == nil {
+		t.Fatal("expected example_prompt load error")
+	}
+
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"example_prompt": map[string]any{
+			"_type":         "few_shot",
+			"example_prompt": map[string]any{"_type": "prompt", "template": "{{.q}}"},
+			"examples":       []any{map[string]any{"q": "1"}},
+		},
+	}), LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "must be a prompt template") {
+		t.Fatalf("expected prompt template type error, got %v", err)
+	}
+}
+
+func TestLoadFewShotPromptExampleErrors(t *testing.T) {
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"examples": 42,
+	}), LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "invalid examples format") {
+		t.Fatalf("expected invalid examples format error, got %v", err)
+	}
+
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"examples": []any{"nope"},
+	}), LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "must be an object") {
+		t.Fatalf("expected example object error, got %v", err)
+	}
+
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"examples": "examples.txt",
+	}), LoadPromptOptions{}); err == nil || !strings.Contains(err.Error(), "only json is supported") {
+		t.Fatalf("expected examples extension error, got %v", err)
+	}
+
+	dir := t.TempDir()
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"examples": "missing.json",
+	}), LoadPromptOptions{BaseDir: dir}); err == nil {
+		t.Fatal("expected missing examples file error")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte("["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
+		"examples": "bad.json",
+	}), LoadPromptOptions{BaseDir: dir}); err == nil {
+		t.Fatal("expected invalid examples JSON error")
+	}
+}

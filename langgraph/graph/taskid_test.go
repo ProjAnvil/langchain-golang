@@ -55,3 +55,38 @@ func TestFnTaskIDMatchesManualHash(t *testing.T) {
 		t.Fatalf("FnTaskID = %q, manual fnv-1a recompute = %q", got, want)
 	}
 }
+
+func TestTaskIDDeterministicAndSensitive(t *testing.T) {
+	base := TaskID("cp", 1, "node", map[string]any{"k": "v"})
+	if got := TaskID("cp", 1, "node", map[string]any{"k": "v"}); got != base {
+		t.Fatalf("same inputs must hash identically: %q vs %q", got, base)
+	}
+	variants := map[string]string{
+		"cpID": TaskID("cp2", 1, "node", map[string]any{"k": "v"}),
+		"step": TaskID("cp", 2, "node", map[string]any{"k": "v"}),
+		"node": TaskID("cp", 1, "other", map[string]any{"k": "v"}),
+		"arg":  TaskID("cp", 1, "node", map[string]any{"k": "w"}),
+	}
+	for field, id := range variants {
+		if id == base {
+			t.Errorf("perturbing %s did not change the ID: %q", field, id)
+		}
+	}
+	if len(base) != 16 {
+		t.Fatalf("TaskID = %q, want 16 hex chars", base)
+	}
+}
+
+func TestTaskIDNonJSONArgFallsBackToGoSyntaxDump(t *testing.T) {
+	// A func value is not JSON-marshalable: TaskID must fall back to the
+	// Go-syntax dump and still produce a deterministic, distinct ID.
+	arg := map[string]any{"fn": func() {}}
+	a := TaskID("cp", 1, "node", arg)
+	b := TaskID("cp", 1, "node", arg)
+	if a != b {
+		t.Fatalf("non-JSON arg must hash deterministically: %q vs %q", a, b)
+	}
+	if a == TaskID("cp", 1, "node", map[string]any{"fn": nil}) {
+		t.Fatalf("non-JSON arg ID collides with a different arg: %q", a)
+	}
+}

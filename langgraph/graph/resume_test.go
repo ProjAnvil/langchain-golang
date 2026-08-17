@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -612,5 +613,44 @@ func TestResumeNilResumeRepausesKeepsPrefix(t *testing.T) {
 	}
 	if r4.Values["data"] != "a,b,c" {
 		t.Fatalf("data = %v, want %q", r4.Values["data"], "a,b,c")
+	}
+}
+
+func TestPersistInterruptsEmptyIsNoOp(t *testing.T) {
+	// Even with a failing saver, persisting zero interrupts must not call it.
+	err := persistInterrupts(context.Background(), &putWritesErrSaver{Saver: checkpoint.NewMemorySaver()},
+		checkpoint.Config{ThreadID: "t"}, "task", nil)
+	if err != nil {
+		t.Fatalf("persistInterrupts(nil) error = %v, want nil", err)
+	}
+}
+
+func TestCompletedTaskWritesBadGotoErrors(t *testing.T) {
+	_, err := completedTaskWrites(map[string]any{"x": 1}, &types.Command{Goto: []any{42}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported routing destination") {
+		t.Fatalf("completedTaskWrites() error = %v, want an unsupported routing destination error", err)
+	}
+}
+
+func TestPlanResumeSkipsEndDestinations(t *testing.T) {
+	tup := &checkpoint.Tuple{
+		Checkpoint: checkpoint.Checkpoint{
+			V:               1,
+			ID:              "cp",
+			ChannelValues:   map[string]any{},
+			ChannelVersions: map[string]int64{},
+			VersionsSeen:    map[string]map[string]int64{},
+			Next: []checkpoint.PlannedTask{
+				{Node: types.END},
+				{Node: "a", ID: "task-a"},
+			},
+		},
+	}
+	plan, err := planResume(tup, nil)
+	if err != nil {
+		t.Fatalf("planResume() error = %v", err)
+	}
+	if len(plan.tasks) != 1 || plan.tasks[0].node != "a" {
+		t.Fatalf("planResume().tasks = %+v, want only node %q (END destinations skipped)", plan.tasks, "a")
 	}
 }

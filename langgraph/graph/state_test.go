@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
+	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 )
 
 // TestApplyWritesTracksUpdatedChannelsAndOverwrite verifies the Task 2 tracking
@@ -74,5 +75,24 @@ func TestApplyWritesUpdatedChannelsResetPerCall(t *testing.T) {
 	}
 	if !rs.deltaOverwriteChs["msg"] {
 		t.Error("expected deltaOverwriteChs to persist across supersteps")
+	}
+}
+
+// TestRestoreNilChannelVersions verifies restore guarantees a non-nil
+// versions map even when the checkpoint's ChannelVersions decoded as nil
+// (JSON savers drop empty maps via omitempty); applyWrites assigns into it.
+func TestRestoreNilChannelVersions(t *testing.T) {
+	rs := newRunState(nil)
+	rs.restore(checkpoint.Checkpoint{
+		V:             1,
+		ID:            "cp",
+		ChannelValues: map[string]any{"x": 1},
+		// ChannelVersions deliberately nil.
+	})
+	if rs.versions == nil {
+		t.Fatal("restore() left versions nil, want a non-nil map")
+	}
+	if got := rs.snapshot()["x"]; got != 1 {
+		t.Fatalf("snapshot()[x] = %v, want 1 (channel values restored)", got)
 	}
 }

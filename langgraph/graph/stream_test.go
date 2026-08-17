@@ -529,3 +529,192 @@ func TestStreamNodeError(t *testing.T) {
 		t.Fatalf("Stream() error = %v, want %v", err, want)
 	}
 }
+
+func TestNormalizeEmpty(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want any
+	}{
+		{"empty map", map[string]any{}, nil},
+		{"non-empty map", map[string]any{"a": 1}, map[string]any{"a": 1}},
+		{"empty slice", []any{}, nil},
+		{"non-empty slice", []any{1}, []any{1}},
+		{"scalar", 7, 7},
+		{"nil", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeEmpty(tc.in); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("normalizeEmpty(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValuesEqualTreatsEmptyAsAbsent(t *testing.T) {
+	if !valuesEqual(nil, map[string]any{}) {
+		t.Fatal("valuesEqual(nil, empty map) = false, want true (empty treated as absent)")
+	}
+	if !valuesEqual([]any{}, nil) {
+		t.Fatal("valuesEqual(empty slice, nil) = false, want true")
+	}
+	if valuesEqual(map[string]any{"a": 1}, map[string]any{}) {
+		t.Fatal("valuesEqual(non-empty, empty) = true, want false")
+	}
+}
+
+func TestCloneStateNil(t *testing.T) {
+	if got := cloneState(nil); got != nil {
+		t.Fatalf("cloneState(nil) = %v, want nil", got)
+	}
+}
+
+// TestStreamTasksSendTaskInput verifies that a Send-dispatched task reports
+// its Send argument (not the shared state) as its task input.
+func TestStreamTasksSendTaskInput(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNode("entry", func(runtime.Runtime, map[string]any) (any, error) { return nil, nil })
+	g.AddNode("worker", func(_ runtime.Runtime, state map[string]any) (any, error) {
+		return map[string]any{"got": state["n"]}, nil
+	})
+	g.AddEdge(types.START, "entry")
+	g.AddConditionalEdges("entry", func(runtime.Runtime, map[string]any) ([]any, error) {
+		return []any{types.Send{Node: "worker", Arg: map[string]any{"n": 42}}}, nil
+	})
+	g.AddEdge("worker", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 1}, StreamOptions{
+		Modes: []StreamMode{StreamTasks},
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	var workerStart *TaskEvent
+	for i, c := range chunks {
+		if c.Mode != StreamTasks {
+			t.Fatalf("chunks[%d].Mode = %q, want %q", i, c.Mode, StreamTasks)
+		}
+		if ev, ok := c.Payload.(TaskEvent); ok && ev.Name == "worker" {
+			ev := ev
+			workerStart = &ev
+		}
+	}
+	if workerStart == nil {
+		t.Fatalf("no TaskEvent for worker in %#v", chunks)
+	}
+	if !reflect.DeepEqual(workerStart.Input, map[string]any{"n": 42}) {
+		t.Fatalf("worker TaskEvent.Input = %v, want the Send arg {n: 42}", workerStart.Input)
+	}
+}
+
+// TestStreamTasksNodeErrorResult verifies the tasks/debug modes report a
+// failed task's error in both the TaskResultEvent and the debug envelope.
+func TestStreamTasksNodeErrorResult(t *testing.T) {
+	want := errors.New("boom")
+	g := NewStateGraph()
+	g.AddNode("bad", func(runtime.Runtime, map[string]any) (any, error) { return nil, want })
+	g.AddEdge(types.START, "bad")
+	g.AddEdge("bad", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+		Modes: []StreamMode{StreamTasks, StreamDebug},
+	}))
+	if !errors.Is(err, want) {
+		t.Fatalf("Stream() error = %v, want %v", err, want)
+	}
+	var resultEv *TaskResultEvent
+	var debugResult map[string]any
+	for _, c := range chunks {
+		if c.Mode == StreamTasks {
+			if ev, ok := c.Payload.(TaskResultEvent); ok {
+				ev := ev
+				resultEv = &ev
+			}
+		}
+		if c.Mode == StreamDebug {
+			if m, ok := c.Payload.(map[string]any); ok && m["type"] == "task_result" {
+				debugResult = m
+			}
+		}
+	}
+	if resultEv == nil {
+		t.Fatalf("no TaskResultEvent in %#v", chunks)
+	}
+	if resultEv.Error != "boom" {
+		t.Fatalf("TaskResultEvent.Error = %q, want %q", resultEv.Error, "boom")
+	}
+	if debugResult == nil {
+		t.Fatalf("no debug task_result chunk in %#v", chunks)
+	}
+	payload, ok := debugResult["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("debug task_result payload = %#v, want a map", debugResult["payload"])
+	}
+	if payload["error"] != "boom" {
+		t.Fatalf("debug task_result error = %v, want %q", payload["error"], "boom")
+	}
+}
+
+// TestStreamTasksInterruptResult verifies the tasks/debug modes report a
+// task's interrupt in both the TaskResultEvent and the debug envelope.
+func TestStreamTasksInterruptResult(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNode("ask", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
+		Interrupt(ctx, "q")
+		return nil, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+		Modes: []StreamMode{StreamTasks, StreamDebug},
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	var resultEv *TaskResultEvent
+	var debugResult map[string]any
+	for _, c := range chunks {
+		if c.Mode == StreamTasks {
+			if ev, ok := c.Payload.(TaskResultEvent); ok {
+				ev := ev
+				resultEv = &ev
+			}
+		}
+		if c.Mode == StreamDebug {
+			if m, ok := c.Payload.(map[string]any); ok && m["type"] == "task_result" {
+				debugResult = m
+			}
+		}
+	}
+	if resultEv == nil {
+		t.Fatalf("no TaskResultEvent in %#v", chunks)
+	}
+	if len(resultEv.Interrupts) != 1 || resultEv.Interrupts[0].Value != "q" {
+		t.Fatalf("TaskResultEvent.Interrupts = %+v, want one interrupt with value %q", resultEv.Interrupts, "q")
+	}
+	if debugResult == nil {
+		t.Fatalf("no debug task_result chunk in %#v", chunks)
+	}
+	payload, ok := debugResult["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("debug task_result payload = %#v, want a map", debugResult["payload"])
+	}
+	interrupts, ok := payload["interrupts"].([]types.Interrupt)
+	if !ok || len(interrupts) != 1 {
+		t.Fatalf("debug task_result interrupts = %#v, want one interrupt", payload["interrupts"])
+	}
+}

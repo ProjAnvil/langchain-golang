@@ -104,6 +104,123 @@ func TestDoUsesExponentialBackoff(t *testing.T) {
 	}
 }
 
+func TestDoReturnsLastErrorWhenAttemptsExhausted(t *testing.T) {
+	attempts := 0
+	err := Do(context.Background(), Policy{
+		MaxAttempts: 3,
+		ShouldRetry: func(err error) bool {
+			return errors.Is(err, errTransient)
+		},
+	}, func() error {
+		attempts++
+		return errTransient
+	})
+	if !errors.Is(err, errTransient) {
+		t.Fatalf("error: got %v want transient", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts: got %d want 3", attempts)
+	}
+}
+
+func TestDoNilShouldRetryDoesNotRetry(t *testing.T) {
+	attempts := 0
+	err := Do(context.Background(), Policy{MaxAttempts: 3}, func() error {
+		attempts++
+		return errTransient
+	})
+	if !errors.Is(err, errTransient) {
+		t.Fatalf("error: got %v want transient", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts: got %d want 1", attempts)
+	}
+}
+
+func TestDoDefaultsToSingleAttempt(t *testing.T) {
+	attempts := 0
+	err := Do(context.Background(), Policy{
+		ShouldRetry: func(err error) bool { return true },
+	}, func() error {
+		attempts++
+		return errTransient
+	})
+	if !errors.Is(err, errTransient) {
+		t.Fatalf("error: got %v want transient", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts: got %d want 1", attempts)
+	}
+}
+
+func TestDoDefaultSleepWaits(t *testing.T) {
+	attempts := 0
+	start := time.Now()
+	err := Do(context.Background(), Policy{
+		MaxAttempts: 2,
+		Delay:       20 * time.Millisecond,
+		ShouldRetry: func(err error) bool {
+			return errors.Is(err, errTransient)
+		},
+	}, func() error {
+		attempts++
+		if attempts == 1 {
+			return errTransient
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 20*time.Millisecond {
+		t.Fatalf("elapsed: got %v want at least 20ms", elapsed)
+	}
+}
+
+func TestDoDefaultSleepReturnsContextErrorWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	err := Do(ctx, Policy{
+		MaxAttempts: 3,
+		Delay:       time.Hour,
+		ShouldRetry: func(err error) bool {
+			return errors.Is(err, errTransient)
+		},
+	}, func() error {
+		return errTransient
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error: got %v want context canceled", err)
+	}
+}
+
+func TestDoSkipsSleepWhenDelayNotPositive(t *testing.T) {
+	sleepCalls := 0
+	err := Do(context.Background(), Policy{
+		MaxAttempts: 2,
+		Delay:       -time.Second,
+		ShouldRetry: func(err error) bool {
+			return errors.Is(err, errTransient)
+		},
+		Sleep: func(_ context.Context, _ time.Duration) error {
+			sleepCalls++
+			return nil
+		},
+	}, func() error {
+		return errTransient
+	})
+	if !errors.Is(err, errTransient) {
+		t.Fatalf("error: got %v want transient", err)
+	}
+	if sleepCalls != 0 {
+		t.Fatalf("sleep calls: got %d want 0", sleepCalls)
+	}
+}
+
 func TestDoStopsWhenSleepReturnsContextError(t *testing.T) {
 	err := Do(context.Background(), Policy{
 		MaxAttempts: 3,

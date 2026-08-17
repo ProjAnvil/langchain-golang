@@ -171,6 +171,116 @@ func TestInMemoryCacheLookupReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestInMemoryCacheUpdateWithEmptyGenerations(t *testing.T) {
+	ctx := context.Background()
+	cache, err := NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("new cache: %v", err)
+	}
+
+	if err := cache.Update(ctx, "prompt", "llm_string", nil); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, ok, err := cache.Lookup(ctx, "prompt", "llm_string")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cache hit for empty generations entry")
+	}
+	if got != nil {
+		t.Fatalf("expected nil generations, got %#v", got)
+	}
+}
+
+func TestInMemoryCacheLookupClonesGenerationInfo(t *testing.T) {
+	ctx := context.Background()
+	cache, err := NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("new cache: %v", err)
+	}
+
+	generations := []Generation{{
+		Text:           "text1",
+		GenerationInfo: map[string]any{"finish_reason": "stop"},
+	}}
+	if err := cache.Update(ctx, "prompt", "llm_string", generations); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	// Mutating the caller's map after Update must not affect the cached copy.
+	generations[0].GenerationInfo["finish_reason"] = "mutated"
+
+	got, ok, err := cache.Lookup(ctx, "prompt", "llm_string")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	if got[0].GenerationInfo["finish_reason"] != "stop" {
+		t.Fatalf("cache did not clone generation info on update: got %v", got[0].GenerationInfo["finish_reason"])
+	}
+
+	// Mutating the map returned by Lookup must not affect the cached copy.
+	got[0].GenerationInfo["finish_reason"] = "mutated"
+	again, ok, err := cache.Lookup(ctx, "prompt", "llm_string")
+	if err != nil {
+		t.Fatalf("lookup again: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	if again[0].GenerationInfo["finish_reason"] != "stop" {
+		t.Fatalf("cache exposed internal generation info map: got %v", again[0].GenerationInfo["finish_reason"])
+	}
+}
+
+func TestInMemoryCacheEmptyGenerationInfoBecomesNil(t *testing.T) {
+	ctx := context.Background()
+	cache, err := NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("new cache: %v", err)
+	}
+
+	generations := []Generation{{
+		Text:           "text1",
+		GenerationInfo: map[string]any{},
+	}}
+	if err := cache.Update(ctx, "prompt", "llm_string", generations); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, ok, err := cache.Lookup(ctx, "prompt", "llm_string")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	if got[0].GenerationInfo != nil {
+		t.Fatalf("expected nil generation info for empty map, got %#v", got[0].GenerationInfo)
+	}
+}
+
+func TestInMemoryCacheEvictOldestWithEmptyOrder(t *testing.T) {
+	cache, err := NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("new cache: %v", err)
+	}
+	// evictOldest is a no-op when the eviction order is empty.
+	cache.evictOldest()
+	if cache.Len() != 0 {
+		t.Fatalf("expected empty cache, got %d entries", cache.Len())
+	}
+}
+
+func TestCacheKeyString(t *testing.T) {
+	key := cacheKey{prompt: "hello", llmString: "gpt"}
+	if got, want := key.String(), "hello/gpt"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+}
+
 func assertCacheHit(t *testing.T, cache *InMemoryCache, prompt string, llmString string, want []Generation) {
 	t.Helper()
 	got, ok, err := cache.Lookup(context.Background(), prompt, llmString)

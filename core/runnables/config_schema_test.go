@@ -132,3 +132,111 @@ func mustConfigurableSchema(t *testing.T, cfg schema.Schema) schema.Schema {
 	}
 	return configurable
 }
+
+func TestGetConfigSchemaWithoutProvider(t *testing.T) {
+	plain := NewFunc(func(_ context.Context, input string, _ ...Option) (string, error) {
+		return input, nil
+	}, schema.String(""), schema.String(""))
+	cfg := GetConfigSchema(plain)
+	if cfg["type"] != "object" {
+		t.Fatalf("config schema: %#v", cfg)
+	}
+	if _, ok := configurableSchema(cfg); ok {
+		t.Fatalf("expected no configurable section, got %#v", cfg)
+	}
+}
+
+func TestGetConfigSchemaClonesProviderSchema(t *testing.T) {
+	inner := schema.Schema{"type": "object"}
+	provider := configSchemaOnlyRunnable{schema: configurableConfigSchema(map[string]schema.Schema{
+		"field": inner,
+	})}
+	cfg := GetConfigSchema(provider)
+	configurable, ok := configurableSchema(cfg)
+	if !ok {
+		t.Fatalf("missing configurable: %#v", cfg)
+	}
+	// Mutating the returned schema must not affect the provider's schema.
+	props := schemaProperties(configurable)
+	props["field"]["type"] = "mutated"
+	if inner["type"] != "object" {
+		t.Fatalf("provider schema mutated: %#v", inner)
+	}
+}
+
+func TestSchemaPropertiesTypedVariants(t *testing.T) {
+	// A provider whose properties use map[string]schema.Schema exercises the
+	// typed-properties branch of schemaProperties (and cloneSchemaMap).
+	provider := configSchemaOnlyRunnable{schema: schema.Schema{
+		"type": "object",
+		"properties": map[string]schema.Schema{
+			"configurable": schema.Schema{
+				"type":       "object",
+				"properties": map[string]any{"field": schema.String("f")},
+				"required":   []string{"field"},
+			},
+		},
+	}}
+	cfg := GetConfigSchema(provider)
+	configurable, ok := configurableSchema(cfg)
+	if !ok {
+		t.Fatalf("missing configurable: %#v", cfg)
+	}
+	if got := schemaRequired(configurable); !reflect.DeepEqual(got, []string{"field"}) {
+		t.Fatalf("required: %#v", got)
+	}
+}
+
+func TestSchemaRequiredVariants(t *testing.T) {
+	// []any entries are stringified only when they are strings.
+	got := schemaRequired(schema.Schema{"required": []any{"a", 1, "b"}})
+	if !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("required []any: %#v", got)
+	}
+	// A non-slice required value yields nil.
+	if got := schemaRequired(schema.Schema{"required": "nope"}); got != nil {
+		t.Fatalf("required scalar: %#v", got)
+	}
+	// Missing required yields nil.
+	if got := schemaRequired(schema.Schema{}); got != nil {
+		t.Fatalf("required missing: %#v", got)
+	}
+}
+
+func TestSchemaPropertiesEdgeCases(t *testing.T) {
+	// No properties key at all.
+	if got := schemaProperties(schema.Schema{}); got != nil {
+		t.Fatalf("no properties: %#v", got)
+	}
+	// An unrecognized properties type yields nil.
+	if got := schemaProperties(schema.Schema{"properties": 42}); got != nil {
+		t.Fatalf("scalar properties: %#v", got)
+	}
+	// Properties stored as plain map[string]any with nested maps.
+	got := schemaProperties(schema.Schema{
+		"properties": map[string]any{
+			"a": map[string]any{"type": "string"},
+			"b": schema.Integer("b"),
+		},
+	})
+	if got["a"]["type"] != "string" || got["b"]["type"] != "integer" {
+		t.Fatalf("map properties: %#v", got)
+	}
+}
+
+func TestCloneSchemaSliceValues(t *testing.T) {
+	provider := configSchemaOnlyRunnable{schema: schema.Schema{
+		"type":     "object",
+		"required": []any{"a"},
+		"tags":     []string{"x"},
+	}}
+	cfg := GetConfigSchema(provider)
+	required, ok := cfg["required"].([]any)
+	if !ok || len(required) != 1 || required[0] != "a" {
+		t.Fatalf("required: %#v", cfg["required"])
+	}
+	tags, ok := cfg["tags"].([]string)
+	if !ok || len(tags) != 1 || tags[0] != "x" {
+		t.Fatalf("tags: %#v", cfg["tags"])
+	}
+}

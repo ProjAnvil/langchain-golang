@@ -109,3 +109,40 @@ func TestTrimMessagesEndOn(t *testing.T) {
 		t.Fatalf("end_on trim = %#v, want 3", out)
 	}
 }
+
+func TestCountTokensApproximatelyToolCallsAndImages(t *testing.T) {
+	ai := AI("")
+	ai.ToolCalls = []ToolCall{{Name: "search", Args: map[string]any{"q": "x"}}}
+	tool := Tool("call-1", "")
+	withImage := Human("")
+	withImage.ContentBlocks = []ContentBlock{ImageBlock{URL: "http://x/i.png"}}
+	msgs := []Message{
+		{Role: RoleHuman, Content: "hello world", Name: "alice"},
+		ai,
+		tool,
+		withImage,
+	}
+
+	// Defaults (charsPerToken=4, extra=3, countName=false, tokensPerImage=85):
+	//   human: 3 + ceil(11/4)=3                = 6
+	//   ai:    3 + ceil(6/4)=2 + ceil(9/4)=3   = 8   (tool call name + args JSON)
+	//   tool:  3 + ceil(6/4)=2                 = 5   (tool_call_id)
+	//   image: 3 + 85                          = 88
+	if got := CountTokensApproximately(msgs); got != 107 {
+		t.Fatalf("CountTokensApproximately = %d, want 107", got)
+	}
+
+	// Custom options: charsPerToken=2, extra=10, countName=true.
+	//   human: 10 + ceil(11/2)=6 + ceil(5/2)=3 = 19
+	//   ai:    10 + ceil(6/2)=3 + ceil(9/2)=5  = 18
+	//   tool:  10 + ceil(6/2)=3                = 13
+	//   image: 10 + 85                         = 95
+	got := CountTokensApproximately(msgs,
+		WithCharsPerToken(2),
+		WithExtraTokensPerMessage(10),
+		WithCountName(true),
+	)
+	if got != 145 {
+		t.Fatalf("CountTokensApproximately with options = %d, want 145", got)
+	}
+}

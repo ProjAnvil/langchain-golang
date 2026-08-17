@@ -63,6 +63,15 @@ func requireRoundTrip(t *testing.T, ch Channel) {
 	requireEmpty(t, ch.FromCheckpoint(nil))
 }
 
+func TestInvalidUpdateErrorMessage(t *testing.T) {
+	err := &InvalidUpdateError{Channel: "LastValue", Reason: "can receive only one value per super-step"}
+	got := err.Error()
+	want := "channels: invalid update for LastValue channel: can receive only one value per super-step"
+	if got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
 func TestLastValue(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		requireEmpty(t, NewLastValue())

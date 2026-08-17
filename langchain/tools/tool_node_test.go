@@ -10,8 +10,22 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
+	"github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
+
+// stubTool is a minimal Tool implementation for exercising validation paths
+// that NewFunc refuses to construct (e.g. an empty name).
+type stubTool struct{ name string }
+
+func (s stubTool) Name() string        { return s.name }
+func (s stubTool) Description() string { return "" }
+func (s stubTool) ArgsSchema() schema.Schema {
+	return schema.Object(nil)
+}
+func (s stubTool) Invoke(context.Context, map[string]any) (Result, error) {
+	return Result{}, nil
+}
 
 func echoTool(t *testing.T, name string, fn func(context.Context, map[string]any) (Result, error)) Tool {
 	t.Helper()
@@ -34,6 +48,9 @@ func TestNewToolNodeValidation(t *testing.T) {
 	}
 	if _, err := NewToolNode([]Tool{nil}); err == nil {
 		t.Fatal("expected error for nil tool")
+	}
+	if _, err := NewToolNode([]Tool{stubTool{name: ""}}); err == nil {
+		t.Fatal("expected error for empty tool name")
 	}
 
 	dup := echoTool(t, "same", func(context.Context, map[string]any) (Result, error) {
@@ -427,5 +444,98 @@ func TestInvokeToolCallsFullWithWrapper(t *testing.T) {
 	}
 	if outcomes[0].Message.Content != "short-circuited" || outcomes[0].Command != nil {
 		t.Fatalf("outcomes[0] = %+v, want the short-circuit message with no command", outcomes[0])
+	}
+}
+
+func TestNewToolNodeNilErrorHandlerFallsBackToDefault(t *testing.T) {
+	boom := echoTool(t, "boom", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, errors.New("kaboom")
+	})
+	// A nil handler must be replaced with DefaultHandleToolErrors, so tool
+	// errors are converted into error ToolMessages instead of propagating.
+	node, err := NewToolNode([]Tool{boom}, WithHandleToolErrors(nil))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	msgs := []messages.Message{aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"})}
+	results, err := node.Invoke(context.Background(), msgs, nil)
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want nil (nil handler should fall back to the default)", err)
+	}
+	want, _ := DefaultHandleToolErrors(errors.New("kaboom"))
+	if len(results) != 1 || results[0].Content != want || results[0].ResponseMetadata["status"] != "error" {
+		t.Fatalf("unexpected results: %+v, want default-handled error message %q", results, want)
+	}
+}
+
+func TestToolNodeAppendToolResultsErrorPropagates(t *testing.T) {
+	sentinel := errors.New("kaboom")
+	boom := echoTool(t, "boom", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, sentinel
+	})
+	node, err := NewToolNode([]Tool{boom}, WithHandleToolErrors(func(error) (string, bool) {
+		return "", false
+	}))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	msgs := []messages.Message{
+		messages.Human("hi"),
+		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"}),
+	}
+	out, err := node.AppendToolResults(context.Background(), msgs)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error to propagate, got %v", err)
+	}
+	if out != nil {
+		t.Fatalf("expected nil output on error, got %+v", out)
+	}
+}
+
+func TestToolNodeWithToolNodeStore(t *testing.T) {
+	s := store.NewInMemoryStore()
+	echo := echoTool(t, "echo", func(context.Context, map[string]any) (Result, error) {
+		return Result{Content: "ok"}, nil
+	})
+
+	// Capture the Store seen by the wrapper on each request.
+	var sawStore, sawNilStore atomic.Int32
+	capture := func(ctx context.Context, req ToolCallRequest, next ToolHandler) (messages.Message, error) {
+		if req.Store != nil {
+			sawStore.Add(1)
+		} else {
+			sawNilStore.Add(1)
+		}
+		return next(ctx, req)
+	}
+
+	node, err := NewToolNode([]Tool{echo}, WithToolNodeStore(s), WithToolCallWrapper(capture))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+	calls := []messages.ToolCall{{ID: "1", Name: "echo"}}
+	outcomes, err := node.InvokeToolCallsFull(context.Background(), calls, nil)
+	if err != nil {
+		t.Fatalf("InvokeToolCallsFull() error = %v", err)
+	}
+	if outcomes[0].Message.Content != "ok" {
+		t.Fatalf("outcomes[0].Message.Content = %q, want %q", outcomes[0].Message.Content, "ok")
+	}
+	if sawStore.Load() != 1 || sawNilStore.Load() != 0 {
+		t.Fatalf("expected store on the request, sawStore=%d sawNilStore=%d", sawStore.Load(), sawNilStore.Load())
+	}
+
+	// Without WithToolNodeStore the request's Store stays nil.
+	node, err = NewToolNode([]Tool{echo}, WithToolCallWrapper(capture))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+	if _, err := node.InvokeToolCalls(context.Background(), calls, nil); err != nil {
+		t.Fatalf("InvokeToolCalls() error = %v", err)
+	}
+	if sawStore.Load() != 1 || sawNilStore.Load() != 1 {
+		t.Fatalf("expected nil store without WithToolNodeStore, sawStore=%d sawNilStore=%d", sawStore.Load(), sawNilStore.Load())
 	}
 }

@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -64,6 +65,18 @@ func TestIteratorToChannel(t *testing.T) {
 	_, nilErrs := IteratorToChannel[int](context.Background(), nil, 0)
 	if err := <-nilErrs; err == nil {
 		t.Fatal("expected nil iterator error")
+	}
+
+	// A negative buffer is normalized to unbuffered and still delivers values.
+	negValues, negErrs := IteratorToChannel(context.Background(), NewSliceIterator([]int{7}), -1)
+	if got := <-negValues; got != 7 {
+		t.Fatalf("negative buffer values: %#v", got)
+	}
+	if _, ok := <-negValues; ok {
+		t.Fatal("values channel should be closed")
+	}
+	if err, ok := <-negErrs; ok && err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -194,5 +207,202 @@ func TestRenderSimpleMustache(t *testing.T) {
 	want := "Hello Ada  &lt;b&gt;ok&lt;/b&gt; <b>ok</b> <b>ok</b>  {{#items}}x{{/items}}"
 	if got != want {
 		t.Fatalf("render: got %q want %q", got, want)
+	}
+}
+
+// errIterator fails on the first Next call.
+type errIterator struct{ err error }
+
+func (e *errIterator) Next(context.Context) (int, bool, error) { return 0, false, e.err }
+func (e *errIterator) Close() error                            { return nil }
+
+type stringerValue struct{ text string }
+
+func (s stringerValue) String() string { return s.text }
+
+func TestCollectIteratorNilAndError(t *testing.T) {
+	if _, err := CollectIterator[int](context.Background(), nil); err == nil {
+		t.Fatal("expected nil iterator error")
+	}
+	wantErr := errIterator{err: context.DeadlineExceeded}
+	if _, err := CollectIterator(context.Background(), &wantErr); err != context.DeadlineExceeded {
+		t.Fatalf("expected Next error to propagate, got %v", err)
+	}
+}
+
+func TestIteratorToChannelContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Unbuffered channel with no reader: the goroutine blocks on send until
+	// the context is canceled.
+	values, errs := IteratorToChannel(ctx, NewSliceIterator([]int{1, 2, 3}), 0)
+	cancel()
+	if err := <-errs; err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	// Drain values in case a send raced the cancellation.
+	for range values {
+	}
+}
+
+func TestIteratorToChannelNextError(t *testing.T) {
+	iter := &errIterator{err: context.DeadlineExceeded}
+	values, errs := IteratorToChannel(context.Background(), iter, 1)
+	if err := <-errs; err != context.DeadlineExceeded {
+		t.Fatalf("expected Next error, got %v", err)
+	}
+	if _, ok := <-values; ok {
+		t.Fatal("values channel should be closed without values")
+	}
+}
+
+func TestMustGetFromEnvSuccess(t *testing.T) {
+	t.Setenv("LC_TEST_REQUIRED", "present")
+	got, err := MustGetFromEnv("MISSING", "LC_TEST_REQUIRED")
+	if err != nil || got != "present" {
+		t.Fatalf("MustGetFromEnv = %q, %v", got, err)
+	}
+}
+
+func TestToJSONString(t *testing.T) {
+	got, err := ToJSONString(map[string]any{"a": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `{"a":1}` {
+		t.Fatalf("ToJSONString = %q", got)
+	}
+	if _, err := ToJSONString(map[string]any{"f": func() {}}); err == nil {
+		t.Fatal("expected marshal error for func value")
+	}
+}
+
+func TestStringifyValue(t *testing.T) {
+	if got := StringifyValue("plain"); got != "plain" {
+		t.Fatalf("string: %q", got)
+	}
+	if got := StringifyValue(stringerValue{text: "stringer"}); got != "stringer" {
+		t.Fatalf("Stringer: %q", got)
+	}
+	if got := StringifyValue(42); got != "42" {
+		t.Fatalf("default: %q", got)
+	}
+}
+
+func TestMergeMapsNilBase(t *testing.T) {
+	got := MergeMaps(nil, map[string]any{"a": 1})
+	if got["a"] != 1 {
+		t.Fatalf("unexpected merge: %#v", got)
+	}
+}
+
+func TestNewFunctionSpecValidationAndDefaults(t *testing.T) {
+	if _, err := NewFunctionSpec("", "", nil); err == nil {
+		t.Fatal("expected error for empty name")
+	}
+	if _, err := NewFunctionSpec(strings.Repeat("a", 65), "", nil); err == nil {
+		t.Fatal("expected error for name longer than 64 characters")
+	}
+	fn, err := NewFunctionSpec("ok_name", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fn.Parameters["type"] != "object" {
+		t.Fatalf("nil parameters should default to object schema: %#v", fn.Parameters)
+	}
+}
+
+func TestCloneSchemaNil(t *testing.T) {
+	if got := CloneSchema(nil); got != nil {
+		t.Fatalf("CloneSchema(nil) = %#v, want nil", got)
+	}
+}
+
+func TestSchemaPropertiesVariants(t *testing.T) {
+	if got := SchemaProperties(schema.Schema{"type": "object"}); len(got) != 0 {
+		t.Fatalf("missing properties: %#v", got)
+	}
+	if got := SchemaProperties(schema.Schema{"properties": nil}); len(got) != 0 {
+		t.Fatalf("nil properties: %#v", got)
+	}
+	typed := schema.Schema{
+		"properties": map[string]schema.Schema{
+			"name": schema.String("name"),
+		},
+	}
+	got := SchemaProperties(typed)
+	if got["name"]["type"] != "string" {
+		t.Fatalf("typed properties: %#v", got)
+	}
+	plain := schema.Schema{
+		"properties": map[string]any{
+			"age": map[string]any{"type": "integer"},
+			"raw": "not a schema",
+		},
+	}
+	got = SchemaProperties(plain)
+	if got["age"]["type"] != "integer" {
+		t.Fatalf("plain map properties: %#v", got)
+	}
+	if _, ok := got["raw"]; ok {
+		t.Fatalf("non-schema values should be skipped: %#v", got)
+	}
+}
+
+func TestSchemaRequiredVariants(t *testing.T) {
+	if got := SchemaRequired(schema.Schema{"type": "object"}); got != nil {
+		t.Fatalf("missing required: %#v", got)
+	}
+	if got := SchemaRequired(schema.Schema{"required": nil}); got != nil {
+		t.Fatalf("nil required: %#v", got)
+	}
+	got := SchemaRequired(schema.Schema{"required": []any{"a", 1, "b"}})
+	if !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("[]any required: %#v", got)
+	}
+	if got := SchemaRequired(schema.Schema{"required": "name"}); got != nil {
+		t.Fatalf("non-list required: %#v", got)
+	}
+}
+
+func TestCreateSubsetSchemaErrorsAndDescriptionFallback(t *testing.T) {
+	if _, err := CreateSubsetSchema("", schema.String("not an object"), nil, nil, ""); err == nil {
+		t.Fatal("expected error for non-object schema")
+	}
+	input := schema.Object(map[string]schema.Schema{"name": schema.String("name")})
+	input["description"] = "original description"
+	subset, err := CreateSubsetSchema("", input, []string{"name"}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subset["description"] != "original description" {
+		t.Fatalf("description fallback: %#v", subset)
+	}
+	if _, ok := subset["title"]; ok {
+		t.Fatalf("empty name should not set title: %#v", subset)
+	}
+}
+
+func TestMustacheEdgeCases(t *testing.T) {
+	// {{& name}} contributes the variable in template-variable extraction.
+	if got := MustacheTemplateVariables("{{& html}}"); !reflect.DeepEqual(got, []string{"html"}) {
+		t.Fatalf("variables: %#v", got)
+	}
+	// Empty tags are not variables and are left unchanged when rendering.
+	if got := MustacheTemplateVariables("{{ }} {{name}}"); !reflect.DeepEqual(got, []string{"name"}) {
+		t.Fatalf("variables with empty tag: %#v", got)
+	}
+	got := RenderSimpleMustache("a {{ }} b", map[string]any{})
+	if got != "a {{ }} b" {
+		t.Fatalf("empty tag render: %q", got)
+	}
+	// Dotted lookup through a non-map value resolves to empty.
+	got = RenderSimpleMustache("{{user.name.first}}", map[string]any{"user": map[string]any{"name": "Ada"}})
+	if got != "" {
+		t.Fatalf("non-map dotted lookup: %q", got)
+	}
+	// Explicit nil values render as empty.
+	got = RenderSimpleMustache("{{value}}", map[string]any{"value": nil})
+	if got != "" {
+		t.Fatalf("nil value render: %q", got)
 	}
 }

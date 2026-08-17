@@ -7,6 +7,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/outputs"
 	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -382,5 +383,106 @@ func TestStreamMessagesInSubgraph(t *testing.T) {
 	}
 	if !reflect.DeepEqual(mc.Metadata, wantMetadata) {
 		t.Errorf("metadata = %v, want %v", mc.Metadata, wantMetadata)
+	}
+}
+
+// TestEventOutputMessages covers every Output shape a chat model's
+// EventChatModelEnd can carry.
+func TestEventOutputMessages(t *testing.T) {
+	msg := messages.AI("hi")
+	msg2 := messages.AI("there")
+	cases := []struct {
+		name  string
+		value any
+		want  []messages.Message
+	}{
+		{"single message", msg, []messages.Message{msg}},
+		{"message list", []messages.Message{msg, msg2}, []messages.Message{msg, msg2}},
+		{"chat generation", outputs.ChatGeneration{Message: msg}, []messages.Message{msg}},
+		{"chat result", outputs.ChatResult{Generations: []outputs.ChatGeneration{{Message: msg}, {Message: msg2}}}, []messages.Message{msg, msg2}},
+		{"unsupported type", "plain string", nil},
+		{"nil", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := eventOutputMessages(tc.value); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("eventOutputMessages(%T) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMessageChunkMessageUnsupportedChunk(t *testing.T) {
+	if _, ok := messageChunkMessage(42); ok {
+		t.Fatal("messageChunkMessage(42) ok = true, want false for a non-message, non-string chunk")
+	}
+}
+
+// TestStreamMessagesUnsupportedChunkDropped verifies that a stream event whose
+// chunk is neither a message nor a string is silently dropped.
+func TestStreamMessagesUnsupportedChunkDropped(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNode("model", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
+		manager, ok := callbacks.ManagerFromContext(ctx)
+		if !ok {
+			t.Errorf("ManagerFromContext() ok = false, want an installed manager under StreamMessages")
+			return nil, nil
+		}
+		if err := manager.Emit(ctx, callbacks.Event{Kind: callbacks.EventChatModelStream, Chunk: 42}); err != nil {
+			t.Errorf("Emit() error = %v", err)
+		}
+		return nil, nil
+	})
+	g.AddEdge(types.START, "model")
+	g.AddEdge("model", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+		Modes: []StreamMode{StreamMessages},
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("len(chunks) = %d, want 0 (unsupported chunk dropped): %#v", len(chunks), chunks)
+	}
+}
+
+// TestStreamMessagesEmptyIDNeverDedupes verifies that end messages with an
+// empty ID are always emitted, even repeatedly (empty IDs never dedupe).
+func TestStreamMessagesEmptyIDNeverDedupes(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNode("model", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
+		manager, ok := callbacks.ManagerFromContext(ctx)
+		if !ok {
+			t.Errorf("ManagerFromContext() ok = false, want an installed manager under StreamMessages")
+			return nil, nil
+		}
+		for _, event := range []callbacks.Event{
+			{Kind: callbacks.EventChatModelEnd, Output: messages.AI("one")},
+			{Kind: callbacks.EventChatModelEnd, Output: messages.AI("two")},
+		} {
+			if err := manager.Emit(ctx, event); err != nil {
+				t.Errorf("Emit() error = %v", err)
+			}
+		}
+		return nil, nil
+	})
+	g.AddEdge(types.START, "model")
+	g.AddEdge("model", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+		Modes: []StreamMode{StreamMessages},
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("len(chunks) = %d, want 2 (empty IDs never dedupe): %#v", len(chunks), chunks)
 	}
 }

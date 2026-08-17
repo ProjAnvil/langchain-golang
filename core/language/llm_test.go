@@ -180,3 +180,252 @@ func TestPromptValueConversions(t *testing.T) {
 		t.Fatal("expected unsupported messages conversion error")
 	}
 }
+
+func TestFakeLLMSchemas(t *testing.T) {
+	model := NewFakeLLM()
+
+	input := model.InputSchema()
+	if input["type"] != "string" || input["description"] != "text prompt" {
+		t.Fatalf("input schema: %#v", input)
+	}
+	output := model.OutputSchema()
+	if output["type"] != "string" || output["description"] != "text completion" {
+		t.Fatalf("output schema: %#v", output)
+	}
+}
+
+func TestFakeLLMDefaultModelProfile(t *testing.T) {
+	profile := NewFakeLLM().ModelProfile()
+	if profile["text_inputs"] != true || profile["text_outputs"] != true {
+		t.Fatalf("profile: %#v", profile)
+	}
+	if len(profile) != 2 {
+		t.Fatalf("unexpected profile keys: %#v", profile)
+	}
+}
+
+func TestFakeLLMStreamFallsBackToInvoke(t *testing.T) {
+	model := NewFakeLLM(WithLLMResponses("streamed response"))
+
+	stream, err := model.Stream(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	chunk, ok, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if !ok || chunk != "streamed response" {
+		t.Fatalf("chunk: ok=%v value=%q", ok, chunk)
+	}
+	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+		t.Fatalf("expected exhausted stream, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFakeLLMStreamRateLimiterError(t *testing.T) {
+	wantErr := errors.New("rate limited")
+	model := NewFakeLLM(
+		WithLLMRateLimiter(&recordingLimiter{err: wantErr}),
+		WithLLMStreamChunks("chunk"),
+	)
+
+	_, err := model.Stream(context.Background(), "hello")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err=%v, want %v", err, wantErr)
+	}
+
+	// Without configured chunks, Stream delegates to Invoke, which must surface
+	// the same limiter error.
+	noChunks := NewFakeLLM(WithLLMRateLimiter(&recordingLimiter{err: wantErr}))
+	_, err = noChunks.Stream(context.Background(), "hello")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("fallback stream err=%v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeLLMStreamWithoutCallbacks(t *testing.T) {
+	model := NewFakeLLM(WithLLMStreamChunks("a", "b"))
+
+	stream, err := model.Stream(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var chunks []string
+	for {
+		chunk, ok, err := stream.Next(context.Background())
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		chunks = append(chunks, chunk)
+	}
+	if !reflect.DeepEqual(chunks, []string{"a", "b"}) {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+}
+
+func TestFakeLLMInvokeCallbackError(t *testing.T) {
+	wantErr := errors.New("callback failed")
+
+	startModel := NewFakeLLM()
+	_, err := startModel.Invoke(
+		context.Background(),
+		"hello",
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+			kind: callbacks.EventLLMStart,
+			err:  wantErr,
+		})),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("start err=%v, want %v", err, wantErr)
+	}
+
+	endModel := NewFakeLLM()
+	_, err = endModel.Invoke(
+		context.Background(),
+		"hello",
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+			kind: callbacks.EventLLMEnd,
+			err:  wantErr,
+		})),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("end err=%v, want %v", err, wantErr)
+	}
+}
+
+func TestFakeLLMStreamStartCallbackError(t *testing.T) {
+	wantErr := errors.New("callback failed")
+	model := NewFakeLLM(WithLLMStreamChunks("chunk"))
+
+	_, err := model.Stream(
+		context.Background(),
+		"hello",
+		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+			kind: callbacks.EventLLMStart,
+			err:  wantErr,
+		})),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err=%v, want %v", err, wantErr)
+	}
+}
+
+func TestLLMCallbackStreamErrorPaths(t *testing.T) {
+	wantErr := errors.New("boom")
+
+	t.Run("inner stream error emits error event", func(t *testing.T) {
+		recorder := callbacks.NewRecorder()
+		stream := newLLMCallbackStream(
+			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(recorder))),
+			errorStringStream{err: wantErr},
+		)
+
+		_, ok, err := stream.Next(context.Background())
+		if !errors.Is(err, wantErr) || ok {
+			t.Fatalf("next: ok=%v err=%v", ok, err)
+		}
+
+		events := recorder.Events()
+		if len(events) != 1 || events[0].Kind != callbacks.EventLLMError {
+			t.Fatalf("events: %+v", events)
+		}
+		if events[0].Error != wantErr.Error() {
+			t.Fatalf("event error: got %q want %q", events[0].Error, wantErr)
+		}
+	})
+
+	t.Run("end event failure propagates once", func(t *testing.T) {
+		stream := newLLMCallbackStream(
+			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+				kind: callbacks.EventLLMEnd,
+				err:  wantErr,
+			}))),
+			runnables.NewSliceStream([]string{}),
+		)
+
+		_, ok, err := stream.Next(context.Background())
+		if !errors.Is(err, wantErr) || ok {
+			t.Fatalf("next: ok=%v err=%v", ok, err)
+		}
+		// The end event must only be emitted once; a second Next is a clean stop.
+		if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+			t.Fatalf("second next: ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("stream event failure propagates", func(t *testing.T) {
+		stream := newLLMCallbackStream(
+			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
+				kind: callbacks.EventLLMStream,
+				err:  wantErr,
+			}))),
+			runnables.NewSliceStream([]string{"chunk"}),
+		)
+
+		_, ok, err := stream.Next(context.Background())
+		if !errors.Is(err, wantErr) || ok {
+			t.Fatalf("next: ok=%v err=%v", ok, err)
+		}
+	})
+}
+
+func TestPromptValueConversionsFromMessages(t *testing.T) {
+	single := messages.Human("just one")
+	text, err := PromptValueString(single)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "just one" {
+		t.Fatalf("message string = %q", text)
+	}
+	msgs, err := PromptValueMessages(single)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != messages.RoleHuman || msgs[0].Content != "just one" {
+		t.Fatalf("message messages: %#v", msgs)
+	}
+
+	list := []messages.Message{
+		messages.System("rules"),
+		messages.Human("question"),
+	}
+	text, err = PromptValueString(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "System: rules\nHuman: question" {
+		t.Fatalf("list string = %q", text)
+	}
+	msgs, err = PromptValueMessages(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("list messages: %#v", msgs)
+	}
+	// The conversion must clone so callers cannot mutate the source slice.
+	msgs[0].Content = "mutated"
+	if list[0].Content != "rules" {
+		t.Fatal("source messages were mutated through the converted slice")
+	}
+}
+
+// errorStringStream fails on the first Next call.
+type errorStringStream struct {
+	err error
+}
+
+func (s errorStringStream) Next(context.Context) (string, bool, error) {
+	return "", false, s.err
+}
+
+func (s errorStringStream) Close() error { return nil }

@@ -20,6 +20,25 @@ func TestMergeGenerationChunks(t *testing.T) {
 	}
 }
 
+func TestChatGenerationPrefersContentOverBlocks(t *testing.T) {
+	gen := NewChatGeneration(messages.Message{
+		Role:    messages.RoleAI,
+		Content: "direct",
+		ContentBlocks: []messages.ContentBlock{
+			messages.TextBlock{Text: "ignored"},
+		},
+	}, nil)
+	if gen.Text != "direct" {
+		t.Fatalf("Text = %q, want direct", gen.Text)
+	}
+}
+
+func TestMergeMapsEmptyReturnsNil(t *testing.T) {
+	if got := MergeMaps(nil, map[string]any{}); got != nil {
+		t.Fatalf("MergeMaps(nil, {}) = %#v, want nil", got)
+	}
+}
+
 func TestChatGenerationTextFromBlocks(t *testing.T) {
 	gen := NewChatGeneration(messages.Message{
 		Role: messages.RoleAI,

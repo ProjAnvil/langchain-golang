@@ -580,3 +580,255 @@ func TestTaskConcurrentStress(t *testing.T) {
 		t.Fatalf("snapshotResults = %d results, want %d", got, n*4)
 	}
 }
+
+// A task without a Cache policy treats ClearCache as a no-op (the cache
+// backend is never touched), mirroring Python's `_TaskFunction.clear_cache`.
+func TestClearCacheNoPolicy(t *testing.T) {
+	task := NewTask[int, int]("plain", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
+	if err := task.ClearCache(context.Background(), checkpoint.NewInMemoryCache()); err != nil {
+		t.Fatalf("ClearCache error = %v, want nil for a cache-less task", err)
+	}
+}
+
+// A replayed __error__ write whose persisted value is not a string (a serde
+// round-trip can decode it differently) still replays as an error, with the
+// message rendered via fmt.Sprint.
+func TestCallReplayErrorNonStringValue(t *testing.T) {
+	id := graph.FnTaskID("cp1", "", 3, "a", "", 0)
+	d := replayDispatcher(t, checkpoint.Write{TaskID: id, Channel: checkpoint.ReservedError, Value: 42})
+	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
+
+	_, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+	if err == nil || err.Error() != "42" {
+		t.Fatalf("Get error = %v, want %q (fmt.Sprint of the non-string value)", err, "42")
+	}
+	results := d.snapshotResults()
+	if len(results) != 1 || !results[0].isErr || results[0].errMsg != "42" {
+		t.Fatalf("snapshotResults = %+v, want the replayed error re-recorded with message %q", results, "42")
+	}
+}
+
+// Defense in depth: a replay write on a channel other than
+// __return__/__error__ (loadReplay normally filters these) fails the call
+// with a descriptive error instead of being misread.
+func TestCallReplayUnexpectedChannel(t *testing.T) {
+	id := graph.FnTaskID("cp1", "", 3, "a", "", 0)
+	d := newDispatcher(nil)
+	d.replay = map[string]checkpoint.Write{id: {TaskID: id, Channel: "__other__", Value: 1}}
+	d.cpID, d.ns, d.step = "cp1", "", 3
+	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
+
+	_, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+	if err == nil || !strings.Contains(err.Error(), `replayed write of task "a" has unexpected channel "__other__"`) {
+		t.Fatalf("Get error = %v, want an unexpected-channel error", err)
+	}
+}
+
+// A KeyFunc-supplied namespace overrides the default __fn_writes/<task>
+// namespace on both the lookup and the store, and a KeyFunc-supplied TTL
+// overrides the policy TTL.
+func TestCacheNamespaceAndTTLOverride(t *testing.T) {
+	cache := checkpoint.NewInMemoryCache()
+	var calls atomic.Int32
+	task := NewTask[int, int]("ns", func(_ runtime.Runtime, in int) (int, error) {
+		calls.Add(1)
+		return in * 2, nil
+	}, TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(map[string]any) (types.CacheKey, error) {
+		return types.CacheKey{Namespace: []string{"custom", "ns"}, Key: "k", TTL: time.Minute}, nil
+	}}})
+
+	d := newDispatcher(cache)
+	v, err := task.Call(contextWithDispatcher(context.Background(), d), 3).Get(context.Background())
+	if err != nil || v != 6 {
+		t.Fatalf("first call: Get = (%v, %v), want (6, nil)", v, err)
+	}
+	// The result is stored under the KeyFunc namespace, not __fn_writes/ns.
+	writes, ok, err := cache.Get(context.Background(), "custom/ns", "k")
+	if err != nil || !ok {
+		t.Fatalf("cache.Get(custom/ns, k) = (%v, %v, %v), want a hit", writes, ok, err)
+	}
+	if len(writes) != 1 || writes[0].Channel != checkpoint.ReservedReturn || writes[0].Value != 6 {
+		t.Fatalf("cached writes = %+v, want one __return__ write with value 6", writes)
+	}
+	if _, ok, err := cache.Get(context.Background(), fnCacheNS("ns"), "k"); err != nil || ok {
+		t.Fatalf("cache.Get(%q, k) ok = %v, want a miss (namespace overridden)", fnCacheNS("ns"), ok)
+	}
+
+	// The next turn's lookup uses the same override and hits the cache.
+	d2 := newDispatcher(cache)
+	v, err = task.Call(contextWithDispatcher(context.Background(), d2), 3).Get(context.Background())
+	if err != nil || v != 6 {
+		t.Fatalf("cached call: Get = (%v, %v), want (6, nil)", v, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1 (second turn served from the overridden namespace)", got)
+	}
+}
+
+// errCache is a checkpoint.Cache whose Get/Set fail with the configured
+// errors (a miss otherwise), for the cache error-path tests.
+type errCache struct {
+	getErr error
+	setErr error
+}
+
+func (c *errCache) Get(context.Context, string, string) ([]checkpoint.Write, bool, error) {
+	if c.getErr != nil {
+		return nil, false, c.getErr
+	}
+	return nil, false, nil
+}
+
+func (c *errCache) Set(context.Context, string, string, []checkpoint.Write, time.Duration) error {
+	return c.setErr
+}
+
+func (c *errCache) Clear(context.Context, string) error { return nil }
+
+// A cache backend Get failure fails the task with a wrapped error (graph
+// node-cache parity) and is recorded as an __error__ outcome.
+func TestCacheGetErrorFailsTask(t *testing.T) {
+	boom := errors.New("cache down")
+	var calls atomic.Int32
+	task := NewTask[int, int]("g", func(_ runtime.Runtime, in int) (int, error) {
+		calls.Add(1)
+		return in, nil
+	}, TaskOpts{Cache: &graph.CachePolicy{}})
+
+	d := newDispatcher(&errCache{getErr: boom})
+	_, err := task.Call(contextWithDispatcher(context.Background(), d), 7).Get(context.Background())
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), `task "g" cache get`) {
+		t.Fatalf("Get error = %v, want the wrapped cache-get error", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("calls = %d, want 0 (the lookup failed before execution)", got)
+	}
+	if got := d.snapshotResults(); len(got) != 1 || !got[0].isErr {
+		t.Fatalf("snapshotResults = %+v, want one recorded error", got)
+	}
+}
+
+// A cache backend Set failure after a successful execution fails the task
+// (the caller must not observe a success first) and records the error.
+func TestCacheSetErrorFailsTask(t *testing.T) {
+	boom := errors.New("cache read-only")
+	task := NewTask[int, int]("s", func(_ runtime.Runtime, in int) (int, error) { return in * 2, nil },
+		TaskOpts{Cache: &graph.CachePolicy{}})
+
+	d := newDispatcher(&errCache{setErr: boom})
+	_, err := task.Call(contextWithDispatcher(context.Background(), d), 7).Get(context.Background())
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), `task "s" cache set`) {
+		t.Fatalf("Get error = %v, want the wrapped cache-set error", err)
+	}
+	if got := d.snapshotResults(); len(got) != 1 || !got[0].isErr {
+		t.Fatalf("snapshotResults = %+v, want one recorded error", got)
+	}
+}
+
+// A cache hit whose persisted value does not match the task's declared
+// output type fails the call with a descriptive error — never a silent
+// zero-value downgrade.
+func TestCachedResultTypeMismatch(t *testing.T) {
+	cache := checkpoint.NewInMemoryCache()
+	ctx := context.Background()
+	if err := cache.Set(ctx, fnCacheNS("m"), "k1",
+		[]checkpoint.Write{{Channel: checkpoint.ReservedReturn, Value: "oops"}}, 0); err != nil {
+		t.Fatalf("cache.Set error = %v, want nil", err)
+	}
+	task := NewTask[int, int]("m", func(_ runtime.Runtime, in int) (int, error) { return in, nil },
+		TaskOpts{Cache: &graph.CachePolicy{KeyFunc: func(map[string]any) (types.CacheKey, error) {
+			return types.CacheKey{Key: "k1"}, nil
+		}}})
+
+	d := newDispatcher(cache)
+	_, err := task.Call(contextWithDispatcher(ctx, d), 1).Get(ctx)
+	if err == nil || !strings.Contains(err.Error(), `cached result of task "m" has type string`) {
+		t.Fatalf("Get error = %v, want a descriptive type-mismatch error", err)
+	}
+	if got := d.snapshotResults(); len(got) != 1 || !got[0].isErr {
+		t.Fatalf("snapshotResults = %+v, want one recorded error", got)
+	}
+}
+
+// Canceling the run while a retryable task sits in its backoff sleep aborts
+// the retry loop and surfaces the context error (the backoff select on
+// taskCtx.Done), not the task's failure.
+func TestRetryBackoffCanceled(t *testing.T) {
+	d := newDispatcher(nil)
+	runCtx, cancel := context.WithCancel(context.Background())
+	ctx := contextWithDispatcher(runCtx, d)
+	var retrying atomic.Bool
+	retryingCh := make(chan struct{})
+	task := NewTask[int, int]("flaky", func(_ runtime.Runtime, in int) (int, error) {
+		return 0, &net.DNSError{IsTimeout: true}
+	}, TaskOpts{Retry: &graph.RetryPolicy{
+		MaxAttempts:     5,
+		InitialInterval: time.Hour, // long enough that only cancellation ends the wait
+		NoJitter:        true,
+		RetryOn: func(error) bool {
+			if retrying.CompareAndSwap(false, true) {
+				close(retryingCh)
+			}
+			return true
+		},
+	}})
+
+	fut := task.Call(ctx, 1)
+	select {
+	case <-retryingCh: // first attempt failed; the goroutine is entering the backoff wait
+	case <-time.After(2 * time.Second):
+		t.Fatal("task did not reach the retry backoff")
+	}
+	cancel()
+	if _, err := fut.Get(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get error = %v, want context.Canceled", err)
+	}
+	if got := d.snapshotResults(); len(got) != 0 {
+		t.Fatalf("snapshotResults = %+v, want empty (canceled retries record nothing)", got)
+	}
+}
+
+// A task with a Timeout that finishes well within it resolves normally (the
+// attempt-outcome branch of the timeout select).
+func TestTaskTimeoutFastSuccess(t *testing.T) {
+	d := newDispatcher(nil)
+	ctx := contextWithDispatcher(context.Background(), d)
+	task := NewTask[int, int]("fast", func(_ runtime.Runtime, in int) (int, error) {
+		return in * 2, nil
+	}, TaskOpts{Timeout: time.Minute})
+
+	v, err := task.Call(ctx, 21).Get(ctx)
+	if err != nil || v != 42 {
+		t.Fatalf("Get = (%v, %v), want (42, nil)", v, err)
+	}
+}
+
+// Canceling the parent context while a timed attempt is still in flight
+// surfaces the PARENT's cancellation, not context.DeadlineExceeded.
+func TestTaskTimeoutParentCancel(t *testing.T) {
+	d := newDispatcher(nil)
+	runCtx, cancel := context.WithCancel(context.Background())
+	ctx := contextWithDispatcher(runCtx, d)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release) // let the abandoned attempt goroutine exit with the test
+	task := NewTask[int, int]("slow", func(_ runtime.Runtime, in int) (int, error) {
+		close(started)
+		<-release // does not honor ctx; only the test releases it
+		return in, nil
+	}, TaskOpts{Timeout: time.Hour})
+
+	fut := task.Call(ctx, 1)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task did not start")
+	}
+	cancel()
+	if _, err := fut.Get(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get error = %v, want context.Canceled (parent cancellation, not the task's timeout)", err)
+	}
+	if got := d.snapshotResults(); len(got) != 0 {
+		t.Fatalf("snapshotResults = %+v, want empty (canceled runs record nothing)", got)
+	}
+}

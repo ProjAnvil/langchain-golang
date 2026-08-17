@@ -167,3 +167,36 @@ func TestInMemoryDocumentIndexGetRelevantDocumentsRanksByCount(t *testing.T) {
 		t.Fatalf("ranked IDs = %q %q, want %q %q", got[0].ID, got[1].ID, "three", "two")
 	}
 }
+
+func TestNewInMemoryDocumentIndexDefaultsTopK(t *testing.T) {
+	ctx := context.Background()
+	idx := NewInMemoryDocumentIndex(0)
+	docs := []documents.Document{
+		documents.New("apple one", nil),
+		documents.New("apple two", nil),
+		documents.New("apple three", nil),
+		documents.New("apple four", nil),
+		documents.New("apple five", nil),
+	}
+	if _, err := idx.Upsert(ctx, docs); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	got, err := idx.GetRelevantDocuments(ctx, "apple")
+	if err != nil {
+		t.Fatalf("get relevant: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d docs, want default top_k = 4", len(got))
+	}
+}
+
+func TestInMemoryDocumentIndexGetRelevantDocumentsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	idx := NewInMemoryDocumentIndex(4)
+
+	if _, err := idx.GetRelevantDocuments(ctx, "apple"); err == nil {
+		t.Fatal("expected context error")
+	}
+}

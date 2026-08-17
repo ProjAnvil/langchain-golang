@@ -74,3 +74,18 @@ func TestFuncBeforeAndAfterAgentAdapters(t *testing.T) {
 		t.Fatalf("after_agent: %v", err)
 	}
 }
+
+func TestFuncBeforeModelCommandAdapter(t *testing.T) {
+	var called bool
+	hook := FuncBeforeModelCommand(func(ctx context.Context, state map[string]any) (*middleware.Command, error) {
+		called = true
+		return &middleware.Command{Update: map[string]any{"k": "v"}, Goto: "end"}, nil
+	})
+	cmd, err := hook.BeforeModel(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("BeforeModel: %v", err)
+	}
+	if !called || cmd == nil || cmd.Goto != "end" || cmd.Update["k"] != "v" {
+		t.Fatalf("before_model command not invoked: called=%v cmd=%#v", called, cmd)
+	}
+}

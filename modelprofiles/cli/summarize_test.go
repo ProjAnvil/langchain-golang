@@ -120,6 +120,75 @@ func TestRunSummarizeDefaultsAfterToDataDir(t *testing.T) {
 	}
 }
 
+func TestLoadProfilesErrors(t *testing.T) {
+	dir := t.TempDir()
+
+	// Missing file.
+	if _, err := LoadProfiles(filepath.Join(dir, "missing.json")); err == nil {
+		t.Errorf("expected error for missing file")
+	}
+
+	// Invalid JSON.
+	badPath := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(badPath, []byte("not json"), 0o644); err != nil {
+		t.Fatalf("failed to write bad.json: %v", err)
+	}
+	if _, err := LoadProfiles(badPath); err == nil {
+		t.Errorf("expected error for invalid JSON")
+	}
+}
+
+func TestLoadProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	writeProfilesFile(t, path, summarizeOldRegistry())
+
+	got, err := LoadProfiles(path)
+	if err != nil {
+		t.Fatalf("LoadProfiles() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(got))
+	}
+	gpt4, ok := got["gpt-4"]
+	if !ok {
+		t.Fatalf("expected gpt-4 in loaded profiles, got %v", got)
+	}
+	// JSON numbers decode as float64.
+	if gpt4["max_input_tokens"] != float64(8192) {
+		t.Errorf("expected max_input_tokens = 8192, got %v", gpt4["max_input_tokens"])
+	}
+	if gpt4["name"] != "GPT-4" {
+		t.Errorf("expected name = GPT-4, got %v", gpt4["name"])
+	}
+	if _, ok := got["old-model"]; !ok {
+		t.Errorf("expected old-model in loaded profiles, got %v", got)
+	}
+}
+
+func TestRunSummarizeValidation(t *testing.T) {
+	dir := t.TempDir()
+	beforePath := filepath.Join(dir, "before.json")
+	writeProfilesFile(t, beforePath, summarizeOldRegistry())
+
+	cases := []struct {
+		name string
+		opts SummarizeOptions
+	}{
+		{"empty provider", SummarizeOptions{Before: beforePath, After: beforePath}},
+		{"empty before", SummarizeOptions{Provider: "openai", After: beforePath}},
+		{"empty after and datadir", SummarizeOptions{Provider: "openai", Before: beforePath}},
+		{"missing before file", SummarizeOptions{Provider: "openai", Before: filepath.Join(dir, "missing.json"), After: beforePath}},
+		{"missing after file", SummarizeOptions{Provider: "openai", Before: beforePath, After: filepath.Join(dir, "missing.json")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := RunSummarize(tc.opts); err == nil {
+				t.Errorf("expected error for %s", tc.name)
+			}
+		})
+	}
+}
+
 func writeProfilesFile(t *testing.T, path string, profiles Registry) {
 	t.Helper()
 	contents, err := BuildProfilesJSON(profiles)

@@ -2,6 +2,7 @@ package documentloaders
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -104,6 +105,119 @@ func TestBlobConstructorsAndSource(t *testing.T) {
 	if fileBlob.Mimetype == "" {
 		t.Fatal("expected guessed mimetype")
 	}
+}
+
+func TestLoadErrors(t *testing.T) {
+	if _, err := Load(context.Background(), errLoader{err: errTest}); err == nil {
+		t.Fatal("expected lazy load error")
+	}
+
+	iter := &errIterator{nextErr: errTest}
+	if _, err := Load(context.Background(), fakeIterLoader{iter: iter}); err == nil {
+		t.Fatal("expected next error")
+	}
+}
+
+func TestLoadAndSplitLoadError(t *testing.T) {
+	if _, err := LoadAndSplit(context.Background(), errLoader{err: errTest}, fakeSplitter{}); err == nil {
+		t.Fatal("expected load error to propagate")
+	}
+}
+
+func TestDefaultTextSplitterFactoryFailures(t *testing.T) {
+	RegisterDefaultTextSplitterFactory(nil)
+	t.Cleanup(func() { RegisterDefaultTextSplitterFactory(nil) })
+
+	loader := fakeLoader{docs: []documents.Document{documents.New("a", nil)}}
+
+	RegisterDefaultTextSplitterFactory(func() (TextSplitter, error) {
+		return nil, errTest
+	})
+	if _, err := LoadAndSplit(context.Background(), loader, nil); err == nil {
+		t.Fatal("expected factory error")
+	}
+
+	RegisterDefaultTextSplitterFactory(func() (TextSplitter, error) {
+		return nil, nil
+	})
+	if _, err := LoadAndSplit(context.Background(), loader, nil); err == nil {
+		t.Fatal("expected nil splitter error")
+	}
+}
+
+func TestParseErrors(t *testing.T) {
+	if _, err := Parse(context.Background(), errParser{err: errTest}, Blob{}); err == nil {
+		t.Fatal("expected lazy parse error")
+	}
+
+	iter := &errIterator{nextErr: errTest}
+	if _, err := Parse(context.Background(), iterParser{iter: iter}, Blob{}); err == nil {
+		t.Fatal("expected next error")
+	}
+}
+
+func TestNewBlobFromPathMissingFile(t *testing.T) {
+	if _, err := NewBlobFromPath(filepath.Join(t.TempDir(), "missing.txt"), "", nil); err == nil {
+		t.Fatal("expected read error")
+	}
+}
+
+var errTest = errors.New("test error")
+
+type errLoader struct {
+	err error
+}
+
+func (l errLoader) LazyLoad(context.Context) (DocumentIterator, error) {
+	return nil, l.err
+}
+
+type fakeIterLoader struct {
+	iter DocumentIterator
+}
+
+func (l fakeIterLoader) LazyLoad(context.Context) (DocumentIterator, error) {
+	return l.iter, nil
+}
+
+// errIterator is a DocumentIterator that can fail on Next and Close.
+type errIterator struct {
+	docs     []documents.Document
+	index    int
+	nextErr  error
+	closeErr error
+}
+
+func (i *errIterator) Next(context.Context) (documents.Document, bool, error) {
+	if i.nextErr != nil {
+		return documents.Document{}, false, i.nextErr
+	}
+	if i.index >= len(i.docs) {
+		return documents.Document{}, false, nil
+	}
+	doc := i.docs[i.index]
+	i.index++
+	return doc, true, nil
+}
+
+func (i *errIterator) Close() error {
+	return i.closeErr
+}
+
+type errParser struct {
+	err error
+}
+
+func (p errParser) LazyParse(context.Context, Blob) (DocumentIterator, error) {
+	return nil, p.err
+}
+
+type iterParser struct {
+	iter DocumentIterator
+}
+
+func (p iterParser) LazyParse(context.Context, Blob) (DocumentIterator, error) {
+	return p.iter, nil
 }
 
 type fakeLoader struct {

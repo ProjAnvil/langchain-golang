@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
+	"github.com/projanvil/langchain-golang/core/prompts"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
@@ -1277,4 +1279,633 @@ func (m *erroringModel) BindTools([]coretools.Tool) (language.ChatModel, error) 
 
 func (m *erroringModel) Capabilities() language.ChatModelCapabilities {
 	return language.ChatModelCapabilities{ToolCalling: true}
+}
+
+// failBindModel is a ChatModel test double whose BindTools always fails, used
+// to exercise the bind-error paths in invokeModel/invokeModelStreaming.
+type failBindModel struct {
+	*sequenceModel
+}
+
+func (m *failBindModel) BindTools(boundTools []coretools.Tool) (language.ChatModel, error) {
+	return nil, fmt.Errorf("failBindModel: bind not supported")
+}
+
+func TestCreateAgentRecursionLimitStopsToolLoop(t *testing.T) {
+	// The model requests a tool call on every invocation; without a recursion
+	// limit this loops forever, so the limit must surface an error.
+	model := &sequenceModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c1", Name: "echo", Args: map[string]any{"tool_input": "x"}}}},
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c2", Name: "echo", Args: map[string]any{"tool_input": "x"}}}},
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c3", Name: "echo", Args: map[string]any{"tool_input": "x"}}}},
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c4", Name: "echo", Args: map[string]any{"tool_input": "x"}}}},
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c5", Name: "echo", Args: map[string]any{"tool_input": "x"}}}},
+		messages.AI("done"),
+	}}
+	agent, err := CreateAgent(model, []coretools.Tool{newEchoTool(t)}, WithAgentRecursionLimit(3))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+		t.Fatal("expected recursion-limit error for a looping agent, got nil")
+	}
+}
+
+func TestCreateAgentInterruptAfterSurfacesViaInvoke(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil,
+		WithAgentCheckpointer(checkpoint.NewMemorySaver()),
+		WithAgentInterruptAfter(ModelNodeName),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	// Agent.Invoke treats a paused run as a terminal failure, pointing the
+	// caller at Agent.Graph for resumption.
+	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err == nil {
+		t.Fatal("expected an interrupted-run error from Invoke, got nil")
+	}
+}
+
+func TestCreateAgentDictToolSpecValidation(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+
+	t.Run("missing name", func(t *testing.T) {
+		_, err := CreateAgent(model, nil, WithAgentToolSpecs(map[string]any{"description": "no name"}))
+		if err == nil {
+			t.Fatal("expected error for spec without a name")
+		}
+	})
+
+	t.Run("parameters wrong type", func(t *testing.T) {
+		_, err := CreateAgent(model, nil, WithAgentToolSpecs(map[string]any{"name": "x", "parameters": "nope"}))
+		if err == nil {
+			t.Fatal("expected error for non-object parameters")
+		}
+	})
+
+	t.Run("schema key variants", func(t *testing.T) {
+		agent, err := CreateAgent(model, nil, WithAgentToolSpecs(
+			map[string]any{"name": "spec_params", "parameters": schema.Schema{"type": "object", "properties": map[string]any{}}},
+			map[string]any{"name": "spec_input_schema", "input_schema": map[string]any{"type": "object"}},
+			map[string]any{"name": "spec_args_schema", "args_schema": map[string]any{"type": "object"}},
+		))
+		if err != nil {
+			t.Fatalf("create agent with schema key variants: %v", err)
+		}
+		out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if len(model.boundTools) != 3 {
+			names := make([]string, 0, len(model.boundTools))
+			for _, bt := range model.boundTools {
+				names = append(names, bt.Name())
+			}
+			t.Fatalf("expected 3 bound dict-spec tools, got %v", names)
+		}
+		if len(out) == 0 {
+			t.Fatal("expected output messages")
+		}
+	})
+}
+
+func TestCreateAgentDictToolSpecHasNoExecutable(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c1", Name: "builtin_tool", Args: map[string]any{}}}},
+		messages.AI("done"),
+	}}
+	agent, err := CreateAgent(model, nil, WithAgentToolSpecs(map[string]any{"name": "builtin_tool"}))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	var toolMsg *messages.Message
+	for i := range out {
+		if out[i].Role == messages.RoleTool {
+			toolMsg = &out[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("expected a tool message for the dict-spec tool call, got %#v", out)
+	}
+	if !strings.Contains(toolMsg.Content, "no executable implementation") {
+		t.Fatalf("expected explanatory tool error, got %q", toolMsg.Content)
+	}
+}
+
+func TestAsSchemaCoercion(t *testing.T) {
+	if s, ok := asSchema(schema.Schema{"type": "object"}); !ok || s["type"] != "object" {
+		t.Fatalf("schema.Schema coercion failed: %#v ok=%v", s, ok)
+	}
+	if s, ok := asSchema(map[string]any{"type": "object"}); !ok || s["type"] != "object" {
+		t.Fatalf("map coercion failed: %#v ok=%v", s, ok)
+	}
+	if _, ok := asSchema("nope"); ok {
+		t.Fatal("expected non-map value to be rejected")
+	}
+}
+
+func TestToolsFromAnyRejectsNonTool(t *testing.T) {
+	if _, err := toolsFromAny([]any{"not-a-tool"}); err == nil {
+		t.Fatal("expected error for non-Tool element")
+	}
+	tools, err := toolsFromAny([]any{newEchoTool(t)})
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("expected one tool, got %v err=%v", tools, err)
+	}
+}
+
+func TestResolveJumpTargetBranches(t *testing.T) {
+	cases := map[string]string{
+		"":       AfterAgentNodeName,
+		"end":    AfterAgentNodeName,
+		"model":  ModelNodeName,
+		"tools":  ToolsNodeName,
+		"custom": "custom",
+	}
+	for jumpTo, want := range cases {
+		if got := resolveJumpTarget(jumpTo, AfterAgentNodeName); got != want {
+			t.Fatalf("resolveJumpTarget(%q) = %q, want %q", jumpTo, got, want)
+		}
+	}
+}
+
+func TestPopJumpToNilAndMissing(t *testing.T) {
+	if jump, ok := popJumpTo(nil); ok || jump != "" {
+		t.Fatalf("expected (\"\", false) for nil update, got (%q, %v)", jump, ok)
+	}
+	if jump, ok := popJumpTo(map[string]any{"other": 1}); ok || jump != "" {
+		t.Fatalf("expected (\"\", false) without jump_to key, got (%q, %v)", jump, ok)
+	}
+	update := map[string]any{"jump_to": "end"}
+	if jump, ok := popJumpTo(update); !ok || jump != "end" {
+		t.Fatalf("expected (end, true), got (%q, %v)", jump, ok)
+	}
+	if _, stillThere := update["jump_to"]; stillThere {
+		t.Fatal("jump_to must be consumed out of the update")
+	}
+}
+
+func TestBeforeModelHookErrorPropagates(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncBeforeModel(func(ctx context.Context, state map[string]any) (map[string]any, error) {
+			return nil, fmt.Errorf("before_model boom")
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+		t.Fatal("expected before_model error to propagate, got nil")
+	}
+}
+
+func TestBeforeModelCommandHookErrorPropagates(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncBeforeModelCommand(func(ctx context.Context, state map[string]any) (*middleware.Command, error) {
+			return nil, fmt.Errorf("command boom")
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+		t.Fatal("expected command hook error to propagate, got nil")
+	}
+}
+
+func TestBeforeModelCommandHookNilCommandContinues(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	var calls int
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncBeforeModelCommand(func(ctx context.Context, state map[string]any) (*middleware.Command, error) {
+			calls++
+			return nil, nil // nil command: fall through to the normal model call
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if calls != 1 || len(out) == 0 || out[len(out)-1].Content != "done" {
+		t.Fatalf("nil command should continue the run: calls=%d out=%#v", calls, out)
+	}
+}
+
+func TestBeforeModelCommandHookCommandEndsRun(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncBeforeModelCommand(func(ctx context.Context, state map[string]any) (*middleware.Command, error) {
+			return &middleware.Command{Update: map[string]any{"marker": "set"}, Goto: "end"}, nil
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if state["marker"] != "set" {
+		t.Fatalf("expected command update in state, got %#v", state)
+	}
+	if len(model.invocations) != 0 {
+		t.Fatalf("model must not run after a jump_to end command, got %d invocations", len(model.invocations))
+	}
+}
+
+func TestBeforeModelJumpToEndShortCircuits(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncBeforeModel(func(ctx context.Context, state map[string]any) (map[string]any, error) {
+			return map[string]any{"jump_to": "end", "marker": true}, nil
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if state["marker"] != true {
+		t.Fatalf("expected marker in state, got %#v", state)
+	}
+	if len(model.invocations) != 0 {
+		t.Fatalf("model must not run after jump_to end, got %d invocations", len(model.invocations))
+	}
+	if _, leaked := state["jump_to"]; leaked {
+		t.Fatal("jump_to must not be persisted into state")
+	}
+}
+
+func TestBeforeModelMessagesReshapeIsLocalOnly(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncBeforeModel(func(ctx context.Context, state map[string]any) (map[string]any, error) {
+			return map[string]any{"messages": []messages.Message{messages.Human("replaced")}}, nil
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	// The model call saw the reshaped (local) message view...
+	if len(model.invocations) != 1 || len(model.invocations[0]) != 1 || model.invocations[0][0].Content != "replaced" {
+		t.Fatalf("model should see the reshaped messages, got %#v", model.invocations)
+	}
+	// ...but the committed state keeps the original history plus the reply.
+	msgs, _ := state["messages"].([]messages.Message)
+	if len(msgs) != 2 || msgs[0].Content != "hi" || msgs[1].Content != "done" {
+		t.Fatalf("state messages mismatch: %#v", msgs)
+	}
+}
+
+func TestAfterModelHookErrorPropagates(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncAfterModel(func(ctx context.Context, state map[string]any) (map[string]any, error) {
+			return nil, fmt.Errorf("after_model boom")
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+		t.Fatal("expected after_model error to propagate, got nil")
+	}
+}
+
+func TestCreateAgentCacheHitWithDebugAndSystemPrompt(t *testing.T) {
+	cache, err := caches.NewInMemoryCache()
+	if err != nil {
+		t.Fatalf("new cache: %v", err)
+	}
+	model := &sequenceModel{responses: []messages.Message{messages.AI("cached answer")}}
+	agent, err := CreateAgent(model, nil,
+		WithAgentCache(cache),
+		WithAgentDebug(true),
+		WithAgentSystemPrompt("you are helpful"),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+		if err != nil {
+			t.Fatalf("invoke %d: %v", i, err)
+		}
+		if len(out) == 0 || out[len(out)-1].Content != "cached answer" {
+			t.Fatalf("invoke %d: unexpected output %#v", i, out)
+		}
+	}
+	// The second identical Invoke must be served from the cache: the model's
+	// single queued response was consumed by the first call, so a second model
+	// call would have errored.
+	if len(model.invocations) != 1 {
+		t.Fatalf("expected exactly one model call (second served from cache), got %d", len(model.invocations))
+	}
+}
+
+func TestHashToolsAndSettingsNonMarshable(t *testing.T) {
+	if got := hashToolsAndSettings(nil, map[string]any{"fn": func() {}}); got != "" {
+		t.Fatalf("expected empty hash for non-JSON-marshable settings, got %q", got)
+	}
+	// A non-Tool entry in the tools list is skipped, not fatal.
+	a := hashToolsAndSettings([]any{"not-a-tool"}, nil)
+	b := hashToolsAndSettings(nil, nil)
+	if a != b {
+		t.Fatalf("non-Tool entries must not affect the hash: %q vs %q", a, b)
+	}
+}
+
+func TestToolResultMapVariants(t *testing.T) {
+	if got := toolResultMap(messages.Message{}); got != nil {
+		t.Fatalf("expected nil for empty message, got %#v", got)
+	}
+	if got := toolResultMap(messages.Tool("c1", "content")); got["content"] != "content" {
+		t.Fatalf("expected content entry, got %#v", got)
+	}
+	metaOnly := messages.Message{ResponseMetadata: map[string]any{"status": "ok"}}
+	got := toolResultMap(metaOnly)
+	if got["status"] != "ok" {
+		t.Fatalf("expected status entry, got %#v", got)
+	}
+	if _, hasContent := got["content"]; hasContent {
+		t.Fatalf("unexpected content entry for empty content: %#v", got)
+	}
+}
+
+func TestCreateAgentDuplicateToolNames(t *testing.T) {
+	dup := func() coretools.Tool {
+		tool, err := coretools.NewSimple("dup", "duplicate", func(_ context.Context, input string) (coretools.Result, error) {
+			return coretools.Result{Content: input}, nil
+		})
+		if err != nil {
+			t.Fatalf("new tool: %v", err)
+		}
+		return tool
+	}
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	if _, err := CreateAgent(model, []coretools.Tool{dup(), dup()}); err == nil {
+		t.Fatal("expected error for duplicate tool names")
+	}
+}
+
+func TestAgentHookNodesWithDebug(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	var beforeRan, afterRan bool
+	agent, err := CreateAgent(model, nil,
+		WithAgentDebug(true),
+		WithAgentMiddleware(
+			FuncBeforeAgent(func(ctx context.Context, state map[string]any) (map[string]any, error) {
+				beforeRan = true
+				return map[string]any{"before": true}, nil
+			}),
+			FuncAfterAgent(func(ctx context.Context, state map[string]any) error {
+				afterRan = true
+				return nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if !beforeRan || !afterRan {
+		t.Fatalf("hooks did not run: before=%v after=%v", beforeRan, afterRan)
+	}
+	if state["before"] != true {
+		t.Fatalf("expected before_agent update in state, got %#v", state)
+	}
+}
+
+func TestBeforeAgentHookErrorPropagates(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncBeforeAgent(func(ctx context.Context, state map[string]any) (map[string]any, error) {
+			return nil, fmt.Errorf("before_agent boom")
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+		t.Fatal("expected before_agent error to propagate, got nil")
+	}
+}
+
+func TestModelNodeHandlesEmptyAndNonAIResponses(t *testing.T) {
+	t.Run("empty result", func(t *testing.T) {
+		model := &sequenceModel{responses: []messages.Message{messages.AI("unused")}}
+		agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+			FuncWrapModelCall(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
+				return middleware.ModelResponse{}, nil
+			}),
+		))
+		if err != nil {
+			t.Fatalf("create agent: %v", err)
+		}
+		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		msgs, _ := state["messages"].([]messages.Message)
+		if len(msgs) != 1 || msgs[0].Content != "hi" {
+			t.Fatalf("expected only the human message, got %#v", msgs)
+		}
+	})
+
+	t.Run("non-AI result", func(t *testing.T) {
+		model := &sequenceModel{responses: []messages.Message{messages.AI("unused")}}
+		agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+			FuncWrapModelCall(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
+				return middleware.ModelResponse{Result: []messages.Message{messages.Human("odd")}}, nil
+			}),
+		))
+		if err != nil {
+			t.Fatalf("create agent: %v", err)
+		}
+		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		msgs, _ := state["messages"].([]messages.Message)
+		if len(msgs) != 2 || msgs[1].Content != "odd" {
+			t.Fatalf("expected the non-AI message appended, got %#v", msgs)
+		}
+	})
+}
+
+func TestProviderStrategyInvalidJSONPropagates(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("this is not json")}}
+	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(NewProviderStrategy(weatherSchema())))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+		t.Fatal("expected a parse error for non-JSON model output, got nil")
+	}
+}
+
+func TestResponseFormatPointerVariants(t *testing.T) {
+	toolStrategy := NewToolStrategy(weatherSchema())
+	providerStrategy := NewProviderStrategy(weatherSchema())
+
+	model := &sequenceModel{responses: []messages.Message{messages.AI(`{"temperature": 75, "condition": "sunny"}`)}}
+	if _, err := CreateAgent(model, nil, WithAgentResponseFormat(&toolStrategy)); err != nil {
+		t.Fatalf("*ToolStrategy: %v", err)
+	}
+	if _, err := CreateAgent(model, nil, WithAgentResponseFormat(&providerStrategy)); err != nil {
+		t.Fatalf("*ProviderStrategy: %v", err)
+	}
+	auto := NewAutoStrategy(weatherSchema())
+	if _, err := CreateAgent(model, nil, WithAgentResponseFormat(&auto)); err != nil {
+		t.Fatalf("*AutoStrategy with tool-calling model: %v", err)
+	}
+
+	// A model with neither tool calling nor structured output cannot resolve
+	// an AutoStrategy (nil *AutoStrategy is a no-op, non-nil errors).
+	noCaps := language.NewFakeChatModel(language.WithCapabilities(language.ChatModelCapabilities{}))
+	_, err := CreateAgent(noCaps, nil, WithAgentResponseFormat(&auto))
+	if err == nil {
+		t.Fatal("expected StructuredOutputUnsupportedError for a no-capability model")
+	}
+	var unsupported *StructuredOutputUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected *StructuredOutputUnsupportedError, got %T: %v", err, err)
+	}
+}
+
+func TestInvokeModelRejectsNonChatModel(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncWrapModelCall(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
+			request.Model = 42
+			return handler(ctx, request)
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err == nil {
+		t.Fatal("expected error for non-ChatModel request.Model")
+	}
+}
+
+func TestInvokeModelRejectsNonTool(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
+		FuncWrapModelCall(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
+			request.Tools = []any{"not-a-tool"}
+			return handler(ctx, request)
+		}),
+	))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err == nil {
+		t.Fatal("expected error for non-Tool request.Tools entry")
+	}
+}
+
+func TestInvokeModelBindToolsError(t *testing.T) {
+	model := &failBindModel{sequenceModel: &sequenceModel{responses: []messages.Message{messages.AI("done")}}}
+	agent, err := CreateAgent(model, []coretools.Tool{newEchoTool(t)})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	if err == nil {
+		t.Fatal("expected BindTools error to propagate")
+	}
+}
+
+func TestNativeStructuredCallerErrorPropagates(t *testing.T) {
+	model := &nativeStructuredSequenceModel{sequenceModel: &sequenceModel{}}
+	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(NewProviderStrategy(weatherSchema())))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+		t.Fatal("expected InvokeStructured error to propagate")
+	}
+	if !model.nativeCalled {
+		t.Fatal("expected the native structured path to be taken")
+	}
+}
+
+func TestStateSchemaNilReducerDefaultsToLastValue(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c1", Name: "echo", Args: map[string]any{"tool_input": "x"}}}},
+		messages.AI("done"),
+	}}
+	var writes int
+	agent, err := CreateAgent(model, []coretools.Tool{newEchoTool(t)},
+		WithAgentStateFields(StateField{Name: "note"}), // nil Reducer: last write wins
+		WithAgentMiddleware(
+			FuncAfterModel(func(ctx context.Context, state map[string]any) (map[string]any, error) {
+				writes++
+				return map[string]any{"note": writes}, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if writes != 2 {
+		t.Fatalf("expected after_model to run twice, got %d", writes)
+	}
+	if state["note"] != 2 {
+		t.Fatalf("expected last write to win for a nil-reducer field, got %#v", state["note"])
+	}
+}
+
+func TestSystemPromptTemplateRenderFailureFallsBackToLiteral(t *testing.T) {
+	// The template references a variable nobody supplies; with
+	// missingkey=error the render fails and the resolver must fall back to the
+	// literal system prompt rather than silently sending an empty one.
+	tmpl, err := prompts.NewPromptTemplate("test", "You are {{.missing_var}}.")
+	if err != nil {
+		t.Fatalf("new prompt template: %v", err)
+	}
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	agent, err := CreateAgent(model, nil,
+		WithAgentSystemPrompt("literal fallback"),
+		WithAgentSystemPromptTemplate(&tmpl, nil),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if len(model.invocations) != 1 || len(model.invocations[0]) != 2 {
+		t.Fatalf("expected system+human messages, got %#v", model.invocations)
+	}
+	if got := model.invocations[0][0].Content; got != "literal fallback" {
+		t.Fatalf("expected literal fallback system prompt, got %q", got)
+	}
 }

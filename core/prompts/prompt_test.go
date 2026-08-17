@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -335,5 +336,282 @@ func TestPromptTemplateFormatPrompt(t *testing.T) {
 	rendered := got.ToMessages()
 	if len(rendered) != 1 || rendered[0].Role != messages.RoleHuman || rendered[0].Content != "Hello Ada" {
 		t.Fatalf("messages: %#v", rendered)
+	}
+}
+
+func TestPromptTemplateInvalidSyntax(t *testing.T) {
+	if _, err := NewPromptTemplate("bad", "Hello {{.name"); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+func TestPromptTemplateDefaultName(t *testing.T) {
+	prompt, err := NewPromptTemplate("", "Hello {{.name}}")
+	if err != nil {
+		t.Fatalf("new prompt: %v", err)
+	}
+	_, err = prompt.Format(nil)
+	if err == nil {
+		t.Fatal("expected missing variable error")
+	}
+	if got := err.Error(); !strings.Contains(got, `"prompt"`) {
+		t.Fatalf("expected default name in error, got %q", got)
+	}
+}
+
+func TestPromptTemplateTemplateAccessor(t *testing.T) {
+	prompt, err := NewPromptTemplate("greeting", "Hello {{.name}}")
+	if err != nil {
+		t.Fatalf("new prompt: %v", err)
+	}
+	if got := prompt.Template(); got != "Hello {{.name}}" {
+		t.Fatalf("template: got %q", got)
+	}
+}
+
+func TestPromptTemplateValidateSameLengthMismatch(t *testing.T) {
+	prompt, err := NewPromptTemplate("greeting", "Hello {{.name}}")
+	if err != nil {
+		t.Fatalf("new prompt: %v", err)
+	}
+	if err := prompt.Validate([]string{"other"}); err == nil {
+		t.Fatal("expected validate mismatch for same-length different names")
+	}
+}
+
+func TestPromptTemplateFormatPromptError(t *testing.T) {
+	prompt, err := NewPromptTemplate("greeting", "Hello {{.name}}")
+	if err != nil {
+		t.Fatalf("new prompt: %v", err)
+	}
+	if _, err := prompt.FormatPrompt(nil); err == nil {
+		t.Fatal("expected format prompt error")
+	}
+}
+
+func TestNewChatMessageTemplateError(t *testing.T) {
+	if _, err := NewChatMessageTemplate(messages.RoleHuman, "bad", "{{.x"); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+func TestChatMessageTemplateWithPartials(t *testing.T) {
+	template, err := NewChatMessageTemplateWithPartials(
+		messages.RoleAI,
+		"ai",
+		"{{.greeting}}, {{.name}}",
+		map[string]any{"greeting": "Hi"},
+	)
+	if err != nil {
+		t.Fatalf("new chat message template: %v", err)
+	}
+	if got := template.Prompt.InputVariables(); len(got) != 1 || got[0] != "name" {
+		t.Fatalf("input variables: %#v", got)
+	}
+	message, err := template.Format(map[string]any{"name": "Ada"})
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	if message.Role != messages.RoleAI || message.Content != "Hi, Ada" {
+		t.Fatalf("message: %+v", message)
+	}
+}
+
+func TestChatMessageTemplateFormatError(t *testing.T) {
+	template, err := NewChatMessageTemplate(messages.RoleHuman, "human", "{{.question}}")
+	if err != nil {
+		t.Fatalf("new chat message template: %v", err)
+	}
+	if _, err := template.Format(nil); err == nil {
+		t.Fatal("expected format error")
+	}
+	if _, err := template.FormatMessages(nil); err == nil {
+		t.Fatal("expected format messages error")
+	}
+}
+
+func TestNewChatMessageTemplateWithPartialsError(t *testing.T) {
+	if _, err := NewChatMessageTemplateWithPartials(messages.RoleHuman, "bad", "{{.x", nil); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+func TestTextContentTemplate(t *testing.T) {
+	part, err := NewTextContentTemplate("text", "{{.value}}")
+	if err != nil {
+		t.Fatalf("new text content template: %v", err)
+	}
+	if got := part.InputVariables(); len(got) != 1 || got[0] != "value" {
+		t.Fatalf("input variables: %#v", got)
+	}
+	block, ok, err := part.FormatContentBlock(map[string]any{"value": "hi"})
+	if err != nil {
+		t.Fatalf("format content block: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected block to be rendered")
+	}
+	if got := messages.BlockToMap(block); got["type"] != "text" || got["text"] != "hi" {
+		t.Fatalf("block: %#v", got)
+	}
+}
+
+func TestTextContentTemplateEmptyAndError(t *testing.T) {
+	empty, err := NewTextContentTemplate("empty", "")
+	if err != nil {
+		t.Fatalf("new text content template: %v", err)
+	}
+	block, ok, err := empty.FormatContentBlock(nil)
+	if err != nil {
+		t.Fatalf("format content block: %v", err)
+	}
+	if ok || block != nil {
+		t.Fatalf("expected no block for empty text, got %#v", block)
+	}
+
+	part, err := NewTextContentTemplate("text", "{{.value}}")
+	if err != nil {
+		t.Fatalf("new text content template: %v", err)
+	}
+	if _, _, err := part.FormatContentBlock(nil); err == nil {
+		t.Fatal("expected missing variable error")
+	}
+}
+
+func TestNewTextContentTemplateError(t *testing.T) {
+	if _, err := NewTextContentTemplate("bad", "{{.x"); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+func TestImagePromptTemplateValidation(t *testing.T) {
+	if _, err := NewImagePromptTemplate(map[string]any{"detail": "low"}); err == nil {
+		t.Fatal("expected missing url error")
+	}
+	if _, err := NewImagePromptTemplate(map[string]any{"url": "{{.id"}); err == nil {
+		t.Fatal("expected template parse error")
+	}
+}
+
+func TestImagePromptTemplateFormatPassthroughAndError(t *testing.T) {
+	template, err := NewImagePromptTemplate(map[string]any{
+		"url":    "https://example.com/{{.id}}.png",
+		"width":  512,
+		"detail": "low",
+	})
+	if err != nil {
+		t.Fatalf("new image prompt: %v", err)
+	}
+	if got := template.InputVariables(); len(got) != 1 || got[0] != "id" {
+		t.Fatalf("input variables: %#v", got)
+	}
+	formatted, err := template.Format(map[string]any{"id": "cat"})
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	if formatted["width"] != 512 || formatted["detail"] != "low" {
+		t.Fatalf("non-templated values should pass through: %#v", formatted)
+	}
+	if _, err := template.Format(nil); err == nil {
+		t.Fatal("expected missing variable error")
+	}
+	if _, _, err := template.FormatContentBlock(nil); err == nil {
+		t.Fatal("expected format content block error")
+	}
+}
+
+func TestDictContentTemplateInputVariablesAndErrors(t *testing.T) {
+	part := NewDictContentTemplate(map[string]any{
+		"type": "text",
+		"text": "{{.value}}",
+		"nested": map[string]any{
+			"list": []any{"{{.other}}", 7},
+		},
+	})
+	got := part.InputVariables()
+	if len(got) != 2 || got[0] != "other" || got[1] != "value" {
+		t.Fatalf("input variables: %#v", got)
+	}
+	if _, _, err := part.FormatContentBlock(nil); err == nil {
+		t.Fatal("expected missing variable error")
+	}
+}
+
+func TestRichChatMessageTemplateFormatError(t *testing.T) {
+	part, err := NewTextContentTemplate("text", "{{.missing}}")
+	if err != nil {
+		t.Fatalf("new text content template: %v", err)
+	}
+	template := NewRichChatMessageTemplate(messages.RoleHuman, part)
+	if _, err := template.Format(nil); err == nil {
+		t.Fatal("expected format error")
+	}
+	if _, err := template.FormatMessages(nil); err == nil {
+		t.Fatal("expected format messages error")
+	}
+}
+
+func TestMessagesPlaceholderConversions(t *testing.T) {
+	placeholder := NewMessagesPlaceholder("history", false, 0)
+
+	got, err := placeholder.FormatMessages(map[string]any{
+		"history": messages.Human("hi"),
+	})
+	if err != nil {
+		t.Fatalf("single message: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != "hi" {
+		t.Fatalf("messages: %#v", got)
+	}
+
+	if _, err := placeholder.FormatMessages(map[string]any{"history": 42}); err == nil {
+		t.Fatal("expected invalid value type error")
+	}
+	if _, err := placeholder.FormatMessages(map[string]any{"history": []any{42}}); err == nil {
+		t.Fatal("expected invalid item error")
+	}
+	if _, err := placeholder.FormatMessages(map[string]any{
+		"history": []any{map[string]any{"content": "no role"}},
+	}); err == nil {
+		t.Fatal("expected missing role error")
+	}
+	if _, err := placeholder.FormatMessages(map[string]any{
+		"history": []any{[]string{"human"}},
+	}); err == nil {
+		t.Fatal("expected tuple length error")
+	}
+}
+
+func TestChatPromptTemplateMessagesOnly(t *testing.T) {
+	message, err := NewChatMessageTemplate(messages.RoleSystem, "system", "Be {{.style}}")
+	if err != nil {
+		t.Fatalf("new chat message template: %v", err)
+	}
+	prompt := ChatPromptTemplate{Messages: []ChatMessageTemplate{message}}
+
+	got, err := prompt.FormatMessages(map[string]any{"style": "brief"})
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != "Be brief" {
+		t.Fatalf("messages: %#v", got)
+	}
+
+	if _, err := prompt.FormatMessages(nil); err == nil {
+		t.Fatal("expected format messages error")
+	}
+}
+
+func TestChatPromptTemplatePartsError(t *testing.T) {
+	message, err := NewChatMessageTemplate(messages.RoleSystem, "system", "Be {{.style}}")
+	if err != nil {
+		t.Fatalf("new chat message template: %v", err)
+	}
+	prompt := NewChatPromptTemplateFromParts(message)
+	if _, err := prompt.FormatMessages(nil); err == nil {
+		t.Fatal("expected format messages error")
+	}
+	if _, err := prompt.FormatPrompt(nil); err == nil {
+		t.Fatal("expected format prompt error")
 	}
 }

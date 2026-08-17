@@ -244,3 +244,136 @@ func TestConvertToMessagesDictAIToolCalls(t *testing.T) {
 		t.Fatalf("tool call = %#v", tc)
 	}
 }
+
+func TestConvertToMessagesPointer(t *testing.T) {
+	msg := AI("hi")
+	msgs, err := ConvertToMessages([]any{&msg})
+	if err != nil {
+		t.Fatalf("ConvertToMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Content != "hi" {
+		t.Fatalf("pointer pass-through = %#v", msgs)
+	}
+
+	var nilMsg *Message
+	if _, err := ConvertToMessages([]any{nilMsg}); err == nil {
+		t.Fatal("expected error for nil *Message")
+	}
+}
+
+func TestConvertToMessagesDictEdgeCases(t *testing.T) {
+	// "type" is accepted as an alias for "role".
+	msgs, err := ConvertToMessages([]any{map[string]any{"type": "user", "content": "hi"}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages with type key: %v", err)
+	}
+	if msgs[0].Role != RoleHuman || msgs[0].Content != "hi" {
+		t.Fatalf("message = %#v", msgs[0])
+	}
+
+	// Non-string role is rejected.
+	if _, err := ConvertToMessages([]any{map[string]any{"role": 42, "content": "x"}}); err == nil {
+		t.Fatal("expected error for non-string role")
+	}
+
+	// Missing content key is rejected.
+	if _, err := ConvertToMessages([]any{map[string]any{"role": "human"}}); err == nil {
+		t.Fatal("expected error for missing content")
+	}
+
+	// nil content becomes the empty string.
+	msgs, err = ConvertToMessages([]any{map[string]any{"role": "human", "content": nil}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages with nil content: %v", err)
+	}
+	if msgs[0].Content != "" {
+		t.Fatalf("nil content = %q, want empty", msgs[0].Content)
+	}
+
+	// Unsupported content types are rejected.
+	if _, err := ConvertToMessages([]any{map[string]any{"role": "human", "content": 42}}); err == nil {
+		t.Fatal("expected error for int content")
+	}
+
+	// Unsupported elements inside a content list are rejected.
+	if _, err := ConvertToMessages([]any{map[string]any{"role": "human", "content": []any{42}}}); err == nil {
+		t.Fatal("expected error for int content block")
+	}
+
+	// Strings inside a content list become text blocks.
+	msgs, err = ConvertToMessages([]any{map[string]any{"role": "human", "content": []any{"plain"}}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages with string block: %v", err)
+	}
+	tb, ok := msgs[0].ContentBlocks[0].(TextBlock)
+	if !ok || tb.Text != "plain" {
+		t.Fatalf("string content block = %#v", msgs[0].ContentBlocks[0])
+	}
+
+	// id, response_metadata and additional_kwargs are carried over.
+	msgs, err = ConvertToMessages([]any{map[string]any{
+		"role": "ai", "content": "x", "id": "m1",
+		"response_metadata": map[string]any{"model": "fake"},
+		"additional_kwargs": map[string]any{"extra": true},
+	}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages with metadata: %v", err)
+	}
+	if msgs[0].ID != "m1" {
+		t.Fatalf("id = %q, want m1", msgs[0].ID)
+	}
+	if msgs[0].ResponseMetadata["model"] != "fake" {
+		t.Fatalf("response_metadata = %#v", msgs[0].ResponseMetadata)
+	}
+	if msgs[0].AdditionalKwargs["extra"] != true {
+		t.Fatalf("additional_kwargs = %#v", msgs[0].AdditionalKwargs)
+	}
+}
+
+func TestConvertToMessagesToolCallShapes(t *testing.T) {
+	msgs, err := ConvertToMessages([]any{map[string]any{
+		"role": "ai", "content": "",
+		"tool_calls": []any{
+			"not-a-map", // skipped
+			map[string]any{"id": "c1", "name": "search", "args": map[string]any{"q": "x"}}, // LangChain shape
+			map[string]any{"id": "c2", "type": "function", "function": map[string]any{ // invalid JSON args
+				"name": "bad", "arguments": "{invalid"}},
+			map[string]any{"id": "c3", "type": "function", "function": map[string]any{ // args already a map
+				"name": "m", "arguments": map[string]any{"k": "v"}}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("ConvertToMessages: %v", err)
+	}
+	calls := msgs[0].ToolCalls
+	if len(calls) != 3 {
+		t.Fatalf("tool calls = %d, want 3 (non-map skipped)", len(calls))
+	}
+	if calls[0].ID != "c1" || calls[0].Name != "search" || calls[0].Args["q"] != "x" {
+		t.Fatalf("langchain-shape tool call = %#v", calls[0])
+	}
+	if calls[1].ID != "c2" || calls[1].Name != "bad" || calls[1].Args != nil {
+		t.Fatalf("invalid-JSON tool call = %#v, want nil args", calls[1])
+	}
+	if calls[2].ID != "c3" || calls[2].Name != "m" || calls[2].Args["k"] != "v" {
+		t.Fatalf("map-args tool call = %#v", calls[2])
+	}
+}
+
+func TestConvertToOpenAIMessagesEdgeCases(t *testing.T) {
+	// Unknown roles are rejected.
+	if _, err := ConvertToOpenAIMessages([]Message{{Role: "weird", Content: "x"}}); err == nil {
+		t.Fatal("expected error for unknown role")
+	}
+
+	// The name field is emitted when set.
+	named := Human("hi")
+	named.Name = "alice"
+	out, err := ConvertToOpenAIMessages([]Message{named})
+	if err != nil {
+		t.Fatalf("ConvertToOpenAIMessages: %v", err)
+	}
+	if out[0]["name"] != "alice" {
+		t.Fatalf("name = %v, want alice", out[0]["name"])
+	}
+}

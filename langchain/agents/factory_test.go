@@ -233,3 +233,66 @@ func TestSupportsProviderStrategyStringPathIgnoresTools(t *testing.T) {
 		t.Fatal("expected string fallback path to ignore tools")
 	}
 }
+
+func TestSupportsProviderStrategyModelInfoPointer(t *testing.T) {
+	var nilInfo *ModelInfo
+	if SupportsProviderStrategy(nilInfo, nil) {
+		t.Fatal("nil *ModelInfo must not support provider strategy")
+	}
+
+	// A ModelInfo with no identifying name falls through to "" and is rejected.
+	if SupportsProviderStrategy(&ModelInfo{}, nil) {
+		t.Fatal("empty ModelInfo must not support provider strategy")
+	}
+
+	// Name resolution order: ModelName, then Model, then ModelID.
+	if !SupportsProviderStrategy(&ModelInfo{Model: "gpt-4o"}, nil) {
+		t.Fatal("gpt-4o via Model field should match the fallback list")
+	}
+	if !SupportsProviderStrategy(&ModelInfo{ModelID: "openai:gpt-4.1"}, nil) {
+		t.Fatal("gpt-4.1 via ModelID field should match the fallback list")
+	}
+
+	// A profile declaring structured_output support short-circuits the
+	// fallback list, even for an unknown model name.
+	supported := &ModelInfo{ModelName: "custom-model", Profile: map[string]any{"structured_output": true}}
+	if !SupportsProviderStrategy(supported, nil) {
+		t.Fatal("profile-declared structured_output support should be honored")
+	}
+
+	// Gemini (< 3) with tools blocks profile-declared support.
+	blocked := &ModelInfo{ModelName: "gemini-2.5-pro", Profile: map[string]any{"structured_output": true}}
+	if SupportsProviderStrategy(blocked, []any{"some-tool"}) {
+		t.Fatal("gemini-2.x with tools must block provider strategy")
+	}
+	// Without tools the same model is allowed through the profile path.
+	if !SupportsProviderStrategy(blocked, nil) {
+		t.Fatal("gemini-2.x without tools should be allowed via the profile")
+	}
+
+	// A non-bool structured_output profile value is ignored; an unknown model
+	// then fails the fallback list.
+	notBool := &ModelInfo{ModelName: "custom-model", Profile: map[string]any{"structured_output": "yes"}}
+	if SupportsProviderStrategy(notBool, nil) {
+		t.Fatal("non-bool structured_output profile value must be ignored")
+	}
+}
+
+func TestSupportsProviderStrategyModelInfoValue(t *testing.T) {
+	info := ModelInfo{ModelName: "claude-sonnet-4-6", Profile: map[string]any{"structured_output": true}}
+	if !SupportsProviderStrategy(info, nil) {
+		t.Fatal("ModelInfo value with profile support should be accepted")
+	}
+	if !SupportsProviderStrategy(ModelInfo{ModelName: "grok-4"}, nil) {
+		t.Fatal("grok-4 should match the fallback list")
+	}
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+	if got := firstNonEmpty("", "", ""); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	if got := firstNonEmpty("", "b", "c"); got != "b" {
+		t.Fatalf("expected first non-empty, got %q", got)
+	}
+}

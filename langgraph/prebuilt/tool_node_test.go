@@ -483,3 +483,166 @@ func TestToolNodeWithCheckpointerInterruptBefore(t *testing.T) {
 		t.Fatalf("messages after resume = %+v, want the echo tool result appended", msgs)
 	}
 }
+
+// TestToolNodeNilNodePanics verifies the construction-time guard: a nil
+// *tools.ToolNode is a programming error and must panic immediately.
+func TestToolNodeNilNodePanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("ToolNode(nil) did not panic")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "non-nil") {
+			t.Fatalf("ToolNode(nil) panic = %v, want a message about the nil node", r)
+		}
+	}()
+	ToolNode(nil)
+}
+
+// TestToolNodeEmptyMessagesKeyPanics verifies the construction-time guard:
+// an option that sets an empty messages key is a programming error and must
+// panic immediately.
+func TestToolNodeEmptyMessagesKeyPanics(t *testing.T) {
+	echo := funcTool(t, "echo", func(context.Context, map[string]any) (tools.Result, error) {
+		return tools.Result{Content: "ok"}, nil
+	})
+	toolNode, err := tools.NewToolNode([]tools.Tool{echo})
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("ToolNode(node, WithMessagesKey(\"\")) did not panic")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "messages key") {
+			t.Fatalf("panic = %v, want a message about the empty messages key", r)
+		}
+	}()
+	ToolNode(toolNode, WithMessagesKey(""))
+}
+
+// TestToolNodeUnhandledToolErrorPropagates verifies that when the underlying
+// tools.ToolNode declines to handle a tool error (HandleToolErrors returns
+// handled=false), the error surfaces as the node error instead of an error
+// ToolMessage.
+func TestToolNodeUnhandledToolErrorPropagates(t *testing.T) {
+	failing := funcTool(t, "failing", func(context.Context, map[string]any) (tools.Result, error) {
+		return tools.Result{}, errors.New("boom")
+	})
+	toolNode, err := tools.NewToolNode([]tools.Tool{failing},
+		tools.WithHandleToolErrors(func(error) (string, bool) { return "", false }),
+	)
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	node := ToolNode(toolNode)
+	state := map[string]any{"messages": []messages.Message{aiWithCalls(
+		messages.ToolCall{ID: "call-1", Name: "failing", Args: map[string]any{}},
+	)}}
+	update, err := node(runtime.NewRuntime(context.Background()), state)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("ToolNode() error = %v, want the unhandled tool error propagated", err)
+	}
+	if update != nil {
+		t.Fatalf("ToolNode() update = %v, want nil on error", update)
+	}
+}
+
+// TestToolNodeCommandConflictLastWins verifies the conflict semantics of the
+// merged command: when several tools in one batch return commands, the last
+// command in call order wins for conflicting Update keys, Graph, and Resume,
+// while the Goto lists concatenate in call order.
+func TestToolNodeCommandConflictLastWins(t *testing.T) {
+	first := funcTool(t, "first", func(context.Context, map[string]any) (tools.Result, error) {
+		return tools.Result{
+			Content:  "first done",
+			Artifact: &types.Command{Update: map[string]any{"shared": "first", "only-first": 1}, Goto: graph.To("n1")},
+		}, nil
+	})
+	second := funcTool(t, "second", func(context.Context, map[string]any) (tools.Result, error) {
+		return tools.Result{
+			Content: "second done",
+			Artifact: &types.Command{
+				Graph:  types.ParentGraph,
+				Update: map[string]any{"shared": "second"},
+				Resume: "resume-value",
+				Goto:   graph.To("n2"),
+			},
+		}, nil
+	})
+	toolNode, err := tools.NewToolNode([]tools.Tool{first, second})
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	node := ToolNode(toolNode)
+	state := map[string]any{"messages": []messages.Message{aiWithCalls(
+		messages.ToolCall{ID: "call-1", Name: "first", Args: map[string]any{}},
+		messages.ToolCall{ID: "call-2", Name: "second", Args: map[string]any{}},
+	)}}
+	out, err := node(runtime.NewRuntime(context.Background()), state)
+	if err != nil {
+		t.Fatalf("ToolNode() error = %v", err)
+	}
+	cmd, ok := out.(*types.Command)
+	if !ok {
+		t.Fatalf("ToolNode() result = %T, want *types.Command", out)
+	}
+	if cmd.Graph != types.ParentGraph {
+		t.Errorf("merged Graph = %q, want %q from the last command", cmd.Graph, types.ParentGraph)
+	}
+	if cmd.Resume != "resume-value" {
+		t.Errorf("merged Resume = %v, want %q from the last command", cmd.Resume, "resume-value")
+	}
+	if cmd.Update["shared"] != "second" {
+		t.Errorf("merged Update[shared] = %v, want the last command's value winning the conflict", cmd.Update["shared"])
+	}
+	if cmd.Update["only-first"] != 1 {
+		t.Errorf("merged Update[only-first] = %v, want the non-conflicting key kept", cmd.Update["only-first"])
+	}
+	if len(cmd.Goto) != 2 || cmd.Goto[0] != "n1" || cmd.Goto[1] != "n2" {
+		t.Errorf("merged Goto = %v, want both destinations concatenated in call order", cmd.Goto)
+	}
+	resultMsgs, ok := cmd.Update["messages"].([]messages.Message)
+	if !ok || len(resultMsgs) != 2 {
+		t.Fatalf("merged Update[messages] = %v, want the two tool result messages", cmd.Update["messages"])
+	}
+	if resultMsgs[0].Content != "first done" || resultMsgs[1].Content != "second done" {
+		t.Errorf("result messages = %+v, want both tool results in call order", resultMsgs)
+	}
+}
+
+// TestMergeCommandSeedFromFirstCommand verifies mergeCommand's initialization
+// path: folding into a nil accumulator seeds Graph and Resume from the first
+// command and starts a fresh Update map that does not alias the input.
+func TestMergeCommandSeedFromFirstCommand(t *testing.T) {
+	cmd := &types.Command{
+		Graph:  types.ParentGraph,
+		Update: map[string]any{"k": "v"},
+		Resume: 42,
+		Goto:   graph.To("n1"),
+	}
+	merged := mergeCommand(nil, cmd)
+	if merged.Graph != types.ParentGraph || merged.Resume != 42 {
+		t.Errorf("merged = %+v, want Graph and Resume seeded from the first command", merged)
+	}
+	if merged.Update["k"] != "v" {
+		t.Errorf("merged.Update = %v, want the first command's update merged in", merged.Update)
+	}
+	if len(merged.Goto) != 1 || merged.Goto[0] != "n1" {
+		t.Errorf("merged.Goto = %v, want the first command's destinations", merged.Goto)
+	}
+	// Folding a second command with empty Graph/Resume must not clear the
+	// values seeded by the first.
+	merged = mergeCommand(merged, &types.Command{Update: map[string]any{"k2": "v2"}})
+	if merged.Graph != types.ParentGraph || merged.Resume != 42 {
+		t.Errorf("merged after empty fields = %+v, want Graph and Resume preserved", merged)
+	}
+	if merged.Update["k"] != "v" || merged.Update["k2"] != "v2" {
+		t.Errorf("merged.Update = %v, want both commands' updates present", merged.Update)
+	}
+}

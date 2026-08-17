@@ -98,3 +98,9 @@ func TestBufferStringXMLContentBlocks(t *testing.T) {
 		t.Fatalf("BufferStringXML() = %q, want %q", got, want)
 	}
 }
+
+func TestMessageUpdateSeal(t *testing.T) {
+	// Both members of the MessageUpdate union implement the seal method.
+	Message{}.isMessageUpdate()
+	RemoveMessage{}.isMessageUpdate()
+}

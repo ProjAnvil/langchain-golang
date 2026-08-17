@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 )
@@ -196,5 +197,158 @@ func TestNamespacesAreIndependent(t *testing.T) {
 	sub, err := saver.GetTuple(ctx, Config{ThreadID: "t", CheckpointNS: "sub"})
 	if err != nil || sub == nil || sub.Checkpoint.ChannelValues["ns"] != "sub" {
 		t.Fatalf("sub namespace tuple = %+v err=%v", sub, err)
+	}
+}
+
+// TestListBeforeAndLimit verifies ListOptions.Before excludes the named
+// checkpoint and everything newer (strictly-older semantics) and that
+// ListOptions.Limit truncates the newest-first result after filtering.
+func TestListBeforeAndLimit(t *testing.T) {
+	ctx := context.Background()
+	saver := NewMemorySaver()
+
+	ids := make([]string, 4)
+	cfg := Config{ThreadID: "t"}
+	for i := range ids {
+		cp := Checkpoint{V: 1, ID: NewID(i), TS: time.Now()}
+		var err error
+		cfg, err = saver.Put(ctx, cfg, cp, Metadata{Source: "loop", Step: i}, nil)
+		if err != nil {
+			t.Fatalf("Put() error = %v", err)
+		}
+		ids[i] = cp.ID
+	}
+
+	// Before ids[2]: only ids[1] and ids[0] remain, newest first.
+	tups, err := saver.List(ctx, Config{ThreadID: "t"}, ListOptions{Before: &Config{CheckpointID: ids[2]}})
+	if err != nil {
+		t.Fatalf("List(Before) error = %v", err)
+	}
+	if len(tups) != 2 || tups[0].Checkpoint.ID != ids[1] || tups[1].Checkpoint.ID != ids[0] {
+		t.Fatalf("List(Before=%s) = %+v, want [%s %s]", ids[2], tups, ids[1], ids[0])
+	}
+
+	// A Before config with an empty CheckpointID imposes no restriction.
+	tups, err = saver.List(ctx, Config{ThreadID: "t"}, ListOptions{Before: &Config{}})
+	if err != nil {
+		t.Fatalf("List(Before with empty ID) error = %v", err)
+	}
+	if len(tups) != 4 {
+		t.Fatalf("List(Before with empty ID) = %d tuples, want 4", len(tups))
+	}
+
+	// Limit caps the newest-first ordering.
+	tups, err = saver.List(ctx, Config{ThreadID: "t"}, ListOptions{Limit: 2})
+	if err != nil {
+		t.Fatalf("List(Limit) error = %v", err)
+	}
+	if len(tups) != 2 || tups[0].Checkpoint.ID != ids[3] || tups[1].Checkpoint.ID != ids[2] {
+		t.Fatalf("List(Limit=2) = %+v, want [%s %s]", tups, ids[3], ids[2])
+	}
+}
+
+// TestPutNewVersions verifies Put merges newVersions into the stored
+// ChannelVersions, creating the map when the checkpoint has none and
+// merging into an existing one otherwise.
+func TestPutNewVersions(t *testing.T) {
+	ctx := context.Background()
+	saver := NewMemorySaver()
+
+	// Checkpoint without ChannelVersions: newVersions creates the map.
+	cp1 := Checkpoint{V: 1, ID: NewID(0), TS: time.Now()}
+	cfg, err := saver.Put(ctx, Config{ThreadID: "t"}, cp1, Metadata{Source: "loop"}, map[string]int64{"a": 2})
+	if err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	tup, err := saver.GetTuple(ctx, cfg)
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple() = %+v err=%v", tup, err)
+	}
+	if tup.Checkpoint.ChannelVersions["a"] != 2 {
+		t.Fatalf("ChannelVersions = %+v, want a:2 merged into a fresh map", tup.Checkpoint.ChannelVersions)
+	}
+
+	// Checkpoint with existing ChannelVersions: newVersions merge in.
+	cp2 := Checkpoint{V: 1, ID: NewID(1), TS: time.Now(), ChannelVersions: map[string]int64{"a": 3, "b": 1}}
+	cfg, err = saver.Put(ctx, cfg, cp2, Metadata{Source: "loop"}, map[string]int64{"b": 5, "c": 7})
+	if err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	tup, err = saver.GetTuple(ctx, cfg)
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple() = %+v err=%v", tup, err)
+	}
+	want := map[string]int64{"a": 3, "b": 5, "c": 7}
+	if !maps.Equal(tup.Checkpoint.ChannelVersions, want) {
+		t.Fatalf("ChannelVersions = %+v, want %+v", tup.Checkpoint.ChannelVersions, want)
+	}
+}
+
+// TestPutWritesMissingCheckpoint verifies PutWrites against a checkpoint
+// that does not exist errors instead of silently dropping the writes.
+func TestPutWritesMissingCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	saver := NewMemorySaver()
+
+	err := saver.PutWrites(ctx, Config{ThreadID: "nope", CheckpointID: "missing"}, []Write{{Channel: "c", Value: 1}}, "task", "")
+	if err == nil {
+		t.Fatalf("PutWrites() on missing checkpoint = nil error, want an error")
+	}
+}
+
+// TestPutWritesSlotRules pins the write-slot dedup rules: a regular channel
+// keeps the first write to an occupied (taskID, idx) slot, while a reserved
+// channel's fixed negative slot is replaced in place on rewrite.
+func TestPutWritesSlotRules(t *testing.T) {
+	ctx := context.Background()
+	saver := NewMemorySaver()
+
+	cp := Checkpoint{V: 1, ID: NewID(0), TS: time.Now()}
+	cfg, err := saver.Put(ctx, Config{ThreadID: "t"}, cp, Metadata{Source: "loop"}, nil)
+	if err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+
+	writes := func() []Write {
+		t.Helper()
+		tup, err := saver.GetTuple(ctx, cfg)
+		if err != nil || tup == nil {
+			t.Fatalf("GetTuple() = %+v err=%v", tup, err)
+		}
+		return tup.PendingWrites
+	}
+
+	// Regular channel, same task and positional idx: first write wins.
+	if err := saver.PutWrites(ctx, cfg, []Write{{Channel: "c", Value: "first"}}, "task-1", ""); err != nil {
+		t.Fatalf("PutWrites() error = %v", err)
+	}
+	if err := saver.PutWrites(ctx, cfg, []Write{{Channel: "c", Value: "second"}}, "task-1", ""); err != nil {
+		t.Fatalf("PutWrites() error = %v", err)
+	}
+	if got := writes(); len(got) != 1 || got[0].Value != "first" {
+		t.Fatalf("PendingWrites after regular rewrite = %+v, want the first write kept", got)
+	}
+
+	// A different task ID occupies a different slot even at the same idx.
+	if err := saver.PutWrites(ctx, cfg, []Write{{Channel: "c", Value: "other task"}}, "task-2", ""); err != nil {
+		t.Fatalf("PutWrites() error = %v", err)
+	}
+	if got := writes(); len(got) != 2 {
+		t.Fatalf("PendingWrites = %+v, want a separate slot per task ID", got)
+	}
+
+	// Reserved channel: the rewrite replaces the stored value in place.
+	if err := saver.PutWrites(ctx, cfg, []Write{{Channel: ReservedError, Value: "err-1"}}, "task-1", ""); err != nil {
+		t.Fatalf("PutWrites() error = %v", err)
+	}
+	if err := saver.PutWrites(ctx, cfg, []Write{{Channel: ReservedError, Value: "err-2"}}, "task-1", ""); err != nil {
+		t.Fatalf("PutWrites() error = %v", err)
+	}
+	got := writes()
+	if len(got) != 3 {
+		t.Fatalf("PendingWrites after reserved rewrite = %+v, want in-place replace (no new slot)", got)
+	}
+	if last := got[len(got)-1]; last.Channel != ReservedError || last.Value != "err-2" {
+		t.Fatalf("reserved write = %+v, want {%s err-2}", last, ReservedError)
 	}
 }

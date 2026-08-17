@@ -227,6 +227,134 @@ func TestJSONSerializerInt64Precision(t *testing.T) {
 	}
 }
 
+func TestJSONSerializerDecodeInvalidJSON(t *testing.T) {
+	s := NewJSONSerializer()
+
+	for _, tag := range []string{"json", "json+envelope"} {
+		if _, err := s.LoadsTyped(tag, []byte("{not json")); err == nil {
+			t.Fatalf("LoadsTyped(%q, invalid JSON) succeeded, want error", tag)
+		}
+	}
+}
+
+// TestJSONSerializerEncodeNestedUnregistered pins that unregistered values
+// nested inside maps, slices, and envelope payloads propagate an encode
+// error instead of being silently dropped.
+func TestJSONSerializerEncodeNestedUnregistered(t *testing.T) {
+	s := NewJSONSerializer()
+	type custom struct{ X int }
+
+	cases := map[string]any{
+		"in map":        map[string]any{"ok": 1.5, "bad": custom{X: 1}},
+		"in slice":      []any{"ok", custom{X: 2}},
+		"send arg":      types.Send{Node: "n", Arg: map[string]any{"bad": make(chan int)}},
+		"interrupt val": types.Interrupt{Value: custom{X: 3}, ID: "i"},
+		// A registered envelope nested in a slice whose own payload fails.
+		"nested envelope": []any{types.Send{Node: "n", Arg: map[string]any{"bad": custom{X: 4}}}},
+	}
+	for name, v := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := s.DumpsTyped(v); err == nil {
+				t.Fatalf("DumpsTyped(%#v) succeeded, want error", v)
+			}
+		})
+	}
+}
+
+// TestJSONSerializerMarshalError pins that a registered value whose fields
+// are not JSON-marshalable (here a chan inside a message metadata map, which
+// bypasses registry validation) surfaces a marshal error from DumpsTyped.
+func TestJSONSerializerMarshalError(t *testing.T) {
+	s := NewJSONSerializer()
+
+	msg := messages.Message{
+		Role:             messages.RoleAI,
+		Content:          "hi",
+		AdditionalKwargs: map[string]any{"bad": make(chan int)},
+	}
+	if _, _, err := s.DumpsTyped(msg); err == nil {
+		t.Fatal("DumpsTyped(message with chan in AdditionalKwargs) succeeded, want error")
+	}
+}
+
+// TestJSONSerializerDecodeNestedEnvelopeErrors pins that malformed envelopes
+// nested inside plain-JSON maps and slices propagate a decode error.
+func TestJSONSerializerDecodeNestedEnvelopeErrors(t *testing.T) {
+	s := NewJSONSerializer()
+
+	for _, doc := range []string{
+		`{"a":{"__type__":"no.Such","data":1}}`,
+		`[{"ok":1},{"__type__":"no.Such","data":1}]`,
+	} {
+		if _, err := s.LoadsTyped("json", []byte(doc)); err == nil {
+			t.Fatalf("LoadsTyped(%s) succeeded, want error", doc)
+		}
+	}
+}
+
+// TestJSONSerializerMalformedSendInterrupt pins the field-level validation of
+// the types.Send and types.Interrupt envelope payloads.
+func TestJSONSerializerMalformedSendInterrupt(t *testing.T) {
+	s := NewJSONSerializer()
+
+	docs := []string{
+		// Send: node must be a string.
+		`{"__type__":"types.Send","data":{"node":1,"arg":{}}}`,
+		// Send: a malformed envelope nested in arg propagates.
+		`{"__type__":"types.Send","data":{"node":"n","arg":{"__type__":"no.Such","data":1}}}`,
+		// Send: a non-nil arg that is not an object is an error.
+		`{"__type__":"types.Send","data":{"node":"n","arg":[1]}}`,
+		// Interrupt: id must be a string.
+		`{"__type__":"types.Interrupt","data":{"id":1,"value":"x"}}`,
+		// Interrupt: a malformed envelope nested in value propagates.
+		`{"__type__":"types.Interrupt","data":{"id":"i","value":{"__type__":"no.Such","data":1}}}`,
+	}
+	for _, doc := range docs {
+		if _, err := s.LoadsTyped("json+envelope", []byte(doc)); err == nil {
+			t.Fatalf("LoadsTyped(%s) succeeded, want error", doc)
+		}
+	}
+}
+
+// TestJSONSerializerMalformedScalarPayloads pins payload validation for the
+// scalar registry types: unparseable timestamps, invalid base64, and a
+// non-array []string payload.
+func TestJSONSerializerMalformedScalarPayloads(t *testing.T) {
+	s := NewJSONSerializer()
+
+	docs := []string{
+		`{"__type__":"time.Time","data":"not-a-time"}`,
+		`{"__type__":"[]byte","data":"!!!not-base64!!!"}`,
+		`{"__type__":"[]string","data":"x"}`,
+	}
+	for _, doc := range docs {
+		if _, err := s.LoadsTyped("json+envelope", []byte(doc)); err == nil {
+			t.Fatalf("LoadsTyped(%s) succeeded, want error", doc)
+		}
+	}
+}
+
+// TestJSONSerializerSendNilArg pins that a Send with a nil Arg stays
+// restorable: like typed nil slices, the typed nil map encodes as an empty
+// object and decodes to an empty non-nil map (JSON's nil/empty asymmetry),
+// so the non-map arg check must not fire on it.
+func TestJSONSerializerSendNilArg(t *testing.T) {
+	s := NewJSONSerializer()
+
+	send := types.Send{Node: "worker"}
+	_, got := roundTrip(t, s, send)
+	decoded, ok := got.(types.Send)
+	if !ok {
+		t.Fatalf("round trip decoded as %T, want types.Send", got)
+	}
+	if decoded.Node != send.Node {
+		t.Fatalf("round trip node = %q, want %q", decoded.Node, send.Node)
+	}
+	if decoded.Arg == nil || len(decoded.Arg) != 0 {
+		t.Fatalf("round trip arg = %#v, want empty non-nil map", decoded.Arg)
+	}
+}
+
 func TestJSONSerializerMalformedEnvelopes(t *testing.T) {
 	s := NewJSONSerializer()
 

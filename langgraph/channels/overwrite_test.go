@@ -48,9 +48,9 @@ func TestOverwriteThenAccumulateAcrossSupersteps(t *testing.T) {
 	// super-steps): Overwrite wins (base reset), then later writes — in a
 	// SUBSEQUENT super-step — accumulate via the reducer on the new base.
 	ch := NewBinaryOperator(overwriteAppend)
-	update(t, ch, []int{1, 2})                       // super-step 1: [1 2]
-	update(t, ch, NewOverwrite([]int{10}))           // super-step 2: overwrite → [10]
-	update(t, ch, []int{20})                         // super-step 3: accumulate → [10 20]
+	update(t, ch, []int{1, 2})             // super-step 1: [1 2]
+	update(t, ch, NewOverwrite([]int{10})) // super-step 2: overwrite → [10]
+	update(t, ch, []int{20})               // super-step 3: accumulate → [10 20]
 	if got := get(t, ch); !reflect.DeepEqual(got, []int{10, 20}) {
 		t.Fatalf("Get() = %v, want [10 20]", got)
 	}
@@ -163,6 +163,21 @@ func TestAsOverwriteRecognizesSentinelMap(t *testing.T) {
 	}
 }
 
+func TestAsOverwritePointerForm(t *testing.T) {
+	// The *Overwrite pointer form must be recognized just like the value form.
+	ow := NewOverwrite([]int{5})
+	val, ok := AsOverwrite(&ow)
+	if !ok {
+		t.Fatal("AsOverwrite(*Overwrite) ok = false, want true")
+	}
+	if !reflect.DeepEqual(val, []int{5}) {
+		t.Fatalf("AsOverwrite(*Overwrite) = %v, want [5]", val)
+	}
+	if !IsOverwrite(&ow) {
+		t.Fatal("IsOverwrite(*Overwrite) = false, want true")
+	}
+}
+
 func TestAsOverwriteRejectsNonOverwrite(t *testing.T) {
 	cases := []any{
 		nil,
@@ -170,7 +185,7 @@ func TestAsOverwriteRejectsNonOverwrite(t *testing.T) {
 		"plain",
 		[]int{1},
 		map[string]any{"type": "other"},
-		map[string]any{"value": 1}, // missing type discriminator
+		map[string]any{"value": 1},            // missing type discriminator
 		map[string]any{"type": OverwriteType}, // missing value key
 		map[string]any{"type": OverwriteType, "value": 1, "extra": 2}, // len != 1 but has both keys...
 	}
