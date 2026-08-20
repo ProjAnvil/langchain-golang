@@ -1,4 +1,4 @@
-.PHONY: test test-sqlite test-postgres test-integration vet-integration
+.PHONY: test test-sqlite test-postgres test-redis test-integration vet-integration
 
 ## Run the offline unit test suite (default; no network, no keys).
 test:
@@ -15,6 +15,11 @@ test-sqlite:
 ##   cd langgraph/checkpoint/postgres && go test -short ./...
 test-postgres:
 	cd langgraph/checkpoint/postgres && go test ./...
+
+## Run the nested Redis checkpoint saver module's tests (its own go.mod).
+## Fully offline: tests run against miniredis, no Redis server needed.
+test-redis:
+	cd langgraph/checkpoint/redis && go test ./...
 
 ## Run integration tests against real providers.
 ## Requires a .env file (copy .env.example) with at least one *_ENABLED=1.

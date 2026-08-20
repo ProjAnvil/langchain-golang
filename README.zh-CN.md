@@ -90,6 +90,9 @@ go get github.com/projanvil/langchain-golang/langgraph/checkpoint/sqlite
 
 # PostgreSQL
 go get github.com/projanvil/langchain-golang/langgraph/checkpoint/postgres
+
+# Redis
+go get github.com/projanvil/langchain-golang/langgraph/checkpoint/redis
 ```
 
 ---
