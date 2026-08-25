@@ -29,6 +29,7 @@ type ChatModel struct {
 	chatCompletions  bool
 	reasoningEffort  string
 	toolChoice       *ToolChoice
+	responseFormat   map[string]any
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -254,6 +255,8 @@ func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
 				Strict: m.structuredOutput.Strict,
 			},
 		}
+	} else if m.responseFormat != nil {
+		payload.Text = &textConfig{Format: toResponseFormat(m.responseFormat)}
 	}
 	if m.toolChoice != nil {
 		payload.ToolChoice = responsesToolChoice(m.toolChoice.value)

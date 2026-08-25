@@ -14,13 +14,14 @@ import (
 // `toMessage` already consume.
 
 type chatCompletionsRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []chatToolDef `json:"tools,omitempty"`
-	ToolChoice  any           `json:"tool_choice,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	MaxTokens   *int          `json:"max_tokens,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	Model          string         `json:"model"`
+	Messages       []chatMessage  `json:"messages"`
+	Tools          []chatToolDef  `json:"tools,omitempty"`
+	ToolChoice     any            `json:"tool_choice,omitempty"`
+	ResponseFormat map[string]any `json:"response_format,omitempty"`
+	Temperature    *float64       `json:"temperature,omitempty"`
+	MaxTokens      *int           `json:"max_tokens,omitempty"`
+	Stream         bool           `json:"stream,omitempty"`
 	// ReasoningEffort (low|medium|high) steers reasoning models' effort on
 	// the Chat Completions API (OpenAI o-series / gpt-5 family). Ignored by
 	// non-reasoning models and gateways that don't know the field.
@@ -95,6 +96,9 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) chatCom
 	}
 	if m.toolChoice != nil {
 		payload.ToolChoice = m.toolChoice.value
+	}
+	if m.responseFormat != nil {
+		payload.ResponseFormat = m.responseFormat
 	}
 
 	for _, message := range input {
