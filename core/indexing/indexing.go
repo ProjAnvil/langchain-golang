@@ -15,7 +15,6 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/documentloaders"
 	"github.com/projanvil/langchain-golang/core/documents"
-	"github.com/projanvil/langchain-golang/core/vectorstores"
 )
 
 // Record stores indexing metadata for one document key.
@@ -179,6 +178,11 @@ type Options struct {
 	// (indexing/api.py:208-210). When changing the key encoder, change the
 	// index as well to avoid duplicated documents.
 	KeyEncoderFunc KeyEncoderFunc
+	// UpsertKwargs are passed through to the destination's add/upsert call,
+	// mirroring Python's upsert_kwargs (indexing/api.py:308). Requires the
+	// destination to implement KwargAdder (VectorStore) or KwargUpserter
+	// (DocumentIndex); otherwise indexing fails with an error.
+	UpsertKwargs map[string]any
 }
 
 // KeyEncoderFunc derives a document's deduplication key directly, mirroring
@@ -194,16 +198,18 @@ func hashDocumentKey(doc documents.Document, options Options) (string, error) {
 	return HashDocumentWithAlgorithm(doc, options.KeyEncoder)
 }
 
-// IndexDocuments indexes documents into a vector store while skipping records
-// already present in the record manager.
+// IndexDocuments indexes documents into a vector store or document index
+// while skipping records already present in the record manager. The
+// destination must be a vectorstores.VectorStore or an indexing.DocumentIndex
+// (Python indexing/api.py:296-308).
 func IndexDocuments(
 	ctx context.Context,
 	docs []documents.Document,
 	recordManager RecordManager,
-	vectorStore vectorstores.VectorStore,
+	destination any,
 	options Options,
 ) (IndexingResult, error) {
-	batchSize, cleanupBatchSize, err := validateIndexingInputs(recordManager, vectorStore, options)
+	dest, batchSize, cleanupBatchSize, err := validateIndexingInputs(recordManager, destination, options)
 	if err != nil {
 		return IndexingResult{}, err
 	}
@@ -220,11 +226,11 @@ func IndexDocuments(
 		if end > len(docs) {
 			end = len(docs)
 		}
-		if err := indexBatch(ctx, docs[start:end], recordManager, vectorStore, options, cleanupBatchSize, &state); err != nil {
+		if err := indexBatch(ctx, docs[start:end], recordManager, dest, options, cleanupBatchSize, &state); err != nil {
 			return state.result, err
 		}
 	}
-	if err := finishCleanup(ctx, recordManager, vectorStore, options, cleanupBatchSize, &state); err != nil {
+	if err := finishCleanup(ctx, recordManager, dest, options, cleanupBatchSize, &state); err != nil {
 		return state.result, err
 	}
 	return state.result, nil
@@ -232,18 +238,20 @@ func IndexDocuments(
 
 // IndexDocumentIterator indexes documents from an iterator without loading the
 // full input into memory. The iterator is closed before the function returns.
+// The destination must be a vectorstores.VectorStore or an
+// indexing.DocumentIndex.
 func IndexDocumentIterator(
 	ctx context.Context,
 	iter documentloaders.DocumentIterator,
 	recordManager RecordManager,
-	vectorStore vectorstores.VectorStore,
+	destination any,
 	options Options,
 ) (IndexingResult, error) {
 	if iter == nil {
 		return IndexingResult{}, fmt.Errorf("document iterator is required")
 	}
 	defer iter.Close()
-	batchSize, cleanupBatchSize, err := validateIndexingInputs(recordManager, vectorStore, options)
+	dest, batchSize, cleanupBatchSize, err := validateIndexingInputs(recordManager, destination, options)
 	if err != nil {
 		return IndexingResult{}, err
 	}
@@ -271,17 +279,17 @@ func IndexDocumentIterator(
 		if len(batch) < batchSize {
 			continue
 		}
-		if err := indexBatch(ctx, batch, recordManager, vectorStore, options, cleanupBatchSize, &state); err != nil {
+		if err := indexBatch(ctx, batch, recordManager, dest, options, cleanupBatchSize, &state); err != nil {
 			return state.result, err
 		}
 		batch = batch[:0]
 	}
 	if len(batch) > 0 {
-		if err := indexBatch(ctx, batch, recordManager, vectorStore, options, cleanupBatchSize, &state); err != nil {
+		if err := indexBatch(ctx, batch, recordManager, dest, options, cleanupBatchSize, &state); err != nil {
 			return state.result, err
 		}
 	}
-	if err := finishCleanup(ctx, recordManager, vectorStore, options, cleanupBatchSize, &state); err != nil {
+	if err := finishCleanup(ctx, recordManager, dest, options, cleanupBatchSize, &state); err != nil {
 		return state.result, err
 	}
 	return state.result, nil
@@ -295,22 +303,23 @@ type indexState struct {
 
 func validateIndexingInputs(
 	recordManager RecordManager,
-	vectorStore vectorstores.VectorStore,
+	rawDestination any,
 	options Options,
-) (int, int, error) {
+) (indexDestination, int, int, error) {
 	if recordManager == nil {
-		return 0, 0, fmt.Errorf("record manager is required")
+		return nil, 0, 0, fmt.Errorf("record manager is required")
 	}
-	if vectorStore == nil {
-		return 0, 0, fmt.Errorf("vector store is required")
+	dest, err := resolveDestination(rawDestination)
+	if err != nil {
+		return nil, 0, 0, err
 	}
 	switch options.Cleanup {
 	case CleanupNone, CleanupIncremental, CleanupFull, CleanupScopedFull:
 	default:
-		return 0, 0, fmt.Errorf("cleanup should be one of %q, %q, %q, or %q; got %q", CleanupNone, CleanupIncremental, CleanupFull, CleanupScopedFull, options.Cleanup)
+		return nil, 0, 0, fmt.Errorf("cleanup should be one of %q, %q, %q, or %q; got %q", CleanupNone, CleanupIncremental, CleanupFull, CleanupScopedFull, options.Cleanup)
 	}
 	if (options.Cleanup == CleanupIncremental || options.Cleanup == CleanupScopedFull) && options.SourceIDKey == "" {
-		return 0, 0, fmt.Errorf("%s cleanup requires SourceIDKey", options.Cleanup)
+		return nil, 0, 0, fmt.Errorf("%s cleanup requires SourceIDKey", options.Cleanup)
 	}
 	batchSize := options.BatchSize
 	if batchSize <= 0 {
@@ -320,14 +329,14 @@ func validateIndexingInputs(
 	if cleanupBatchSize <= 0 {
 		cleanupBatchSize = 1000
 	}
-	return batchSize, cleanupBatchSize, nil
+	return dest, batchSize, cleanupBatchSize, nil
 }
 
 func indexBatch(
 	ctx context.Context,
 	batch []documents.Document,
 	recordManager RecordManager,
-	vectorStore vectorstores.VectorStore,
+	dest indexDestination,
 	options Options,
 	cleanupBatchSize int,
 	state *indexState,
@@ -382,7 +391,7 @@ func indexBatch(
 		}
 	}
 	if len(toAdd) > 0 {
-		if _, err := vectorStore.AddDocuments(ctx, toAdd); err != nil {
+		if err := dest.addDocuments(ctx, toAdd, options.UpsertKwargs); err != nil {
 			return err
 		}
 	}
@@ -390,7 +399,7 @@ func indexBatch(
 		return err
 	}
 	if options.Cleanup == CleanupIncremental {
-		deleted, err := cleanupKeys(ctx, recordManager, vectorStore, uniqueStrings(groupIDs), state.indexStart, cleanupBatchSize)
+		deleted, err := cleanupKeys(ctx, recordManager, dest, uniqueStrings(groupIDs), state.indexStart, cleanupBatchSize)
 		if err != nil {
 			return err
 		}
@@ -402,7 +411,7 @@ func indexBatch(
 func finishCleanup(
 	ctx context.Context,
 	recordManager RecordManager,
-	vectorStore vectorstores.VectorStore,
+	dest indexDestination,
 	options Options,
 	cleanupBatchSize int,
 	state *indexState,
@@ -415,7 +424,7 @@ func finishCleanup(
 				return nil
 			}
 		}
-		deleted, err := cleanupKeys(ctx, recordManager, vectorStore, groups, state.indexStart, cleanupBatchSize)
+		deleted, err := cleanupKeys(ctx, recordManager, dest, groups, state.indexStart, cleanupBatchSize)
 		if err != nil {
 			return err
 		}
@@ -427,7 +436,7 @@ func finishCleanup(
 func cleanupKeys(
 	ctx context.Context,
 	recordManager RecordManager,
-	vectorStore vectorstores.VectorStore,
+	dest indexDestination,
 	groupIDs []string,
 	before time.Time,
 	limit int,
@@ -447,7 +456,7 @@ func cleanupKeys(
 		if len(keys) == 0 {
 			return deleted, nil
 		}
-		if err := vectorStore.Delete(ctx, keys); err != nil {
+		if err := dest.deleteIDs(ctx, keys); err != nil {
 			return deleted, err
 		}
 		if err := recordManager.DeleteKeys(ctx, keys); err != nil {

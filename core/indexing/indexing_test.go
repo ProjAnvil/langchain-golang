@@ -739,7 +739,7 @@ func TestCleanupKeysDefaultsLimit(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	deleted, err := cleanupKeys(ctx, manager, store, nil, time.Now().Add(time.Hour), 0)
+	deleted, err := cleanupKeys(ctx, manager, vectorStoreDestination{store: store}, nil, time.Now().Add(time.Hour), 0)
 	if err != nil {
 		t.Fatalf("cleanup keys: %v", err)
 	}
