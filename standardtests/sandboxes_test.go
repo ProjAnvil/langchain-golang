@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,20 +110,136 @@ func (l *localSandbox) Read(_ context.Context, path string, opts SandboxReadOpti
 	}}
 }
 
-func (l *localSandbox) Edit(context.Context, string, string, string, bool) SandboxEditResult {
-	return SandboxEditResult{Error: "unimplemented"}
+func (l *localSandbox) Edit(_ context.Context, path string, old string, new string, replaceAll bool) SandboxEditResult {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SandboxEditResult{Error: fmt.Sprintf("File not found: '%s'", path)}
+	}
+	content := string(data)
+	count := strings.Count(content, old)
+	if count == 0 {
+		return SandboxEditResult{Error: fmt.Sprintf("String not found in '%s'", path)}
+	}
+	if count > 1 && !replaceAll {
+		return SandboxEditResult{Error: fmt.Sprintf("Multiple occurrences (%d) of %q in '%s'", count, old, path)}
+	}
+	n := 1
+	if replaceAll {
+		n = -1
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(content, old, new, n)), 0o644); err != nil {
+		return SandboxEditResult{Error: err.Error()}
+	}
+	return SandboxEditResult{Occurrences: count}
 }
 
-func (l *localSandbox) Ls(context.Context, string) SandboxLsResult {
-	return SandboxLsResult{Error: "unimplemented"}
+func (l *localSandbox) Ls(_ context.Context, path string) SandboxLsResult {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return SandboxLsResult{Error: err.Error(), Entries: []SandboxEntry{}}
+	}
+	out := make([]SandboxEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, SandboxEntry{Path: filepath.Join(path, e.Name()), IsDir: e.IsDir()})
+	}
+	return SandboxLsResult{Entries: out}
 }
 
-func (l *localSandbox) Glob(context.Context, string, string) SandboxGlobResult {
-	return SandboxGlobResult{Error: "unimplemented"}
+func (l *localSandbox) Glob(_ context.Context, pattern string, dir string) SandboxGlobResult {
+	matches := []SandboxEntry{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		rel, relErr := filepath.Rel(dir, p)
+		if relErr != nil || rel == "." {
+			return nil
+		}
+		ok, matchErr := matchSandboxGlob(pattern, rel)
+		if matchErr != nil {
+			return matchErr
+		}
+		if ok {
+			matches = append(matches, SandboxEntry{Path: rel, IsDir: d.IsDir()})
+		}
+		return nil
+	})
+	if err != nil {
+		return SandboxGlobResult{Error: err.Error()}
+	}
+	return SandboxGlobResult{Matches: matches}
 }
 
-func (l *localSandbox) Grep(context.Context, string, string, string) SandboxGrepResult {
-	return SandboxGrepResult{Error: "unimplemented"}
+// matchSandboxGlob matches a slash-separated glob pattern against a relative
+// path; the segment "**" matches any number of path segments. POSIX paths
+// only (the suite assumes a POSIX userland).
+func matchSandboxGlob(pattern string, name string) (bool, error) {
+	return matchGlobSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
+}
+
+func matchGlobSegments(pat []string, name []string) (bool, error) {
+	for len(pat) > 0 {
+		if pat[0] == "**" {
+			if len(pat) == 1 {
+				return true, nil
+			}
+			for i := 0; i <= len(name); i++ {
+				ok, err := matchGlobSegments(pat[1:], name[i:])
+				if err != nil {
+					return false, err
+				}
+				if ok {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
+		if len(name) == 0 {
+			return false, nil
+		}
+		ok, err := path.Match(pat[0], name[0])
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+		pat = pat[1:]
+		name = name[1:]
+	}
+	return len(name) == 0, nil
+}
+
+func (l *localSandbox) Grep(_ context.Context, pattern string, dir string, glob string) SandboxGrepResult {
+	matches := []SandboxGrepMatch{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if glob != "" {
+			ok, matchErr := path.Match(glob, d.Name())
+			if matchErr != nil {
+				return matchErr
+			}
+			if !ok {
+				return nil
+			}
+		}
+		data, readErr := os.ReadFile(p)
+		if readErr != nil || !utf8.Valid(data) {
+			return nil // skip unreadable and binary files
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, pattern) {
+				matches = append(matches, SandboxGrepMatch{Path: p, Line: i + 1, Text: line})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return SandboxGrepResult{Error: err.Error()}
+	}
+	return SandboxGrepResult{Matches: matches}
 }
 
 func (l *localSandbox) UploadFiles(_ context.Context, files []SandboxFileUpload) []SandboxUploadResponse {

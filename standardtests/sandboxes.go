@@ -538,4 +538,411 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
 		requireContains(t, "content", data.Content, "Line 0 with some content here")
 	})
+
+	t.Run("edit single occurrence", func(t *testing.T) { // test_edit_single_occurrence
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "edit_single.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Hello world\nGoodbye world\nHello again").Error)
+		result := backend.Edit(ctx, testPath, "Goodbye", "Farewell", false)
+		requireNoSandboxError(t, "edit", result.Error)
+		requireEqual(t, "occurrences", result.Occurrences, 1)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "content", data.Content, "Farewell world")
+		requireNotContains(t, "content", data.Content, "Goodbye")
+	})
+
+	t.Run("edit multiple without replace all", func(t *testing.T) { // test_edit_multiple_occurrences_without_replace_all
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "edit_multi.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "apple\nbanana\napple\norange\napple").Error)
+		result := backend.Edit(ctx, testPath, "apple", "pear", false)
+		requireSandboxErrorContaining(t, "edit", result.Error, "multiple")
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "content", data.Content, "apple")
+		requireNotContains(t, "content", data.Content, "pear")
+	})
+
+	t.Run("edit multiple with replace all", func(t *testing.T) { // test_edit_multiple_occurrences_with_replace_all
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "edit_replace_all.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "apple\nbanana\napple\norange\napple").Error)
+		result := backend.Edit(ctx, testPath, "apple", "pear", true)
+		requireNoSandboxError(t, "edit", result.Error)
+		requireEqual(t, "occurrences", result.Occurrences, 3)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireNotContains(t, "content", data.Content, "apple")
+		requireEqual(t, "pear count", strings.Count(data.Content, "pear"), 3)
+	})
+
+	t.Run("edit string not found", func(t *testing.T) { // test_edit_string_not_found
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "edit_not_found.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Hello world").Error)
+		result := backend.Edit(ctx, testPath, "nonexistent", "replacement", false)
+		requireSandboxErrorContaining(t, "edit", result.Error, "not found")
+	})
+
+	t.Run("edit nonexistent file", func(t *testing.T) { // test_edit_nonexistent_file
+		backend, root := factory(t)
+		result := backend.Edit(ctx, sandboxPath(root, "nonexistent_edit.txt"), "old", "new", false)
+		requireSandboxErrorContaining(t, "edit", result.Error, "not_found", "not found")
+	})
+
+	t.Run("edit special characters", func(t *testing.T) { // test_edit_special_characters
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "edit_special.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Price: $100.00\nPattern: [a-z]*\nPath: /usr/bin").Error)
+		requireNoSandboxError(t, "first edit", backend.Edit(ctx, testPath, "$100.00", "$200.00", false).Error)
+		requireNoSandboxError(t, "second edit", backend.Edit(ctx, testPath, "[a-z]*", "[0-9]+", false).Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "content", data.Content, "$200.00", "[0-9]+")
+	})
+
+	t.Run("edit multiline", func(t *testing.T) { // test_edit_multiline_support
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "edit_multiline.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Line 1\nLine 2\nLine 3").Error)
+		result := backend.Edit(ctx, testPath, "Line 1\nLine 2", "Combined", false)
+		requireNoSandboxError(t, "edit", result.Error)
+		requireEqual(t, "occurrences", result.Occurrences, 1)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "content", data.Content, "Combined")
+	})
+
+	t.Run("ls lists files", func(t *testing.T) { // test_ls_lists_files
+		backend, root := factory(t)
+		requireNoSandboxError(t, "write a", backend.Write(ctx, sandboxPath(root, "a.txt"), "a").Error)
+		requireNoSandboxError(t, "write b", backend.Write(ctx, sandboxPath(root, "b.txt"), "b").Error)
+		result := backend.Ls(ctx, root)
+		requireNoSandboxError(t, "ls", result.Error)
+		requireContainsPath(t, "ls entries", result.Entries, sandboxPath(root, "a.txt"), sandboxPath(root, "b.txt"))
+	})
+
+	t.Run("ls lists nested directories", func(t *testing.T) { // test_ls_lists_nested_directories
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "ls_nested")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir)+"/subdir && touch "+shellQuote(baseDir)+"/root.txt")
+		result := backend.Ls(ctx, baseDir)
+		requireNoSandboxError(t, "ls", result.Error)
+		requireContainsPath(t, "ls entries", result.Entries, baseDir+"/subdir", baseDir+"/root.txt")
+	})
+
+	t.Run("ls unicode filenames", func(t *testing.T) { // test_ls_unicode_filenames
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "ls_unicode")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write 测试文件", backend.Write(ctx, baseDir+"/测试文件.txt", "content").Error)
+		requireNoSandboxError(t, "write файл", backend.Write(ctx, baseDir+"/файл.txt", "content").Error)
+		result := backend.Ls(ctx, baseDir)
+		requireNoSandboxError(t, "ls", result.Error)
+		requireContainsPath(t, "ls entries", result.Entries, baseDir+"/测试文件.txt", baseDir+"/файл.txt")
+	})
+
+	t.Run("ls large directory", func(t *testing.T) { // test_ls_large_directory
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "ls_large")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir)+" && cd "+shellQuote(baseDir)+
+			" && for i in $(seq 0 49); do echo content > file_$(printf '%03d' $i).txt; done")
+		result := backend.Ls(ctx, baseDir)
+		requireNoSandboxError(t, "ls", result.Error)
+		requireLen(t, "ls entries", result.Entries, 50)
+		requireContainsPath(t, "ls entries", result.Entries, baseDir+"/file_000.txt", baseDir+"/file_049.txt")
+	})
+
+	t.Run("ls path with trailing slash", func(t *testing.T) { // test_ls_path_with_trailing_slash
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "ls_trailing")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/file.txt", "content").Error)
+		result := backend.Ls(ctx, baseDir+"/")
+		requireNoSandboxError(t, "ls", result.Error)
+		requireContainsPath(t, "ls entries", result.Entries, baseDir+"/file.txt")
+	})
+
+	t.Run("ls special characters in filenames", func(t *testing.T) { // test_ls_special_characters_in_filenames
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "ls_special")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write (1)", backend.Write(ctx, baseDir+"/file(1).txt", "content").Error)
+		requireNoSandboxError(t, "write [2]", backend.Write(ctx, baseDir+"/file[2].txt", "content").Error)
+		requireNoSandboxError(t, "write -3", backend.Write(ctx, baseDir+"/file-3.txt", "content").Error)
+		result := backend.Ls(ctx, baseDir)
+		requireNoSandboxError(t, "ls", result.Error)
+		requireContainsPath(t, "ls entries", result.Entries,
+			baseDir+"/file(1).txt", baseDir+"/file[2].txt", baseDir+"/file-3.txt")
+	})
+
+	t.Run("ls path is sanitized", func(t *testing.T) { // test_ls_path_is_sanitized
+		backend, _ := factory(t)
+		malicious := "'; import os; os.system('echo INJECTED'); #"
+		result := backend.Ls(ctx, malicious)
+		if result.Error == "" && len(result.Entries) != 0 {
+			t.Fatalf("ls of injected path: expected error or empty entries, got %v", result.Entries)
+		}
+	})
+
+	t.Run("glob single match exact", func(t *testing.T) { // test_glob
+		backend, root := factory(t)
+		requireNoSandboxError(t, "write x.py", backend.Write(ctx, sandboxPath(root, "x.py"), "print('x')").Error)
+		requireNoSandboxError(t, "write y.txt", backend.Write(ctx, sandboxPath(root, "y.txt"), "y").Error)
+		result := backend.Glob(ctx, "*.py", root)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireDeepEqual(t, "glob matches", result.Matches, []SandboxEntry{{Path: "x.py"}})
+	})
+
+	t.Run("glob basic pattern", func(t *testing.T) { // test_glob_basic_pattern
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "glob_test")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write 1", backend.Write(ctx, baseDir+"/file1.txt", "content").Error)
+		requireNoSandboxError(t, "write 2", backend.Write(ctx, baseDir+"/file2.txt", "content").Error)
+		requireNoSandboxError(t, "write 3", backend.Write(ctx, baseDir+"/file3.py", "content").Error)
+		result := backend.Glob(ctx, "*.txt", baseDir)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireLen(t, "glob matches", result.Matches, 2)
+		requireContainsPath(t, "glob matches", result.Matches, "file1.txt", "file2.txt")
+		for _, m := range result.Matches {
+			requireNotContains(t, "glob match path", m.Path, ".py")
+		}
+	})
+
+	t.Run("glob recursive pattern", func(t *testing.T) { // test_glob_recursive_pattern
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "glob_recursive")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir)+"/subdir1 "+shellQuote(baseDir)+"/subdir2")
+		requireNoSandboxError(t, "write root", backend.Write(ctx, baseDir+"/root.txt", "content").Error)
+		requireNoSandboxError(t, "write nested1", backend.Write(ctx, baseDir+"/subdir1/nested1.txt", "content").Error)
+		requireNoSandboxError(t, "write nested2", backend.Write(ctx, baseDir+"/subdir2/nested2.txt", "content").Error)
+		result := backend.Glob(ctx, "**/*.txt", baseDir)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireContainsPath(t, "glob matches", result.Matches,
+			"root.txt", "subdir1/nested1.txt", "subdir2/nested2.txt")
+	})
+
+	t.Run("glob no matches", func(t *testing.T) { // test_glob_no_matches
+		backend, root := factory(t)
+		requireNoSandboxError(t, "write", backend.Write(ctx, sandboxPath(root, "file.txt"), "content").Error)
+		result := backend.Glob(ctx, "*.py", root)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireLen(t, "glob matches", result.Matches, 0)
+	})
+
+	t.Run("glob with directories", func(t *testing.T) { // test_glob_with_directories
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "glob_dirs")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir)+"/dir1 "+shellQuote(baseDir)+"/dir2")
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/file.txt", "content").Error)
+		result := backend.Glob(ctx, "*", baseDir)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireLen(t, "glob matches", result.Matches, 3)
+		dirs, files := 0, 0
+		for _, m := range result.Matches {
+			if m.IsDir {
+				dirs++
+			} else {
+				files++
+			}
+		}
+		requireEqual(t, "dir count", dirs, 2)
+		requireEqual(t, "file count", files, 1)
+	})
+
+	t.Run("glob hidden files explicitly", func(t *testing.T) { // test_glob_hidden_files_explicitly
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "glob_hidden")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write hidden1", backend.Write(ctx, baseDir+"/.hidden1", "content").Error)
+		requireNoSandboxError(t, "write hidden2", backend.Write(ctx, baseDir+"/.hidden2", "content").Error)
+		requireNoSandboxError(t, "write visible", backend.Write(ctx, baseDir+"/visible.txt", "content").Error)
+		result := backend.Glob(ctx, ".*", baseDir)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireLen(t, "glob matches", result.Matches, 2)
+		requireContainsPath(t, "glob matches", result.Matches, ".hidden1", ".hidden2")
+	})
+
+	t.Run("glob with character class", func(t *testing.T) { // test_glob_with_character_class
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "glob_charclass")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		for _, name := range []string{"file1.txt", "file2.txt", "file3.txt", "fileA.txt"} {
+			requireNoSandboxError(t, "write "+name, backend.Write(ctx, baseDir+"/"+name, "content").Error)
+		}
+		result := backend.Glob(ctx, "file[1-2].txt", baseDir)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireDeepEqual(t, "glob matches", result.Matches,
+			[]SandboxEntry{{Path: "file1.txt"}, {Path: "file2.txt"}})
+	})
+
+	t.Run("glob with question mark", func(t *testing.T) { // test_glob_with_question_mark
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "glob_question")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		for _, name := range []string{"file1.txt", "file2.txt", "file10.txt"} {
+			requireNoSandboxError(t, "write "+name, backend.Write(ctx, baseDir+"/"+name, "content").Error)
+		}
+		result := backend.Glob(ctx, "file?.txt", baseDir)
+		requireNoSandboxError(t, "glob", result.Error)
+		requireDeepEqual(t, "glob matches", result.Matches,
+			[]SandboxEntry{{Path: "file1.txt"}, {Path: "file2.txt"}})
+	})
+
+	t.Run("grep literal", func(t *testing.T) { // test_grep_literal
+		backend, root := factory(t)
+		requireNoSandboxError(t, "write", backend.Write(ctx, sandboxPath(root, "grep.txt"), "a (b)\nstr | int\n").Error)
+		result := backend.Grep(ctx, "str | int", root, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		if len(result.Matches) == 0 {
+			t.Fatalf("grep matches: got none, want at least one")
+		}
+		if !strings.HasSuffix(result.Matches[0].Path, "/grep.txt") {
+			t.Fatalf("grep match path: got %q want suffix /grep.txt", result.Matches[0].Path)
+		}
+		requireEqual(t, "grep match text", strings.TrimSpace(result.Matches[0].Text), "str | int")
+	})
+
+	t.Run("grep basic search", func(t *testing.T) { // test_grep_basic_search
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_test")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write 1", backend.Write(ctx, baseDir+"/file1.txt", "Hello world\nGoodbye world").Error)
+		requireNoSandboxError(t, "write 2", backend.Write(ctx, baseDir+"/file2.txt", "Hello there\nGoodbye friend").Error)
+		result := backend.Grep(ctx, "Hello", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireLen(t, "grep matches", result.Matches, 2)
+		paths := result.Matches[0].Path + "\n" + result.Matches[1].Path
+		requireContains(t, "grep paths", paths, "file1.txt", "file2.txt")
+		for _, m := range result.Matches {
+			requireEqual(t, "grep line", m.Line, 1)
+		}
+	})
+
+	t.Run("grep with glob pattern", func(t *testing.T) { // test_grep_with_glob_pattern
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_glob")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write txt", backend.Write(ctx, baseDir+"/test.txt", "pattern").Error)
+		requireNoSandboxError(t, "write py", backend.Write(ctx, baseDir+"/test.py", "pattern").Error)
+		requireNoSandboxError(t, "write md", backend.Write(ctx, baseDir+"/test.md", "pattern").Error)
+		result := backend.Grep(ctx, "pattern", baseDir, "*.py")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireDeepEqual(t, "grep matches", result.Matches,
+			[]SandboxGrepMatch{{Path: baseDir + "/test.py", Line: 1, Text: "pattern"}})
+	})
+
+	t.Run("grep no matches", func(t *testing.T) { // test_grep_no_matches
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_empty")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/file.txt", "Hello world").Error)
+		result := backend.Grep(ctx, "nonexistent", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireLen(t, "grep matches", result.Matches, 0)
+	})
+
+	t.Run("grep multiple matches per file", func(t *testing.T) { // test_grep_multiple_matches_per_file
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_multi")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/fruits.txt", "apple\nbanana\napple\norange\napple").Error)
+		result := backend.Grep(ctx, "apple", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireLen(t, "grep matches", result.Matches, 3)
+		lines := make([]int, 0, len(result.Matches))
+		for _, m := range result.Matches {
+			lines = append(lines, m.Line)
+		}
+		requireDeepEqual(t, "grep lines", lines, []int{1, 3, 5})
+	})
+
+	t.Run("grep literal string matching", func(t *testing.T) { // test_grep_literal_string_matching
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_literal")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/numbers.txt", "test123\ntest456\nabcdef").Error)
+		result := backend.Grep(ctx, "test123", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireLen(t, "grep matches", result.Matches, 1)
+		requireContains(t, "grep match text", result.Matches[0].Text, "test123")
+	})
+
+	t.Run("grep case sensitivity", func(t *testing.T) { // test_grep_case_sensitivity
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_case")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/case.txt", "Hello\nhello\nHELLO").Error)
+		result := backend.Grep(ctx, "Hello", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireDeepEqual(t, "grep matches", result.Matches,
+			[]SandboxGrepMatch{{Path: baseDir + "/case.txt", Line: 1, Text: "Hello"}})
+	})
+
+	t.Run("grep unicode pattern", func(t *testing.T) { // test_grep_unicode_pattern
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_unicode")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/unicode.txt", "Hello 世界\nПривет мир\n测试 pattern").Error)
+		result := backend.Grep(ctx, "世界", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireLen(t, "grep matches", result.Matches, 1)
+		requireContains(t, "grep match text", result.Matches[0].Text, "世界")
+	})
+
+	t.Run("grep with special characters", func(t *testing.T) { // test_grep_with_special_characters
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_special")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/special.txt", "Price: $100\nPath: /usr/bin\nPattern: [a-z]*").Error)
+		dollar := backend.Grep(ctx, "$100", baseDir, "")
+		requireNoSandboxError(t, "grep $100", dollar.Error)
+		requireLen(t, "dollar matches", dollar.Matches, 1)
+		requireContains(t, "dollar match text", dollar.Matches[0].Text, "$100")
+		brackets := backend.Grep(ctx, "[a-z]*", baseDir, "")
+		requireNoSandboxError(t, "grep [a-z]*", brackets.Error)
+		requireLen(t, "bracket matches", brackets.Matches, 1)
+		requireContains(t, "bracket match text", brackets.Matches[0].Text, "[a-z]*")
+	})
+
+	t.Run("grep empty directory", func(t *testing.T) { // test_grep_empty_directory
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_empty_dir")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		result := backend.Grep(ctx, "anything", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireLen(t, "grep matches", result.Matches, 0)
+	})
+
+	t.Run("grep across nested directories", func(t *testing.T) { // test_grep_across_nested_directories
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_nested")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir)+"/sub1/sub2")
+		requireNoSandboxError(t, "write root", backend.Write(ctx, baseDir+"/root.txt", "target here").Error)
+		requireNoSandboxError(t, "write l1", backend.Write(ctx, baseDir+"/sub1/level1.txt", "target here").Error)
+		requireNoSandboxError(t, "write l2", backend.Write(ctx, baseDir+"/sub1/sub2/level2.txt", "target here").Error)
+		result := backend.Grep(ctx, "target", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireLen(t, "grep matches", result.Matches, 3)
+	})
+
+	t.Run("grep with globstar include pattern", func(t *testing.T) { // test_grep_with_globstar_include_pattern
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_globstar")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir)+"/a/b")
+		requireNoSandboxError(t, "write py", backend.Write(ctx, baseDir+"/a/b/target.py", "needle").Error)
+		requireNoSandboxError(t, "write txt", backend.Write(ctx, baseDir+"/a/ignore.txt", "needle").Error)
+		result := backend.Grep(ctx, "needle", baseDir, "*.py")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireDeepEqual(t, "grep matches", result.Matches,
+			[]SandboxGrepMatch{{Path: baseDir + "/a/b/target.py", Line: 1, Text: "needle"}})
+	})
+
+	t.Run("grep reports correct line numbers", func(t *testing.T) { // test_grep_reports_correct_line_numbers
+		backend, root := factory(t)
+		baseDir := sandboxPath(root, "grep_multiline")
+		backend.Execute(ctx, "mkdir -p "+shellQuote(baseDir))
+		requireNoSandboxError(t, "write", backend.Write(ctx, baseDir+"/long.txt", numberedLines("Line %d", 1, 100)).Error)
+		result := backend.Grep(ctx, "Line 50", baseDir, "")
+		requireNoSandboxError(t, "grep", result.Error)
+		requireDeepEqual(t, "grep matches", result.Matches,
+			[]SandboxGrepMatch{{Path: baseDir + "/long.txt", Line: 50, Text: "Line 50"}})
+	})
 }
