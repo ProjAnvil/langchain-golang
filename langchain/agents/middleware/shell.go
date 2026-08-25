@@ -116,6 +116,15 @@ func NewShellToolMiddleware(workspaceRoot string, opts ...ShellToolOption) (*She
 	if err := m.Policy.Validate(); err != nil {
 		return nil, err
 	}
+	// Python validates execution-policy fields at construction (__post_init__);
+	// Go policies are plain structs, so validation hooks in here. Policies
+	// without a Validate method (e.g. CodexSandboxExecutionPolicy, whose
+	// binary/platform errors surface at spawn like Python's) are unaffected.
+	if validating, ok := m.ExecutionPolicy.(interface{ Validate() error }); ok {
+		if err := validating.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if m.WorkspaceRoot == "" {
 		temp, err := os.MkdirTemp("", ShellTempPrefix)
 		if err != nil {
