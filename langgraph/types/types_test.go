@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/projanvil/langchain-golang/core/messages"
 )
 
 func TestSentinelConstants(t *testing.T) {
@@ -100,5 +102,21 @@ func TestCommandZeroValue(t *testing.T) {
 	}
 	if cmd.Goto != nil || cmd.Update != nil || cmd.Resume != nil {
 		t.Errorf("zero Command should have nil Goto/Update/Resume, got %+v", cmd)
+	}
+}
+
+func TestCommandIsToolOutput(t *testing.T) {
+	// Mirrors Python's Command(Generic[N], ToolOutputMixin)
+	// (langgraph/types.py:759): a Command is a direct tool output.
+	var cmd any = &Command{Update: map[string]any{"k": "v"}}
+	out, ok := cmd.(messages.ToolOutput)
+	if !ok {
+		t.Fatal("*Command does not satisfy messages.ToolOutput")
+	}
+	if !out.IsToolOutput() {
+		t.Fatal("IsToolOutput() = false, want true")
+	}
+	if _, ok := any(Command{}).(messages.ToolOutput); ok {
+		t.Fatal("Command value (non-pointer) must not satisfy messages.ToolOutput; tools signal control flow with *Command")
 	}
 }

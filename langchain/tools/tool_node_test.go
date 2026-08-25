@@ -539,3 +539,29 @@ func TestToolNodeWithToolNodeStore(t *testing.T) {
 		t.Fatalf("expected nil store without WithToolNodeStore, sawStore=%d sawNilStore=%d", sawStore.Load(), sawNilStore.Load())
 	}
 }
+
+// customToolOutput is a ToolOutput-marked artifact that is not a
+// *types.Command: it must be ignored, not mistaken for a command.
+type customToolOutput struct{ marker string }
+
+func (customToolOutput) IsToolOutput() bool { return true }
+
+// Mirrors the recognition half of Python's ToolOutputMixin contract: only
+// marked artifacts are considered direct tool outputs, and only *types.Command
+// is surfaced as a command (test_tool_node.py::test_tool_node_command
+// exercises the Python equivalent end to end).
+func TestCommandFromArtifactToolOutputGate(t *testing.T) {
+	cmd := &types.Command{Update: map[string]any{"k": "v"}}
+	if got := commandFromArtifact(cmd); got != cmd {
+		t.Errorf("commandFromArtifact(*Command) = %v, want the command itself", got)
+	}
+	if got := commandFromArtifact(customToolOutput{marker: "x"}); got != nil {
+		t.Errorf("commandFromArtifact(customToolOutput) = %v, want nil (marked but not a Command)", got)
+	}
+	if got := commandFromArtifact("plain"); got != nil {
+		t.Errorf("commandFromArtifact(string) = %v, want nil (unmarked)", got)
+	}
+	if got := commandFromArtifact(nil); got != nil {
+		t.Errorf("commandFromArtifact(nil) = %v, want nil", got)
+	}
+}

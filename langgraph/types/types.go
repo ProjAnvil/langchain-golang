@@ -11,6 +11,8 @@ package types
 import (
 	"fmt"
 	"time"
+
+	"github.com/projanvil/langchain-golang/core/messages"
 )
 
 // START and END are sentinel node names, matching Python's
@@ -44,6 +46,7 @@ type Send struct {
 
 // Command carries state updates and/or routing decisions returned by a node,
 // matching (a scoped-down subset of) Python's `langgraph.types.Command`.
+// It implements messages.ToolOutput, mirroring Python's Command(ToolOutputMixin) mixin (see IsToolOutput).
 type Command struct {
 	// Graph selects which graph the command applies to. Empty means the
 	// current graph; ParentGraph targets the closest parent graph (see
@@ -61,6 +64,16 @@ type Command struct {
 	// conditional edges.
 	Goto []any
 }
+
+// Compile-time assertion mirroring Python's class Command(Generic[N],
+// ToolOutputMixin) (langgraph/types.py:759).
+var _ messages.ToolOutput = (*Command)(nil)
+
+// IsToolOutput marks Command as a value tools may return directly (Python's
+// ToolOutputMixin): a tool signals graph control flow by placing a *Command in
+// its Result.Artifact, and tool executors recognize it via the
+// messages.ToolOutput interface. Always returns true.
+func (*Command) IsToolOutput() bool { return true }
 
 // Interrupt describes a pause in graph execution surfaced to the caller,
 // matching Python's `langgraph.types.Interrupt`.

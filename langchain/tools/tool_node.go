@@ -316,9 +316,17 @@ func (n *ToolNode) execute(ctx context.Context, req ToolCallRequest) (ToolCallOu
 
 // commandFromArtifact extracts the *types.Command a tool placed in its
 // Result.Artifact to signal graph control flow, or nil if the artifact is
-// absent or of any other type.
+// absent or of any other type. Recognition goes through the
+// messages.ToolOutput marker interface (Python's ToolOutputMixin,
+// langchain_core/messages/tool.py:16): only ToolOutput-marked artifacts are
+// considered direct tool outputs at all, and only *types.Command among them
+// carries graph control flow in this port.
 func commandFromArtifact(artifact any) *types.Command {
-	cmd, _ := artifact.(*types.Command)
+	out, ok := artifact.(messages.ToolOutput)
+	if !ok {
+		return nil
+	}
+	cmd, _ := out.(*types.Command)
 	return cmd
 }
 
