@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // database/sql driver name `sqlite` (pure Go, no cgo)
@@ -337,6 +338,117 @@ func (s *Saver) DeleteThread(ctx context.Context, threadID string) error {
 	return nil
 }
 
+// DeleteForRuns implements checkpoint.Saver: every checkpoint whose metadata
+// run_id is listed, plus its writes, across all threads and namespaces
+// (json_extract reads the metadata blob's run_id; NULL — no run_id — never
+// matches because runIDs entries are non-empty strings and a SQL NULL never
+// equals an IN-list element). The DeltaChannel warning on the Saver
+// interface (base/__init__.py:340-346) applies: deleting a run can sever a
+// live thread's delta-channel ancestor history — documented only, mirroring
+// Python.
+func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
+	if len(runIDs) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(runIDs))
+	args := make([]any, len(runIDs))
+	for i, id := range runIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	in := strings.Join(placeholders, ", ")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete for runs: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM writes WHERE (thread_id, checkpoint_ns, checkpoint_id) IN (SELECT thread_id, checkpoint_ns, checkpoint_id FROM checkpoints WHERE json_extract(metadata, '$.run_id') IN (`+in+`))`,
+		args...); err != nil {
+		return fmt.Errorf("sqlite: delete writes for runs: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM checkpoints WHERE json_extract(metadata, '$.run_id') IN (`+in+`)`,
+		args...); err != nil {
+		return fmt.Errorf("sqlite: delete checkpoints for runs: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: delete for runs: %w", err)
+	}
+	return nil
+}
+
+// CopyThread implements checkpoint.Saver: INSERT ... SELECT with the thread
+// replaced, preserving checkpoint IDs, namespaces, parent links, and writes
+// (Python's copy_thread must carry the complete parent chain,
+// base/__init__.py:361-371). A nonexistent source inserts nothing.
+func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: copy thread %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) SELECT ?, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata FROM checkpoints WHERE thread_id = ?`,
+		dstThreadID, srcThreadID); err != nil {
+		return fmt.Errorf("sqlite: copy checkpoints %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value, task_path) SELECT ?, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value, task_path FROM writes WHERE thread_id = ?`,
+		dstThreadID, srcThreadID); err != nil {
+		return fmt.Errorf("sqlite: copy writes %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: copy thread %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	return nil
+}
+
+// Prune implements checkpoint.Saver. keep_latest keeps, per namespace, the
+// row with the maximum checkpoint_id (IDs are lexicographically ordered,
+// checkpoint.NewID); delete removes the whole thread. The writes DELETE runs
+// BEFORE the checkpoints DELETE so its NOT IN subquery still sees the full
+// pre-prune table. The DeltaChannel warning on the Saver interface
+// (base/__init__.py:387-413) applies: naive keep_latest can sever
+// delta-channel ancestor history — documented only, mirroring Python.
+func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) error {
+	switch strategy {
+	case checkpoint.PruneKeepLatest, checkpoint.PruneDeleteAll:
+	default:
+		return fmt.Errorf("sqlite: unknown prune strategy %q", strategy)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: prune: %w", err)
+	}
+	defer tx.Rollback()
+	const keepLatestPerNS = `(SELECT checkpoint_ns, MAX(checkpoint_id) FROM checkpoints WHERE thread_id = ? GROUP BY checkpoint_ns)`
+	for _, threadID := range threadIDs {
+		if strategy == checkpoint.PruneDeleteAll {
+			for _, table := range []string{"checkpoints", "writes"} {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE thread_id = ?`, threadID); err != nil {
+					return fmt.Errorf("sqlite: prune(delete) thread %q: %w", threadID, err)
+				}
+			}
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM writes WHERE thread_id = ? AND (checkpoint_ns, checkpoint_id) NOT IN `+keepLatestPerNS,
+			threadID, threadID); err != nil {
+			return fmt.Errorf("sqlite: prune writes for thread %q: %w", threadID, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM checkpoints WHERE thread_id = ? AND (checkpoint_ns, checkpoint_id) NOT IN `+keepLatestPerNS,
+			threadID, threadID); err != nil {
+			return fmt.Errorf("sqlite: prune checkpoints for thread %q: %w", threadID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: prune: %w", err)
+	}
+	return nil
+}
+
 // resolveCheckpointID resolves cfg to a stored checkpoint ID — cfg's own ID,
 // or the latest for the thread/namespace when empty — and errors when no such
 // checkpoint exists, matching MemorySaver's PutWrites behavior.
@@ -604,10 +716,11 @@ type storedMetadata struct {
 	Source  string            `json:"source"`
 	Step    int               `json:"step"`
 	Parents map[string]string `json:"parents,omitempty"`
+	RunID   string            `json:"run_id,omitempty"`
 }
 
 func encodeMetadata(md checkpoint.Metadata) ([]byte, error) {
-	return json.Marshal(storedMetadata{Source: md.Source, Step: md.Step, Parents: md.Parents})
+	return json.Marshal(storedMetadata{Source: md.Source, Step: md.Step, Parents: md.Parents, RunID: md.RunID})
 }
 
 func decodeMetadata(blob []byte) (checkpoint.Metadata, error) {
@@ -618,5 +731,5 @@ func decodeMetadata(blob []byte) (checkpoint.Metadata, error) {
 	if err := json.Unmarshal(blob, &stored); err != nil {
 		return checkpoint.Metadata{}, err
 	}
-	return checkpoint.Metadata{Source: stored.Source, Step: stored.Step, Parents: stored.Parents}, nil
+	return checkpoint.Metadata{Source: stored.Source, Step: stored.Step, Parents: stored.Parents, RunID: stored.RunID}, nil
 }

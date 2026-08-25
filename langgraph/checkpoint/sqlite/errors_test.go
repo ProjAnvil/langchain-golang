@@ -192,6 +192,97 @@ func TestClosedSaverErrors(t *testing.T) {
 	if err := s.DeleteThread(ctx, "t1"); err == nil {
 		t.Error("DeleteThread on closed Saver: expected error, got nil")
 	}
+	if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+		t.Error("DeleteForRuns on closed Saver: expected error, got nil")
+	}
+	if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+		t.Error("CopyThread on closed Saver: expected error, got nil")
+	}
+	if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+		t.Error("Prune on closed Saver: expected error, got nil")
+	}
+}
+
+// TestManagementDroppedTables forces the management methods' statements to
+// fail independently by dropping tables (or rejecting deletes via trigger)
+// out from under an open Saver — the same technique as
+// TestDeleteThreadDroppedTables.
+func TestManagementDroppedTables(t *testing.T) {
+	ctx := context.Background()
+
+	// DeleteForRuns's first statement (the writes DELETE) selects from
+	// checkpoints, so dropping either table fails it; a delete-rejecting
+	// trigger on checkpoints fails the second statement after the first
+	// succeeded (the trigger needs a matching row to fire on).
+	t.Run("delete_for_runs writes dropped", func(t *testing.T) {
+		path := dbPath(t)
+		s := newSaver(t, path)
+		rawExec(t, path, `DROP TABLE writes`)
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with dropped writes table: expected error, got nil")
+		}
+	})
+	t.Run("delete_for_runs checkpoints delete rejected", func(t *testing.T) {
+		path := dbPath(t)
+		s := newSaver(t, path)
+		if _, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{RunID: "r1"}, nil); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		rawExec(t, path, `CREATE TRIGGER reject_cp_delete BEFORE DELETE ON checkpoints BEGIN SELECT RAISE(ABORT, 'rejected'); END`)
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with rejecting checkpoints trigger: expected error, got nil")
+		}
+	})
+
+	t.Run("copy_thread checkpoints dropped", func(t *testing.T) {
+		path := dbPath(t)
+		s := newSaver(t, path)
+		rawExec(t, path, `DROP TABLE checkpoints`)
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with dropped checkpoints table: expected error, got nil")
+		}
+	})
+	t.Run("copy_thread writes dropped", func(t *testing.T) {
+		path := dbPath(t)
+		s := newSaver(t, path)
+		rawExec(t, path, `DROP TABLE writes`)
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with dropped writes table: expected error, got nil")
+		}
+	})
+
+	t.Run("prune keep_latest writes dropped", func(t *testing.T) {
+		path := dbPath(t)
+		s := newSaver(t, path)
+		rawExec(t, path, `DROP TABLE writes`)
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+			t.Fatal("Prune(keep_latest) with dropped writes table: expected error, got nil")
+		}
+	})
+	t.Run("prune keep_latest checkpoints delete rejected", func(t *testing.T) {
+		path := dbPath(t)
+		s := newSaver(t, path)
+		cfg := checkpoint.Config{ThreadID: "t1"}
+		for i := 1; i <= 2; i++ {
+			next, err := s.Put(ctx, cfg, sampleCheckpoint(checkpoint.NewID(i)), checkpoint.Metadata{}, nil)
+			if err != nil {
+				t.Fatalf("Put %d: %v", i, err)
+			}
+			cfg = next
+		}
+		rawExec(t, path, `CREATE TRIGGER reject_cp_delete BEFORE DELETE ON checkpoints BEGIN SELECT RAISE(ABORT, 'rejected'); END`)
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+			t.Fatal("Prune(keep_latest) with rejecting checkpoints trigger: expected error, got nil")
+		}
+	})
+	t.Run("prune delete checkpoints dropped", func(t *testing.T) {
+		path := dbPath(t)
+		s := newSaver(t, path)
+		rawExec(t, path, `DROP TABLE checkpoints`)
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneDeleteAll); err == nil {
+			t.Fatal("Prune(delete) with dropped checkpoints table: expected error, got nil")
+		}
+	})
 }
 
 // TestDeleteThreadDroppedTables forces the two DELETE statements to fail
