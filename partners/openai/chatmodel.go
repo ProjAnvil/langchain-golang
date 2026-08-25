@@ -28,6 +28,7 @@ type ChatModel struct {
 	structuredOutput *structuredoutput.JSONSchema
 	chatCompletions  bool
 	reasoningEffort  string
+	toolChoice       *ToolChoice
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -150,6 +151,15 @@ func (m ChatModel) WithReasoningEffort(effort string) ChatModel {
 	return next
 }
 
+// WithToolChoice returns a copy of the model that sends tool_choice on both
+// the Responses and Chat Completions APIs, mirroring Python
+// bind_tools(tool_choice=...).
+func (m ChatModel) WithToolChoice(choice ToolChoice) ChatModel {
+	next := m
+	next.toolChoice = &choice
+	return next
+}
+
 // WithStructuredOutput returns a copy of the model configured for provider-native
 // JSON-schema output.
 func (m ChatModel) WithStructuredOutput(
@@ -245,6 +255,9 @@ func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
 			},
 		}
 	}
+	if m.toolChoice != nil {
+		payload.ToolChoice = responsesToolChoice(m.toolChoice.value)
+	}
 
 	var instructions []string
 	for _, message := range input {
@@ -294,6 +307,7 @@ type requestPayload struct {
 	Temperature     *float64    `json:"temperature,omitempty"`
 	MaxOutputTokens *int        `json:"max_output_tokens,omitempty"`
 	Tools           []toolSpec  `json:"tools,omitempty"`
+	ToolChoice      any         `json:"tool_choice,omitempty"`
 	Text            *textConfig `json:"text,omitempty"`
 	Stream          bool        `json:"stream,omitempty"`
 }

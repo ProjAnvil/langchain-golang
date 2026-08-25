@@ -17,6 +17,7 @@ type chatCompletionsRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Tools       []chatToolDef `json:"tools,omitempty"`
+	ToolChoice  any           `json:"tool_choice,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
@@ -91,6 +92,9 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) chatCom
 	}
 	if m.reasoningEffort != "" {
 		payload.ReasoningEffort = m.reasoningEffort
+	}
+	if m.toolChoice != nil {
+		payload.ToolChoice = m.toolChoice.value
 	}
 
 	for _, message := range input {
