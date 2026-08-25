@@ -31,6 +31,30 @@ type StateSnapshot struct {
 	// Interrupts holds the interrupts pending against this checkpoint when it
 	// records a paused run; empty otherwise.
 	Interrupts []types.Interrupt
+	// Tasks describes the tasks planned for the superstep after this
+	// checkpoint, mirroring Python's StateSnapshot.tasks (tuple of
+	// PregelTask, types.py:597). Empty when the run had reached END.
+	Tasks []SnapshotTask
+}
+
+// SnapshotTask describes one task planned for the superstep after a
+// checkpoint — the scoped Go subset of Python's PregelTask (types.py:597):
+// id, name, path, interrupts. (Python's error/result/subgraph-state fields
+// are out of scope for this port; pending state writes of completed sibling
+// tasks are replayed via resume, not surfaced here.)
+type SnapshotTask struct {
+	// ID is the task's deterministic planned ID (graph.TaskID over the
+	// owning checkpoint, step, node, and Send arg).
+	ID string
+	// Name is the node the task will invoke (PregelTask.name).
+	Name string
+	// Path is the task path recorded on the task's pending writes
+	// (checkpoint.Write.TaskPath); empty at all current call sites, kept for
+	// parity with PregelTask.path.
+	Path string
+	// Interrupts are the interrupts pending against this task
+	// (PregelTask.interrupts).
+	Interrupts []types.Interrupt
 }
 
 // BulkUpdate is a single state update within a bulk superstep, mirroring one
@@ -226,8 +250,10 @@ func (g *CompiledGraph) snapshotFromTuple(tup *checkpoint.Tuple) StateSnapshot {
 		}
 	}
 	next := make([]string, 0, len(tup.Checkpoint.Next))
+	tasks := make([]SnapshotTask, 0, len(tup.Checkpoint.Next))
 	for _, pt := range tup.Checkpoint.Next {
 		next = append(next, pt.Node)
+		tasks = append(tasks, snapshotTask(pt, tup.PendingWrites))
 	}
 	return StateSnapshot{
 		Values:       values,
@@ -237,7 +263,32 @@ func (g *CompiledGraph) snapshotFromTuple(tup *checkpoint.Tuple) StateSnapshot {
 		CreatedAt:    tup.Checkpoint.TS,
 		ParentConfig: tup.ParentConfig,
 		Interrupts:   interruptsFromWrites(tup.PendingWrites),
+		Tasks:        tasks,
 	}
+}
+
+// snapshotTask projects one planned task plus its pending-write attachments
+// into a SnapshotTask, mirroring the per-task interrupt collection of
+// Python's tasks_w_writes (pregel/debug.py:231-236). Interrupt writes match
+// the task by planned ID (in-node interrupts, persistInterruptAndResume) or
+// — for interrupt_before/after pauses — by NODE NAME, which the boundary
+// path uses as the write's task ID (persistInterrupts, resume.go:57-66).
+func snapshotTask(pt checkpoint.PlannedTask, writes []checkpoint.Write) SnapshotTask {
+	st := SnapshotTask{ID: pt.ID, Name: pt.Node}
+	for _, w := range writes {
+		if w.TaskID != pt.ID && w.TaskID != pt.Node {
+			continue
+		}
+		if st.Path == "" {
+			st.Path = w.TaskPath
+		}
+		if w.Channel == checkpoint.ReservedInterrupt {
+			if intr, ok := w.Value.(types.Interrupt); ok {
+				st.Interrupts = append(st.Interrupts, intr)
+			}
+		}
+	}
+	return st
 }
 
 // reconstructDeltaChannels fills in delta channels that used sentinel-only
