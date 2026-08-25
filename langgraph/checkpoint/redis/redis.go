@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -272,6 +273,174 @@ func (s *Saver) DeleteThread(ctx context.Context, threadID string) error {
 		}
 		if err := s.client.Del(ctx, keys...).Err(); err != nil {
 			return fmt.Errorf("redis: delete thread %q: %w", threadID, err)
+		}
+	}
+	return nil
+}
+
+// DeleteForRuns implements checkpoint.Saver: scans every checkpoint hash,
+// matches the metadata run_id, and deletes matching hashes plus their writes
+// and ordering-zset members. Run IDs span threads, so this is a full
+// checkpoint-key scan (the key layout has no run_id index — same shape as
+// Python, which filters on the metadata column). The DeltaChannel warning on
+// the Saver interface (base/__init__.py:340-346) applies: deleting a run can
+// sever a live thread's delta-channel ancestor history — documented only,
+// mirroring Python.
+func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
+	if len(runIDs) == 0 {
+		return nil
+	}
+	drop := make(map[string]bool, len(runIDs))
+	for _, id := range runIDs {
+		drop[id] = true
+	}
+	keys, err := s.scanKeys(ctx, checkpointPrefix+`*`)
+	if err != nil {
+		return fmt.Errorf("redis: delete for runs: scan: %w", err)
+	}
+	for _, key := range keys {
+		mdBlob, err := s.client.HGet(ctx, key, fieldMetadata).Result()
+		if err != nil {
+			return fmt.Errorf("redis: delete for runs: read metadata of %q: %w", key, err)
+		}
+		md, err := decodeMetadata([]byte(mdBlob))
+		if err != nil {
+			return fmt.Errorf("redis: delete for runs: decode metadata of %q: %w", key, err)
+		}
+		if md.RunID == "" || !drop[md.RunID] {
+			continue
+		}
+		parts, ok := parsePrefixedKey(checkpointPrefix, key)
+		if !ok || len(parts) != 3 {
+			return fmt.Errorf("redis: delete for runs: malformed checkpoint key %q", key)
+		}
+		threadID, ns, cpID := parts[0], parts[1], parts[2]
+		writeKeys, err := s.scanKeys(ctx, writeScanPattern(threadID, ns, cpID))
+		if err != nil {
+			return fmt.Errorf("redis: delete for runs: scan writes of %q: %w", key, err)
+		}
+		pipe := s.client.Pipeline()
+		pipe.Del(ctx, append(writeKeys, key)...)
+		pipe.ZRem(ctx, zsetKey(threadID, ns), cpID)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return fmt.Errorf("redis: delete for runs: delete %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// CopyThread implements checkpoint.Saver: every checkpoint hash, its writes,
+// and its zset membership are duplicated under the destination thread
+// (checkpoint IDs, namespaces, and parent links preserved — the complete
+// parent chain, per Python's copy_thread contract). A nonexistent source is
+// a no-op. applyTTL stamps the configured TTL on the new keys, matching Put.
+func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error {
+	keys, err := s.scanKeys(ctx, checkpointScanPattern(srcThreadID))
+	if err != nil {
+		return fmt.Errorf("redis: copy thread %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	srcWritePrefix := checkpointWritePrefix + escapeKeyComponent(srcThreadID) + ":"
+	dstWritePrefix := checkpointWritePrefix + escapeKeyComponent(dstThreadID) + ":"
+	for _, key := range keys {
+		parts, ok := parsePrefixedKey(checkpointPrefix, key)
+		if !ok || len(parts) != 3 {
+			return fmt.Errorf("redis: copy thread: malformed checkpoint key %q", key)
+		}
+		ns, cpID := parts[1], parts[2]
+		fields, err := s.client.HGetAll(ctx, key).Result()
+		if err != nil {
+			return fmt.Errorf("redis: copy thread: read %q: %w", key, err)
+		}
+		if len(fields) == 0 {
+			continue // vanished between SCAN and HGETALL
+		}
+		dstKey := checkpointKey(dstThreadID, ns, cpID)
+		dstZSet := zsetKey(dstThreadID, ns)
+		fieldPairs := make([]any, 0, len(fields)*2)
+		for k, v := range fields {
+			fieldPairs = append(fieldPairs, k, v)
+		}
+		pipe := s.client.Pipeline()
+		pipe.HSet(ctx, dstKey, fieldPairs...)
+		pipe.ZAdd(ctx, dstZSet, goredis.Z{Score: 0, Member: cpID})
+		if _, err := pipe.Exec(ctx); err != nil {
+			return fmt.Errorf("redis: copy thread: write %q: %w", dstKey, err)
+		}
+		s.applyTTL(ctx, dstKey, dstZSet)
+		// Pending writes of this checkpoint: GET + SET under the dst thread
+		// component (string swap — the thread is the first write-key
+		// component).
+		writeKeys, err := s.scanKeys(ctx, writeScanPattern(srcThreadID, ns, cpID))
+		if err != nil {
+			return fmt.Errorf("redis: copy thread: scan writes of %q: %w", key, err)
+		}
+		for _, wk := range writeKeys {
+			val, err := s.client.Get(ctx, wk).Result()
+			if err != nil {
+				return fmt.Errorf("redis: copy thread: read write %q: %w", wk, err)
+			}
+			dstWK := dstWritePrefix + strings.TrimPrefix(wk, srcWritePrefix)
+			if err := s.client.Set(ctx, dstWK, val, 0).Err(); err != nil {
+				return fmt.Errorf("redis: copy thread: write %q: %w", dstWK, err)
+			}
+			s.applyTTL(ctx, dstWK)
+		}
+	}
+	return nil
+}
+
+// Prune implements checkpoint.Saver. keep_latest keeps, per namespace zset,
+// the lexicographically greatest checkpoint ID (IDs order chronologically);
+// delete removes the thread via DeleteThread. The DeltaChannel warning on
+// the Saver interface (base/__init__.py:387-413) applies: naive keep_latest
+// can sever delta-channel ancestor history — documented only, mirroring
+// Python.
+func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) error {
+	switch strategy {
+	case checkpoint.PruneKeepLatest, checkpoint.PruneDeleteAll:
+	default:
+		return fmt.Errorf("redis: unknown prune strategy %q", strategy)
+	}
+	for _, threadID := range threadIDs {
+		if strategy == checkpoint.PruneDeleteAll {
+			if err := s.DeleteThread(ctx, threadID); err != nil {
+				return fmt.Errorf("redis: prune(delete) thread %q: %w", threadID, err)
+			}
+			continue
+		}
+		zkeys, err := s.scanKeys(ctx, zsetScanPattern(threadID))
+		if err != nil {
+			return fmt.Errorf("redis: prune thread %q: scan namespaces: %w", threadID, err)
+		}
+		for _, zkey := range zkeys {
+			parts, ok := parsePrefixedKey(checkpointZSetPrefix, zkey)
+			if !ok || len(parts) != 2 {
+				return fmt.Errorf("redis: prune: malformed zset key %q", zkey)
+			}
+			ns := parts[1]
+			// All members carry score 0, so ZRange returns them in
+			// lexicographic member order — the latest ID sorts last.
+			members, err := s.client.ZRange(ctx, zkey, 0, -1).Result()
+			if err != nil {
+				return fmt.Errorf("redis: prune thread %q ns %q: %w", threadID, ns, err)
+			}
+			if len(members) == 0 {
+				continue
+			}
+			// members[:len-1] are the prunable checkpoints (the last member —
+			// the greatest ID — is the one keep_latest retains).
+			for _, cpID := range members[:len(members)-1] {
+				writeKeys, err := s.scanKeys(ctx, writeScanPattern(threadID, ns, cpID))
+				if err != nil {
+					return fmt.Errorf("redis: prune thread %q ns %q: scan writes: %w", threadID, ns, err)
+				}
+				pipe := s.client.Pipeline()
+				pipe.Del(ctx, append(writeKeys, checkpointKey(threadID, ns, cpID))...)
+				pipe.ZRem(ctx, zkey, cpID)
+				if _, err := pipe.Exec(ctx); err != nil {
+					return fmt.Errorf("redis: prune thread %q ns %q checkpoint %q: %w", threadID, ns, cpID, err)
+				}
+			}
 		}
 	}
 	return nil

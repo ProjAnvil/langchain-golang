@@ -90,3 +90,37 @@ func writeScanPattern(threadID, ns, checkpointID string) string {
 func zsetScanPattern(threadID string) string {
 	return checkpointZSetPrefix + globComponent(threadID) + `:*`
 }
+
+// splitEscaped splits s on unescaped ':' separators, resolving the
+// keyEscaper escapes ('\\' then ':' — escape order reversed on read). A
+// trailing lone backslash (never produced by escapeKeyComponent) is kept
+// literally.
+func splitEscaped(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			cur.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		if s[i] == ':' {
+			parts = append(parts, cur.String())
+			cur.Reset()
+			continue
+		}
+		cur.WriteByte(s[i])
+	}
+	return append(parts, cur.String())
+}
+
+// parsePrefixedKey strips prefix from key and splits the remaining escaped
+// components, the read side of the colon-joined key builders above. ok is
+// false when key does not carry the prefix.
+func parsePrefixedKey(prefix, key string) ([]string, bool) {
+	rest, ok := strings.CutPrefix(key, prefix)
+	if !ok {
+		return nil, false
+	}
+	return splitEscaped(rest), true
+}

@@ -62,6 +62,7 @@ type storedMetadata struct {
 	Source  string            `json:"source"`
 	Step    int               `json:"step"`
 	Parents map[string]string `json:"parents,omitempty"`
+	RunID   string            `json:"run_id,omitempty"`
 }
 
 // storedWrite is the JSON projection of one pending write persisted in a
@@ -177,7 +178,7 @@ func (s *Saver) decodeCheckpoint(typ string, blob []byte) (checkpoint.Checkpoint
 }
 
 func encodeMetadata(md checkpoint.Metadata) ([]byte, error) {
-	return json.Marshal(storedMetadata{Source: md.Source, Step: md.Step, Parents: md.Parents})
+	return json.Marshal(storedMetadata{Source: md.Source, Step: md.Step, Parents: md.Parents, RunID: md.RunID})
 }
 
 func decodeMetadata(blob []byte) (checkpoint.Metadata, error) {
@@ -188,5 +189,5 @@ func decodeMetadata(blob []byte) (checkpoint.Metadata, error) {
 	if err := json.Unmarshal(blob, &stored); err != nil {
 		return checkpoint.Metadata{}, err
 	}
-	return checkpoint.Metadata{Source: stored.Source, Step: stored.Step, Parents: stored.Parents}, nil
+	return checkpoint.Metadata{Source: stored.Source, Step: stored.Step, Parents: stored.Parents, RunID: stored.RunID}, nil
 }

@@ -53,6 +53,18 @@ func TestServerFailures(t *testing.T) {
 	if err := s.DeleteThread(ctx, "t1"); err == nil {
 		t.Error("DeleteThread: expected error, got nil")
 	}
+	if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+		t.Error("DeleteForRuns: expected error, got nil")
+	}
+	if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+		t.Error("CopyThread: expected error, got nil")
+	}
+	if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+		t.Error("Prune (keep_latest): expected error, got nil")
+	}
+	if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneDeleteAll); err == nil {
+		t.Error("Prune (delete): expected error, got nil")
+	}
 
 	// The error is transient: clearing it restores service.
 	mr.SetError("")
@@ -81,6 +93,150 @@ func TestServerClosed(t *testing.T) {
 	if err := s.DeleteThread(ctx, "t1"); err == nil {
 		t.Error("DeleteThread: expected connection error, got nil")
 	}
+}
+
+// TestManagementMalformedStorage plants keys the Saver API would never write
+// (wrong-type keys, malformed metadata, keys with too few/many components)
+// and verifies the management methods fail descriptively instead of
+// panicking or silently corrupting state — the same technique as
+// TestCorruptCheckpointHashes.
+func TestManagementMalformedStorage(t *testing.T) {
+	ctx := context.Background()
+
+	// DeleteForRuns: a checkpoint-prefixed STRING key fails the metadata
+	// HGet with WRONGTYPE.
+	t.Run("delete_for_runs wrong-type checkpoint key", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.Set(ctx, "checkpoint:t1::c1", "x", 0).Err(); err != nil {
+			t.Fatalf("plant string: %v", err)
+		}
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with string checkpoint key: expected error, got nil")
+		}
+	})
+
+	// DeleteForRuns: a hash whose metadata field is not JSON fails decode.
+	t.Run("delete_for_runs malformed metadata", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.HSet(ctx, "checkpoint:t1::c1", "metadata", "not json").Err(); err != nil {
+			t.Fatalf("plant hash: %v", err)
+		}
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with malformed metadata: expected error, got nil")
+		}
+	})
+
+	// DeleteForRuns: a matching hash whose key has too few components is a
+	// malformed-key error.
+	t.Run("delete_for_runs malformed key", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.HSet(ctx, "checkpoint:t1", "metadata", `{"source":"x","step":0,"run_id":"r1"}`).Err(); err != nil {
+			t.Fatalf("plant hash: %v", err)
+		}
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with malformed key: expected error, got nil")
+		}
+	})
+
+	// DeleteForRuns: the delete pipeline fails when the ordering zset key is
+	// a STRING (ZRem on a wrong-type key).
+	t.Run("delete_for_runs wrong-type zset", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.HSet(ctx, "checkpoint:t1::c1", "metadata", `{"source":"x","step":0,"run_id":"r1"}`).Err(); err != nil {
+			t.Fatalf("plant hash: %v", err)
+		}
+		if err := raw.Set(ctx, "checkpoint_zset:t1:", "x", 0).Err(); err != nil {
+			t.Fatalf("plant string zset: %v", err)
+		}
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with wrong-type zset: expected error, got nil")
+		}
+	})
+
+	// CopyThread: a scanned key with too few components is a malformed-key
+	// error (glob `*` matches the empty component, so "checkpoint:t1:" scans).
+	t.Run("copy_thread malformed key", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.HSet(ctx, "checkpoint:t1:", "metadata", `{}`).Err(); err != nil {
+			t.Fatalf("plant hash: %v", err)
+		}
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with malformed key: expected error, got nil")
+		}
+	})
+
+	// CopyThread: a STRING where the checkpoint hash should be fails HGetAll.
+	t.Run("copy_thread wrong-type checkpoint key", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.Set(ctx, "checkpoint:t1::c1", "x", 0).Err(); err != nil {
+			t.Fatalf("plant string: %v", err)
+		}
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with string checkpoint key: expected error, got nil")
+		}
+	})
+
+	// CopyThread: the write pipeline fails when the destination zset key is a
+	// STRING (ZAdd on a wrong-type key).
+	t.Run("copy_thread wrong-type zset", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.HSet(ctx, "checkpoint:t1::c1", "metadata", `{}`).Err(); err != nil {
+			t.Fatalf("plant hash: %v", err)
+		}
+		if err := raw.Set(ctx, "checkpoint_zset:t2:", "x", 0).Err(); err != nil {
+			t.Fatalf("plant string zset: %v", err)
+		}
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with wrong-type zset: expected error, got nil")
+		}
+	})
+
+	// CopyThread: a write key holding a HASH fails the per-write GET.
+	t.Run("copy_thread wrong-type write key", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.HSet(ctx, "checkpoint:t1::c1", "metadata", `{}`).Err(); err != nil {
+			t.Fatalf("plant hash: %v", err)
+		}
+		if err := raw.HSet(ctx, "checkpoint_write:t1::c1:task-1:0", "x", "y").Err(); err != nil {
+			t.Fatalf("plant write hash: %v", err)
+		}
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with wrong-type write key: expected error, got nil")
+		}
+	})
+
+	// Prune: a scanned zset key with too many components is a malformed-key
+	// error (a legit namespace containing ':' would be key-escaped).
+	t.Run("prune malformed zset key", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.ZAdd(ctx, "checkpoint_zset:t1:a:b", goredis.Z{Score: 0, Member: "c1"}).Err(); err != nil {
+			t.Fatalf("plant zset: %v", err)
+		}
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+			t.Fatal("Prune with malformed zset key: expected error, got nil")
+		}
+	})
+
+	// Prune: a STRING where the ordering zset should be fails ZRange.
+	t.Run("prune wrong-type zset", func(t *testing.T) {
+		s, mr := newSaver(t)
+		raw := rawClient(mr.Addr())
+		if err := raw.Set(ctx, "checkpoint_zset:t1:", "x", 0).Err(); err != nil {
+			t.Fatalf("plant string zset: %v", err)
+		}
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+			t.Fatal("Prune with wrong-type zset: expected error, got nil")
+		}
+	})
 }
 
 // TestCorruptCheckpointHashes plants checkpoint hashes the Saver API could
