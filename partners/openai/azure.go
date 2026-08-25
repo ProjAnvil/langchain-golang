@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/projanvil/langchain-golang/core/httpclient"
 	"github.com/projanvil/langchain-golang/core/language"
@@ -96,6 +97,15 @@ func NewAzureChatModelWithADToken(endpoint, deployment, apiVersion, adToken stri
 	return AzureChatModel{chat: NewChatModel(opts...), az: az}
 }
 
+// WithStreamChunkTimeout returns a copy of the model with the per-chunk
+// stream timeout set, passing through to the embedded ChatModel that
+// AzureChatModel.Stream delegates to (mirrors ChatModel.WithStreamChunkTimeout).
+func (m AzureChatModel) WithStreamChunkTimeout(d time.Duration) AzureChatModel {
+	next := m
+	next.chat = m.chat.WithStreamChunkTimeout(d)
+	return next
+}
+
 func (m AzureChatModel) Invoke(ctx context.Context, input []messages.Message, opts ...runnables.Option) (messages.Message, error) {
 	resp, err := azurePost[chatCompletionsResponse](m.az, ctx, m.chat.config, "/chat/completions", m.chat.buildChatCompletionsRequest(input))
 	if err != nil {
@@ -168,11 +178,13 @@ func (m AzureChatModel) createStream(ctx context.Context, input []messages.Messa
 	}
 
 	return &chatCompletionsStream{
-		ctx:       ctx,
-		cancel:    cancel,
-		body:      resp.Body,
-		scanner:   bufio.NewScanner(resp.Body),
-		cfg:       cfg,
-		toolCalls: make(map[int]*streamToolCall),
+		ctx:          ctx,
+		cancel:       cancel,
+		body:         resp.Body,
+		scanner:      bufio.NewScanner(resp.Body),
+		cfg:          cfg,
+		toolCalls:    make(map[int]*streamToolCall),
+		chunkTimeout: m.chat.streamChunkTimeout,
+		model:        m.chat.config.Model,
 	}, nil
 }

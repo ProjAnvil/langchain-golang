@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/httpclient"
@@ -67,6 +68,8 @@ func (m ChatModel) createResponseStream(
 		toolCalls:       make(map[int]*streamToolCall),
 		textBlocks:      make(map[int]*streamTextBlock),
 		reasoningBlocks: make(map[int]*streamReasoningBlock),
+		chunkTimeout:    m.streamChunkTimeout,
+		model:           m.config.Model,
 	}, nil
 }
 
@@ -83,9 +86,34 @@ type responseStream struct {
 	textBlocks      map[int]*streamTextBlock
 	reasoningBlocks map[int]*streamReasoningBlock
 	protocolStarted bool
+	chunkTimeout    time.Duration
+	model           string
+	chunksReceived  int
+	guard           chunkTimeoutGuard
 }
 
+// Next arms the per-chunk timeout (stream_chunk_timeout, spec 4.6) around the
+// underlying scan and converts a fire into StreamChunkTimeoutError.
 func (s *responseStream) Next(ctx context.Context) (messages.Message, bool, error) {
+	timer := s.guard.arm(s.chunkTimeout, s.cancel)
+	if timer != nil {
+		defer timer.Stop()
+	}
+	chunk, ok, err := s.next(ctx)
+	if err == nil && ok {
+		s.chunksReceived++
+		return chunk, true, nil
+	}
+	if !ok && s.guard.fired.Load() {
+		s.done = true
+		err = s.guard.timeoutError(s.chunkTimeout, s.model, s.chunksReceived)
+		_ = s.emitError(ctx, err)
+		return messages.Message{}, false, err
+	}
+	return chunk, ok, err
+}
+
+func (s *responseStream) next(ctx context.Context) (messages.Message, bool, error) {
 	for {
 		if s.done {
 			return messages.Message{}, false, nil
@@ -299,7 +327,7 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 				Event: streamevents.EventContentBlockFinish,
 				Index: event.OutputIndex,
 				Content: messages.NonStandardContentBlock{
-					Type: "invalid_tool_call",
+					Type:  "invalid_tool_call",
 					Value: map[string]any{"id": call.ID, "name": call.Name},
 				},
 			}); err != nil {
@@ -346,7 +374,7 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		return messages.Message{}, false, nil
 	case "response.refusal.done":
 		block := messages.NonStandardContentBlock{
-			Type: "refusal",
+			Type:  "refusal",
 			Value: map[string]any{"refusal": event.Refusal},
 		}
 		chunk := messages.AI("")

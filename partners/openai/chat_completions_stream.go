@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/httpclient"
@@ -62,26 +63,52 @@ func (m ChatModel) createChatCompletionsStream(
 	}
 
 	return &chatCompletionsStream{
-		ctx:       ctx,
-		cancel:    cancel,
-		body:      resp.Body,
-		scanner:   bufio.NewScanner(resp.Body),
-		cfg:       cfg,
-		toolCalls: make(map[int]*streamToolCall),
+		ctx:          ctx,
+		cancel:       cancel,
+		body:         resp.Body,
+		scanner:      bufio.NewScanner(resp.Body),
+		cfg:          cfg,
+		toolCalls:    make(map[int]*streamToolCall),
+		chunkTimeout: m.streamChunkTimeout,
+		model:        m.config.Model,
 	}, nil
 }
 
 type chatCompletionsStream struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	body      io.Closer
-	scanner   *bufio.Scanner
-	cfg       runnables.Config
-	done      bool
-	toolCalls map[int]*streamToolCall
+	ctx            context.Context
+	cancel         context.CancelFunc
+	body           io.Closer
+	scanner        *bufio.Scanner
+	cfg            runnables.Config
+	done           bool
+	toolCalls      map[int]*streamToolCall
+	chunkTimeout   time.Duration
+	model          string
+	chunksReceived int
+	guard          chunkTimeoutGuard
 }
 
+// Next arms the per-chunk timeout (stream_chunk_timeout, spec 4.6) around the
+// underlying scan and converts a fire into StreamChunkTimeoutError.
 func (s *chatCompletionsStream) Next(ctx context.Context) (messages.Message, bool, error) {
+	timer := s.guard.arm(s.chunkTimeout, s.cancel)
+	if timer != nil {
+		defer timer.Stop()
+	}
+	chunk, ok, err := s.next(ctx)
+	if err == nil && ok {
+		s.chunksReceived++
+		return chunk, true, nil
+	}
+	if !ok && s.guard.fired.Load() {
+		s.done = true
+		err = s.guard.timeoutError(s.chunkTimeout, s.model, s.chunksReceived)
+		return messages.Message{}, false, err
+	}
+	return chunk, ok, err
+}
+
+func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, bool, error) {
 	for {
 		if s.done {
 			return messages.Message{}, false, nil

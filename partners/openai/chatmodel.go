@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -23,13 +24,14 @@ const defaultBaseURL = "https://api.openai.com/v1"
 // the Responses API; WithChatCompletions switches it to the Chat Completions
 // API (the classic `/chat/completions` endpoint, Python's default).
 type ChatModel struct {
-	config           modelconfig.Config
-	boundTools       []tools.Tool
-	structuredOutput *structuredoutput.JSONSchema
-	chatCompletions  bool
-	reasoningEffort  string
-	toolChoice       *ToolChoice
-	responseFormat   map[string]any
+	config             modelconfig.Config
+	boundTools         []tools.Tool
+	structuredOutput   *structuredoutput.JSONSchema
+	chatCompletions    bool
+	reasoningEffort    string
+	toolChoice         *ToolChoice
+	responseFormat     map[string]any
+	streamChunkTimeout time.Duration
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -50,7 +52,7 @@ func NewChatModel(opts ...modelconfig.Option) ChatModel {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 60 * time.Second
 	}
-	return ChatModel{config: cfg}
+	return ChatModel{config: cfg, streamChunkTimeout: resolveStreamChunkTimeout()}
 }
 
 // Invoke calls the OpenAI Responses API.
@@ -158,6 +160,25 @@ func (m ChatModel) WithReasoningEffort(effort string) ChatModel {
 func (m ChatModel) WithToolChoice(choice ToolChoice) ChatModel {
 	next := m
 	next.toolChoice = &choice
+	return next
+}
+
+// WithStreamChunkTimeout returns a copy of the model with a per-chunk
+// wall-clock timeout on streaming, mirroring Python
+// ChatOpenAI(stream_chunk_timeout=...). 0 disables; negative values are
+// rejected and fall back to the env/default with a WARNING (Python's field
+// validator), matching the env-var path.
+func (m ChatModel) WithStreamChunkTimeout(d time.Duration) ChatModel {
+	next := m
+	if d < 0 {
+		fallback := resolveStreamChunkTimeout()
+		slog.Warn("openai: invalid negative stream_chunk_timeout; falling back (pass 0 to disable)",
+			slog.String("value", d.String()),
+			slog.String("fallback", fallback.String()))
+		next.streamChunkTimeout = fallback
+		return next
+	}
+	next.streamChunkTimeout = d
 	return next
 }
 
