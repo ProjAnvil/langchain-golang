@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
@@ -94,3 +95,48 @@ func FuncBeforeAgent(fn BeforeAgentFunc) BeforeAgentHook { return beforeAgentFun
 
 // FuncAfterAgent returns an AfterAgentHook backed by fn.
 func FuncAfterAgent(fn AfterAgentFunc) AfterAgentHook { return afterAgentFuncAdapter{fn: fn} }
+
+// DynamicPromptFunc mirrors the function decorated with Python's
+// `@dynamic_prompt` (middleware/types.py:1680): it computes the system prompt
+// for one model call from the request. Return either a string (wrapped into a
+// system message, mirroring Python's `str` branch) or a complete
+// messages.Message (installed as-is, mirroring Python's `SystemMessage`
+// branch). Returning (nil, nil) leaves the request unchanged (Go-only
+// convenience; Python has no None return).
+type DynamicPromptFunc func(ctx context.Context, request middleware.ModelRequest) (any, error)
+
+type dynamicPromptAdapter struct{ fn DynamicPromptFunc }
+
+func (a dynamicPromptAdapter) WrapModelCall(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
+	prompt, err := a.fn(ctx, request)
+	if err != nil {
+		return middleware.ModelResponse{}, err
+	}
+	var next middleware.ModelRequest
+	switch p := prompt.(type) {
+	case nil:
+		next = request
+	case string:
+		next, err = request.Override(middleware.WithSystemPrompt(p))
+	case messages.Message:
+		msg := p
+		next, err = request.Override(middleware.WithSystemMessage(&msg))
+	case *messages.Message:
+		next, err = request.Override(middleware.WithSystemMessage(p))
+	default:
+		return middleware.ModelResponse{}, fmt.Errorf("agents: DynamicPromptFunc must return a string or messages.Message, got %T", prompt)
+	}
+	if err != nil {
+		return middleware.ModelResponse{}, err
+	}
+	return handler(ctx, next)
+}
+
+// DynamicPrompt returns a WrapModelCallHook that installs fn's computed system
+// prompt before delegating to the handler, mirroring Python's `@dynamic_prompt`
+// decorator. When several DynamicPrompt middleware are chained, the one closest
+// to the model (last in the CreateAgent middleware list) runs last and its
+// prompt wins, matching Python's wrap_model_call composition order.
+func DynamicPrompt(fn DynamicPromptFunc) WrapModelCallHook {
+	return dynamicPromptAdapter{fn: fn}
+}
