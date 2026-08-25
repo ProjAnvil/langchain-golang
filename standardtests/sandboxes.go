@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -944,5 +946,206 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		requireNoSandboxError(t, "grep", result.Error)
 		requireDeepEqual(t, "grep matches", result.Matches,
 			[]SandboxGrepMatch{{Path: baseDir + "/long.txt", Line: 50, Text: "Line 50"}})
+	})
+
+	t.Run("upload single file", func(t *testing.T) { // test_upload_single_file
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "test_upload_single.txt")
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: []byte("Hello, Sandbox!")}})
+		requireLen(t, "upload responses", uploads, 1)
+		requireEqual(t, "upload path", uploads[0].Path, testPath)
+		requireNoSandboxError(t, "upload", uploads[0].Error)
+		execResult := backend.Execute(ctx, "cat "+shellQuote(testPath))
+		requireEqual(t, "cat output", strings.TrimSpace(execResult.Output), "Hello, Sandbox!")
+	})
+
+	t.Run("download single file", func(t *testing.T) { // test_download_single_file
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "test_download_single.txt")
+		content := []byte("Download test content")
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: content}})
+		requireLen(t, "upload responses", uploads, 1)
+		requireNoSandboxError(t, "upload", uploads[0].Error)
+		downloads := backend.DownloadFiles(ctx, []string{testPath})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: testPath, Content: content}})
+	})
+
+	t.Run("upload download roundtrip", func(t *testing.T) { // test_upload_download_roundtrip
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "test_roundtrip.txt")
+		content := []byte("Roundtrip test: special chars \n\t\r\x00")
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: content}})
+		requireDeepEqual(t, "upload responses", uploads, []SandboxUploadResponse{{Path: testPath}})
+		downloads := backend.DownloadFiles(ctx, []string{testPath})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: testPath, Content: content}})
+	})
+
+	t.Run("upload multiple files order preserved", func(t *testing.T) { // test_upload_multiple_files_order_preserved
+		backend, root := factory(t)
+		files := []SandboxFileUpload{
+			{Path: sandboxPath(root, "test_multi_1.txt"), Content: []byte("Content 1")},
+			{Path: sandboxPath(root, "test_multi_2.txt"), Content: []byte("Content 2")},
+			{Path: sandboxPath(root, "test_multi_3.txt"), Content: []byte("Content 3")},
+		}
+		uploads := backend.UploadFiles(ctx, files)
+		requireDeepEqual(t, "upload responses", uploads, []SandboxUploadResponse{
+			{Path: files[0].Path},
+			{Path: files[1].Path},
+			{Path: files[2].Path},
+		})
+	})
+
+	t.Run("download multiple files order preserved", func(t *testing.T) { // test_download_multiple_files_order_preserved
+		backend, root := factory(t)
+		files := []SandboxFileUpload{
+			{Path: sandboxPath(root, "test_batch_1.txt"), Content: []byte("Batch 1")},
+			{Path: sandboxPath(root, "test_batch_2.txt"), Content: []byte("Batch 2")},
+			{Path: sandboxPath(root, "test_batch_3.txt"), Content: []byte("Batch 3")},
+		}
+		uploads := backend.UploadFiles(ctx, files)
+		requireLen(t, "upload responses", uploads, 3)
+		requireNoSandboxError(t, "upload", uploads[0].Error)
+		downloads := backend.DownloadFiles(ctx, []string{files[0].Path, files[1].Path, files[2].Path})
+		requireDeepEqual(t, "download responses", downloads, []SandboxDownloadResponse{
+			{Path: files[0].Path, Content: files[0].Content},
+			{Path: files[1].Path, Content: files[1].Content},
+			{Path: files[2].Path, Content: files[2].Content},
+		})
+	})
+
+	t.Run("upload binary content roundtrip", func(t *testing.T) { // test_upload_binary_content_roundtrip
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "binary_file.bin")
+		content := make([]byte, 256)
+		for i := range content {
+			content[i] = byte(i)
+		}
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: content}})
+		requireDeepEqual(t, "upload responses", uploads, []SandboxUploadResponse{{Path: testPath}})
+		downloads := backend.DownloadFiles(ctx, []string{testPath})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: testPath, Content: content}})
+	})
+
+	t.Run("upload large file reports expected size", func(t *testing.T) { // test_upload_large_file_reports_expected_size
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "large_upload.txt")
+		content := bytes.Repeat([]byte("0123456789abcdef"), 1024*640)
+		requireEqual(t, "content length", len(content), 10*1024*1024)
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: content}})
+		requireDeepEqual(t, "upload responses", uploads, []SandboxUploadResponse{{Path: testPath}})
+		execResult := backend.Execute(ctx, "wc -c "+shellQuote(testPath))
+		requireEqual(t, "wc exit code", execResult.ExitCode, 0)
+		requireContains(t, "wc output", execResult.Output, strconv.Itoa(len(content)))
+		downloads := backend.DownloadFiles(ctx, []string{testPath})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: testPath, Content: content}})
+	})
+
+	t.Run("download error file not found", func(t *testing.T) { // test_download_error_file_not_found
+		backend, root := factory(t)
+		missingPath := sandboxPath(root, "nonexistent_test_file.txt")
+		downloads := backend.DownloadFiles(ctx, []string{missingPath})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: missingPath, Error: "file_not_found"}})
+	})
+
+	t.Run("download error is directory", func(t *testing.T) { // test_download_error_is_directory
+		backend, root := factory(t)
+		dirPath := sandboxPath(root, "test_directory")
+		backend.Execute(ctx, "rm -rf "+shellQuote(dirPath)+" && mkdir -p "+shellQuote(dirPath))
+		downloads := backend.DownloadFiles(ctx, []string{dirPath})
+		requireLen(t, "download responses", downloads, 1)
+		requireEqual(t, "download path", downloads[0].Path, dirPath)
+		if downloads[0].Content != nil {
+			t.Fatalf("download of directory: expected nil content, got %d bytes", len(downloads[0].Content))
+		}
+		requireSandboxErrorContaining(t, "download", downloads[0].Error, "is_directory", "file_not_found", "invalid_path")
+	})
+
+	t.Run("download error permission denied", func(t *testing.T) { // test_download_error_permission_denied
+		if os.Geteuid() == 0 {
+			t.Skip("chmod 000 files are still readable by root")
+		}
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "test_no_read.txt")
+		backend.Execute(ctx, "rm -f "+shellQuote(testPath)+" && echo secret > "+shellQuote(testPath)+" && chmod 000 "+shellQuote(testPath))
+		defer backend.Execute(ctx, "chmod 644 "+shellQuote(testPath)+" || true")
+		downloads := backend.DownloadFiles(ctx, []string{testPath})
+		requireLen(t, "download responses", downloads, 1)
+		requireEqual(t, "download path", downloads[0].Path, testPath)
+		if downloads[0].Content != nil {
+			t.Fatalf("download of chmod 000 file: expected nil content, got %d bytes", len(downloads[0].Content))
+		}
+		requireSandboxErrorContaining(t, "download", downloads[0].Error, "permission_denied", "file_not_found", "invalid_path")
+	})
+
+	t.Run("download error invalid path relative", func(t *testing.T) { // test_download_error_invalid_path_relative
+		backend, _ := factory(t)
+		downloads := backend.DownloadFiles(ctx, []string{"relative/path.txt"})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: "relative/path.txt", Error: "invalid_path"}})
+	})
+
+	t.Run("upload missing parent dir or roundtrip", func(t *testing.T) { // test_upload_missing_parent_dir_or_roundtrip
+		backend, root := factory(t)
+		dirPath := sandboxPath(root, "test_upload_missing_parent_dir")
+		path := dirPath + "/deepagents_test_upload.txt"
+		content := []byte("nope")
+		backend.Execute(ctx, "rm -rf "+shellQuote(dirPath))
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: path, Content: content}})
+		requireLen(t, "upload responses", uploads, 1)
+		requireEqual(t, "upload path", uploads[0].Path, path)
+		if uploads[0].Error != "" {
+			// Some sandboxes reject a missing parent directory instead of
+			// auto-creating it; both are conformant.
+			requireSandboxErrorContaining(t, "upload", uploads[0].Error,
+				"invalid_path", "permission_denied", "file_not_found")
+			return
+		}
+		downloads := backend.DownloadFiles(ctx, []string{path})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: path, Content: content}})
+	})
+
+	t.Run("upload relative path returns invalid path", func(t *testing.T) { // test_upload_relative_path_returns_invalid_path
+		backend, _ := factory(t)
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: "relative_upload.txt", Content: []byte("nope")}})
+		requireDeepEqual(t, "upload responses", uploads,
+			[]SandboxUploadResponse{{Path: "relative_upload.txt", Error: "invalid_path"}})
+	})
+
+	t.Run("write read download large text with escaped content", func(t *testing.T) { // test_write_read_download_large_text_with_escaped_content
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "large_sync_escaped.txt")
+		line := "prefix\t☃世界π≈3.14159" +
+			" | spaces   preserved" +
+			" | quotes ' \"" +
+			" | brackets [] {{}}" +
+			" | shell $VAR `cmd` $(subshell)" +
+			" | slash /tmp/path and backslash \\\\" +
+			" | control-ish \\r \\n" +
+			" | suffix"
+		lines := make([]string, 0, 2500)
+		for i := 0; i < 2500; i++ {
+			lines = append(lines, fmt.Sprintf("%04d:%s", i, line))
+		}
+		content := strings.Join(lines, "\n")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, content).Error)
+
+		pages := make([]string, 0, 25)
+		for offset := 0; offset < len(lines); offset += 100 {
+			page := requireFileData(t, "read page", backend.Read(ctx, testPath,
+				SandboxReadOptions{Offset: offset, Limit: intPtr(100)}))
+			requireDeepEqual(t, "page content", page.Content, strings.Join(lines[offset:offset+100], "\n"))
+			pages = append(pages, page.Content)
+		}
+		requireDeepEqual(t, "reconstructed content", strings.Join(pages, "\n"), content)
+
+		downloads := backend.DownloadFiles(ctx, []string{testPath})
+		requireDeepEqual(t, "download responses", downloads,
+			[]SandboxDownloadResponse{{Path: testPath, Content: []byte(content)}})
 	})
 }

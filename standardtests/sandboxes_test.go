@@ -261,8 +261,39 @@ func (l *localSandbox) UploadFiles(_ context.Context, files []SandboxFileUpload)
 	return responses
 }
 
-func (l *localSandbox) DownloadFiles(context.Context, []string) []SandboxDownloadResponse {
-	return []SandboxDownloadResponse{{Error: "unimplemented"}}
+func (l *localSandbox) DownloadFiles(_ context.Context, paths []string) []SandboxDownloadResponse {
+	responses := make([]SandboxDownloadResponse, 0, len(paths))
+	for _, p := range paths {
+		resp := SandboxDownloadResponse{Path: p}
+		if !filepath.IsAbs(p) {
+			resp.Error = "invalid_path"
+			responses = append(responses, resp)
+			continue
+		}
+		info, err := os.Stat(p)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			resp.Error = "file_not_found"
+		case err != nil && os.IsPermission(err):
+			resp.Error = "permission_denied"
+		case err != nil:
+			resp.Error = err.Error()
+		case info.IsDir():
+			resp.Error = "is_directory"
+		default:
+			data, readErr := os.ReadFile(p)
+			switch {
+			case readErr != nil && os.IsPermission(readErr):
+				resp.Error = "permission_denied"
+			case readErr != nil:
+				resp.Error = readErr.Error()
+			default:
+				resp.Content = data
+			}
+		}
+		responses = append(responses, resp)
+	}
+	return responses
 }
 
 // TestRunSandboxConformanceWithLocalSandbox wires the conformance suite to
