@@ -302,3 +302,187 @@ func (l *localSandbox) DownloadFiles(_ context.Context, paths []string) []Sandbo
 func TestRunSandboxConformanceWithLocalSandbox(t *testing.T) {
 	RunSandboxConformance(t, newLocalSandbox)
 }
+
+// stubSandbox delegates to a real local sandbox unless a per-method override
+// is set, for failure-injection tests of the sandbox conformance runner.
+type stubSandbox struct {
+	inner    *localSandbox
+	write    func(context.Context, string, string) SandboxWriteResult
+	read     func(context.Context, string, SandboxReadOptions) SandboxReadResult
+	edit     func(context.Context, string, string, string, bool) SandboxEditResult
+	ls       func(context.Context, string) SandboxLsResult
+	glob     func(context.Context, string, string) SandboxGlobResult
+	grep     func(context.Context, string, string, string) SandboxGrepResult
+	upload   func(context.Context, []SandboxFileUpload) []SandboxUploadResponse
+	download func(context.Context, []string) []SandboxDownloadResponse
+	execute  func(context.Context, string) SandboxExecuteResponse
+}
+
+func (s *stubSandbox) Write(ctx context.Context, path string, content string) SandboxWriteResult {
+	if s.write != nil {
+		return s.write(ctx, path, content)
+	}
+	return s.inner.Write(ctx, path, content)
+}
+
+func (s *stubSandbox) Read(ctx context.Context, path string, opts SandboxReadOptions) SandboxReadResult {
+	if s.read != nil {
+		return s.read(ctx, path, opts)
+	}
+	return s.inner.Read(ctx, path, opts)
+}
+
+func (s *stubSandbox) Edit(ctx context.Context, path string, old string, new string, replaceAll bool) SandboxEditResult {
+	if s.edit != nil {
+		return s.edit(ctx, path, old, new, replaceAll)
+	}
+	return s.inner.Edit(ctx, path, old, new, replaceAll)
+}
+
+func (s *stubSandbox) Ls(ctx context.Context, path string) SandboxLsResult {
+	if s.ls != nil {
+		return s.ls(ctx, path)
+	}
+	return s.inner.Ls(ctx, path)
+}
+
+func (s *stubSandbox) Glob(ctx context.Context, pattern string, path string) SandboxGlobResult {
+	if s.glob != nil {
+		return s.glob(ctx, pattern, path)
+	}
+	return s.inner.Glob(ctx, pattern, path)
+}
+
+func (s *stubSandbox) Grep(ctx context.Context, pattern string, path string, glob string) SandboxGrepResult {
+	if s.grep != nil {
+		return s.grep(ctx, pattern, path, glob)
+	}
+	return s.inner.Grep(ctx, pattern, path, glob)
+}
+
+func (s *stubSandbox) UploadFiles(ctx context.Context, files []SandboxFileUpload) []SandboxUploadResponse {
+	if s.upload != nil {
+		return s.upload(ctx, files)
+	}
+	return s.inner.UploadFiles(ctx, files)
+}
+
+func (s *stubSandbox) DownloadFiles(ctx context.Context, paths []string) []SandboxDownloadResponse {
+	if s.download != nil {
+		return s.download(ctx, paths)
+	}
+	return s.inner.DownloadFiles(ctx, paths)
+}
+
+func (s *stubSandbox) Execute(ctx context.Context, command string) SandboxExecuteResponse {
+	if s.execute != nil {
+		return s.execute(ctx, command)
+	}
+	return s.inner.Execute(ctx, command)
+}
+
+func TestRunSandboxConformanceFailures(t *testing.T) {
+	// Skip the whole test when sh is missing: a skip from newLocalSandbox
+	// inside the testing.RunTests harness counts as a pass there, which would
+	// break expectConformanceFailure.
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("POSIX shell required for sandbox failure-injection tests: %v", err)
+	}
+	factory := func(configure func(*stubSandbox)) SandboxFactory {
+		return func(t testing.TB) (SandboxBackend, string) {
+			t.Helper()
+			backend, root := newLocalSandbox(t)
+			stub := &stubSandbox{inner: backend.(*localSandbox)}
+			configure(stub)
+			return stub, root
+		}
+	}
+
+	expectConformanceFailure(t, "write errors", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.write = func(_ context.Context, path string, _ string) SandboxWriteResult {
+				return SandboxWriteResult{Path: path, Error: "boom"}
+			}
+		}))
+	})
+	expectConformanceFailure(t, "write does not persist", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.write = func(_ context.Context, path string, _ string) SandboxWriteResult {
+				return SandboxWriteResult{Path: path}
+			}
+		}))
+	})
+	expectConformanceFailure(t, "write reports the wrong path", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.write = func(ctx context.Context, path string, content string) SandboxWriteResult {
+				result := s.inner.Write(ctx, path, content)
+				result.Path = path + "-wrong"
+				return result
+			}
+		}))
+	})
+	expectConformanceFailure(t, "read ignores offset", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.read = func(ctx context.Context, path string, _ SandboxReadOptions) SandboxReadResult {
+				return s.inner.Read(ctx, path, SandboxReadOptions{})
+			}
+		}))
+	})
+	expectConformanceFailure(t, "read returns nil file data", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.read = func(context.Context, string, SandboxReadOptions) SandboxReadResult {
+				return SandboxReadResult{}
+			}
+		}))
+	})
+	expectConformanceFailure(t, "read fabricates content for empty files", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.read = func(context.Context, string, SandboxReadOptions) SandboxReadResult {
+				return SandboxReadResult{FileData: &SandboxFileData{Content: "garbage content", Encoding: "utf-8"}}
+			}
+		}))
+	})
+	expectConformanceFailure(t, "edit reports success without editing", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.edit = func(context.Context, string, string, string, bool) SandboxEditResult {
+				return SandboxEditResult{Occurrences: 1}
+			}
+		}))
+	})
+	expectConformanceFailure(t, "ls loses entries", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.ls = func(context.Context, string) SandboxLsResult {
+				return SandboxLsResult{Entries: []SandboxEntry{}}
+			}
+		}))
+	})
+	expectConformanceFailure(t, "download drops responses", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.download = func(context.Context, []string) []SandboxDownloadResponse {
+				return nil
+			}
+		}))
+	})
+	expectConformanceFailure(t, "upload reverses response order", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.upload = func(ctx context.Context, files []SandboxFileUpload) []SandboxUploadResponse {
+				responses := s.inner.UploadFiles(ctx, files)
+				for i, j := 0, len(responses)-1; i < j; i, j = i+1, j-1 {
+					responses[i], responses[j] = responses[j], responses[i]
+				}
+				return responses
+			}
+		}))
+	})
+	expectConformanceFailure(t, "upload reports a bogus error for a missing parent", func(t *testing.T) {
+		RunSandboxConformance(t, factory(func(s *stubSandbox) {
+			s.upload = func(_ context.Context, files []SandboxFileUpload) []SandboxUploadResponse {
+				responses := make([]SandboxUploadResponse, 0, len(files))
+				for _, f := range files {
+					responses = append(responses, SandboxUploadResponse{Path: f.Path, Error: "totally unexpected"})
+				}
+				return responses
+			}
+		}))
+	})
+}
