@@ -1,9 +1,11 @@
 package middleware
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -213,18 +215,105 @@ func (d DockerExecutionPolicy) BuildCommand(command []string, workspace string) 
 }
 
 // CodexSandboxExecutionPolicy runs commands inside a Codex CLI sandbox,
-// mirroring Python's `CodexSandboxExecutionPolicy._build_command`.
+// mirroring Python's `CodexSandboxExecutionPolicy` (`_execution.py:190`).
+//
+// PARITY CHANGE: the argv shape follows Python's `_build_command`
+// (`_execution.py:226-234`) — `<binary> sandbox <platform> -c key=json … --
+// <command>` — replacing the old Go shape `codex exec sandbox --platform <p>`.
 type CodexSandboxExecutionPolicy struct {
-	// Platform is the sandbox platform hint passed to the Codex CLI ("" is
-	// valid — the CLI autodetects).
+	// Binary is the Codex CLI name/path (default "codex"), resolved via PATH
+	// lookup like Python's `_resolve_binary` (`_execution.py:236`).
+	Binary string
+	// Platform is the sandbox platform hint: "auto" or "" resolves via
+	// runtime.GOOS (linux → "linux", darwin → "macos"; anything else errors in
+	// ResolvePlatform, mirroring Python's `_determine_platform`,
+	// `_execution.py:245-256`). An explicit value (e.g. "linux", "macos") is
+	// passed through unchanged.
 	Platform string
+	// ConfigOverrides renders as sorted `-c key=<json>` pairs before the `--`
+	// separator (Python `config_overrides`, `_execution.py:208`). Keys are
+	// sorted for determinism; values serialize via encoding/json (compact —
+	// whitespace-only divergence from Python's json.dumps), falling back to
+	// fmt.Sprint for unmarshalable values.
+	ConfigOverrides map[string]any
 }
 
+// ResolveBinary mirrors Python's `CodexSandboxExecutionPolicy._resolve_binary`
+// (`_execution.py:236-243`).
+func (c CodexSandboxExecutionPolicy) ResolveBinary() (string, error) {
+	binary := c.Binary
+	if binary == "" {
+		binary = "codex"
+	}
+	path, err := execLookPath(binary)
+	if err != nil {
+		return "", fmt.Errorf("Codex sandbox policy requires the '%s' CLI to be installed and available on PATH", binary)
+	}
+	return path, nil
+}
+
+// ResolvePlatform mirrors Python's `CodexSandboxExecutionPolicy._determine_platform`
+// (`_execution.py:245-256`) using the real runtime.GOOS.
+func (c CodexSandboxExecutionPolicy) ResolvePlatform() (string, error) {
+	return c.resolvePlatform(runtime.GOOS)
+}
+
+// resolvePlatform is the GOOS-parameterized core of ResolvePlatform so tests
+// can exercise the unsupported-platform branch (Python tests monkeypatch
+// sys.platform).
+func (c CodexSandboxExecutionPolicy) resolvePlatform(goos string) (string, error) {
+	switch c.Platform {
+	case "", "auto":
+		switch goos {
+		case "linux":
+			return "linux", nil
+		case "darwin":
+			return "macos", nil
+		default:
+			return "", fmt.Errorf("Codex sandbox policy could not determine a supported platform; set 'platform' explicitly")
+		}
+	default:
+		return c.Platform, nil
+	}
+}
+
+// BuildCommand mirrors Python's `CodexSandboxExecutionPolicy._build_command`
+// (`_execution.py:226-234`). Binary resolution and platform auto-resolution are
+// best-effort here (total function); the hard error paths live in
+// ResolveBinary/ResolvePlatform, mirroring Python raising at spawn. On an
+// unsupported GOOS the platform segment is silently dropped from the argv, so
+// callers that need Python's error path must call ResolvePlatform themselves.
 func (c CodexSandboxExecutionPolicy) BuildCommand(command []string, _ string) []string {
-	args := []string{"codex", "exec", "sandbox"}
-	if c.Platform != "" {
-		args = append(args, "--platform", c.Platform)
+	binary := c.Binary
+	if binary == "" {
+		binary = "codex"
+	}
+	if path, err := execLookPath(binary); err == nil {
+		binary = path
+	}
+	args := []string{binary, "sandbox"}
+	if platform, err := c.ResolvePlatform(); err == nil {
+		args = append(args, platform)
+	}
+	keys := make([]string, 0, len(c.ConfigOverrides))
+	for k := range c.ConfigOverrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "-c", k+"="+formatCodexOverride(c.ConfigOverrides[k]))
 	}
 	args = append(args, "--")
 	return append(args, command...)
+}
+
+// formatCodexOverride mirrors Python's `_format_override` (`_execution.py:258-263`):
+// JSON when marshalable (compact separators — see the struct doc comment),
+// fmt.Sprint otherwise.
+func formatCodexOverride(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(data)
 }

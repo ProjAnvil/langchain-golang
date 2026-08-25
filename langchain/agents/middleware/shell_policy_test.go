@@ -23,16 +23,22 @@ func TestDockerExecutionPolicyBuildCommand(t *testing.T) {
 }
 
 func TestCodexSandboxExecutionPolicyBuildCommand(t *testing.T) {
+	stubLookPath(t, identityLookPath)
 	got := CodexSandboxExecutionPolicy{Platform: "linux"}.BuildCommand([]string{"/bin/sh", "-c", "pwd"}, "/ws")
-	want := []string{"codex", "exec", "sandbox", "--platform", "linux", "--", "/bin/sh", "-c", "pwd"}
+	want := []string{"codex", "sandbox", "linux", "--", "/bin/sh", "-c", "pwd"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CodexSandboxExecutionPolicy = %#v, want %#v", got, want)
 	}
 }
 
 func TestCodexSandboxExecutionPolicyNoPlatform(t *testing.T) {
+	stubLookPath(t, identityLookPath)
+	platform, err := CodexSandboxExecutionPolicy{}.ResolvePlatform()
+	if err != nil {
+		t.Skipf("codex auto platform unsupported on this GOOS: %v", err)
+	}
 	got := CodexSandboxExecutionPolicy{}.BuildCommand([]string{"sh"}, "/ws")
-	want := []string{"codex", "exec", "sandbox", "--", "sh"}
+	want := []string{"codex", "sandbox", platform, "--", "sh"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CodexSandboxExecutionPolicy = %#v, want %#v", got, want)
 	}
