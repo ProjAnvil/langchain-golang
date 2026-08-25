@@ -218,3 +218,19 @@ func (a afterModelConfiguredAdapter) CanJumpTo(hookName string) []string {
 func FuncAfterModelWithConfig(fn AfterModelFunc, cfg HookConfig) AfterModelHook {
 	return afterModelConfiguredAdapter{fn: fn, canJumpTo: cfg.CanJumpTo}
 }
+
+// WrapModelCallResultFunc mirrors a Python wrap_model_call hook returning the
+// ModelCallResult union (ModelResponse, ExtendedModelResponse, or a bare
+// AIMessage as messages.Message with role ai).
+type WrapModelCallResultFunc func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error)
+
+type wrapModelCallResultFuncAdapter struct{ fn WrapModelCallResultFunc }
+
+func (a wrapModelCallResultFuncAdapter) WrapModelCallResult(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error) {
+	return a.fn(ctx, request, handler)
+}
+
+// FuncWrapModelCallResult returns a WrapModelCallResultHook backed by fn.
+func FuncWrapModelCallResult(fn WrapModelCallResultFunc) WrapModelCallResultHook {
+	return wrapModelCallResultFuncAdapter{fn: fn}
+}

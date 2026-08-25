@@ -130,6 +130,19 @@ type WrapModelCallHook interface {
 	WrapModelCall(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error)
 }
 
+// WrapModelCallResultHook is the ModelCallResult-returning sibling of
+// WrapModelCallHook, mirroring Python middleware whose wrap_model_call
+// returns the `ModelCallResult` union (`ModelResponse | AIMessage |
+// ExtendedModelResponse`, middleware/types.py:313). A bare messages.Message
+// with role ai (the AIMessage short form) is normalized into a ModelResponse
+// by middleware.NormalizeModelCallResult at the composition boundary
+// (factory._normalize_to_model_response, factory.py:177). When a middleware
+// implements both WrapModelCallHook and WrapModelCallResultHook, the Result
+// variant takes precedence.
+type WrapModelCallResultHook interface {
+	WrapModelCallResult(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error)
+}
+
 // WrapToolCallHook lets middleware intercept a single tool call, mirroring
 // Python's `AgentMiddleware.wrap_tool_call`. It receives a context.Context
 // for the same reason as BeforeModelHook.
@@ -1107,6 +1120,20 @@ func buildModelNode(
 			return invokeModel(c, r, providerStrategySchema(providerStrategy))
 		}
 		for i := len(mws) - 1; i >= 0; i-- {
+			if hook, ok := mws[i].(WrapModelCallResultHook); ok {
+				next := handler
+				handler = func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
+					result, err := hook.WrapModelCallResult(c, r, next)
+					if err != nil {
+						return middleware.ModelResponse{}, err
+					}
+					// Normalize the ModelCallResult union (AIMessage short form,
+					// ExtendedModelResponse unwrap) at the composition boundary,
+					// mirroring factory._normalize_to_model_response.
+					return middleware.NormalizeModelCallResult(result)
+				}
+				continue
+			}
 			hook, ok := mws[i].(WrapModelCallHook)
 			if !ok {
 				continue

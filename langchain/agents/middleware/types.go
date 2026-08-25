@@ -32,6 +32,49 @@ type ExtendedModelResponse struct {
 	Command       *Command
 }
 
+// ModelCallResult mirrors Python's `ModelCallResult` union
+// (middleware/types.py:313: `ModelResponse | AIMessage | ExtendedModelResponse`).
+// A model-call handler result may be any of:
+//   - ModelResponse / *ModelResponse — passed through unchanged
+//   - ExtendedModelResponse / *ExtendedModelResponse — unwrapped to its
+//     embedded ModelResponse
+//   - messages.Message with Role == messages.RoleAI — the AIMessage short
+//     form, normalized to ModelResponse{Result: [msg]}
+//
+// It is returned by agents.WrapModelCallResultHook and normalized by
+// NormalizeModelCallResult.
+type ModelCallResult = any
+
+// NormalizeModelCallResult mirrors Python's `factory._normalize_to_model_response`
+// (factory.py:177): a bare AI message becomes ModelResponse{Result: [msg]} and
+// an ExtendedModelResponse unwraps to its embedded ModelResponse, so the inner
+// composition boundary always sees a ModelResponse.
+func NormalizeModelCallResult(result ModelCallResult) (ModelResponse, error) {
+	switch r := result.(type) {
+	case ModelResponse:
+		return r, nil
+	case *ModelResponse:
+		if r == nil {
+			return ModelResponse{}, fmt.Errorf("middleware: nil *ModelResponse is not a valid ModelCallResult")
+		}
+		return *r, nil
+	case ExtendedModelResponse:
+		return r.ModelResponse, nil
+	case *ExtendedModelResponse:
+		if r == nil {
+			return ModelResponse{}, fmt.Errorf("middleware: nil *ExtendedModelResponse is not a valid ModelCallResult")
+		}
+		return r.ModelResponse, nil
+	case messages.Message:
+		if r.Role != messages.RoleAI {
+			return ModelResponse{}, fmt.Errorf("middleware: ModelCallResult message must have role %q, got %q", messages.RoleAI, r.Role)
+		}
+		return ModelResponse{Result: []messages.Message{r}}, nil
+	default:
+		return ModelResponse{}, fmt.Errorf("middleware: unsupported ModelCallResult type %T", result)
+	}
+}
+
 type Command struct {
 	Update map[string]any
 	Goto   string
