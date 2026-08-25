@@ -39,6 +39,26 @@ type EntrypointOpts struct {
 	// Retry retries the entrypoint function as a whole (it is the internal
 	// graph node's retry policy, installed via AddNodeWithPolicies).
 	Retry *graph.RetryPolicy
+	// CachePolicy caches the whole workflow's writes (the __end__/__previous__
+	// result) on the internal entrypoint node, mirroring Python's
+	// @entrypoint(cache_policy=...) (func/__init__.py:443, passed to the
+	// internal Pregel at :606). Inert unless Cache is also installed — the
+	// same "policy without backend is inert" rule as graph node caching.
+	// Only SUCCESSFUL runs are cached.
+	CachePolicy *graph.CachePolicy
+	// Timeout caps each workflow attempt, mirroring @entrypoint(timeout=...)
+	// (func/__init__.py:445): installed as the internal node's
+	// graph.TimeoutPolicy. Cooperative cancellation applies — a function
+	// that never observes rt.Done() overruns the deadline (see
+	// graph.TimeoutPolicy).
+	Timeout *graph.TimeoutPolicy
+	// ContextSchema validates the run-scoped context (rt.Context, attached
+	// via runtime.ContextWithValues) before the entrypoint function runs —
+	// the Go port of @entrypoint(context_schema=...) validation
+	// (func/__init__.py:442; Python coerces context into the schema type,
+	// which has no Go analogue, so the port is a validation hook). Nil
+	// disables validation. A validation error fails the invocation.
+	ContextSchema func(ctx any) error
 }
 
 // Entrypoint is a function compiled to a checkpointed workflow, mirroring
@@ -67,6 +87,9 @@ func NewEntrypoint[I, O, S any](opts EntrypointOpts,
 		panic("fn: entrypoint function must be non-nil")
 	}
 	nodeFn := func(rt runtime.Runtime, state map[string]any) (any, error) {
+		if err := validateEntrypointContext(opts.ContextSchema, rt); err != nil {
+			return nil, err
+		}
 		in, prev, hasPrev, err := entrypointInput[I, S](state)
 		if err != nil {
 			return nil, err
@@ -101,6 +124,9 @@ func NewEntrypointFinal[I, O, S any](opts EntrypointOpts,
 		panic("fn: entrypoint function must be non-nil")
 	}
 	nodeFn := func(rt runtime.Runtime, state map[string]any) (any, error) {
+		if err := validateEntrypointContext(opts.ContextSchema, rt); err != nil {
+			return nil, err
+		}
 		in, prev, hasPrev, err := entrypointInput[I, S](state)
 		if err != nil {
 			return nil, err
@@ -140,6 +166,18 @@ func entrypointInput[I, S any](state map[string]any) (I, S, bool, error) {
 	return in, p, true, nil
 }
 
+// validateEntrypointContext runs the ContextSchema hook (nil = no
+// validation), wrapping failures with the entrypoint context.
+func validateEntrypointContext(schema func(any) error, rt runtime.Runtime) error {
+	if schema == nil {
+		return nil
+	}
+	if err := schema(rt.Context); err != nil {
+		return fmt.Errorf("fn: entrypoint context_schema validation: %w", err)
+	}
+	return nil
+}
+
 // compileEntrypoint builds the single-node StateGraph every Entrypoint
 // compiles to: three reserved channels (__start__ ephemeral input, __end__
 // and __previous__ last-value saves) plus one "entrypoint" node (Python
@@ -149,7 +187,7 @@ func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) 
 		AddChannel(channelStart, channels.NewEphemeral(true)).
 		AddChannel(channelEnd, channels.NewLastValue()).
 		AddChannel(channelPrevious, channels.NewLastValue()).
-		AddNodeWithPolicies(entrypointNode, nodeFn, graph.NodePolicies{Retry: opts.Retry}).
+		AddNodeWithPolicies(entrypointNode, nodeFn, graph.NodePolicies{Retry: opts.Retry, Cache: opts.CachePolicy, Timeout: opts.Timeout}).
 		SetEntryPoint(entrypointNode).
 		AddEdge(entrypointNode, types.END)
 	var copts []graph.CompileOption
