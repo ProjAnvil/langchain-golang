@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/blake2b"
+
 	"github.com/projanvil/langchain-golang/core/documentloaders"
 	"github.com/projanvil/langchain-golang/core/documents"
 	"github.com/projanvil/langchain-golang/core/vectorstores"
@@ -172,6 +174,24 @@ type Options struct {
 	// deduplication key. Empty defaults to KeyEncoderSHA256, matching the
 	// pre-existing HashDocument behavior and Python's default.
 	KeyEncoder KeyEncoder
+	// KeyEncoderFunc derives each document's deduplication key directly and
+	// overrides KeyEncoder when set, mirroring Python's callable key_encoder
+	// (indexing/api.py:208-210). When changing the key encoder, change the
+	// index as well to avoid duplicated documents.
+	KeyEncoderFunc KeyEncoderFunc
+}
+
+// KeyEncoderFunc derives a document's deduplication key directly, mirroring
+// Python's callable key_encoder parameter.
+type KeyEncoderFunc func(documents.Document) (string, error)
+
+// hashDocumentKey derives the deduplication key for doc, honoring
+// Options.KeyEncoderFunc before Options.KeyEncoder.
+func hashDocumentKey(doc documents.Document, options Options) (string, error) {
+	if options.KeyEncoderFunc != nil {
+		return options.KeyEncoderFunc(doc)
+	}
+	return HashDocumentWithAlgorithm(doc, options.KeyEncoder)
 }
 
 // IndexDocuments indexes documents into a vector store while skipping records
@@ -320,7 +340,7 @@ func indexBatch(
 	groupIDs := make([]string, 0, len(batch))
 	seenKeys := map[string]bool{}
 	for i, doc := range batch {
-		key, err := HashDocumentWithAlgorithm(doc, options.KeyEncoder)
+		key, err := hashDocumentKey(doc, options)
 		if err != nil {
 			return err
 		}
@@ -466,8 +486,8 @@ func HashDocument(doc documents.Document) (string, error) {
 // KeyEncoder selects the hash algorithm used to derive a document's
 // deduplication key, mirroring Python's `index(..., key_encoder=...)`
 // parameter (langchain_core.indexing.api._calculate_hash). SHA-1 is kept for
-// parity but SHA-256 is the default; blake2b requires golang.org/x/crypto and
-// is therefore not supported here (a clear error is returned).
+// parity but SHA-256 is the default (Python defaults to sha1 with a
+// deprecation warning; the Go port deliberately skips the deprecation cycle).
 type KeyEncoder string
 
 const (
@@ -503,7 +523,8 @@ func HashDocumentWithAlgorithm(doc documents.Document, algorithm KeyEncoder) (st
 		sum := sha512.Sum512(data)
 		return hex.EncodeToString(sum[:]), nil
 	case KeyEncoderBlake2b:
-		return "", fmt.Errorf("indexing: key_encoder %q is not supported (requires golang.org/x/crypto/blake2b)", algorithm)
+		sum := blake2b.Sum512(data)
+		return hex.EncodeToString(sum[:]), nil
 	default:
 		return "", fmt.Errorf("indexing: unknown key_encoder %q", algorithm)
 	}

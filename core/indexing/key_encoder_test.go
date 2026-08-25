@@ -1,7 +1,6 @@
 package indexing
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -78,14 +77,33 @@ func TestHashDocumentWithAlgorithmDefaultMatchesHashDocument(t *testing.T) {
 	}
 }
 
-func TestHashDocumentWithAlgorithmBlake2bUnsupported(t *testing.T) {
+func TestHashDocumentWithAlgorithmBlake2b(t *testing.T) {
 	doc := documents.New("alpha", nil)
-	_, err := HashDocumentWithAlgorithm(doc, KeyEncoderBlake2b)
-	if err == nil {
-		t.Fatalf("expected error for blake2b, got nil")
+
+	first, err := HashDocumentWithAlgorithm(doc, KeyEncoderBlake2b)
+	if err != nil {
+		t.Fatalf("blake2b error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "blake2b") {
-		t.Fatalf("blake2b error = %v, want mention of blake2b", err)
+	if len(first) != 128 { // blake2b-512 hex digest length
+		t.Fatalf("blake2b digest length = %d, want 128", len(first))
+	}
+	second, err := HashDocumentWithAlgorithm(doc, KeyEncoderBlake2b)
+	if err != nil {
+		t.Fatalf("blake2b error = %v", err)
+	}
+	if first != second {
+		t.Fatalf("blake2b not deterministic: %q vs %q", first, second)
+	}
+	// Mirrors test_hashed_document.py::test_hashing: blake2b differs from
+	// sha1/sha256/sha512 for the same document.
+	for _, algorithm := range []KeyEncoder{KeyEncoderSHA1, KeyEncoderSHA256, KeyEncoderSHA512} {
+		other, err := HashDocumentWithAlgorithm(doc, algorithm)
+		if err != nil {
+			t.Fatalf("%s error = %v", algorithm, err)
+		}
+		if other == first {
+			t.Fatalf("blake2b and %s produced the same digest %q", algorithm, first)
+		}
 	}
 }
 
