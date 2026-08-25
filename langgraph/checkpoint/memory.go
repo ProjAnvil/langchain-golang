@@ -187,6 +187,121 @@ func (s *MemorySaver) DeleteThread(ctx context.Context, threadID string) error {
 	return nil
 }
 
+// DeleteForRuns implements Saver: drops every stored checkpoint whose
+// metadata RunID is listed, across all threads and namespaces. Writes ride
+// inside the stored record, so they are removed together. Checkpoints with
+// an empty RunID never match. The Saver-interface DeltaChannel warning
+// (base/__init__.py:340-346) applies: deletion can sever a live thread's
+// delta-channel ancestor history — documented only, mirroring Python.
+func (s *MemorySaver) DeleteForRuns(ctx context.Context, runIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(runIDs) == 0 {
+		return nil
+	}
+	drop := make(map[string]bool, len(runIDs))
+	for _, id := range runIDs {
+		drop[id] = true
+	}
+	for threadID, nss := range s.threads {
+		for ns, byID := range nss {
+			for cpID, st := range byID {
+				if st.md.RunID != "" && drop[st.md.RunID] {
+					delete(byID, cpID)
+				}
+			}
+			if len(byID) == 0 {
+				delete(nss, ns)
+			}
+		}
+		if len(nss) == 0 {
+			delete(s.threads, threadID)
+		}
+	}
+	return nil
+}
+
+// CopyThread implements Saver: every namespace's records are deep-copied
+// onto the destination thread (checkpoint IDs and parent links preserved,
+// mirroring Python's requirement that the copy carry the complete parent
+// chain, base/__init__.py:361-371). A nonexistent source is a no-op.
+func (s *MemorySaver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.threads[srcThreadID]
+	if len(src) == 0 {
+		return nil
+	}
+	dst := s.threads[dstThreadID]
+	if dst == nil {
+		dst = map[string]map[string]stored{}
+		s.threads[dstThreadID] = dst
+	}
+	for ns, byID := range src {
+		dstNS := dst[ns]
+		if dstNS == nil {
+			dstNS = map[string]stored{}
+			dst[ns] = dstNS
+		}
+		for id, st := range byID {
+			copied := stored{
+				cp:     copyCheckpoint(st.cp),
+				md:     copyMetadata(st.md),
+				writes: slices.Clone(st.writes),
+			}
+			if st.parent != nil {
+				p := *st.parent
+				copied.parent = &p
+			}
+			if st.writeSlots != nil {
+				copied.writeSlots = maps.Clone(st.writeSlots)
+			}
+			dstNS[id] = copied
+		}
+	}
+	return nil
+}
+
+// Prune implements Saver: PruneKeepLatest keeps the highest-ID (latest)
+// checkpoint per namespace; PruneDeleteAll removes the thread. Unknown
+// threads are skipped; an unknown strategy is an error. The Saver-interface
+// DeltaChannel warning (base/__init__.py:387-413) applies: naive keep_latest
+// can sever delta-channel ancestor history — documented only, mirroring
+// Python.
+func (s *MemorySaver) Prune(ctx context.Context, threadIDs []string, strategy PruneStrategy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch strategy {
+	case PruneKeepLatest, PruneDeleteAll:
+	default:
+		return fmt.Errorf("checkpoint: unknown prune strategy %q", strategy)
+	}
+	for _, threadID := range threadIDs {
+		nss := s.threads[threadID]
+		if len(nss) == 0 {
+			continue
+		}
+		if strategy == PruneDeleteAll {
+			delete(s.threads, threadID)
+			continue
+		}
+		for _, byID := range nss {
+			latest := ""
+			for id := range byID {
+				if id > latest {
+					latest = id
+				}
+			}
+			for id := range byID {
+				if id != latest {
+					delete(byID, id)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // lookup resolves cfg to a stored checkpoint: cfg.CheckpointID selects an
 // exact checkpoint, empty selects the latest (highest ID).
 func (s *MemorySaver) lookup(cfg Config) (string, stored, bool) {

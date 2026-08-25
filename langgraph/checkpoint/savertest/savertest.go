@@ -29,6 +29,9 @@ func Run(t *testing.T, newSaver func(t *testing.T) checkpoint.Saver) {
 	t.Run("put_writes_task_path", func(t *testing.T) { testPutWritesTaskPath(t, newSaver) })
 	t.Run("put_writes_missing_checkpoint", func(t *testing.T) { testPutWritesMissingCheckpoint(t, newSaver) })
 	t.Run("delete_thread", func(t *testing.T) { testDeleteThread(t, newSaver) })
+	t.Run("delete_for_runs", func(t *testing.T) { testDeleteForRuns(t, newSaver) })
+	t.Run("copy_thread", func(t *testing.T) { testCopyThread(t, newSaver) })
+	t.Run("prune", func(t *testing.T) { testPrune(t, newSaver) })
 	t.Run("concurrent_put", func(t *testing.T) { testConcurrentPut(t, newSaver) })
 	t.Run("serde_round_trip", func(t *testing.T) { testSerdeRoundTrip(t, newSaver) })
 }

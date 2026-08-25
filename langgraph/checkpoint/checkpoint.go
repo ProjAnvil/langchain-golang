@@ -74,6 +74,10 @@ type Metadata struct {
 	// Step is the superstep number: -1 for the "input" checkpoint, 0 for the
 	// first "loop" checkpoint.
 	Step int
+	// RunID is the ID of the run that created this checkpoint, mirroring
+	// Python's CheckpointMetadata.run_id (base/__init__.py:61). Empty when
+	// the caller did not stamp one; DeleteForRuns selects on it.
+	RunID string
 	// Parents maps checkpoint namespace -> parent checkpoint ID.
 	Parents map[string]string
 	// CountersSinceDeltaSnapshot tracks per-channel (updates, supersteps)
@@ -215,6 +219,14 @@ type ListOptions struct {
 // This is a breaking redesign of the M1 Saver (single latest checkpoint per
 // thread, no context, no history): checkpoints are now immutable,
 // ID-addressable snapshots retained per thread until DeleteThread.
+//
+// Python parity note — with_allowlist (base/__init__.py:713) is deliberately
+// NOT ported: it exists to extend the msgpack strict-deserialization
+// allowlist of JsonPlusSerializer/EncryptedSerializer. The Go serde
+// (checkpoint/serde) has no msgpack at all; its JSON serializer is a closed
+// type registry that already rejects unregistered types on BOTH encode and
+// decode (serde/json.go:57), so there is no allowlist to extend and no
+// per-saver clone machinery to mirror.
 type Saver interface {
 	// GetTuple returns the tuple for cfg — the checkpoint identified by
 	// cfg.CheckpointID, or the latest when it is empty — or (nil, nil) when
@@ -238,4 +250,65 @@ type Saver interface {
 	PutWrites(ctx context.Context, cfg Config, writes []Write, taskID, taskPath string) error
 	// DeleteThread removes all checkpoints and pending writes for threadID.
 	DeleteThread(ctx context.Context, threadID string) error
+	// DeleteForRuns removes all checkpoints and pending writes whose
+	// metadata RunID is in runIDs, across every thread and namespace,
+	// mirroring Python's BaseCheckpointSaver.delete_for_runs
+	// (base/__init__.py:331). An empty runIDs and unknown run IDs are no-op
+	// successes. Checkpoints with an empty RunID never match.
+	//
+	// WARNING — DeltaChannel (base/__init__.py:340-346): deleting a run that
+	// produced ancestor checkpoint writes — or the only delta snapshot — for
+	// a still-live thread breaks reconstruction of any DeltaChannel whose
+	// history depended on those rows. This port mirrors Python: the method
+	// deletes unconditionally; the warning is documentation only, no
+	// behavioral safeguard.
+	DeleteForRuns(ctx context.Context, runIDs []string) error
+	// CopyThread duplicates every checkpoint of srcThreadID — all
+	// namespaces, full history including parent links — plus their pending
+	// writes onto dstThreadID, mirroring Python's copy_thread
+	// (base/__init__.py:350). Checkpoint IDs are preserved, so a dst
+	// checkpoint colliding with an existing dst ID is replaced. A
+	// nonexistent source is a no-op success; the source is never modified.
+	CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error
+	// Prune removes checkpoints of the listed threads per strategy,
+	// mirroring Python's prune (base/__init__.py:374): PruneKeepLatest
+	// retains only the most recent checkpoint PER NAMESPACE (plus its
+	// pending writes); PruneDeleteAll removes the threads entirely
+	// (DeleteThread semantics). Unknown threads and an empty list are no-op
+	// successes; an unknown strategy is an error.
+	//
+	// WARNING — DeltaChannel (base/__init__.py:387-413): a naive keep_latest
+	// that drops intermediate checkpoints and their writes can sever the
+	// ancestor chain DeltaChannel reconstruction walks (the kept latest is
+	// rarely a snapshot point, so delta channels would silently reconstruct
+	// as empty). Python documents safe options — preserve ancestors up to
+	// the nearest delta snapshot, force a fresh snapshot on the kept
+	// checkpoint, or skip pruning DeltaChannel threads; this port mirrors
+	// Python's naive behavior and records the warning only — documentation,
+	// no behavioral change.
+	Prune(ctx context.Context, threadIDs []string, strategy PruneStrategy) error
+}
+
+// PruneStrategy selects how Saver.Prune trims a thread's checkpoints,
+// mirroring Python's `strategy` literal (base/__init__.py:378).
+type PruneStrategy string
+
+const (
+	// PruneKeepLatest retains only the most recent checkpoint per namespace.
+	PruneKeepLatest PruneStrategy = "keep_latest"
+	// PruneDeleteAll removes all checkpoints and writes of the thread.
+	PruneDeleteAll PruneStrategy = "delete"
+)
+
+// Get returns the checkpoint identified by cfg without metadata, parent
+// config, or pending writes — the Go analogue of Python's
+// BaseCheckpointSaver.get (base/__init__.py:227), which is a concrete method
+// delegating to get_tuple. Go interfaces cannot carry default
+// implementations, so Get is a package-level helper over s.GetTuple.
+func Get(ctx context.Context, s Saver, cfg Config) (*Checkpoint, error) {
+	tup, err := s.GetTuple(ctx, cfg)
+	if err != nil || tup == nil {
+		return nil, err
+	}
+	return &tup.Checkpoint, nil
 }

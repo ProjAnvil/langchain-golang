@@ -166,6 +166,18 @@ func (f *faultySaver) DeleteThread(ctx context.Context, threadID string) error {
 	return next()
 }
 
+func (f *faultySaver) DeleteForRuns(ctx context.Context, runIDs []string) error {
+	return f.inner.DeleteForRuns(ctx, runIDs)
+}
+
+func (f *faultySaver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error {
+	return f.inner.CopyThread(ctx, srcThreadID, dstThreadID)
+}
+
+func (f *faultySaver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) error {
+	return f.inner.Prune(ctx, threadIDs, strategy)
+}
+
 // rejectionCase pairs a violation name with the hook that injects it.
 type rejectionCase struct {
 	name string

@@ -5,14 +5,15 @@ import "encoding/json"
 // MetadataMatchesFilter reports whether md contains filter, the in-process
 // equivalent of Postgres's `metadata @> filter` JSONB containment used by
 // persistent savers. The metadata document is md's JSON projection —
-// {"source": ..., "step": ..., "parents": ...} — so filter keys are limited
-// to source/step/parents (Metadata is a closed struct, unlike Python's
-// free-form CheckpointMetadata). Both sides are normalized through JSON
-// before comparison so `step` filters match whether written as int or
-// float64 (JSONB numeric equality). Containment is recursive, mirroring @>:
-// an object filter matches when every key is present and contained, an array
-// filter when every element is contained in some element of the target, and
-// scalars when equal.
+// {"source": ..., "step": ..., "parents": ..., "run_id": ...} — so filter
+// keys are limited to source/step/parents/run_id (Metadata is a closed
+// struct, unlike Python's free-form CheckpointMetadata). run_id appears only
+// when non-empty. Both sides are normalized through JSON before comparison
+// so `step` filters match whether written as int or float64 (JSONB numeric
+// equality). Containment is recursive, mirroring @>: an object filter
+// matches when every key is present and contained, an array filter when
+// every element is contained in some element of the target, and scalars
+// when equal.
 func MetadataMatchesFilter(md Metadata, filter map[string]any) bool {
 	if len(filter) == 0 {
 		return true
@@ -20,6 +21,9 @@ func MetadataMatchesFilter(md Metadata, filter map[string]any) bool {
 	doc := map[string]any{"source": md.Source, "step": md.Step}
 	if md.Parents != nil {
 		doc["parents"] = md.Parents
+	}
+	if md.RunID != "" {
+		doc["run_id"] = md.RunID
 	}
 	return jsonContains(normalizeJSON(doc), normalizeJSON(filter))
 }
