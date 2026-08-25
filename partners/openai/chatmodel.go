@@ -275,21 +275,61 @@ func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
 				Content: message.Content,
 			})
 		case messages.RoleAI:
-			payload.Input = append(payload.Input, inputItem{
-				Role:    "assistant",
-				Content: message.Content,
-			})
+			// A blocks-only AI message (e.g. a bare custom_tool_call) emits no
+			// empty assistant text item, mirroring Python's block pass-through.
+			if message.Content != "" {
+				payload.Input = append(payload.Input, inputItem{
+					Role:    "assistant",
+					Content: message.Content,
+				})
+			}
+			// Replay custom_tool_call blocks as Responses input items
+			// (chat_models/base.py:4661-4677).
+			for _, block := range message.ContentBlocks {
+				if ns, ok := block.(messages.NonStandardContentBlock); ok && ns.Type == "custom_tool_call" {
+					payload.Input = append(payload.Input, inputItem{
+						Type:   "custom_tool_call",
+						ID:     stringFrom(ns.Value, "id"),
+						CallID: stringFrom(ns.Value, "call_id"),
+						Name:   stringFrom(ns.Value, "name"),
+						Input:  stringFrom(ns.Value, "input"),
+					})
+				}
+			}
 		case messages.RoleTool:
-			payload.Input = append(payload.Input, inputItem{
-				Role:    "tool",
-				Content: message.Content,
-			})
+			// A custom_tool_call_output block replaces the plain tool message
+			// (chat_models/base.py:4505-4523, 4597-4601).
+			replayed := false
+			for _, block := range message.ContentBlocks {
+				if ns, ok := block.(messages.NonStandardContentBlock); ok && ns.Type == "custom_tool_call_output" {
+					payload.Input = append(payload.Input, inputItem{
+						Type:   "custom_tool_call_output",
+						CallID: message.ToolCallID,
+						Output: stringFrom(ns.Value, "output"),
+					})
+					replayed = true
+				}
+			}
+			if !replayed {
+				payload.Input = append(payload.Input, inputItem{
+					Role:    "tool",
+					Content: message.Content,
+				})
+			}
 		}
 	}
 	if len(instructions) > 0 {
 		payload.Instructions = strings.Join(instructions, "\n")
 	}
 	for _, tool := range m.boundTools {
+		if custom, ok := tool.(CustomTool); ok {
+			spec := toolSpec{Type: "custom", Name: custom.name, Description: custom.description}
+			if len(custom.format) > 0 {
+				spec.Format = custom.format
+			}
+			payload.Tools = append(payload.Tools, spec)
+			continue
+		}
 		payload.Tools = append(payload.Tools, toolSpec{
 			Type:        "function",
 			Name:        tool.Name(),
@@ -316,15 +356,22 @@ type requestPayload struct {
 }
 
 type inputItem struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+	Type    string `json:"type,omitempty"`
+	ID      string `json:"id,omitempty"`
+	CallID  string `json:"call_id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Input   string `json:"input,omitempty"`
+	Output  string `json:"output,omitempty"`
 }
 
 type toolSpec struct {
-	Type        string        `json:"type"`
-	Name        string        `json:"name"`
-	Description string        `json:"description,omitempty"`
-	Parameters  schema.Schema `json:"parameters,omitempty"`
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  schema.Schema  `json:"parameters,omitempty"`
+	Format      map[string]any `json:"format,omitempty"`
 }
 
 type textConfig struct {
@@ -398,6 +445,7 @@ func (r responsePayload) toMessage() messages.Message {
 	var parts []string
 	var toolCalls []messages.ToolCall
 	var invalidToolCalls []messages.ToolCall
+	var contentBlocks []messages.ContentBlock
 	for _, output := range r.Output {
 		switch output.Type {
 		case "message":
@@ -423,12 +471,25 @@ func (r responsePayload) toMessage() messages.Message {
 				toolCall.Args = args
 			}
 			toolCalls = append(toolCalls, toolCall)
+		case "custom_tool_call":
+			// chat_models/base.py:4883-4891: keep the raw item as a content
+			// block and append a tool call with args {"__arg1": input}.
+			contentBlocks = append(contentBlocks, messages.NonStandardContentBlock{
+				Type:  "custom_tool_call",
+				Value: output.Raw,
+			})
+			toolCalls = append(toolCalls, messages.ToolCall{
+				ID:   output.CallID,
+				Name: output.Name,
+				Args: map[string]any{"__arg1": output.Input},
+			})
 		}
 	}
 	message := messages.AI(strings.Join(parts, ""))
 	message.ID = r.ID
 	message.ToolCalls = toolCalls
 	message.InvalidToolCalls = invalidToolCalls
+	message.ContentBlocks = contentBlocks
 	message.ResponseMetadata = map[string]any{
 		"model":          r.Model,
 		"model_provider": "openai",
@@ -477,6 +538,12 @@ func emit(
 		event.Error = err.Error()
 	}
 	return cfg.Callbacks.Emit(ctx, event)
+}
+
+// stringFrom extracts m[key] as a string ("" when absent or not a string).
+func stringFrom(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
 }
 
 func cloneMetadata(metadata map[string]any) map[string]any {
