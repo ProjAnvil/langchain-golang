@@ -300,9 +300,11 @@ func snapshotTask(pt checkpoint.PlannedTask, writes []checkpoint.Write) Snapshot
 // ReplayWrites method.
 //
 // This mirrors Python's BaseCheckpointSaver.get_delta_channel_history ancestor
-// walk, but lives in the read path (GetState/GetStateHistory) because the Go
-// executor does not yet persist per-task writes in the normal (non-interrupt)
-// checkpoint flow — the ancestor walk primarily finds snapshot blobs.
+// walk and lives in the read path (GetState/GetStateHistory). The writes it
+// replays are persisted by the normal executor loop: each completed task's
+// writes are anchored on the loop checkpoint that observed them
+// (graph/graph.go's checkpointing block after the superstep commit, via
+// checkpointSink.putWrites), matching Python pregel's per-task put_writes.
 func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, values map[string]any) {
 	// Collect the delta channel keys that are absent from values.
 	var deltaKeys []string
