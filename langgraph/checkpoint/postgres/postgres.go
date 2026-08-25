@@ -195,7 +195,7 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("postgres saver: encode checkpoint %q: %w", cp.ID, err)
 	}
-	mdJSON, err := json.Marshal(storedMetadata{Source: md.Source, Step: md.Step, Parents: md.Parents})
+	mdJSON, err := json.Marshal(storedMetadata{Source: md.Source, Step: md.Step, Parents: md.Parents, RunID: md.RunID})
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("postgres saver: encode metadata for %q: %w", cp.ID, err)
 	}
@@ -391,7 +391,7 @@ func (s *Saver) assemble(ctx context.Context, threadID, ns, cpID string, parent 
 		if err := json.Unmarshal(mdJSON, &storedMd); err != nil {
 			return nil, fmt.Errorf("postgres saver: decode metadata for %q: %w", cpID, err)
 		}
-		md = checkpoint.Metadata{Source: storedMd.Source, Step: storedMd.Step, Parents: storedMd.Parents}
+		md = checkpoint.Metadata{Source: storedMd.Source, Step: storedMd.Step, Parents: storedMd.Parents, RunID: storedMd.RunID}
 	}
 	writes, err := s.loadWrites(ctx, threadID, ns, cpID)
 	if err != nil {
@@ -493,6 +493,126 @@ func (s *Saver) DeleteThread(ctx context.Context, threadID string) error {
 	return nil
 }
 
+// DeleteForRuns implements checkpoint.Saver: every checkpoint whose metadata
+// run_id is listed, plus its writes, across all threads and namespaces
+// (metadata->>'run_id' on the JSONB column; NULL never matches ANY). The
+// DeltaChannel warning on the Saver interface (base/__init__.py:340-346)
+// applies: deleting a run can sever a live thread's delta-channel ancestor
+// history — documented only, mirroring Python.
+func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
+	if len(runIDs) == 0 {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres saver: delete for runs: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM checkpoint_writes WHERE (thread_id, checkpoint_ns, checkpoint_id) IN (SELECT thread_id, checkpoint_ns, checkpoint_id FROM checkpoints WHERE metadata->>'run_id' = ANY($1))`,
+		runIDs); err != nil {
+		return fmt.Errorf("postgres saver: delete writes for runs: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM checkpoints WHERE metadata->>'run_id' = ANY($1)`,
+		runIDs); err != nil {
+		return fmt.Errorf("postgres saver: delete checkpoints for runs: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres saver: delete for runs: %w", err)
+	}
+	return nil
+}
+
+// CopyThread implements checkpoint.Saver: INSERT ... SELECT with the thread
+// replaced across all three tables (blobs are keyed by thread too, so the
+// copy needs its own blob rows), preserving checkpoint IDs, namespaces,
+// parent links, and writes. A nonexistent source inserts nothing.
+func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres saver: copy thread %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata)
+		 SELECT $1, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata FROM checkpoints WHERE thread_id = $2
+		 ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id) DO UPDATE SET
+			parent_checkpoint_id = EXCLUDED.parent_checkpoint_id,
+			checkpoint = EXCLUDED.checkpoint,
+			metadata = EXCLUDED.metadata`,
+		dstThreadID, srcThreadID); err != nil {
+		return fmt.Errorf("postgres saver: copy checkpoints %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO checkpoint_writes (thread_id, checkpoint_ns, checkpoint_id, task_id, task_path, idx, channel, type, blob)
+		 SELECT $1, checkpoint_ns, checkpoint_id, task_id, task_path, idx, channel, type, blob FROM checkpoint_writes WHERE thread_id = $2
+		 ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) DO NOTHING`,
+		dstThreadID, srcThreadID); err != nil {
+		return fmt.Errorf("postgres saver: copy writes %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO checkpoint_blobs (thread_id, checkpoint_ns, channel, version, type, blob)
+		 SELECT $1, checkpoint_ns, channel, version, type, blob FROM checkpoint_blobs WHERE thread_id = $2
+		 ON CONFLICT (thread_id, checkpoint_ns, channel, version) DO NOTHING`,
+		dstThreadID, srcThreadID); err != nil {
+		return fmt.Errorf("postgres saver: copy blobs %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres saver: copy thread %q -> %q: %w", srcThreadID, dstThreadID, err)
+	}
+	return nil
+}
+
+// Prune implements checkpoint.Saver. keep_latest keeps, per namespace, the
+// row with the maximum checkpoint_id; delete removes the whole thread
+// (including its blob rows). keep_latest deliberately leaves checkpoint_blobs
+// rows in place: blob rows are keyed by (thread, ns, channel, version) and
+// may be shared with the surviving latest checkpoint, so deleting them could
+// corrupt the survivor — orphaned blobs are storage-only waste with no
+// semantic impact (documented divergence from a hypothetical storage-optimal
+// prune; Python ships no reference prune implementation to mirror). The
+// DeltaChannel warning on the Saver interface (base/__init__.py:387-413)
+// applies: naive keep_latest can sever delta-channel ancestor history —
+// documented only, mirroring Python.
+func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) error {
+	switch strategy {
+	case checkpoint.PruneKeepLatest, checkpoint.PruneDeleteAll:
+	default:
+		return fmt.Errorf("postgres saver: unknown prune strategy %q", strategy)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres saver: prune: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	const keepLatestPerNS = `(SELECT checkpoint_ns, MAX(checkpoint_id) FROM checkpoints WHERE thread_id = $1 GROUP BY checkpoint_ns)`
+	for _, threadID := range threadIDs {
+		if strategy == checkpoint.PruneDeleteAll {
+			for _, table := range []string{"checkpoints", "checkpoint_blobs", "checkpoint_writes"} {
+				if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE thread_id = $1`, threadID); err != nil {
+					return fmt.Errorf("postgres saver: prune(delete) thread %q: %w", threadID, err)
+				}
+			}
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM checkpoint_writes WHERE thread_id = $1 AND (checkpoint_ns, checkpoint_id) NOT IN `+keepLatestPerNS,
+			threadID); err != nil {
+			return fmt.Errorf("postgres saver: prune writes for thread %q: %w", threadID, err)
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM checkpoints WHERE thread_id = $1 AND (checkpoint_ns, checkpoint_id) NOT IN `+keepLatestPerNS,
+			threadID); err != nil {
+			return fmt.Errorf("postgres saver: prune checkpoints for thread %q: %w", threadID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres saver: prune: %w", err)
+	}
+	return nil
+}
+
 // resolveCheckpointID resolves cfg to a stored checkpoint ID — cfg's own ID,
 // or the latest for the thread/namespace when empty — and errors when no
 // such checkpoint exists, matching MemorySaver's PutWrites behavior.
@@ -564,6 +684,7 @@ type storedMetadata struct {
 	Source  string            `json:"source"`
 	Step    int               `json:"step"`
 	Parents map[string]string `json:"parents,omitempty"`
+	RunID   string            `json:"run_id,omitempty"`
 }
 
 // encodeCheckpoint marshals the projection with inline channel values.

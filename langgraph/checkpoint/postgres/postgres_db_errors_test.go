@@ -75,11 +75,135 @@ func TestDeadPoolErrors(t *testing.T) {
 	if err := s.DeleteThread(ctx, "t1"); err == nil {
 		t.Error("DeleteThread on a dead pool = nil, want a connect error")
 	}
+	if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+		t.Error("DeleteForRuns on a dead pool = nil, want a connect error")
+	}
+	if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+		t.Error("CopyThread on a dead pool = nil, want a connect error")
+	}
+	if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+		t.Error("Prune on a dead pool = nil, want a connect error")
+	}
 	err = s.PutWrites(ctx, checkpoint.Config{ThreadID: "t1", CheckpointID: "cp1"},
 		[]checkpoint.Write{{Channel: "a", Value: 1}}, "task-1", "")
 	if err == nil {
 		t.Error("PutWrites on a dead pool = nil, want a connect error")
 	}
+}
+
+// TestManagementDroppedTablesError forces the management methods' statements
+// to fail independently: a dropped table aborts the statement touching it, and
+// a delete-rejecting trigger on checkpoints fails the second DELETE of
+// DeleteForRuns/Prune(keep_latest) after the first succeeded (the trigger
+// needs a matching row to fire on) — the same technique as
+// TestDeleteThreadDroppedTableError.
+func TestManagementDroppedTablesError(t *testing.T) {
+	ctx := context.Background()
+
+	setup := func(t *testing.T) (*postgres.Saver, *pgxpool.Pool) {
+		t.Helper()
+		pool := newIsolatedPool(t)
+		s := postgres.New(pool, serde.NewJSONSerializer())
+		if err := s.Setup(ctx); err != nil {
+			t.Fatalf("Setup: %v", err)
+		}
+		return s, pool
+	}
+	rejectDeletes := func(t *testing.T, pool *pgxpool.Pool) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			CREATE OR REPLACE FUNCTION reject_delete() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'rejected'; END; $$ LANGUAGE plpgsql;
+			CREATE TRIGGER reject_cp_delete BEFORE DELETE ON checkpoints FOR EACH ROW EXECUTE FUNCTION reject_delete()`); err != nil {
+			t.Fatalf("create reject trigger: %v", err)
+		}
+	}
+	putChain := func(t *testing.T, s *postgres.Saver, threadID string, n int) {
+		t.Helper()
+		cfg := checkpoint.Config{ThreadID: threadID}
+		for i := 1; i <= n; i++ {
+			next, err := s.Put(ctx, cfg, checkpoint.Checkpoint{V: 1, ID: checkpoint.NewID(i)}, checkpoint.Metadata{Source: "loop", Step: i - 1}, nil)
+			if err != nil {
+				t.Fatalf("Put %d: %v", i, err)
+			}
+			cfg = next
+		}
+	}
+
+	t.Run("delete_for_runs writes dropped", func(t *testing.T) {
+		s, pool := setup(t)
+		if _, err := pool.Exec(ctx, `DROP TABLE checkpoint_writes`); err != nil {
+			t.Fatalf("drop checkpoint_writes: %v", err)
+		}
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with dropped writes table: expected error, got nil")
+		}
+	})
+	t.Run("delete_for_runs checkpoints delete rejected", func(t *testing.T) {
+		s, pool := setup(t)
+		if _, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{V: 1, ID: checkpoint.NewID(1)}, checkpoint.Metadata{RunID: "r1"}, nil); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		rejectDeletes(t, pool)
+		if err := s.DeleteForRuns(ctx, []string{"r1"}); err == nil {
+			t.Fatal("DeleteForRuns with rejecting checkpoints trigger: expected error, got nil")
+		}
+	})
+
+	t.Run("copy_thread checkpoints dropped", func(t *testing.T) {
+		s, pool := setup(t)
+		if _, err := pool.Exec(ctx, `DROP TABLE checkpoints`); err != nil {
+			t.Fatalf("drop checkpoints: %v", err)
+		}
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with dropped checkpoints table: expected error, got nil")
+		}
+	})
+	t.Run("copy_thread writes dropped", func(t *testing.T) {
+		s, pool := setup(t)
+		if _, err := pool.Exec(ctx, `DROP TABLE checkpoint_writes`); err != nil {
+			t.Fatalf("drop checkpoint_writes: %v", err)
+		}
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with dropped writes table: expected error, got nil")
+		}
+	})
+	t.Run("copy_thread blobs dropped", func(t *testing.T) {
+		s, pool := setup(t)
+		if _, err := pool.Exec(ctx, `DROP TABLE checkpoint_blobs`); err != nil {
+			t.Fatalf("drop checkpoint_blobs: %v", err)
+		}
+		if err := s.CopyThread(ctx, "t1", "t2"); err == nil {
+			t.Fatal("CopyThread with dropped blobs table: expected error, got nil")
+		}
+	})
+
+	t.Run("prune keep_latest writes dropped", func(t *testing.T) {
+		s, pool := setup(t)
+		putChain(t, s, "t1", 2)
+		if _, err := pool.Exec(ctx, `DROP TABLE checkpoint_writes`); err != nil {
+			t.Fatalf("drop checkpoint_writes: %v", err)
+		}
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+			t.Fatal("Prune(keep_latest) with dropped writes table: expected error, got nil")
+		}
+	})
+	t.Run("prune keep_latest checkpoints delete rejected", func(t *testing.T) {
+		s, pool := setup(t)
+		putChain(t, s, "t1", 2)
+		rejectDeletes(t, pool)
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneKeepLatest); err == nil {
+			t.Fatal("Prune(keep_latest) with rejecting checkpoints trigger: expected error, got nil")
+		}
+	})
+	t.Run("prune delete checkpoints dropped", func(t *testing.T) {
+		s, pool := setup(t)
+		if _, err := pool.Exec(ctx, `DROP TABLE checkpoints`); err != nil {
+			t.Fatalf("drop checkpoints: %v", err)
+		}
+		if err := s.Prune(ctx, []string{"t1"}, checkpoint.PruneDeleteAll); err == nil {
+			t.Fatal("Prune(delete) with dropped checkpoints table: expected error, got nil")
+		}
+	})
 }
 
 // TestSetupMigrationVersionReadError: when the migrations table exists but
