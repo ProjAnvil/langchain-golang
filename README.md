@@ -80,7 +80,7 @@ All three chat-model providers self-register via `init()`, so `WithAgentModel("o
 go get github.com/projanvil/langchain-golang
 ```
 
-Requires **Go 1.23+**.
+Requires **Go 1.26+** (v0.6.1 and earlier: Go 1.23+).
 
 For checkpoint backends:
 

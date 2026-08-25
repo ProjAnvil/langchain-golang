@@ -46,4 +46,4 @@ Runnable, compile-checked examples live alongside the code as
 - All examples are offline by default — they use `language.FakeChatModel` so you
   can run them without an API key. Swap in a partner `ChatModel`
   (`partners/openai`, `partners/anthropic`, `partners/ollama`) for real usage.
-- Go 1.23+ is required.
+- Go 1.26+ is required (v0.6.1 and earlier: Go 1.23+).

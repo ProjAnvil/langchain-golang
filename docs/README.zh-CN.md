@@ -45,4 +45,4 @@
 - 所有示例默认离线运行——它们使用 `language.FakeChatModel`，无需 API key
   即可运行。实际使用时换成某个 partner `ChatModel`
   （`partners/openai`、`partners/anthropic`、`partners/ollama`）。
-- 需要 Go 1.23+。
+- 需要 Go 1.26+（v0.6.1 及更早版本：Go 1.23+）。

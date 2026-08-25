@@ -11,7 +11,7 @@ mirrors the README's Quick start section but explains each piece.
 go get github.com/projanvil/langchain-golang@latest
 ```
 
-Requires Go 1.23+.
+Requires Go 1.26+ (v0.6.1 and earlier: Go 1.23+).
 
 ## Your first agent
 

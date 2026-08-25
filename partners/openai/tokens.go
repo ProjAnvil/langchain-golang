@@ -63,7 +63,7 @@ func encodingForModel(model string) tokenizer.Encoding {
 	lower := strings.ToLower(model)
 	if strings.HasPrefix(lower, "gpt-4o") ||
 		strings.HasPrefix(lower, "gpt-4.1") ||
-		strings.HasPrefix(lower, "gpt-4.5") || // tiktoken-go v0.7.0's table lacks gpt-4.5; Python tiktoken maps it to o200k_base
+		strings.HasPrefix(lower, "gpt-4.5") || // tiktoken-go's model table lacks gpt-4.5; Python tiktoken maps it to o200k_base
 		strings.HasPrefix(lower, "gpt-5") {
 		return tokenizer.O200kBase
 	}

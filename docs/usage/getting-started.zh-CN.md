@@ -11,7 +11,7 @@
 go get github.com/projanvil/langchain-golang@latest
 ```
 
-要求 Go 1.23+。
+要求 Go 1.26+（v0.6.1 及更早版本：Go 1.23+）。
 
 ## 你的第一个 agent
 
