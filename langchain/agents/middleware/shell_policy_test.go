@@ -14,8 +14,9 @@ func TestHostExecutionPolicyIdentity(t *testing.T) {
 }
 
 func TestDockerExecutionPolicyBuildCommand(t *testing.T) {
+	stubLookPath(t, identityLookPath)
 	got := DockerExecutionPolicy{Image: "python:3.12-slim"}.BuildCommand([]string{"/bin/sh", "-c", "pwd"}, "/ws")
-	want := []string{"docker", "run", "--rm", "-v", "/ws:/ws", "-w", "/ws", "python:3.12-slim", "/bin/sh", "-c", "pwd"}
+	want := []string{"docker", "run", "-i", "--rm", "--network", "none", "-v", "/ws:/ws", "-w", "/ws", "python:3.12-slim", "/bin/sh", "-c", "pwd"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("DockerExecutionPolicy = %#v, want %#v", got, want)
 	}
