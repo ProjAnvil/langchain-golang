@@ -19,7 +19,10 @@ type Config struct {
 	RetryBackoffMultiplier float64
 	RetryMaxDelay          time.Duration
 	HTTPClient             *http.Client
-	Extra                  map[string]any
+	// TiktokenModelName overrides the model name used for token counting,
+	// mirroring Python ChatOpenAI(tiktoken_model_name=...).
+	TiktokenModelName string
+	Extra             map[string]any
 }
 
 // Option configures a model Config.
@@ -122,6 +125,14 @@ func WithRetryMaxDelay(delay time.Duration) Option {
 func WithHTTPClient(client *http.Client) Option {
 	return func(cfg *Config) {
 		cfg.HTTPClient = client
+	}
+}
+
+// WithTiktokenModelName overrides the model name used to pick the token
+// encoding, mirroring Python ChatOpenAI(tiktoken_model_name=...).
+func WithTiktokenModelName(name string) Option {
+	return func(cfg *Config) {
+		cfg.TiktokenModelName = name
 	}
 }
 
