@@ -544,6 +544,10 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		return nil, fmt.Errorf("agents: model is required")
 	}
 
+	if err := validateDeclaredJumpTargets(options.Middleware); err != nil {
+		return nil, err
+	}
+
 	// Convert any dict tool specs (Python's `tools: [... | dict]` form) into
 	// core/tools tools and append them after the positional tool list, so they
 	// are bound to the model and routed through the tools node exactly like
@@ -818,6 +822,28 @@ func popJumpTo(update map[string]any) (string, bool) {
 	delete(update, "jump_to")
 	jumpTo, _ := value.(string)
 	return jumpTo, jumpTo != ""
+}
+
+// validateDeclaredJumpTargets enforces Python's JumpTo literal ("tools" |
+// "model" | "end") on statically declared hook can_jump_to values
+// (HookConfig/CanJumpToHook) at agent build time.
+func validateDeclaredJumpTargets(mws []any) error {
+	for _, mw := range mws {
+		hook, ok := mw.(CanJumpToHook)
+		if !ok {
+			continue
+		}
+		for _, hookName := range []string{"before_model", "after_model"} {
+			for _, target := range hook.CanJumpTo(hookName) {
+				switch target {
+				case "model", "tools", "end":
+				default:
+					return fmt.Errorf("agents: invalid can_jump_to target %q declared for %s (valid: model, tools, end)", target, hookName)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func cloneMapState(state map[string]any) map[string]any {

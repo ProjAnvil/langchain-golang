@@ -140,3 +140,81 @@ func (a dynamicPromptAdapter) WrapModelCall(ctx context.Context, request middlew
 func DynamicPrompt(fn DynamicPromptFunc) WrapModelCallHook {
 	return dynamicPromptAdapter{fn: fn}
 }
+
+// HookConfig declares static middleware hook metadata, mirroring Python's
+// `@hook_config` decorator (middleware/types.py:867). Unlike Python, where
+// can_jump_to drives conditional-edge construction (`factory._add_middleware_edge`,
+// factory.py:1957), Go routes jumps dynamically via the types.Command returned
+// by the model node (see popJumpTo, create_agent.go), so the declaration is
+// metadata: CreateAgent validates the declared target names against Python's
+// JumpTo literal ("model" | "tools" | "end") at build time, and tooling can
+// introspect it via DeclaredCanJumpTo.
+type HookConfig struct {
+	// CanJumpTo lists the jump destinations the hook may request via
+	// update["jump_to"]: "model", "tools", or "end".
+	CanJumpTo []string
+}
+
+// CanJumpToHook is implemented by middleware that statically declares valid
+// jump destinations for its hooks, mirroring Python's `__can_jump_to__`
+// method metadata set by `@hook_config` / `@before_model(can_jump_to=...)`.
+type CanJumpToHook interface {
+	// CanJumpTo returns the declared jump targets for hookName
+	// ("before_model"/"after_model"), or nil when the hook has no declaration.
+	CanJumpTo(hookName string) []string
+}
+
+// DeclaredCanJumpTo mirrors Python's `factory._get_can_jump_to`
+// (factory.py:491): it returns the declared jump targets for hookName on mw,
+// or nil when mw does not implement CanJumpToHook (no false positives, like
+// Python's overridden-method check).
+func DeclaredCanJumpTo(mw any, hookName string) []string {
+	if hook, ok := mw.(CanJumpToHook); ok {
+		return hook.CanJumpTo(hookName)
+	}
+	return nil
+}
+
+type beforeModelConfiguredAdapter struct {
+	fn        BeforeModelFunc
+	canJumpTo []string
+}
+
+func (a beforeModelConfiguredAdapter) BeforeModel(ctx context.Context, state map[string]any) (map[string]any, error) {
+	return a.fn(ctx, state)
+}
+
+func (a beforeModelConfiguredAdapter) CanJumpTo(hookName string) []string {
+	if hookName != "before_model" {
+		return nil
+	}
+	return append([]string(nil), a.canJumpTo...)
+}
+
+// FuncBeforeModelWithConfig mirrors `@before_model(can_jump_to=...)` /
+// `@hook_config(can_jump_to=...)` on a before_model hook: a BeforeModelHook
+// backed by fn that additionally declares its valid jump targets.
+func FuncBeforeModelWithConfig(fn BeforeModelFunc, cfg HookConfig) BeforeModelHook {
+	return beforeModelConfiguredAdapter{fn: fn, canJumpTo: cfg.CanJumpTo}
+}
+
+type afterModelConfiguredAdapter struct {
+	fn        AfterModelFunc
+	canJumpTo []string
+}
+
+func (a afterModelConfiguredAdapter) AfterModel(ctx context.Context, state map[string]any) (map[string]any, error) {
+	return a.fn(ctx, state)
+}
+
+func (a afterModelConfiguredAdapter) CanJumpTo(hookName string) []string {
+	if hookName != "after_model" {
+		return nil
+	}
+	return append([]string(nil), a.canJumpTo...)
+}
+
+// FuncAfterModelWithConfig mirrors `@after_model(can_jump_to=...)`.
+func FuncAfterModelWithConfig(fn AfterModelFunc, cfg HookConfig) AfterModelHook {
+	return afterModelConfiguredAdapter{fn: fn, canJumpTo: cfg.CanJumpTo}
+}
