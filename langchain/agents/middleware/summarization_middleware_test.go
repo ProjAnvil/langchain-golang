@@ -337,16 +337,18 @@ func TestResolveTokenCounter(t *testing.T) {
 	if got := override(msgs); got != 42 {
 		t.Fatalf("override mismatch: %d", got)
 	}
-	// Anthropic models use the 3.3 chars/token counter: ceil(4/3.3) = 2.
+	// Anthropic models use the 3.3 chars/token counter:
+	// 3 (per-message extra) + ceil((4 content + 4 role "user")/3.3) = 6.
 	anthropic := resolveTokenCounter(fakeLLMTypeModel{llmType: "anthropic-chat"}, nil)
-	if got := anthropic(msgs); got != 2 {
+	if got := anthropic(msgs); got != 6 {
 		t.Fatalf("anthropic counter mismatch: %d", got)
 	}
-	// Other/nil models use the word-based counter.
-	if got := resolveTokenCounter(fakeLLMTypeModel{llmType: "openai-chat"}, nil)(msgs); got != 1 {
+	// Other/nil models use the default 4.0 chars/token counter:
+	// 3 + ceil(8/4) = 5.
+	if got := resolveTokenCounter(fakeLLMTypeModel{llmType: "openai-chat"}, nil)(msgs); got != 5 {
 		t.Fatalf("default counter mismatch: %d", got)
 	}
-	if got := resolveTokenCounter(nil, nil)(msgs); got != 1 {
+	if got := resolveTokenCounter(nil, nil)(msgs); got != 5 {
 		t.Fatalf("nil model counter mismatch: %d", got)
 	}
 }

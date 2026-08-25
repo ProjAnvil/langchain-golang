@@ -286,10 +286,11 @@ func (m *SummarizationMiddleware) maxInputTokens() (int, bool) {
 }
 
 // resolveTokenCounter mirrors Python's _get_approximate_token_counter
-// (summarization.py:208-216): when the user did not override TokenCounter, an
-// anthropic-chat model (per LLMType) selects the 3.3 chars/token counter;
-// anything else uses the default ApproximateTokenCount. A nil model or one
-// without LLMType also uses the default (Python falls through the same way).
+// (summarization.py:208-216): when the user did not override TokenCounter, the
+// counter is messages.CountTokensApproximately with usage-metadata scaling
+// enabled; an anthropic-chat model (per LLMType) additionally selects 3.3
+// chars/token. A nil model or one without LLMType uses the default parameters
+// (Python falls through the same way).
 func resolveTokenCounter(model any, userOverride TokenCounter) TokenCounter {
 	if userOverride != nil {
 		return userOverride
@@ -297,10 +298,15 @@ func resolveTokenCounter(model any, userOverride TokenCounter) TokenCounter {
 	if lt, ok := model.(LLMTypeProvider); ok && strings.HasPrefix(lt.LLMType(), "anthropic-chat") {
 		const anthropicCharsPerToken = 3.3
 		return func(msgs []messages.Message) int {
-			return ApproximateTokenCountCharsPerToken(msgs, anthropicCharsPerToken)
+			return messages.CountTokensApproximately(msgs,
+				messages.WithCharsPerToken(anthropicCharsPerToken),
+				messages.WithUsageMetadataScaling(true),
+			)
 		}
 	}
-	return ApproximateTokenCount
+	return func(msgs []messages.Message) int {
+		return messages.CountTokensApproximately(msgs, messages.WithUsageMetadataScaling(true))
+	}
 }
 
 // shouldSummarizeBasedOnReportedTokens mirrors Python's

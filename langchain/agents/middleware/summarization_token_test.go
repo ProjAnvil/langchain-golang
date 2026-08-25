@@ -11,15 +11,15 @@ import (
 // TestResolveTokenCounter_AnthropicUsesCharsPerToken mirrors Python's
 // _get_approximate_token_counter (summarization.py:208-216): an anthropic-chat
 // model selects the 3.3 chars/token counter; a non-anthropic model selects the
-// default word-count counter; a model without LLMType also defaults.
+// default 4.0 chars/token counter; a model without LLMType also defaults.
 func TestResolveTokenCounter_AnthropicUsesCharsPerToken(t *testing.T) {
 	anthropicCounter := resolveTokenCounter(fakeLLMTypeModel{"anthropic-chat"}, nil)
 	otherCounter := resolveTokenCounter(fakeLLMTypeModel{"openai-chat"}, nil)
 	noLLMType := resolveTokenCounter(nil, nil)
 
-	// A single 100-char "word" (no spaces): the default word-count counter sees
-	// 1 token; the anthropic char-based counter sees ceil(100/3.3)=31. They must
-	// disagree, proving provider-specific tuning kicked in.
+	// A single 97-char content: the default counter sees 3+ceil(97/4)=28; the
+	// anthropic counter sees 3+ceil(97/3.3)=33. They must disagree, proving
+	// provider-specific tuning kicked in.
 	longWord := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 97 'a's
 	if len(longWord) < 90 {
 		t.Fatalf("test setup: longWord too short")
@@ -64,5 +64,30 @@ func TestShouldSummarizeBasedOnReportedTokens(t *testing.T) {
 	}
 	if mw.shouldSummarizeBasedOnReportedTokens(mismatch, 4000) {
 		t.Fatalf("expected no fire on provider mismatch")
+	}
+}
+
+// TestResolveTokenCounter_UsageMetadataScalingWired verifies that the counters
+// returned by resolveTokenCounter enable usage-metadata scaling, mirroring
+// Python's partial(count_tokens_approximately, use_usage_metadata_scaling=True).
+func TestResolveTokenCounter_UsageMetadataScalingWired(t *testing.T) {
+	ai := messages.AI("hi")
+	ai.UsageMetadata = messages.UsageMetadata{TotalTokens: 20}
+	ai.ResponseMetadata = map[string]any{"model_provider": "anthropic"}
+	msgs := []messages.Message{
+		messages.Human("hello world"),
+		ai,
+		messages.Human("more text here"),
+	}
+
+	// Anthropic (3.3 chars/token): unscaled = 8+7+9 = 24, approx at AI = 15,
+	// factor 20/15 → clamped 1.25 → ceil(24*1.25) = 30.
+	if got := resolveTokenCounter(fakeLLMTypeModel{"anthropic-chat"}, nil)(msgs); got != 30 {
+		t.Fatalf("anthropic scaled counter = %d, want 30", got)
+	}
+	// Default (4.0 chars/token): unscaled = 7+6+8 = 21, factor 20/13 → 1.25
+	// → ceil(21*1.25) = 27.
+	if got := resolveTokenCounter(fakeLLMTypeModel{"openai-chat"}, nil)(msgs); got != 27 {
+		t.Fatalf("default scaled counter = %d, want 27", got)
 	}
 }
