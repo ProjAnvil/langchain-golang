@@ -28,6 +28,14 @@ func NewAzureTextModel(endpoint, deployment, apiVersion, apiKey string, opts ...
 	return AzureTextModel{text: NewTextModel(opts...), az: az}
 }
 
+// NewAzureTextModelWithADToken is like NewAzureTextModel but authenticates
+// with an Azure AD token (Authorization: Bearer) instead of an api-key,
+// mirroring Python AzureOpenAI(azure_ad_token=...) (llms/azure.py:70).
+func NewAzureTextModelWithADToken(endpoint, deployment, apiVersion, adToken string, opts ...modelconfig.Option) AzureTextModel {
+	az := azureClient{endpoint: endpoint, deployment: deployment, apiVersion: apiVersion, adToken: adToken}.fromEnv()
+	return AzureTextModel{text: NewTextModel(opts...), az: az}
+}
+
 func (m AzureTextModel) Invoke(ctx context.Context, prompt string, opts ...runnables.Option) (string, error) {
 	resp, err := azurePost[completionResponse](m.az, ctx, m.text.config, "/completions", m.text.buildRequest(prompt))
 	if err != nil {

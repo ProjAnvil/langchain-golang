@@ -114,3 +114,73 @@ func TestAzureChatModelADTokenAuth(t *testing.T) {
 		t.Fatalf("api-key = %q, want empty", gotAPIKey)
 	}
 }
+
+// Mirrors TestAzureChatModelADTokenAuth above for the embeddings variant
+// (Python AzureOpenAIEmbeddings(azure_ad_token=...), embeddings/azure.py:135).
+func TestAzureEmbeddingsADTokenAuth(t *testing.T) {
+	var gotAuth, gotAPIKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAPIKey = r.Header.Get("api-key")
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}]}`))
+	}))
+	defer server.Close()
+
+	e := NewAzureEmbeddingsWithADToken(server.URL, "emb-dep", "2024-01-01", "ad-token-123",
+		modelconfig.WithModel("text-embedding-3-small"),
+	)
+	if _, err := e.EmbedDocuments(context.Background(), []string{"hello"}); err != nil {
+		t.Fatalf("EmbedDocuments: %v", err)
+	}
+	if gotAuth != "Bearer ad-token-123" {
+		t.Fatalf("Authorization = %q, want 'Bearer ad-token-123'", gotAuth)
+	}
+	if gotAPIKey != "" {
+		t.Fatalf("api-key = %q, want empty", gotAPIKey)
+	}
+}
+
+// AD token from the AZURE_OPENAI_AD_TOKEN env var when not passed explicitly
+// (azureClient.fromEnv, azure.go:43-45).
+func TestAzureEmbeddingsADTokenFromEnv(t *testing.T) {
+	t.Setenv("AZURE_OPENAI_AD_TOKEN", "env-ad-token")
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1]}]}`))
+	}))
+	defer server.Close()
+
+	e := NewAzureEmbeddingsWithADToken(server.URL, "emb-dep", "2024-01-01", "")
+	if _, err := e.EmbedDocuments(context.Background(), []string{"hello"}); err != nil {
+		t.Fatalf("EmbedDocuments: %v", err)
+	}
+	if gotAuth != "Bearer env-ad-token" {
+		t.Fatalf("Authorization = %q, want 'Bearer env-ad-token'", gotAuth)
+	}
+}
+
+// Mirrors TestAzureChatModelADTokenAuth for the text LLM variant (Python
+// AzureOpenAI(azure_ad_token=...), llms/azure.py:70).
+func TestAzureTextModelADTokenAuth(t *testing.T) {
+	var gotAuth, gotAPIKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAPIKey = r.Header.Get("api-key")
+		_, _ = w.Write([]byte(`{"choices":[{"text":"done"}]}`))
+	}))
+	defer server.Close()
+
+	m := NewAzureTextModelWithADToken(server.URL, "txt-dep", "2024-01-01", "ad-token-123",
+		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
+	)
+	if _, err := m.Invoke(context.Background(), "prompt"); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if gotAuth != "Bearer ad-token-123" {
+		t.Fatalf("Authorization = %q, want 'Bearer ad-token-123'", gotAuth)
+	}
+	if gotAPIKey != "" {
+		t.Fatalf("api-key = %q, want empty", gotAPIKey)
+	}
+}

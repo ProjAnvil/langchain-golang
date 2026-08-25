@@ -26,6 +26,15 @@ func NewAzureEmbeddings(endpoint, deployment, apiVersion, apiKey string, opts ..
 	return AzureEmbeddings{embed: NewEmbeddings(opts...), az: az}
 }
 
+// NewAzureEmbeddingsWithADToken is like NewAzureEmbeddings but authenticates
+// with an Azure AD token (Authorization: Bearer) instead of an api-key,
+// mirroring Python AzureOpenAIEmbeddings(azure_ad_token=...)
+// (embeddings/azure.py:135).
+func NewAzureEmbeddingsWithADToken(endpoint, deployment, apiVersion, adToken string, opts ...modelconfig.Option) AzureEmbeddings {
+	az := azureClient{endpoint: endpoint, deployment: deployment, apiVersion: apiVersion, adToken: adToken}.fromEnv()
+	return AzureEmbeddings{embed: NewEmbeddings(opts...), az: az}
+}
+
 // EmbedDocuments embeds all documents, batching inputs into chunks of
 // chunkSize texts per Azure API request (mirrors Embeddings.EmbedDocuments).
 func (e AzureEmbeddings) EmbedDocuments(ctx context.Context, texts []string) ([][]float64, error) {
