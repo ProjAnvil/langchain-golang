@@ -3,12 +3,15 @@ package standardtests
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // localSandbox adapts the host filesystem plus /bin/sh to the SandboxBackend
@@ -66,8 +69,43 @@ func (l *localSandbox) Execute(ctx context.Context, command string) SandboxExecu
 
 // The methods below are stubs in Task 3; Tasks 4-6 replace them one group at
 // a time (TDD: each group's subtests fail against the stub first).
-func (l *localSandbox) Read(context.Context, string, SandboxReadOptions) SandboxReadResult {
-	return SandboxReadResult{Error: "unimplemented"}
+// sandboxMaxBinaryPreviewBytes is the binary preview size limit fixed by the
+// Python conformance suite (test_read_binary_file_1_mib_returns_error).
+const sandboxMaxBinaryPreviewBytes = 512000
+
+func (l *localSandbox) Read(_ context.Context, path string, opts SandboxReadOptions) SandboxReadResult {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SandboxReadResult{Error: fmt.Sprintf("File not found: '%s'", path)}
+	}
+	if !utf8.Valid(data) {
+		if len(data) > sandboxMaxBinaryPreviewBytes {
+			return SandboxReadResult{Error: fmt.Sprintf(
+				"File '%s': Binary file exceeds maximum preview size of 512000 bytes", path)}
+		}
+		return SandboxReadResult{FileData: &SandboxFileData{
+			Content:  base64.StdEncoding.EncodeToString(data),
+			Encoding: "base64",
+		}}
+	}
+	var lines []string
+	if text := string(data); text != "" {
+		lines = strings.Split(text, "\n")
+	}
+	if opts.Offset > 0 {
+		if opts.Offset >= len(lines) {
+			lines = nil
+		} else {
+			lines = lines[opts.Offset:]
+		}
+	}
+	if opts.Limit != nil && *opts.Limit < len(lines) {
+		lines = lines[:*opts.Limit]
+	}
+	return SandboxReadResult{FileData: &SandboxFileData{
+		Content:  strings.Join(lines, "\n"),
+		Encoding: "utf-8",
+	}}
 }
 
 func (l *localSandbox) Edit(context.Context, string, string, string, bool) SandboxEditResult {
@@ -86,8 +124,23 @@ func (l *localSandbox) Grep(context.Context, string, string, string) SandboxGrep
 	return SandboxGrepResult{Error: "unimplemented"}
 }
 
-func (l *localSandbox) UploadFiles(context.Context, []SandboxFileUpload) []SandboxUploadResponse {
-	return []SandboxUploadResponse{{Error: "unimplemented"}}
+func (l *localSandbox) UploadFiles(_ context.Context, files []SandboxFileUpload) []SandboxUploadResponse {
+	responses := make([]SandboxUploadResponse, 0, len(files))
+	for _, f := range files {
+		resp := SandboxUploadResponse{Path: f.Path}
+		switch {
+		case !filepath.IsAbs(f.Path):
+			resp.Error = "invalid_path"
+		default:
+			if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+				resp.Error = err.Error()
+			} else if err := os.WriteFile(f.Path, f.Content, 0o644); err != nil {
+				resp.Error = err.Error()
+			}
+		}
+		responses = append(responses, resp)
+	}
+	return responses
 }
 
 func (l *localSandbox) DownloadFiles(context.Context, []string) []SandboxDownloadResponse {

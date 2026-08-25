@@ -1,7 +1,9 @@
 package standardtests
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -212,6 +214,16 @@ func requireContainsPath(t *testing.T, what string, entries []SandboxEntry, path
 	}
 }
 
+// requireEmptyOrNotice fails the test unless content is empty/blank or
+// contains an emptiness notice (mirrors test_read_empty_file).
+func requireEmptyOrNotice(t *testing.T, what string, content string) {
+	t.Helper()
+	if strings.Contains(strings.ToLower(content), "empty") || strings.TrimSpace(content) == "" {
+		return
+	}
+	t.Fatalf("%s: expected empty content or an emptiness notice, got %q", what, content)
+}
+
 // RunSandboxConformance verifies a SandboxBackend implementation against the
 // sandbox behaviors the Go port exposes. It mirrors the sync tests of
 // SandboxIntegrationTests in
@@ -333,5 +345,197 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 			t.Fatalf("output length: got %d want >= %d", len(result.Output), 500*1024)
 		}
 		requireContains(t, "output prefix", result.Output[:1], "x")
+	})
+
+	t.Run("read basic file", func(t *testing.T) { // test_read_basic_file
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "read_test.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Line 1\nLine 2\nLine 3").Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "read content", data.Content, "Line 1", "Line 2", "Line 3")
+	})
+
+	t.Run("read unicode content", func(t *testing.T) { // test_read_unicode_content
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "unicode_read.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Hello 👋 世界\nПривет мир\nمرحبا العالم").Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "read content", data.Content, "👋", "世界", "Привет")
+	})
+
+	t.Run("read empty file", func(t *testing.T) { // test_read_empty_file
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "empty_read.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "").Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireEmptyOrNotice(t, "empty file content", data.Content)
+	})
+
+	t.Run("read nonexistent file", func(t *testing.T) { // test_read_nonexistent_file
+		backend, root := factory(t)
+		result := backend.Read(ctx, sandboxPath(root, "nonexistent.txt"), SandboxReadOptions{})
+		requireSandboxErrorContaining(t, "read", result.Error, "not_found", "not found")
+	})
+
+	t.Run("read path is sanitized", func(t *testing.T) { // test_read_path_is_sanitized
+		backend, _ := factory(t)
+		malicious := "'; import os; os.system('echo INJECTED'); #"
+		result := backend.Read(ctx, malicious, SandboxReadOptions{})
+		if result.Error == "" {
+			t.Fatalf("read of injected path: expected an error, got none")
+		}
+		if result.FileData != nil {
+			t.Fatalf("read of injected path: expected nil file_data, got %#v", result.FileData)
+		}
+	})
+
+	t.Run("read binary file", func(t *testing.T) { // test_read_binary_file
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "binary.png")
+		raw := make([]byte, 256)
+		for i := range raw {
+			raw[i] = byte(i)
+		}
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: raw}})
+		requireLen(t, "upload responses", uploads, 1)
+		requireNoSandboxError(t, "upload", uploads[0].Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireEqual(t, "encoding", data.Encoding, "base64")
+		decoded, err := base64.StdEncoding.DecodeString(data.Content)
+		requireNoErr(t, "base64 decode", err)
+		requireDeepEqual(t, "decoded content", decoded, raw)
+	})
+
+	t.Run("read binary file 100 kib", func(t *testing.T) { // test_read_binary_file_100_kib
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "binary_100kib.png")
+		chunk := make([]byte, 256)
+		for i := range chunk {
+			chunk[i] = byte(i)
+		}
+		raw := bytes.Repeat(chunk, 400)
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: raw}})
+		requireLen(t, "upload responses", uploads, 1)
+		requireNoSandboxError(t, "upload", uploads[0].Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireEqual(t, "encoding", data.Encoding, "base64")
+		decoded, err := base64.StdEncoding.DecodeString(data.Content)
+		requireNoErr(t, "base64 decode", err)
+		requireDeepEqual(t, "decoded content", decoded, raw)
+	})
+
+	t.Run("read binary file 1 mib returns error", func(t *testing.T) { // test_read_binary_file_1_mib_returns_error
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "binary_1mib.png")
+		chunk := make([]byte, 256)
+		for i := range chunk {
+			chunk[i] = byte(i)
+		}
+		raw := bytes.Repeat(chunk, 4096)
+		uploads := backend.UploadFiles(ctx, []SandboxFileUpload{{Path: testPath, Content: raw}})
+		requireLen(t, "upload responses", uploads, 1)
+		requireNoSandboxError(t, "upload", uploads[0].Error)
+		result := backend.Read(ctx, testPath, SandboxReadOptions{})
+		if result.FileData != nil {
+			t.Fatalf("read of 1 MiB binary: expected nil file_data, got %#v", result.FileData)
+		}
+		requireEqual(t, "error", result.Error,
+			"File '"+testPath+"': Binary file exceeds maximum preview size of 512000 bytes")
+	})
+
+	t.Run("read with offset", func(t *testing.T) { // test_read_with_offset
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "offset_test.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Row_%d_content", 1, 10)).Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 5}))
+		requireContains(t, "content", data.Content, "Row_6_content")
+		requireNotContains(t, "content", data.Content, "Row_1_content")
+	})
+
+	t.Run("read with limit", func(t *testing.T) { // test_read_with_limit
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "limit_test.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Row_%d_content", 1, 100)).Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{Limit: intPtr(5)}))
+		requireContains(t, "content", data.Content, "Row_1_content", "Row_5_content")
+		requireNotContains(t, "content", data.Content, "Row_6_content")
+	})
+
+	t.Run("read with offset and limit", func(t *testing.T) { // test_read_with_offset_and_limit
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "offset_limit_test.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Row_%d_content", 1, 20)).Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 10, Limit: intPtr(5)}))
+		requireContains(t, "content", data.Content, "Row_11_content", "Row_15_content")
+		requireNotContains(t, "content", data.Content, "Row_10_content", "Row_16_content")
+	})
+
+	t.Run("read with zero limit", func(t *testing.T) { // test_read_with_zero_limit
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "zero_limit.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Line 1\nLine 2\nLine 3").Error)
+		result := backend.Read(ctx, testPath, SandboxReadOptions{Limit: intPtr(0)})
+		content := ""
+		if result.FileData != nil {
+			content = result.FileData.Content
+		}
+		requireNotContains(t, "zero-limit content", content, "Line 1")
+	})
+
+	t.Run("read offset beyond file length", func(t *testing.T) { // test_read_offset_beyond_file_length
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "offset_beyond.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Line 1\nLine 2\nLine 3").Error)
+		result := backend.Read(ctx, testPath, SandboxReadOptions{Offset: 100, Limit: intPtr(10)})
+		content := ""
+		if result.FileData != nil {
+			content = result.FileData.Content
+		}
+		requireNotContains(t, "content", content, "Line 1", "Line 2", "Line 3")
+		requireNotContains(t, "error", result.Error, "Line 1", "Line 2", "Line 3")
+	})
+
+	t.Run("read offset at exact file length", func(t *testing.T) { // test_read_offset_at_exact_file_length
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "offset_exact.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Line %d", 1, 5)).Error)
+		result := backend.Read(ctx, testPath, SandboxReadOptions{Offset: 5, Limit: intPtr(10)})
+		content := ""
+		if result.FileData != nil {
+			content = result.FileData.Content
+		}
+		requireNotContains(t, "content", content, "Line 1", "Line 5")
+		requireNotContains(t, "error", result.Error, "Line 1", "Line 5")
+	})
+
+	t.Run("read very large file in chunks", func(t *testing.T) { // test_read_very_large_file_in_chunks
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "large_chunked.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Line_%04d_content", 0, 999)).Error)
+		first := requireFileData(t, "read first chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 0, Limit: intPtr(100)}))
+		requireContains(t, "first chunk", first.Content, "Line_0000_content", "Line_0099_content")
+		requireNotContains(t, "first chunk", first.Content, "Line_0100_content")
+		middle := requireFileData(t, "read middle chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 500, Limit: intPtr(100)}))
+		requireContains(t, "middle chunk", middle.Content, "Line_0500_content", "Line_0599_content")
+		requireNotContains(t, "middle chunk", middle.Content, "Line_0499_content")
+		last := requireFileData(t, "read last chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 900, Limit: intPtr(100)}))
+		requireContains(t, "last chunk", last.Content, "Line_0900_content", "Line_0999_content")
+	})
+
+	t.Run("read file with very long lines", func(t *testing.T) { // test_read_file_with_very_long_lines
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "long_lines.txt")
+		content := "Short line\n" + strings.Repeat("x", 3000) + "\nAnother short line"
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, content).Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "content", data.Content, "Short line")
+	})
+
+	t.Run("write very long content", func(t *testing.T) { // test_write_very_long_content
+		backend, root := factory(t)
+		testPath := sandboxPath(root, "very_long.txt")
+		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Line %d with some content here", 0, 999)).Error)
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{}))
+		requireContains(t, "content", data.Content, "Line 0 with some content here")
 	})
 }
