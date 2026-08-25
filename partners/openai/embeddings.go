@@ -31,6 +31,23 @@ func WithEmbeddingEncodingFormat(format string) modelconfig.Option {
 	return modelconfig.WithExtra(embeddingEncodingFormatKey, format)
 }
 
+const embeddingChunkSizeKey = "openai_embedding_chunk_size"
+
+// WithEmbeddingChunkSize sets the maximum number of texts embedded per API
+// request, mirroring Python OpenAIEmbeddings(chunk_size=...) (default 1000,
+// embeddings/base.py:260). Non-positive values fall back to the default.
+func WithEmbeddingChunkSize(size int) modelconfig.Option {
+	return modelconfig.WithExtra(embeddingChunkSizeKey, size)
+}
+
+// chunkSize returns the configured batch size (default 1000).
+func (e Embeddings) chunkSize() int {
+	if size, ok := e.config.Extra[embeddingChunkSizeKey].(int); ok && size > 0 {
+		return size
+	}
+	return 1000
+}
+
 // NewEmbeddings creates an OpenAI embeddings adapter.
 func NewEmbeddings(opts ...modelconfig.Option) Embeddings {
 	cfg := modelconfig.New(opts...)
@@ -46,28 +63,37 @@ func NewEmbeddings(opts ...modelconfig.Option) Embeddings {
 	return Embeddings{config: cfg}
 }
 
-// EmbedDocuments embeds all documents with one API request.
+// EmbedDocuments embeds all documents, batching inputs into chunks of
+// chunkSize texts per API request (Python embeddings/base.py:731-745).
 func (e Embeddings) EmbedDocuments(ctx context.Context, texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
-	response, err := e.createEmbeddings(ctx, texts)
-	if err != nil {
-		return nil, err
-	}
-
-	sort.SliceStable(response.Data, func(i int, j int) bool {
-		return response.Data[i].Index < response.Data[j].Index
-	})
-	vectors := make([][]float64, len(response.Data))
-	for i, item := range response.Data {
-		if item.Index < 0 || item.Index >= len(texts) {
-			return nil, fmt.Errorf("embedding index out of range: %d", item.Index)
+	chunkSize := e.chunkSize()
+	vectors := make([][]float64, 0, len(texts))
+	for start := 0; start < len(texts); start += chunkSize {
+		end := start + chunkSize
+		if end > len(texts) {
+			end = len(texts)
 		}
-		vectors[i] = append([]float64(nil), item.Embedding...)
-	}
-	if len(vectors) != len(texts) {
-		return nil, fmt.Errorf("embedding count mismatch: got %d want %d", len(vectors), len(texts))
+		batch := texts[start:end]
+		response, err := e.createEmbeddings(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+
+		sort.SliceStable(response.Data, func(i int, j int) bool {
+			return response.Data[i].Index < response.Data[j].Index
+		})
+		if len(response.Data) != len(batch) {
+			return nil, fmt.Errorf("embedding count mismatch: got %d want %d", len(response.Data), len(batch))
+		}
+		for _, item := range response.Data {
+			if item.Index < 0 || item.Index >= len(batch) {
+				return nil, fmt.Errorf("embedding index out of range: %d", item.Index)
+			}
+			vectors = append(vectors, append([]float64(nil), item.Embedding...))
+		}
 	}
 	return vectors, nil
 }
