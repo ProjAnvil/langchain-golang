@@ -120,7 +120,10 @@ type StateGraph struct {
 	// channel prototype).
 	joinEdges []joinEdge
 	entry     string
-	err       error
+	// entryRouter, when set, is the conditional entry point registered via
+	// SetConditionalEntryPoint; exactly one of entry/entryRouter is set.
+	entryRouter ConditionalEdge
+	err         error
 }
 
 // joinEdge is one AddJoinEdge waiting edge: the child triggers once ALL
@@ -301,11 +304,82 @@ func (g *StateGraph) AddConditionalEdges(from string, router ConditionalEdge) *S
 // SetEntryPoint sets the node the graph starts execution from, mirroring
 // Python's `add_edge(START, name)` / `set_entry_point(name)`.
 func (g *StateGraph) SetEntryPoint(name string) *StateGraph {
+	if g.entryRouter != nil {
+		g.setErr(fmt.Errorf("graph: conditional entry point already set"))
+		return g
+	}
 	if g.entry != "" {
 		g.setErr(fmt.Errorf("graph: entry point already set to %q", g.entry))
 		return g
 	}
 	g.entry = name
+	return g
+}
+
+// SetConditionalEntryPoint registers a dynamic router that picks the first
+// node(s) from the post-input state, mirroring Python's
+// `set_conditional_entry_point` (`add_conditional_edges(START, path)`,
+// state.py:1079). The router returns node names, types.END (stop
+// immediately), or *types.Send, exactly like a node router (see
+// AddConditionalEdges). Python has no path_map counterpart here: Go routers
+// return node names directly.
+//
+// Python implements this by ATTACHING a branch to START in the pregel wiring
+// (attach_branch, state.py:1563); the Go executor resolves routers from a
+// map at run time, so there is nothing to attach — SetConditionalEntryPoint
+// is the whole mechanism.
+func (g *StateGraph) SetConditionalEntryPoint(router ConditionalEdge) *StateGraph {
+	if router == nil {
+		g.setErr(fmt.Errorf("graph: conditional entry point router must not be nil"))
+		return g
+	}
+	if g.entry != "" {
+		g.setErr(fmt.Errorf("graph: entry point already set to %q", g.entry))
+		return g
+	}
+	if g.entryRouter != nil {
+		g.setErr(fmt.Errorf("graph: conditional entry point already set"))
+		return g
+	}
+	g.entryRouter = router
+	return g
+}
+
+// SetFinishPoint marks a node as a finish point of the graph — sugar for
+// AddEdge(name, types.END), mirroring Python's `set_finish_point`
+// (state.py:1103).
+func (g *StateGraph) SetFinishPoint(name string) *StateGraph {
+	return g.AddEdge(name, types.END)
+}
+
+// NamedNode pairs a node name with its NodeFunc for AddSequence (Go has no
+// callable-name introspection, so the name is explicit, matching the named
+// `(name, fn)` tuple form of Python's add_sequence).
+type NamedNode struct {
+	Name string
+	Fn   NodeFunc
+}
+
+// AddSequence registers nodes to be executed in the given order: each node
+// is added and chained to its predecessor with a static edge, mirroring
+// Python's `add_sequence` (state.py:1019). An empty sequence is an error
+// (Python: "Sequence requires at least one node."); duplicate names surface
+// the existing duplicate-node error. Entry/finish wiring is left to the
+// caller (SetEntryPoint/SetConditionalEntryPoint/SetFinishPoint), as in
+// Python.
+func (g *StateGraph) AddSequence(nodes ...NamedNode) *StateGraph {
+	if len(nodes) == 0 {
+		g.setErr(fmt.Errorf("graph: AddSequence requires at least one node"))
+		return g
+	}
+	previous := ""
+	for i, n := range nodes {
+		g.AddNode(n.Name, n.Fn)
+		if i > 0 {
+			g.AddEdge(previous, n.Name)
+		}
+		previous = n.Name
+	}
 	return g
 }
 
@@ -422,10 +496,10 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 	if g.err != nil {
 		return nil, g.err
 	}
-	if g.entry == "" {
-		return nil, fmt.Errorf("graph: entry point not set (call AddEdge(types.START, node) or SetEntryPoint)")
+	if g.entry == "" && g.entryRouter == nil {
+		return nil, fmt.Errorf("graph: entry point not set (call AddEdge(types.START, node), SetEntryPoint, or SetConditionalEntryPoint)")
 	}
-	if g.entry != types.END {
+	if g.entry != "" && g.entry != types.END {
 		if _, ok := g.nodes[g.entry]; !ok {
 			return nil, fmt.Errorf("graph: entry point %q is not a registered node", g.entry)
 		}
@@ -497,6 +571,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		joins:           joins,
 		joinsByParent:   joinsByParent,
 		entry:           g.entry,
+		entryRouter:     g.entryRouter,
 		checkpointer:    options.checkpointer,
 		cache:           options.cache,
 		store:           options.store,
@@ -519,9 +594,12 @@ type CompiledGraph struct {
 	// without AddJoinEdge): the executor appends an implicit barrier write to
 	// each parent task's commit batch and dispatches join children from the
 	// commit path (see run).
-	joins           []joinMeta
-	joinsByParent   map[string][]string
-	entry           string
+	joins         []joinMeta
+	joinsByParent map[string][]string
+	entry         string
+	// entryRouter, when set, is the conditional entry point registered via
+	// SetConditionalEntryPoint; exactly one of entry/entryRouter is set.
+	entryRouter     ConditionalEdge
 	checkpointer    checkpoint.Saver
 	cache           checkpoint.Cache
 	store           store.Store
@@ -909,7 +987,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if err := g.persistDeltaInputWrites(ctx, cpSink, *currentCfg, input); err != nil {
 			return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
 		}
-		tasks = []task{{node: g.entry}}
+		entryTasks, err := g.entryTasks(runCtx, rs.snapshot())
+		if err != nil {
+			return Result{}, fmt.Errorf("graph: conditional entry point: %w", err)
+		}
+		tasks = entryTasks
 	default:
 		// Fresh start: the input is the first write batch.
 		changed, err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}})
@@ -929,7 +1011,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
 			}
 		}
-		tasks = []task{{node: g.entry}}
+		entryTasks, err := g.entryTasks(runCtx, rs.snapshot())
+		if err != nil {
+			return Result{}, fmt.Errorf("graph: conditional entry point: %w", err)
+		}
+		tasks = entryTasks
 	}
 	// Cached/replayed writes are re-streamed as updates on resume (Python
 	// parity, `_loop.py:676-679`).
@@ -1549,6 +1635,22 @@ func (g *CompiledGraph) dropJoinKeys(m map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// entryTasks resolves the run's first tasks: the static entry node, or the
+// conditional entry router's destinations resolved against the post-input
+// state (Python's START branch). The router receives a Runtime built for a
+// synthetic START task, like node routers receive their node's.
+func (g *CompiledGraph) entryTasks(ctx context.Context, state map[string]any) ([]task, error) {
+	if g.entryRouter == nil {
+		return []task{{node: g.entry}}, nil
+	}
+	rt := g.buildRuntime(ctx, task{node: types.START})
+	dests, err := g.entryRouter(rt, state)
+	if err != nil {
+		return nil, err
+	}
+	return resolveDestinations(dests)
 }
 
 func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state map[string]any) ([]task, error) {
