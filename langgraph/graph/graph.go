@@ -689,6 +689,13 @@ type Options struct {
 	// Propagated into subgraph runs (see StateGraph.AddSubgraph).
 	RecursionLimit int
 
+	// MaxConcurrency bounds how many nodes of one superstep run
+	// concurrently. Mirrors Python Pregel's use of RunnableConfig
+	// max_concurrency to cap its executor. 0 (or negative) means the
+	// default bound (min(32, GOMAXPROCS+4), the same default as Python's
+	// global executor).
+	MaxConcurrency int
+
 	// checkpointNS namespaces the run's checkpoints within the thread. It is
 	// set only internally, by the StateGraph.AddSubgraph node wrapper, to run
 	// a child graph under <parentNS>/<name> (see joinCheckpointNS); callers
@@ -1177,29 +1184,24 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			storeTTL[i] = ttl
 		}
 
-		var wg sync.WaitGroup
-		for i, t := range active {
-			if !execute[i] {
-				continue
+		// Bounded fan-out: at most opts.MaxConcurrency (default
+		// defaultSuperstepParallelism) nodes execute concurrently, matching
+		// Python Pregel's executor cap. Tasks always run to completion —
+		// cancellation surfaces through the task bodies, not by skipping.
+		runSuperstepBounded(active, execute, superstepBound(opts.MaxConcurrency, len(active)), func(i int, t task) {
+			if sink != nil {
+				sink.EmitRawEvent(RawEvent{Kind: RawNodeStart, Node: t.node})
 			}
-			wg.Add(1)
-			go func(i int, t task) {
-				defer wg.Done()
-				if sink != nil {
-					sink.EmitRawEvent(RawEvent{Kind: RawNodeStart, Node: t.node})
-				}
-				update, cmd, interrupted, consumed, err := g.runTask(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
-				if sink != nil {
-					// Always emit node_end so start/end pairs are balanced per
-					// invocation, even on the error/interrupt paths. The pair
-					// wraps the WHOLE attempt loop: retried tasks emit exactly
-					// one start/end pair regardless of attempt count.
-					sink.EmitRawEvent(RawEvent{Kind: RawNodeEnd, Node: t.node})
-				}
-				outcomes[i] = outcome{update: update, cmd: cmd, interrupted: interrupted, consumed: consumed, err: err}
-			}(i, t)
-		}
-		wg.Wait()
+			update, cmd, interrupted, consumed, err := g.runTask(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
+			if sink != nil {
+				// Always emit node_end so start/end pairs are balanced per
+				// invocation, even on the error/interrupt paths. The pair
+				// wraps the WHOLE attempt loop: retried tasks emit exactly
+				// one start/end pair regardless of attempt count.
+				sink.EmitRawEvent(RawEvent{Kind: RawNodeEnd, Node: t.node})
+			}
+			outcomes[i] = outcome{update: update, cmd: cmd, interrupted: interrupted, consumed: consumed, err: err}
+		})
 		resumeValues = nil
 
 		// Cache store pass: tasks that missed and then completed (no error,

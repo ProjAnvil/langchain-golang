@@ -16,6 +16,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/streamevents"
+	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
 const (
@@ -62,8 +63,7 @@ func (m ChatModel) createChatStream(
 		return nil, httpclient.ResponseError(providerName, "/api/chat", resp)
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner := providerutil.NewSSEScanner(resp.Body)
 	return &chatStream{
 		ctx:        ctx,
 		cancel:     cancel,
@@ -404,18 +404,7 @@ func (s *chatStream) applyDoneMetadata(chunk chatResponse) {
 }
 
 func (s *chatStream) emitProtocol(ctx context.Context, event streamevents.Event) error {
-	if s.cfg.Callbacks.Empty() {
-		return nil
-	}
-	return s.cfg.Callbacks.Emit(ctx, callbacks.Event{
-		Kind:     callbacks.EventChatModelProtocol,
-		Name:     s.cfg.Name,
-		RunID:    s.cfg.RunID,
-		ParentID: s.cfg.ParentID,
-		Tags:     append([]string(nil), s.cfg.Tags...),
-		Metadata: cloneMetadata(s.cfg.Metadata),
-		Chunk:    event,
-	})
+	return providerutil.EmitProtocolEvent(ctx, s.cfg, event)
 }
 
 func (s *chatStream) emitError(ctx context.Context, err error) error {
@@ -423,18 +412,7 @@ func (s *chatStream) emitError(ctx context.Context, err error) error {
 }
 
 func emitStream(ctx context.Context, cfg runnables.Config, chunk messages.Message) error {
-	if cfg.Callbacks.Empty() {
-		return nil
-	}
-	return cfg.Callbacks.Emit(ctx, callbacks.Event{
-		Kind:     callbacks.EventChatModelStream,
-		Name:     cfg.Name,
-		RunID:    cfg.RunID,
-		ParentID: cfg.ParentID,
-		Tags:     append([]string(nil), cfg.Tags...),
-		Metadata: cloneMetadata(cfg.Metadata),
-		Chunk:    chunk,
-	})
+	return providerutil.EmitStream(ctx, cfg, chunk)
 }
 
 // reasoningEnabled reports whether the think request parameter requests

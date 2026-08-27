@@ -16,6 +16,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/structuredoutput"
 	"github.com/projanvil/langchain-golang/core/tools"
+	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -542,23 +543,7 @@ func emit(
 	output any,
 	err error,
 ) error {
-	if cfg.Callbacks.Empty() {
-		return nil
-	}
-	event := callbacks.Event{
-		Kind:     kind,
-		Name:     cfg.Name,
-		RunID:    cfg.RunID,
-		ParentID: cfg.ParentID,
-		Tags:     append([]string(nil), cfg.Tags...),
-		Metadata: cloneMetadata(cfg.Metadata),
-		Input:    input,
-		Output:   output,
-	}
-	if err != nil {
-		event.Error = err.Error()
-	}
-	return cfg.Callbacks.Emit(ctx, event)
+	return providerutil.Emit(ctx, cfg, kind, input, output, err)
 }
 
 // stringFrom extracts m[key] as a string ("" when absent or not a string).
@@ -568,12 +553,5 @@ func stringFrom(m map[string]any, key string) string {
 }
 
 func cloneMetadata(metadata map[string]any) map[string]any {
-	if metadata == nil {
-		return nil
-	}
-	out := make(map[string]any, len(metadata))
-	for key, value := range metadata {
-		out[key] = value
-	}
-	return out
+	return providerutil.CloneMetadata(metadata)
 }

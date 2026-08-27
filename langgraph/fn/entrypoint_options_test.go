@@ -20,13 +20,16 @@ import (
 func TestEntrypointCachePolicy(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var calls atomic.Int32
-	e := NewEntrypoint[int, int, int](
+	e, err := NewEntrypoint[int, int, int](
 		EntrypointOpts{Cache: cache, CachePolicy: &graph.CachePolicy{}},
 		func(_ runtime.Runtime, in int, _ int, _ bool) (int, error) {
 			calls.Add(1)
 			return in * 2, nil
 		},
 	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	ctx := context.Background()
 
 	v, err := e.Invoke(ctx, 5, graph.Options{})
@@ -60,13 +63,16 @@ func TestEntrypointCachePolicy(t *testing.T) {
 // policy.go:222-223).
 func TestEntrypointCachePolicyWithoutBackend(t *testing.T) {
 	var calls atomic.Int32
-	e := NewEntrypoint[int, int, int](
+	e, err := NewEntrypoint[int, int, int](
 		EntrypointOpts{CachePolicy: &graph.CachePolicy{}},
 		func(_ runtime.Runtime, in int, _ int, _ bool) (int, error) {
 			calls.Add(1)
 			return in, nil
 		},
 	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	for i := 0; i < 2; i++ {
 		if _, err := e.Invoke(context.Background(), 5, graph.Options{}); err != nil {
 			t.Fatalf("Invoke %d: %v", i, err)
@@ -82,7 +88,7 @@ func TestEntrypointCachePolicyWithoutBackend(t *testing.T) {
 // the expiry as context.DeadlineExceeded (graph.TimeoutPolicy semantics,
 // timeout_test.go:30-49 — Python's NodeTimeoutError analogue in this port).
 func TestEntrypointTimeout(t *testing.T) {
-	e := NewEntrypoint[int, int, int](
+	e, err := NewEntrypoint[int, int, int](
 		EntrypointOpts{Timeout: &graph.TimeoutPolicy{RunTimeout: 50 * time.Millisecond}},
 		func(rt runtime.Runtime, in int, _ int, _ bool) (int, error) {
 			select {
@@ -93,8 +99,11 @@ func TestEntrypointTimeout(t *testing.T) {
 			}
 		},
 	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	start := time.Now()
-	_, err := e.Invoke(context.Background(), 1, graph.Options{})
+	_, err = e.Invoke(context.Background(), 1, graph.Options{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Invoke error = %v, want context.DeadlineExceeded", err)
 	}
@@ -122,7 +131,7 @@ func TestEntrypointContextSchema(t *testing.T) {
 		return nil
 	}
 	var sawModel any
-	e := NewEntrypoint[int, int, int](
+	e, err := NewEntrypoint[int, int, int](
 		EntrypointOpts{ContextSchema: schema},
 		func(rt runtime.Runtime, in int, _ int, _ bool) (int, error) {
 			if m, ok := rt.Context.(map[string]any); ok {
@@ -131,10 +140,13 @@ func TestEntrypointContextSchema(t *testing.T) {
 			return in, nil
 		},
 	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	// No context attached → rt.Context is nil → the nil-tolerant schema sees
 	// an empty map and fails with the missing-key error.
-	_, err := e.Invoke(context.Background(), 1, graph.Options{})
+	_, err = e.Invoke(context.Background(), 1, graph.Options{})
 	if err == nil || !strings.Contains(err.Error(), `missing required key "model"`) {
 		t.Fatalf("Invoke without context: error = %v, want context_schema validation failure", err)
 	}
@@ -154,10 +166,13 @@ func TestEntrypointContextSchema(t *testing.T) {
 // TestEntrypointContextSchemaNil: no schema means no validation (context is
 // passed through untouched).
 func TestEntrypointContextSchemaNil(t *testing.T) {
-	e := NewEntrypoint[int, int, int](
+	e, err := NewEntrypoint[int, int, int](
 		EntrypointOpts{},
 		func(_ runtime.Runtime, in int, _ int, _ bool) (int, error) { return in, nil },
 	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	if v, err := e.Invoke(context.Background(), 9, graph.Options{}); err != nil || v != 9 {
 		t.Fatalf("Invoke = (%v, %v), want (9, nil)", v, err)
 	}
@@ -169,7 +184,7 @@ func TestEntrypointContextSchemaNil(t *testing.T) {
 func TestEntrypointFinalOptions(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var calls atomic.Int32
-	e := NewEntrypointFinal[string, int, string](
+	e, err := NewEntrypointFinal[string, int, string](
 		EntrypointOpts{
 			Cache:       cache,
 			CachePolicy: &graph.CachePolicy{},
@@ -185,6 +200,9 @@ func TestEntrypointFinalOptions(t *testing.T) {
 			return Final[int, string]{Value: len(in), Save: in}, nil
 		},
 	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	if _, err := e.Invoke(context.Background(), "abc", graph.Options{}); err == nil {
 		t.Fatal("Invoke without context: error = nil, want context_schema failure")
 	}

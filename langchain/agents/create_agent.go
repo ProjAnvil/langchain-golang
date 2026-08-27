@@ -1167,7 +1167,15 @@ func buildModelNode(
 		cacheEnabled := cache != nil && sinkFromContext(rt) == nil
 		if cacheEnabled {
 			promptString, llmString := cacheKey(req)
-			if gens, ok, lerr := cache.Lookup(rt, promptString, llmString); lerr == nil && ok && len(gens) > 0 {
+			gens, ok, lerr := cache.Lookup(rt, promptString, llmString)
+			if lerr != nil {
+				// A failing cache must not masquerade as a miss (Python's
+				// BaseCache.lookup propagates too): that would silently
+				// disable caching for the run and make a permanently broken
+				// cache indistinguishable from a cold one.
+				return nil, fmt.Errorf("agents: model cache lookup: %w", lerr)
+			}
+			if ok && len(gens) > 0 {
 				cached := make([]messages.Message, 0, len(gens))
 				for _, g := range gens {
 					cached = append(cached, messages.AI(g.Text))

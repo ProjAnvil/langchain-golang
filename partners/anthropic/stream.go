@@ -16,6 +16,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/streamevents"
+	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
 func (m ChatModel) createMessageStream(
@@ -65,7 +66,7 @@ func (m ChatModel) createMessageStream(
 		ctx:            ctx,
 		cancel:         cancel,
 		body:           resp.Body,
-		scanner:        bufio.NewScanner(resp.Body),
+		scanner:        providerutil.NewSSEScanner(resp.Body),
 		cfg:            cfg,
 		textBlocks:     make(map[int]*streamTextBlock),
 		toolBlocks:     make(map[int]*streamToolBlock),
@@ -434,7 +435,15 @@ func (s *messageStream) contentBlockStop(ctx context.Context, index int) (messag
 		delete(s.toolBlocks, index)
 		call := messages.ToolCall{ID: block.id, Name: block.name}
 		if block.arguments != "" {
-			_ = json.Unmarshal([]byte(block.arguments), &call.Args)
+			if err := json.Unmarshal([]byte(block.arguments), &call.Args); err != nil {
+				// Malformed arguments would otherwise execute the tool with
+				// empty args, silently corrupting the tool call; fail the
+				// stream instead of guessing intent.
+				s.done = true
+				err = fmt.Errorf("anthropic: parse tool call arguments for %q: %w", block.name, err)
+				_ = s.emitError(ctx, err)
+				return messages.Message{}, false, err
+			}
 		}
 		s.output.ToolCalls = append(s.output.ToolCalls, call)
 		s.output.ContentBlocks = append(s.output.ContentBlocks, messages.ToolCallBlock{
@@ -539,45 +548,9 @@ func (s *messageStream) emitError(ctx context.Context, err error) error {
 }
 
 func emitStream(ctx context.Context, cfg runnables.Config, chunk messages.Message) error {
-	if cfg.Callbacks.Empty() {
-		return nil
-	}
-	return cfg.Callbacks.Emit(ctx, callbacks.Event{
-		Kind:     callbacks.EventChatModelStream,
-		Name:     cfg.Name,
-		RunID:    cfg.RunID,
-		ParentID: cfg.ParentID,
-		Tags:     append([]string(nil), cfg.Tags...),
-		Metadata: cloneMetadata(cfg.Metadata),
-		Chunk:    chunk,
-	})
+	return providerutil.EmitStream(ctx, cfg, chunk)
 }
 
 func (s *messageStream) emitProtocol(ctx context.Context, event streamevents.Event) error {
-	if s.cfg.Callbacks.Empty() {
-		return nil
-	}
-	if !s.protocolStarted {
-		s.protocolStarted = true
-		if err := s.cfg.Callbacks.Emit(ctx, callbacks.Event{
-			Kind:     callbacks.EventChatModelProtocol,
-			Name:     s.cfg.Name,
-			RunID:    s.cfg.RunID,
-			ParentID: s.cfg.ParentID,
-			Tags:     append([]string(nil), s.cfg.Tags...),
-			Metadata: cloneMetadata(s.cfg.Metadata),
-			Chunk:    streamevents.Event{Event: streamevents.EventMessageStart},
-		}); err != nil {
-			return err
-		}
-	}
-	return s.cfg.Callbacks.Emit(ctx, callbacks.Event{
-		Kind:     callbacks.EventChatModelProtocol,
-		Name:     s.cfg.Name,
-		RunID:    s.cfg.RunID,
-		ParentID: s.cfg.ParentID,
-		Tags:     append([]string(nil), s.cfg.Tags...),
-		Metadata: cloneMetadata(s.cfg.Metadata),
-		Chunk:    event,
-	})
+	return providerutil.EmitProtocol(ctx, s.cfg, &s.protocolStarted, event)
 }

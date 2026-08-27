@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
-	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 )
 
 // fnWrites returns the pending writes of tup on the given channel.
@@ -37,7 +37,7 @@ func TestPersistReplaySkipsReexecution(t *testing.T) {
 		calls.Add(1)
 		return strings.Repeat(strconv.Itoa(in), 2), nil
 	}, TaskOpts{})
-	e := NewEntrypoint[[]int, []string, any](
+	e, err := NewEntrypoint[[]int, []string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, in []int, _ any, _ bool) ([]string, error) {
 			futs := make([]*Future[string], len(in))
@@ -58,9 +58,12 @@ func TestPersistReplaySkipsReexecution(t *testing.T) {
 			}
 			return outs, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
 	var ierr *InterruptError
 	if !errors.As(err, &ierr) {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
@@ -91,7 +94,7 @@ func TestPersistReplayFalsyResult(t *testing.T) {
 		calls.Add(1)
 		return false, nil
 	}, TaskOpts{})
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			v, err := falsy.Call(ctx, nil).Get(ctx)
@@ -101,9 +104,12 @@ func TestPersistReplayFalsyResult(t *testing.T) {
 			_ = graph.Interrupt(ctx, "q")
 			return strconv.FormatBool(v), nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
 	var ierr *InterruptError
 	if !errors.As(err, &ierr) {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
@@ -135,14 +141,17 @@ func TestPersistErrorRethrow(t *testing.T) {
 		calls.Add(1)
 		return "", errors.New("boom")
 	}, TaskOpts{})
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			return bad.Call(ctx, nil).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, "in1", graph.Options{ThreadID: "t"})
+	_, err = e.Invoke(ctx, "in1", graph.Options{ThreadID: "t"})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("first Invoke() error = %v, want one containing %q", err, "boom")
 	}
@@ -182,11 +191,14 @@ func TestPersistErrorRethrow(t *testing.T) {
 	good := NewTask[any, string]("bad", func(_ runtime.Runtime, _ any) (string, error) {
 		return "fine", nil
 	}, TaskOpts{})
-	e2 := NewEntrypoint[any, string, any](
+	e2, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			return good.Call(ctx, nil).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	out, err := e2.Invoke(ctx, "in", graph.Options{ThreadID: "t2"})
 	if err != nil || out != "fine" {
 		t.Fatalf("fresh-thread Invoke() = %q, %v; want %q, nil", out, err, "fine")
@@ -205,7 +217,7 @@ func TestPersistChainedPauseRestamp(t *testing.T) {
 		setupCalls.Add(1)
 		return 2, nil
 	}, TaskOpts{})
-	e := NewEntrypoint[any, []string, any](
+	e, err := NewEntrypoint[any, []string, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, _, _ any, _ bool) ([]string, error) {
 			n, err := setup.Call(ctx, nil).Get(ctx)
@@ -219,9 +231,12 @@ func TestPersistChainedPauseRestamp(t *testing.T) {
 			}
 			return answers, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
 	var ierr *InterruptError
 	if !errors.As(err, &ierr) {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
@@ -297,7 +312,7 @@ func TestPersistInterruptKeepsBufferedResults(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		return "B", nil
 	}, TaskOpts{})
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			futA := taskA.Call(ctx, nil)
@@ -313,9 +328,12 @@ func TestPersistInterruptKeepsBufferedResults(t *testing.T) {
 			}
 			return vA + vB, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
 	var ierr *InterruptError
 	if !errors.As(err, &ierr) {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
@@ -369,7 +387,7 @@ func TestPersistDisabledWithoutCheckpointer(t *testing.T) {
 		calls.Add(1)
 		return "v", nil
 	}, TaskOpts{})
-	e := NewEntrypoint[any, string, any](EntrypointOpts{},
+	e, err := NewEntrypoint[any, string, any](EntrypointOpts{},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			v, err := task.Call(ctx, nil).Get(ctx)
 			if err != nil {
@@ -378,8 +396,11 @@ func TestPersistDisabledWithoutCheckpointer(t *testing.T) {
 			_ = graph.Interrupt(ctx, "q")
 			return v, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
-	_, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
 	var ierr *InterruptError
 	if !errors.As(err, &ierr) {
 		t.Fatalf("Invoke() error = %v (%T), want *InterruptError", err, err)

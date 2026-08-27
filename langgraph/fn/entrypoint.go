@@ -2,6 +2,7 @@ package fn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 
@@ -79,12 +80,14 @@ type Entrypoint[I, O, S any] struct {
 // surfaces as a descriptive error on the NEXT invocation's previous
 // assertion, not silently.
 //
-// Construction panics if f is nil or the internal graph fails to compile
-// (programmer errors; the fixed graph shape cannot otherwise fail).
+// Construction returns an error if f is nil or the internal graph fails to
+// compile — both caller-visible, not panics: opts.Timeout and opts.Retry are
+// user-supplied and their validation errors surface at compile time, so an
+// invalid policy must return an error rather than crash the program.
 func NewEntrypoint[I, O, S any](opts EntrypointOpts,
-	f func(rt runtime.Runtime, in I, prev S, hasPrev bool) (O, error)) *Entrypoint[I, O, S] {
+	f func(rt runtime.Runtime, in I, prev S, hasPrev bool) (O, error)) (*Entrypoint[I, O, S], error) {
 	if f == nil {
-		panic("fn: entrypoint function must be non-nil")
+		return nil, errors.New("fn: entrypoint function must be non-nil")
 	}
 	nodeFn := func(rt runtime.Runtime, state map[string]any) (any, error) {
 		if err := validateEntrypointContext(opts.ContextSchema, rt); err != nil {
@@ -118,10 +121,12 @@ type Final[O, S any] struct {
 }
 
 // NewEntrypointFinal is NewEntrypoint for functions returning Final[O, S].
+// Like NewEntrypoint it returns an error instead of panicking on a nil
+// function or an invalid compile-time option.
 func NewEntrypointFinal[I, O, S any](opts EntrypointOpts,
-	f func(rt runtime.Runtime, in I, prev S, hasPrev bool) (Final[O, S], error)) *Entrypoint[I, O, S] {
+	f func(rt runtime.Runtime, in I, prev S, hasPrev bool) (Final[O, S], error)) (*Entrypoint[I, O, S], error) {
 	if f == nil {
-		panic("fn: entrypoint function must be non-nil")
+		return nil, errors.New("fn: entrypoint function must be non-nil")
 	}
 	nodeFn := func(rt runtime.Runtime, state map[string]any) (any, error) {
 		if err := validateEntrypointContext(opts.ContextSchema, rt); err != nil {
@@ -181,8 +186,10 @@ func validateEntrypointContext(schema func(any) error, rt runtime.Runtime) error
 // compileEntrypoint builds the single-node StateGraph every Entrypoint
 // compiles to: three reserved channels (__start__ ephemeral input, __end__
 // and __previous__ last-value saves) plus one "entrypoint" node (Python
-// parity `func/__init__.py:576-609`).
-func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) *Entrypoint[I, O, S] {
+// parity `func/__init__.py:576-609`). Compile can fail on user-supplied
+// policies (opts.Timeout / opts.Retry are validated there), so the error is
+// returned to the constructor rather than panicking.
+func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) (*Entrypoint[I, O, S], error) {
 	g := graph.NewStateGraph().
 		AddChannel(channelStart, channels.NewEphemeral(true)).
 		AddChannel(channelEnd, channels.NewLastValue()).
@@ -202,9 +209,9 @@ func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) 
 	}
 	cg, err := g.Compile(copts...)
 	if err != nil {
-		panic(fmt.Sprintf("fn: entrypoint graph compile: %v", err))
+		return nil, fmt.Errorf("fn: entrypoint graph compile: %w", err)
 	}
-	return &Entrypoint[I, O, S]{opts: opts, graph: cg}
+	return &Entrypoint[I, O, S]{opts: opts, graph: cg}, nil
 }
 
 // prepare assembles one fresh run: the input batch (with the previous save

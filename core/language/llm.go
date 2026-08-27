@@ -2,7 +2,6 @@ package language
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -97,22 +96,12 @@ func (m *FakeLLM) Invoke(ctx context.Context, input string, opts ...runnables.Op
 	return response, nil
 }
 
-// Batch invokes the model for all inputs while preserving order.
+// Batch invokes the model for all inputs while preserving order, bounded by
+// the config's MaxConcurrency (see runnables.ParallelMap).
 func (m *FakeLLM) Batch(ctx context.Context, inputs []string, opts ...runnables.Option) ([]string, error) {
-	outputs := make([]string, len(inputs))
-	errs := make([]error, len(inputs))
-
-	var wg sync.WaitGroup
-	for i, input := range inputs {
-		wg.Add(1)
-		go func(i int, input string) {
-			defer wg.Done()
-			outputs[i], errs[i] = m.Invoke(ctx, input, opts...)
-		}(i, input)
-	}
-	wg.Wait()
-
-	return outputs, errors.Join(errs...)
+	return runnables.ParallelMap(ctx, runnables.NewConfig(opts...), inputs, func(ctx context.Context, input string) (string, error) {
+		return m.Invoke(ctx, input, opts...)
+	})
 }
 
 // Stream returns configured chunks or a single Invoke response.

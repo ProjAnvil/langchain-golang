@@ -111,3 +111,70 @@ func TestShellSessionNotStarted(t *testing.T) {
 		t.Fatal("expected error when session not started")
 	}
 }
+
+func TestShellSessionTimeoutKillsAndRestarts(t *testing.T) {
+	dir, err := os.MkdirTemp("", "lgshell-timeout-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	dir, _ = filepath.EvalSymlinks(dir)
+
+	s := NewShellSession(dir, []string{"/bin/sh"}, map[string]string{})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop(5 * time.Second)
+
+	r, err := s.Execute(context.Background(), "sleep 30", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Execute timed-out command: %v", err)
+	}
+	if !r.TimedOut {
+		t.Fatalf("expected TimedOut result, got %+v", r)
+	}
+
+	// The timed-out command left the old marker reader blocked on the old
+	// pipe; the next Execute must transparently restart the session instead
+	// of racing that goroutine on a shared reader.
+	r, err = s.Execute(context.Background(), "echo recovered", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Execute after timeout: %v", err)
+	}
+	if got := strings.TrimSpace(r.Output); got != "recovered" {
+		t.Fatalf("output after restart = %q, want %q", got, "recovered")
+	}
+}
+
+func TestShellSessionCtxCancelKillsAndRestarts(t *testing.T) {
+	dir, err := os.MkdirTemp("", "lgshell-cancel-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	dir, _ = filepath.EvalSymlinks(dir)
+
+	s := NewShellSession(dir, []string{"/bin/sh"}, map[string]string{})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop(5 * time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	r, err := s.Execute(ctx, "sleep 30", time.Minute)
+	if err != nil {
+		t.Fatalf("Execute canceled command: %v", err)
+	}
+	if !r.TimedOut {
+		t.Fatalf("expected TimedOut result, got %+v", r)
+	}
+
+	r, err = s.Execute(context.Background(), "echo after-cancel", 10*time.Second)
+	if err != nil {
+		t.Fatalf("Execute after cancel: %v", err)
+	}
+	if got := strings.TrimSpace(r.Output); got != "after-cancel" {
+		t.Fatalf("output after restart = %q, want %q", got, "after-cancel")
+	}
+}

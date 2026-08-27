@@ -2,8 +2,6 @@ package runnables
 
 import (
 	"context"
-	"errors"
-	"sync"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -22,6 +20,10 @@ type Config struct {
 	Metadata     map[string]any
 	Configurable map[string]any
 	Callbacks    callbacks.Manager
+	// MaxConcurrency bounds batch fan-out (see ParallelMap). It ports
+	// Python's RunnableConfig.max_concurrency; zero means the shared
+	// DefaultParallelism bound.
+	MaxConcurrency int
 }
 
 // NewConfig applies options to an execution config.
@@ -100,6 +102,15 @@ func WithCallbacks(manager callbacks.Manager) Option {
 	}
 }
 
+// WithMaxConcurrency bounds batch fan-out at n concurrent invocations
+// (Python parity: RunnableConfig.max_concurrency). n <= 0 restores the
+// default bound; see ParallelMap.
+func WithMaxConcurrency(n int) Option {
+	return func(cfg *Config) {
+		cfg.MaxConcurrency = n
+	}
+}
+
 func configOption(cfg Config) Option {
 	return func(out *Config) {
 		*out = cfg.Clone()
@@ -174,22 +185,14 @@ func (r Func[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, err
 }
 
 // Batch executes the runnable for all inputs concurrently while preserving
-// output order.
+// output order, bounded by the config's MaxConcurrency (Python parity:
+// RunnableConfig.max_concurrency; default DefaultParallelism). See
+// ParallelMap.
 func (r Func[I, O]) Batch(ctx context.Context, inputs []I, opts ...Option) ([]O, error) {
-	outputs := make([]O, len(inputs))
-	errs := make([]error, len(inputs))
-
-	var wg sync.WaitGroup
-	for i, input := range inputs {
-		wg.Add(1)
-		go func(i int, input I) {
-			defer wg.Done()
-			outputs[i], errs[i] = r.Invoke(ctx, input, opts...)
-		}(i, input)
-	}
-	wg.Wait()
-
-	return outputs, errors.Join(errs...)
+	cfg := NewConfig(opts...)
+	return ParallelMap(ctx, cfg, inputs, func(ctx context.Context, input I) (O, error) {
+		return r.Invoke(ctx, input, opts...)
+	})
 }
 
 // Stream returns a single-value stream by default.

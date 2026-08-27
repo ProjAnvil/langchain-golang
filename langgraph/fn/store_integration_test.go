@@ -22,7 +22,7 @@ func TestEntrypointStoreRuntimeWiring(t *testing.T) {
 	mem := store.NewInMemoryStore()
 
 	var sawStore bool
-	e := NewEntrypoint[string, string, any](
+	e, err := NewEntrypoint[string, string, any](
 		EntrypointOpts{Store: mem},
 		func(rt runtime.Runtime, in string, _ any, _ bool) (string, error) {
 			if rt.Store == nil {
@@ -45,6 +45,9 @@ func TestEntrypointStoreRuntimeWiring(t *testing.T) {
 			return s, nil
 		},
 	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
 	out, err := e.Invoke(ctx, "first", graph.Options{})

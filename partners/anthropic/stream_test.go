@@ -795,3 +795,82 @@ func TestStreamUnmarshalableToolArgs(t *testing.T) {
 		t.Fatal("stream with unmarshalable tool args should fail")
 	}
 }
+
+func TestStreamMalformedToolArgumentsFailStream(t *testing.T) {
+	// The accumulated input_json_delta payload is not valid JSON. The stream
+	// must fail instead of silently executing the tool with empty args.
+	server := streamServer(
+		sse("message_start", streamMessageStart),
+		sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_bad","name":"search"}}`),
+		sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{not json"}}`),
+		sse("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		sse("message_stop", `{"type":"message_stop"}`),
+	)
+	defer server.Close()
+
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
+	stream, err := model.Stream(
+		context.Background(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+	var sawError bool
+	for {
+		_, ok, err := stream.Next(context.Background())
+		if err != nil {
+			if !strings.Contains(err.Error(), "parse tool call arguments") {
+				t.Fatalf("unexpected stream error: %v", err)
+			}
+			sawError = true
+			break
+		}
+		if !ok {
+			break
+		}
+	}
+	if !sawError {
+		t.Fatal("expected stream to fail on malformed tool arguments")
+	}
+	var errorEvents int
+	for _, event := range recorder.Events() {
+		if event.Kind == callbacks.EventChatModelError {
+			errorEvents++
+		}
+	}
+	if errorEvents == 0 {
+		t.Fatal("expected a chat-model error callback")
+	}
+}
+
+func TestStreamAcceptsLargeToolArgumentDeltas(t *testing.T) {
+	// A single SSE data line well beyond bufio.Scanner's 64KB default. The
+	// delta is a valid JSON string (arguments are validated at block stop),
+	// so the stream must complete rather than fail on "token too long".
+	bigArgs := strings.Repeat("x", 200*1024)
+	server := streamServer(
+		sse("message_start", streamMessageStart),
+		sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_big","name":"search"}}`),
+		sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"`+bigArgs+`\"}"}}`),
+		sse("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		sse("message_stop", `{"type":"message_stop"}`),
+	)
+	defer server.Close()
+
+	stream, recorder := streamWithRecorder(t, server)
+	chunks := drainStream(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks from a >64KB delta stream")
+	}
+	output := finalOutput(t, recorder)
+	if len(output.ToolCalls) != 1 || output.ToolCalls[0].ID != "toolu_big" {
+		t.Fatalf("output tool calls: %+v", output.ToolCalls)
+	}
+	if got, _ := output.ToolCalls[0].Args["q"].(string); got != bigArgs {
+		t.Fatalf("args[q] length = %d, want %d", len(got), len(bigArgs))
+	}
+}

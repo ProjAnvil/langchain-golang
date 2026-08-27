@@ -124,7 +124,10 @@ func (m *FilesystemFileSearchMiddleware) GlobSearch(pattern string, path string)
 		modTime time.Time
 	}
 	matches := []match{}
-	_ = filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
+	// The callback skips unreadable entries (matching Python's os.walk with
+	// onerror=None), so WalkDir only returns an error if the walk itself
+	// fails, e.g. the root vanished between Stat and Walk.
+	if err := filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -152,7 +155,9 @@ func (m *FilesystemFileSearchMiddleware) GlobSearch(pattern string, path string)
 		}
 		matches = append(matches, match{path: "/" + filepath.ToSlash(rootRel), modTime: info.ModTime()})
 		return nil
-	})
+	}); err != nil {
+		return "No files found"
+	}
 	if len(matches) == 0 {
 		return "No files found"
 	}
@@ -293,7 +298,10 @@ func (m *FilesystemFileSearchMiddleware) pythonSearch(regex *regexp.Regexp, base
 		return map[string][]grepMatch{}
 	}
 	results := map[string][]grepMatch{}
-	_ = filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
+	// The callback skips unreadable entries (matching Python's os.walk with
+	// onerror=None) and fs.SkipDir is not an error, so a non-nil WalkDir
+	// error means the walk itself failed; report it rather than discarding.
+	if err := filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -329,7 +337,9 @@ func (m *FilesystemFileSearchMiddleware) pythonSearch(regex *regexp.Regexp, base
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return map[string][]grepMatch{}
+	}
 	return results
 }
 

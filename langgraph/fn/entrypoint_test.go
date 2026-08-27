@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -21,12 +22,15 @@ import (
 func TestEntrypointWithoutCheckpointer(t *testing.T) {
 	var hasPrevs []bool
 	var prevs []map[string]any
-	e := NewEntrypoint[map[string]any, map[string]any, map[string]any](EntrypointOpts{},
+	e, err := NewEntrypoint[map[string]any, map[string]any, map[string]any](EntrypointOpts{},
 		func(_ runtime.Runtime, in, prev map[string]any, hasPrev bool) (map[string]any, error) {
 			hasPrevs = append(hasPrevs, hasPrev)
 			prevs = append(prevs, prev)
 			return map[string]any{"previous": nil, "current": in}, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	opts := graph.Options{ThreadID: "1"}
 	want := map[string]any{"previous": nil, "current": map[string]any{"a": "1"}}
@@ -52,7 +56,7 @@ func TestEntrypointWithoutCheckpointer(t *testing.T) {
 // Mirrors test_pregel.py:6329 test_entrypoint_stateful: previous threads the
 // prior invocation's save value through the checkpointer.
 func TestEntrypointStateful(t *testing.T) {
-	e := NewEntrypoint[map[string]any, map[string]any, map[string]any](
+	e, err := NewEntrypoint[map[string]any, map[string]any, map[string]any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(_ runtime.Runtime, in, prev map[string]any, hasPrev bool) (map[string]any, error) {
 			var p any
@@ -61,6 +65,9 @@ func TestEntrypointStateful(t *testing.T) {
 			}
 			return map[string]any{"previous": p, "current": in}, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	opts := graph.Options{ThreadID: "1"}
 	var outs []map[string]any
@@ -90,7 +97,7 @@ func TestEntrypointStateful(t *testing.T) {
 func TestEntrypointFinalValueSave(t *testing.T) {
 	var hasPrevs []bool
 	var prevs [][]string
-	e := NewEntrypointFinal[string, int, []string](
+	e, err := NewEntrypointFinal[string, int, []string](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(_ runtime.Runtime, in string, prev []string, hasPrev bool) (Final[int, []string], error) {
 			hasPrevs = append(hasPrevs, hasPrev)
@@ -98,6 +105,9 @@ func TestEntrypointFinalValueSave(t *testing.T) {
 			save := append(append([]string(nil), prev...), in)
 			return Final[int, []string]{Value: len(prev), Save: save}, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	opts := graph.Options{ThreadID: "1"}
 	var outs []int
@@ -123,10 +133,13 @@ func TestEntrypointFinalValueSave(t *testing.T) {
 // Mirrors the stream part of test_pregel.py:6329 (Python asserts
 // items == [{"foo": {...}}]; the Go node name is the fixed "entrypoint").
 func TestEntrypointStream(t *testing.T) {
-	e := NewEntrypoint[string, string, string](EntrypointOpts{},
+	e, err := NewEntrypoint[string, string, string](EntrypointOpts{},
 		func(_ runtime.Runtime, in, _ string, _ bool) (string, error) {
 			return "done", nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	var chunks []graph.StreamChunk
 	for chunk, err := range e.Stream(context.Background(), "in", graph.Options{ThreadID: "1"}) {
@@ -157,15 +170,18 @@ func TestEntrypointStream(t *testing.T) {
 // (task-free variant): an interrupt inside the entrypoint pauses the run and
 // a resumed Invoke feeds the resume value to the pending Interrupt call.
 func TestEntrypointInterruptResume(t *testing.T) {
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, _ any, _ any, _ bool) (string, error) {
 			v := graph.Interrupt(ctx, "Provide value")
 			return fmt.Sprintf("got %v", v), nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
 	var ierr *InterruptError
 	if !errors.As(err, &ierr) {
 		t.Fatalf("Invoke() error = %v (%T), want *InterruptError", err, err)
@@ -187,12 +203,15 @@ func TestEntrypointInterruptResume(t *testing.T) {
 // InterruptError.
 func TestEntrypointErrorPropagation(t *testing.T) {
 	boom := errors.New("boom")
-	e := NewEntrypoint[string, string, string](EntrypointOpts{},
+	e, err := NewEntrypoint[string, string, string](EntrypointOpts{},
 		func(_ runtime.Runtime, _, _ string, _ bool) (string, error) {
 			return "", boom
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
-	_, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) {
 		t.Fatalf("Invoke() error = %v, want boom", err)
 	}
@@ -202,24 +221,34 @@ func TestEntrypointErrorPropagation(t *testing.T) {
 	}
 }
 
-// Construction with a nil function is a programmer error and panics, for
+// Construction with a nil function returns an error (not a panic), for
 // both the plain and the Final form.
-func TestNewEntrypointNilFuncPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r != "fn: entrypoint function must be non-nil" {
-			t.Fatalf("recover = %v, want the nil-function panic", r)
-		}
-	}()
-	NewEntrypoint[string, string, string](EntrypointOpts{}, nil)
+func TestNewEntrypointNilFuncError(t *testing.T) {
+	if _, err := NewEntrypoint[string, string, string](EntrypointOpts{}, nil); err == nil ||
+		err.Error() != "fn: entrypoint function must be non-nil" {
+		t.Fatalf("err = %v, want the nil-function error", err)
+	}
 }
 
-func TestNewEntrypointFinalNilFuncPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r != "fn: entrypoint function must be non-nil" {
-			t.Fatalf("recover = %v, want the nil-function panic", r)
-		}
-	}()
-	NewEntrypointFinal[string, int, string](EntrypointOpts{}, nil)
+func TestNewEntrypointFinalNilFuncError(t *testing.T) {
+	if _, err := NewEntrypointFinal[string, int, string](EntrypointOpts{}, nil); err == nil ||
+		err.Error() != "fn: entrypoint function must be non-nil" {
+		t.Fatalf("err = %v, want the nil-function error", err)
+	}
+}
+
+// An invalid user-supplied policy must surface as a constructor error, not a
+// panic: graph.Compile validates node policies (Timeout/Retry), and those
+// come straight from EntrypointOpts.
+func TestNewEntrypointInvalidPolicyError(t *testing.T) {
+	opts := EntrypointOpts{Timeout: &graph.TimeoutPolicy{RunTimeout: -time.Second}}
+	_, err := NewEntrypoint[string, string, string](opts,
+		func(_ runtime.Runtime, in, prev string, hasPrev bool) (string, error) {
+			return in, nil
+		})
+	if err == nil || !strings.Contains(err.Error(), "entrypoint graph compile") {
+		t.Fatalf("err = %v, want a compile error naming the invalid policy", err)
+	}
 }
 
 // A state missing the __start__ channel or carrying an input of the wrong
@@ -227,10 +256,13 @@ func TestNewEntrypointFinalNilFuncPanics(t *testing.T) {
 // never a silent zero-value downgrade. Reached by driving the compiled
 // graph directly (Invoke always supplies a well-typed __start__).
 func TestEntrypointInputContractViolations(t *testing.T) {
-	e := NewEntrypoint[string, string, string](EntrypointOpts{},
+	e, err := NewEntrypoint[string, string, string](EntrypointOpts{},
 		func(_ runtime.Runtime, in, _ string, _ bool) (string, error) { return in, nil })
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
-	_, err := e.graph.InvokeWithOptions(context.Background(), map[string]any{}, graph.Options{})
+	_, err = e.graph.InvokeWithOptions(context.Background(), map[string]any{}, graph.Options{})
 	if err == nil || !strings.Contains(err.Error(), `missing the "__start__" channel`) {
 		t.Fatalf("InvokeWithOptions() error = %v, want a missing-channel error", err)
 	}
@@ -241,10 +273,13 @@ func TestEntrypointInputContractViolations(t *testing.T) {
 	}
 
 	// The Final form's node wrapper surfaces the same contract violation.
-	ef := NewEntrypointFinal[string, int, string](EntrypointOpts{},
+	ef, err := NewEntrypointFinal[string, int, string](EntrypointOpts{},
 		func(_ runtime.Runtime, in string, _ string, _ bool) (Final[int, string], error) {
 			return Final[int, string]{Value: len(in), Save: in}, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	_, err = ef.graph.InvokeWithOptions(context.Background(), map[string]any{channelStart: 42}, graph.Options{})
 	if err == nil || !strings.Contains(err.Error(), "entrypoint input has type int") {
 		t.Fatalf("InvokeWithOptions() error = %v, want an input-type error", err)
@@ -256,15 +291,18 @@ func TestEntrypointInputContractViolations(t *testing.T) {
 // descriptive error on the NEXT invocation's previous assertion (documented
 // NewEntrypoint behavior) — not silently.
 func TestEntrypointPreviousTypeMismatch(t *testing.T) {
-	e := NewEntrypoint[string, string, int](
+	e, err := NewEntrypoint[string, string, int](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(_ runtime.Runtime, in string, _ int, _ bool) (string, error) { return "out:" + in, nil })
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	opts := graph.Options{ThreadID: "1"}
 	if _, err := e.Invoke(context.Background(), "a", opts); err != nil {
 		t.Fatalf("first Invoke() error = %v, want nil", err)
 	}
-	_, err := e.Invoke(context.Background(), "b", opts)
+	_, err = e.Invoke(context.Background(), "b", opts)
 	if err == nil || !strings.Contains(err.Error(), "previous value has type string, want the declared save type") {
 		t.Fatalf("second Invoke() error = %v, want a previous-type mismatch error", err)
 	}
@@ -273,12 +311,15 @@ func TestEntrypointPreviousTypeMismatch(t *testing.T) {
 // A Final entrypoint function's error propagates as a plain error.
 func TestEntrypointFinalErrorPropagation(t *testing.T) {
 	boom := errors.New("boom")
-	e := NewEntrypointFinal[string, int, string](EntrypointOpts{},
+	e, err := NewEntrypointFinal[string, int, string](EntrypointOpts{},
 		func(_ runtime.Runtime, _ string, _ string, _ bool) (Final[int, string], error) {
 			return Final[int, string]{}, boom
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
-	_, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) {
 		t.Fatalf("Invoke() error = %v, want boom", err)
 	}
@@ -330,11 +371,14 @@ func (s *alwaysFailGetTupleSaver) GetTuple(context.Context, checkpoint.Config) (
 // A checkpointer failure during prepare aborts Invoke before the run starts.
 func TestEntrypointPrepareCheckpointLoadError(t *testing.T) {
 	boom := errors.New("saver down")
-	e := NewEntrypoint[string, string, string](
+	e, err := NewEntrypoint[string, string, string](
 		EntrypointOpts{Checkpointer: &alwaysFailGetTupleSaver{Saver: checkpoint.NewMemorySaver(), err: boom}},
 		func(_ runtime.Runtime, in, _ string, _ bool) (string, error) { return in, nil })
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
-	_, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "fn: entrypoint checkpoint load") {
 		t.Fatalf("Invoke() error = %v, want the wrapped checkpoint-load error", err)
 	}
@@ -343,9 +387,12 @@ func TestEntrypointPrepareCheckpointLoadError(t *testing.T) {
 // The same prepare failure surfaces as a yielded error from Stream.
 func TestEntrypointStreamPrepareError(t *testing.T) {
 	boom := errors.New("saver down")
-	e := NewEntrypoint[string, string, string](
+	e, err := NewEntrypoint[string, string, string](
 		EntrypointOpts{Checkpointer: &alwaysFailGetTupleSaver{Saver: checkpoint.NewMemorySaver(), err: boom}},
 		func(_ runtime.Runtime, in, _ string, _ bool) (string, error) { return in, nil })
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	var gotErr error
 	chunks := 0
@@ -387,7 +434,7 @@ func TestEntrypointPersistResultsLoadError(t *testing.T) {
 	boom := errors.New("saver down")
 	saver := &toggleGetTupleSaver{Saver: checkpoint.NewMemorySaver(), failErr: boom}
 	task := NewTask[any, string]("t", func(_ runtime.Runtime, _ any) (string, error) { return "v", nil }, TaskOpts{})
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			v, err := task.Call(ctx, nil).Get(ctx)
@@ -397,8 +444,11 @@ func TestEntrypointPersistResultsLoadError(t *testing.T) {
 			saver.armed.Store(true) // persistResults' GetTuple fails
 			return v, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
-	_, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "fn: persisting task results") {
 		t.Fatalf("Invoke() error = %v, want the wrapped persist error", err)
 	}
@@ -409,7 +459,7 @@ func TestEntrypointPersistResultsLoadError(t *testing.T) {
 func TestEntrypointPersistResultsNoCheckpoint(t *testing.T) {
 	saver := &toggleGetTupleSaver{Saver: checkpoint.NewMemorySaver(), nilTuple: true}
 	task := NewTask[any, string]("t", func(_ runtime.Runtime, _ any) (string, error) { return "v", nil }, TaskOpts{})
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			v, err := task.Call(ctx, nil).Get(ctx)
@@ -419,6 +469,9 @@ func TestEntrypointPersistResultsNoCheckpoint(t *testing.T) {
 			saver.armed.Store(true) // persistResults' GetTuple reports no checkpoint
 			return v, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	out, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
 	if err != nil || out != "v" {
@@ -450,13 +503,16 @@ func TestEntrypointPersistResultsWriteError(t *testing.T) {
 	outer := NewTask[any, string]("outer", func(ctx runtime.Runtime, _ any) (string, error) {
 		return inner.Call(ctx, nil).Get(ctx)
 	}, TaskOpts{})
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, _, _ any, _ bool) (string, error) {
 			return outer.Call(ctx, nil).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
-	_, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "fn: persisting task results") {
 		t.Fatalf("Invoke() error = %v, want the wrapped persist error", err)
 	}
@@ -466,8 +522,11 @@ func TestEntrypointPersistResultsWriteError(t *testing.T) {
 // Stream as a yielded error.
 func TestEntrypointStreamRunError(t *testing.T) {
 	boom := errors.New("boom")
-	e := NewEntrypoint[string, string, string](EntrypointOpts{},
+	e, err := NewEntrypoint[string, string, string](EntrypointOpts{},
 		func(_ runtime.Runtime, _, _ string, _ bool) (string, error) { return "", boom })
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	var gotErr error
 	for _, err := range e.Stream(context.Background(), "in", graph.Options{ThreadID: "1"}) {
@@ -481,8 +540,11 @@ func TestEntrypointStreamRunError(t *testing.T) {
 // Breaking out of the stream early cancels the run; the teardown still runs
 // and the iterator terminates cleanly.
 func TestEntrypointStreamEarlyBreak(t *testing.T) {
-	e := NewEntrypoint[string, string, string](EntrypointOpts{},
+	e, err := NewEntrypoint[string, string, string](EntrypointOpts{},
 		func(_ runtime.Runtime, in, _ string, _ bool) (string, error) { return "done:" + in, nil })
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	chunks := 0
 	for range e.Stream(context.Background(), "in", graph.Options{ThreadID: "1"}) {
@@ -508,9 +570,12 @@ func (s *panicPutSaver) Put(context.Context, checkpoint.Config, checkpoint.Check
 // (cancel -> seal -> best-effort persist) and the ORIGINAL panic value
 // continues to propagate out of Invoke.
 func TestEntrypointInvokePanicTeardown(t *testing.T) {
-	e := NewEntrypoint[string, string, string](
+	e, err := NewEntrypoint[string, string, string](
 		EntrypointOpts{Checkpointer: &panicPutSaver{Saver: checkpoint.NewMemorySaver()}},
 		func(_ runtime.Runtime, in, _ string, _ bool) (string, error) { return in, nil })
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	defer func() {
 		if r := recover(); r != "put boom" {

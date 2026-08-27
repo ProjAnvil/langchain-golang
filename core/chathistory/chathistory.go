@@ -161,11 +161,17 @@ func BufferString(batch []messages.Message) string {
 	return strings.Join(lines, "\n")
 }
 
+// cloneMessages deep-copies a batch so history snapshots never alias
+// caller-mutable nested state (tool-call args, metadata maps, content
+// blocks). A struct-only copy is not enough: messages.Clone is what gives
+// the documented defensive-copy guarantee teeth.
 func cloneMessages(batch []messages.Message) []messages.Message {
 	if len(batch) == 0 {
 		return nil
 	}
 	cloned := make([]messages.Message, len(batch))
-	copy(cloned, batch)
+	for i, message := range batch {
+		cloned[i] = messages.Clone(message)
+	}
 	return cloned
 }

@@ -25,9 +25,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -251,23 +251,14 @@ func (n *ToolNode) InvokeToolCalls(ctx context.Context, calls []messages.ToolCal
 // no Command (the tool never ran), and a wrapper that invokes `next` more
 // than once (e.g. retries) keeps the Command of the last invocation.
 func (n *ToolNode) InvokeToolCallsFull(ctx context.Context, calls []messages.ToolCall, state map[string]any) ([]ToolCallOutcome, error) {
-	outcomes := make([]ToolCallOutcome, len(calls))
-	errs := make([]error, len(calls))
-
-	var wg sync.WaitGroup
-	for i, call := range calls {
-		wg.Add(1)
-		go func(i int, call messages.ToolCall) {
-			defer wg.Done()
-			outcomes[i], errs[i] = n.runOne(ctx, call, state)
-		}(i, call)
-	}
-	wg.Wait()
-
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
+	// Bounded fan-out via the shared batch engine; tool calls in one AI
+	// message are provider calls too, so they get the same default
+	// concurrency ceiling as model batches (runnables.ParallelMap).
+	outcomes, err := runnables.ParallelMap(ctx, runnables.Config{}, calls, func(ctx context.Context, call messages.ToolCall) (ToolCallOutcome, error) {
+		return n.runOne(ctx, call, state)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return outcomes, nil
 }

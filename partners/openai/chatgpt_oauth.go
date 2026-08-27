@@ -1,13 +1,15 @@
 package openai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
+
+	"github.com/projanvil/langchain-golang/core/httpclient"
+	"github.com/projanvil/langchain-golang/core/modelconfig"
 )
 
 // ChatGPT OAuth token bundle + refreshable provider, mirroring the parts of
@@ -72,38 +74,45 @@ func (p *TokenProvider) AccessToken(ctx context.Context) (string, error) {
 	return refreshed.AccessToken, nil
 }
 
-// refresh performs the OAuth refresh_token grant against the token URL.
-func (p *TokenProvider) refresh(ctx context.Context) (Token, error) {
-	body, err := json.Marshal(map[string]string{
-		"grant_type":    "refresh_token",
-		"refresh_token": p.token.RefreshToken,
-		"client_id":     p.clientID,
-	})
-	if err != nil {
-		return Token{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.tokenURL, bytes.NewReader(body))
-	if err != nil {
-		return Token{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+// chatGPTTokenResponse is the OAuth token endpoint's JSON payload.
+type chatGPTTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	IDToken      string `json:"id_token"`
+	ExpiresIn    int    `json:"expires_in"`
+}
 
-	resp, err := p.httpClient.Do(req)
+// refresh performs the OAuth refresh_token grant against the token URL via
+// the shared httpclient helper, so failures come back as typed lcerrors
+// values (ProviderError for non-2xx, wrapped transport errors) exactly like
+// every other provider call. Retries stay disabled: the server may rotate
+// the refresh token during a partially-failed attempt, and replaying an
+// already-consumed refresh token can invalidate the login.
+func (p *TokenProvider) refresh(ctx context.Context) (Token, error) {
+	parsed, err := url.Parse(p.tokenURL)
 	if err != nil {
-		return Token{}, err
+		return Token{}, fmt.Errorf("chatgpt oauth refresh: parse token URL: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Token{}, fmt.Errorf("chatgpt oauth refresh: %s", resp.Status)
+	endpoint := parsed.Path
+	if parsed.RawQuery != "" {
+		endpoint += "?" + parsed.RawQuery
 	}
-	var payload struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		IDToken      string `json:"id_token"`
-		ExpiresIn    int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return Token{}, err
+	// MaxRetries 0 means exactly one attempt (see the comment above).
+	cfg := modelconfig.Config{BaseURL: parsed.Scheme + "://" + parsed.Host, HTTPClient: p.httpClient}
+	payload, err := httpclient.PostJSON[chatGPTTokenResponse](
+		ctx,
+		providerName,
+		cfg,
+		endpoint,
+		map[string]string{
+			"grant_type":    "refresh_token",
+			"refresh_token": p.token.RefreshToken,
+			"client_id":     p.clientID,
+		},
+		nil,
+	)
+	if err != nil {
+		return Token{}, fmt.Errorf("chatgpt oauth refresh: %w", err)
 	}
 	if payload.AccessToken == "" {
 		return Token{}, fmt.Errorf("chatgpt oauth refresh: no access_token in response")

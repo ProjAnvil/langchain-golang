@@ -21,6 +21,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/retry"
 	"github.com/projanvil/langchain-golang/core/vectorstores"
+	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
 const (
@@ -883,12 +884,5 @@ func minInt(a, b int) int {
 }
 
 func cloneMetadata(metadata map[string]any) map[string]any {
-	if metadata == nil {
-		return nil
-	}
-	out := make(map[string]any, len(metadata))
-	for key, value := range metadata {
-		out[key] = value
-	}
-	return out
+	return providerutil.CloneMetadata(metadata)
 }

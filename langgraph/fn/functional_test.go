@@ -31,8 +31,8 @@ import (
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
-	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -62,7 +62,7 @@ func TestFunctionalImpTaskAwaitAll(t *testing.T) {
 		time.Sleep(time.Duration(in) * 10 * time.Millisecond) // Python: time.sleep(input / 100)
 		return strings.Repeat(strconv.Itoa(in), 2), nil
 	}, TaskOpts{})
-	e := NewEntrypoint[[]int, []string, any](
+	e, err := NewEntrypoint[[]int, []string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, in []int, _ any, _ bool) ([]string, error) {
 			futs := make([]*Future[string], len(in))
@@ -79,9 +79,12 @@ func TestFunctionalImpTaskAwaitAll(t *testing.T) {
 			}
 			return mapped, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "question" {
 		t.Fatalf("interrupt value = %v, want %q", intr.Value, "question")
 	}
@@ -142,7 +145,7 @@ func TestFunctionalImpNested(t *testing.T) {
 		t.Fatalf("add_a Compile() error = %v", err)
 	}
 
-	e := NewEntrypoint[[]int, []string, any](
+	e, err := NewEntrypoint[[]int, []string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, in []int, _ any, _ bool) ([]string, error) {
 			futs := make([]*Future[string], len(in))
@@ -168,6 +171,9 @@ func TestFunctionalImpNested(t *testing.T) {
 			}
 			return res.Values["items"].([]string), nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
 	_, err = e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
@@ -208,7 +214,7 @@ func TestFunctionalInterrupt(t *testing.T) {
 	bar := NewTask[map[string]any, map[string]any]("bar", func(_ runtime.Runtime, st map[string]any) (map[string]any, error) {
 		return map[string]any{"a": st["a"].(string) + "bar", "b": st["b"]}, nil
 	}, TaskOpts{})
-	e := NewEntrypoint[map[string]any, map[string]any, any](
+	e, err := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			futFoo := foo.Call(ctx, in)
@@ -220,9 +226,12 @@ func TestFunctionalInterrupt(t *testing.T) {
 			barInput := map[string]any{"a": fooRes["a"], "b": value}
 			return bar.Call(ctx, barInput).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "Provide value for bar:" {
 		t.Fatalf("interrupt value = %v, want %q", intr.Value, "Provide value for bar:")
 	}
@@ -258,7 +267,7 @@ func TestFunctionalInterruptTask(t *testing.T) {
 	}, TaskOpts{})
 
 	// Segment 1 (Python thread "1"): a single interrupting bar call.
-	e1 := NewEntrypoint[map[string]any, map[string]any, any](
+	e1, err := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			fooRes, err := foo.Call(ctx, in).Get(ctx)
@@ -267,9 +276,12 @@ func TestFunctionalInterruptTask(t *testing.T) {
 			}
 			return bar.Call(ctx, fooRes).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e1.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
+	_, err = e1.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "Provide value for bar:" {
 		t.Fatalf("segment 1 interrupt value = %v, want %q", intr.Value, "Provide value for bar:")
 	}
@@ -284,7 +296,7 @@ func TestFunctionalInterruptTask(t *testing.T) {
 	// Segment 2 (Python thread "2"): interrupt the same task twice.
 	fooCalls.Store(0)
 	barCalls.Store(0)
-	e2 := NewEntrypoint[map[string]any, map[string]any, any](
+	e2, err := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: saver},
 		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			fooRes, err := foo.Call(ctx, in).Get(ctx)
@@ -297,6 +309,9 @@ func TestFunctionalInterruptTask(t *testing.T) {
 			}
 			return bar.Call(ctx, barRes).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	_, err = e2.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "2"})
 	if intr := requireInterrupt(t, err); intr.Value != "Provide value for bar:" {
@@ -337,7 +352,7 @@ func TestFunctionalMultipleInterrupts(t *testing.T) {
 		counter.Add(1)
 		return 2 * x, nil
 	}, TaskOpts{})
-	e := NewEntrypoint[map[string]any, map[string]any, any](
+	e, err := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, _ map[string]any, _ any, _ bool) (map[string]any, error) {
 			var values []any
@@ -350,9 +365,12 @@ func TestFunctionalMultipleInterrupts(t *testing.T) {
 			}
 			return map[string]any{"values": values}, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, map[string]any{}, graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, map[string]any{}, graph.Options{ThreadID: "1"})
 	requireInterrupt(t, err)
 	_, err = e.Invoke(ctx, nil, graph.Options{ThreadID: "1", Resume: "a"})
 	requireInterrupt(t, err)
@@ -382,7 +400,7 @@ func TestFunctionalMultipleInterruptsCache(t *testing.T) {
 		counter.Add(1)
 		return 2 * x, nil
 	}, TaskOpts{Cache: &graph.CachePolicy{}})
-	e := NewEntrypoint[map[string]any, map[string]any, any](
+	e, err := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver(), Cache: cache},
 		func(ctx runtime.Runtime, _ map[string]any, _ any, _ bool) (map[string]any, error) {
 			var values []any
@@ -395,6 +413,9 @@ func TestFunctionalMultipleInterruptsCache(t *testing.T) {
 			}
 			return map[string]any{"values": values}, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
 	want := map[string]any{"values": []any{2, "a", 2, "b", 4, "c", 4, "d", 6, "e", 6, "f"}}
@@ -462,7 +483,7 @@ func TestFunctionalMultipleTasksBeforeInterruptResume(t *testing.T) {
 		v, _ := graph.Interrupt(ctx, q).(string)
 		return v, nil
 	}, TaskOpts{})
-	e := NewEntrypoint[map[string]any, map[string]any, any](
+	e, err := NewEntrypoint[map[string]any, map[string]any, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, in map[string]any, _ any, _ bool) (map[string]any, error) {
 			a, err := stepA.Call(ctx, in["x"].(int)).Get(ctx)
@@ -479,9 +500,12 @@ func TestFunctionalMultipleTasksBeforeInterruptResume(t *testing.T) {
 			}
 			return map[string]any{"computed": b, "answer": answer}, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
-	_, err := e.Invoke(ctx, map[string]any{"x": 5}, graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, map[string]any{"x": 5}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "Result so far is 12. What next?" {
 		t.Fatalf("interrupt value = %v, want %q", intr.Value, "Result so far is 12. What next?")
 	}
@@ -530,7 +554,7 @@ func TestFunctionalNamedTasks(t *testing.T) {
 		return v + "|qux", nil
 	}, TaskOpts{})
 
-	e := NewEntrypoint[string, string, any](EntrypointOpts{},
+	e, err := NewEntrypoint[string, string, any](EntrypointOpts{},
 		func(ctx runtime.Runtime, in string, _ any, _ bool) (string, error) {
 			fooRes, err := foo.Call(ctx, in).Get(ctx)
 			if err != nil {
@@ -553,6 +577,9 @@ func TestFunctionalNamedTasks(t *testing.T) {
 			}
 			return quxTask.Call(ctx, customBazRes).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	out, err := e.Invoke(context.Background(), "", graph.Options{})
 	if err != nil {
@@ -584,17 +611,23 @@ func TestFunctionalNamedTasks(t *testing.T) {
 // inside a StateGraph node via Pregel config injection; Go has no
 // equivalent — a node must go through Entrypoint.Invoke, as here.)
 func TestFunctionalSubgraphsMixedStateGraph(t *testing.T) {
-	add := NewEntrypoint[[]int, int, any](EntrypointOpts{},
+	add, err := NewEntrypoint[[]int, int, any](EntrypointOpts{},
 		func(_ runtime.Runtime, in []int, _ any, _ bool) (int, error) {
 			return in[0] + in[1], nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 	multiplyTask := NewTask[[]int, int]("multiply_task", func(_ runtime.Runtime, in []int) (int, error) {
 		return in[0] * in[1], nil
 	}, TaskOpts{})
-	multiply := NewEntrypoint[[]int, int, any](EntrypointOpts{},
+	multiply, err := NewEntrypoint[[]int, int, any](EntrypointOpts{},
 		func(ctx runtime.Runtime, in []int, _ any, _ bool) (int, error) {
 			return multiplyTask.Call(ctx, in).Get(ctx)
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
 
@@ -681,7 +714,7 @@ func TestFunctionalImpException(t *testing.T) {
 		excCalls.Add(1)
 		return 0, errors.New("This is a test exception")
 	}, TaskOpts{})
-	e := NewEntrypoint[int, string, any](
+	e, err := NewEntrypoint[int, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, n int, _ any, _ bool) (string, error) {
 			if _, err := myTask.Call(ctx, n).Get(ctx); err != nil {
@@ -695,6 +728,9 @@ func TestFunctionalImpException(t *testing.T) {
 			}
 			return "done", nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
 	out, err := e.Invoke(ctx, 1, graph.Options{ThreadID: "1"})
@@ -739,17 +775,20 @@ func TestFunctionalPreviousSurvivesInterruptResume(t *testing.T) {
 		hasPrev bool
 	}
 	var observed []observation
-	e := NewEntrypoint[string, []string, []string](
+	e, err := NewEntrypoint[string, []string, []string](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, in string, prev []string, hasPrev bool) ([]string, error) {
 			observed = append(observed, observation{append([]string(nil), prev...), hasPrev})
 			_ = graph.Interrupt(ctx, "continue?")
 			return append(append([]string(nil), prev...), in), nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
 	// First turn: no previous; interrupt, resume, completes with ["a"].
-	_, err := e.Invoke(ctx, "a", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(ctx, "a", graph.Options{ThreadID: "1"})
 	requireInterrupt(t, err)
 	out, err := e.Invoke(ctx, "", graph.Options{ThreadID: "1", Resume: "go"})
 	if err != nil {
@@ -787,12 +826,15 @@ func TestFunctionalPreviousSurvivesInterruptResume(t *testing.T) {
 // applied to it), and the resumed Stream yields the rewritten completion
 // chunk {"entrypoint": <value>}.
 func TestFunctionalStreamInterruptPassthrough(t *testing.T) {
-	e := NewEntrypoint[any, string, any](
+	e, err := NewEntrypoint[any, string, any](
 		EntrypointOpts{Checkpointer: checkpoint.NewMemorySaver()},
 		func(ctx runtime.Runtime, _ any, _ any, _ bool) (string, error) {
 			v, _ := graph.Interrupt(ctx, "Provide value").(string)
 			return "got " + v, nil
 		})
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
 
 	ctx := context.Background()
 	var chunks []graph.StreamChunk
