@@ -152,9 +152,17 @@ func (g *StateGraph) AddSubgraph(name string, child *CompiledGraph) *StateGraph 
 		g.setErr(fmt.Errorf("graph: subgraph %q must not be nil", name))
 		return g
 	}
-	return g.AddNode(name, func(rt runtime.Runtime, state map[string]any) (any, error) {
+	prev := g.err
+	g.AddNode(name, func(rt runtime.Runtime, state map[string]any) (any, error) {
 		return invokeSubgraph(rt, name, child, state)
 	})
+	if g.err == prev {
+		// Register the child for graph export (GetGraph with WithXrayDepth
+		// expands the node into the child's own graph). The wrapper NodeFunc
+		// captures the same child, so the registry adds no runtime behavior.
+		g.subgraphs[name] = child
+	}
+	return g
 }
 
 // invokeSubgraph runs child as the subgraph node name with state as input and

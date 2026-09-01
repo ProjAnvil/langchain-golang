@@ -290,7 +290,86 @@ rejects `START` as the target and `END` as a source).
 > **Not supported:** `defer=True` / `NamedBarrierValueAfterFinish` — the
 > edge-driven executor model has no equivalent.
 
-## Postgres checkpoint saver (`langgraph/checkpoint/postgres/`)
+## Graph export (`GetGraph` / `DrawMermaid`)
+
+Both `StateGraph` and `CompiledGraph` export their static structure,
+mirroring Python's `get_graph()` + `draw_mermaid()`
+(`libs/langgraph/langgraph/pregel/main.py:845`,
+`libs/core/langchain_core/runnables/graph_mermaid.py`):
+
+```go
+cg, _ := g.Compile()
+fmt.Println(cg.DrawMermaid()) // == cg.GetGraph().DrawMermaid()
+```
+
+`GetGraph()` returns a `core/runnables.Graph`: all registered nodes plus the
+`types.START` / `types.END` sentinels (drawn as the rounded first/last
+nodes), static edges and join edges (one solid edge per join parent into its
+child), and conditional edges as dashed lines. The Mermaid output follows
+Python's format — `id(label)` nodes, `-- &nbsp;label&nbsp; -->` labeled
+edges, `-.->` conditional edges, and the trailing `classDef` styles.
+
+Python discovers conditional-edge targets by dry-running the graph with a
+mock state; this port makes a **best-effort probe** instead (enabled by
+default; disable with `GetGraph(WithRouterProbing(false))`): a router
+registered via plain `AddConditionalEdges` / `SetConditionalEntryPoint` is
+called once with an empty state, and the node names, `types.END`, and
+`*types.Send` targets it returns draw as dashed edges. A router that errors
+or panics — e.g. because it reads state keys absent from the empty probe
+state — is omitted from the drawing. For statically enumerated,
+compile-time validated edges, register the router with a path map —
+Python's `path_map`:
+
+```go
+g.AddConditionalEdgesWithPathMap("model", router, map[string]string{
+	"tools": "tools",     // key == target: edge drawn without a label
+	"end":   types.END,   // differing key: drawn as ` -. &nbsp;end&nbsp; .-> `
+})
+```
+
+### Subgraph expansion (`WithXrayDepth`)
+
+Subgraph nodes (`AddSubgraph`) draw as a single node by default. Pass
+`WithXrayDepth` — Python's `xray` — to expand them in place: a negative
+depth expands all nesting levels (Python's `xray=True`), a positive depth
+expands that many levels. Each expanded node is replaced by its child's
+graph (START/END sentinels trimmed) under the `parent:child` prefix, parent
+edges are rewired to the inner first/last nodes, and Mermaid renders a
+`subgraph` block per prefix:
+
+```go
+fmt.Println(cg.GetGraph(graph.WithXrayDepth(-1)).DrawMermaid())
+```
+
+### Mermaid options, interrupt metadata, and ASCII
+
+`DrawMermaid` passes `core/runnables` mermaid options through, mirroring
+Python's `draw_mermaid` keyword arguments:
+
+```go
+cg.DrawMermaid(
+	runnables.WithStyles(false),       // only `graph TD;` + edge lines
+	runnables.WithCurveStyle("basis"), // frontmatter config.flowchart.curve
+	runnables.WithFrontmatterConfig(map[string]any{"theme": "neutral"}),
+	runnables.WithNodeStyles(runnables.NodeStyles{Default: "fill:#f9f"}),
+)
+```
+
+Nodes named in `WithInterruptBefore` / `WithInterruptAfter` carry
+`__interrupt = before` / `after` / `before,after` metadata in the exported
+graph, rendered into the node label (compiled graphs only — the boundaries
+are compile options, as in Python).
+
+`runnables.Graph.DrawASCII` renders the same graph as an ASCII box diagram
+(Python's `draw_ascii`). Its layout uses a Go-native longest-path layering
+rather than Python's grandalf Sugiyama, so the output follows the same
+conventions but is not byte-identical to Python's.
+
+Divergences from Python: router target discovery is best-effort probing
+(Python simulates a full dry-run), the ASCII layout is not byte-identical,
+and PNG rendering is not supported (`runnables.Graph.DrawPNG` errors).
+
+## Postgres checkpoint saver (`langchain/checkpoint/postgres/`)
 
 A durable `checkpoint.Saver` backed by PostgreSQL — the port of Python's
 `langgraph-checkpoint-postgres` (`BasePostgresSaver`). It mirrors Python's

@@ -123,24 +123,107 @@ func TestGraphSanitizeAndMermaidEscapes(t *testing.T) {
 	if got := sanitizeGraphID("a b/c"); got != "a_b_c" {
 		t.Fatalf("sanitized id: %q", got)
 	}
-	if got := mermaidID("a.b-c"); got != "a_b_c" {
-		t.Fatalf("mermaid id: %q", got)
-	}
-	if got := escapeMermaidLabel("a|b\nc"); got != "a/b c" {
-		t.Fatalf("escaped label: %q", got)
-	}
 
 	graph := Graph{
 		Nodes: []GraphNode{{ID: "a", Name: "A", Type: "T"}},
 		Edges: []GraphEdge{{Source: "a", Target: "a"}},
 	}
 	ascii := graph.DrawASCII()
-	if !strings.Contains(ascii, "a --> a") {
-		t.Fatalf("ASCII unlabeled edge: %q", ascii)
+	if !strings.Contains(ascii, "| A |") {
+		t.Fatalf("ASCII node box: %q", ascii)
 	}
 	mermaid := graph.DrawMermaid()
 	if !strings.Contains(mermaid, "a --> a;") {
 		t.Fatalf("Mermaid unlabeled edge: %q", mermaid)
+	}
+}
+
+// TestToSafeMermaidID pins the Python `_to_safe_id` equivalent
+// (langchain_core/runnables/graph_mermaid.py:255): [a-zA-Z0-9_-] pass
+// through, every other character becomes `\` + lowercase hex codepoint.
+func TestToSafeMermaidID(t *testing.T) {
+	cases := map[string]string{
+		"plain_Name-1": "plain_Name-1",
+		"a b":          `a\20b`,
+		"a.b":          `a\2eb`,
+		"中":            `\4e2d`,
+	}
+	for in, want := range cases {
+		if got := toSafeMermaidID(in); got != want {
+			t.Errorf("toSafeMermaidID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestDrawMermaidPythonCompat golden-tests the Python-compatible Mermaid
+// output: frontmatter, `id(label)` nodes, first/last rounded nodes with
+// :::first/:::last classes, dashed conditional edges with &nbsp; labels,
+// and the trailing classDef styles (graph_mermaid.py draw_mermaid).
+func TestDrawMermaidPythonCompat(t *testing.T) {
+	graph := Graph{
+		Nodes: []GraphNode{
+			{ID: "__start__", Name: "__start__"},
+			{ID: "a", Name: "a"},
+			{ID: "__end__", Name: "__end__"},
+		},
+		Edges: []GraphEdge{
+			{Source: "__start__", Target: "a"},
+			{Source: "a", Target: "__end__", Label: "done", Conditional: true},
+		},
+		FirstNode: "__start__",
+		LastNode:  "__end__",
+	}
+	// __start__/__end__ start and end with "_" (a markdown special char), so
+	// Python wraps their labels in <p>...</p> — this is the real langgraph
+	// draw_mermaid output shape.
+	want := `---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__end__([<p>__end__</p>]):::last
+	__start__([<p>__start__</p>]):::first
+	a(a)
+	__start__ --> a;
+	a -. &nbsp;done&nbsp; .-> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+`
+	if got := graph.DrawMermaid(); got != want {
+		t.Fatalf("DrawMermaid() =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestDrawMermaidLabels covers the remaining label rules: solid labeled
+// edges, unlabeled conditional edges, metadata blocks on node labels,
+// markdown-special node names, and >9-word edge label wrapping.
+func TestDrawMermaidLabels(t *testing.T) {
+	graph := Graph{
+		Nodes: []GraphNode{
+			{ID: "a", Name: "a", Metadata: map[string]any{"key": "value"}},
+			{ID: "b", Name: "*bold*"},
+			{ID: "c", Name: "c"},
+			{ID: "d", Name: "d"},
+		},
+		Edges: []GraphEdge{
+			{Source: "a", Target: "b", Label: "solid"},
+			{Source: "b", Target: "c", Conditional: true},
+			{Source: "c", Target: "d", Label: "one two three four five six seven eight nine ten"},
+		},
+	}
+	got := graph.DrawMermaid()
+	for _, want := range []string{
+		"\ta(a<hr/><small><em>key = value</em></small>)\n",
+		"\tb(<p>*bold*</p>)\n",
+		"\ta -- &nbsp;solid&nbsp; --> b;\n",
+		"\tb -.-> c;\n",
+		"\tc -- &nbsp;one two three four five six seven eight nine&nbsp<br>&nbspten&nbsp; --> d;\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("DrawMermaid() missing %q:\n%s", want, got)
+		}
 	}
 }
 

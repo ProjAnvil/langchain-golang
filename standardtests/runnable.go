@@ -108,7 +108,7 @@ func RunRunnableGraphExport[I any, O any](t *testing.T, factory RunnableFactory[
 		if len(graph.Nodes) == 0 {
 			t.Fatal("expected graph nodes")
 		}
-		if !strings.Contains(graph.DrawASCII(), "graph:") {
+		if !strings.Contains(graph.DrawASCII(), "+") {
 			t.Fatalf("unexpected ASCII graph: %q", graph.DrawASCII())
 		}
 		if !strings.Contains(graph.DrawMermaid(), "graph TD;") {

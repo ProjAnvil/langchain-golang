@@ -43,6 +43,13 @@
 //     must treat the state map they receive as read-only and communicate
 //     changes only through their return value, since it may be read
 //     concurrently by sibling tasks in the same superstep.
+//   - Graph export (GetGraph/DrawMermaid, see export.go) is built from
+//     registered metadata, plus best-effort probing of routers registered
+//     without a path map (a single empty-state call; Python does a full
+//     dry-run simulation). Subgraph nodes (AddSubgraph) draw as single nodes
+//     by default and expand into ":"-prefixed inner graphs with
+//     GetGraph(WithXrayDepth(...)), mirroring Python's xray. PNG rendering
+//     is not supported.
 package graph
 
 import (
@@ -115,6 +122,11 @@ type StateGraph struct {
 	channelProtos map[string]channels.Channel
 	edges         map[string][]string
 	conditional   map[string]ConditionalEdge
+	// pathMaps holds the static path maps registered via
+	// AddConditionalEdgesWithPathMap (keyed by source node); they make the
+	// otherwise opaque routers enumerable for graph export (GetGraph) and
+	// enable compile-time target validation.
+	pathMaps map[string]map[string]string
 	// joinEdges holds the waiting edges registered via AddJoinEdge, in
 	// registration order (Compile turns each into a joinMeta + barrier
 	// channel prototype).
@@ -123,7 +135,13 @@ type StateGraph struct {
 	// entryRouter, when set, is the conditional entry point registered via
 	// SetConditionalEntryPoint; exactly one of entry/entryRouter is set.
 	entryRouter ConditionalEdge
-	err         error
+	// entryPathMap is the static path map registered via
+	// SetConditionalEntryPointWithPathMap (see pathMaps).
+	entryPathMap map[string]string
+	// subgraphs records the compiled children registered via AddSubgraph,
+	// keyed by node name, so GetGraph can expand them (WithXrayDepth).
+	subgraphs map[string]*CompiledGraph
+	err       error
 }
 
 // joinEdge is one AddJoinEdge waiting edge: the child triggers once ALL
@@ -155,6 +173,8 @@ func NewStateGraph() *StateGraph {
 		channelProtos: map[string]channels.Channel{},
 		edges:         map[string][]string{},
 		conditional:   map[string]ConditionalEdge{},
+		pathMaps:      map[string]map[string]string{},
+		subgraphs:     map[string]*CompiledGraph{},
 	}
 }
 
@@ -521,6 +541,24 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 			return nil, fmt.Errorf("graph: conditional edge source %q is not a registered node", from)
 		}
 	}
+	// Path maps are the statically enumerable form of the routers (used by
+	// GetGraph), so their targets are validated like static edge targets.
+	for from, pathMap := range g.pathMaps {
+		for _, target := range pathMap {
+			if target != types.END {
+				if _, ok := g.nodes[target]; !ok {
+					return nil, fmt.Errorf("graph: conditional edge %q path map target %q is not a registered node", from, target)
+				}
+			}
+		}
+	}
+	for _, target := range g.entryPathMap {
+		if target != types.END {
+			if _, ok := g.nodes[target]; !ok {
+				return nil, fmt.Errorf("graph: conditional entry point path map target %q is not a registered node", target)
+			}
+		}
+	}
 	for name, policies := range g.policies {
 		if policies.Retry != nil {
 			if err := policies.Retry.validate(); err != nil {
@@ -568,10 +606,13 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		channelProtos:   channelProtos,
 		edges:           g.edges,
 		conditional:     g.conditional,
+		pathMaps:        g.pathMaps,
 		joins:           joins,
 		joinsByParent:   joinsByParent,
 		entry:           g.entry,
 		entryRouter:     g.entryRouter,
+		entryPathMap:    g.entryPathMap,
+		subgraphs:       g.subgraphs,
 		checkpointer:    options.checkpointer,
 		cache:           options.cache,
 		store:           options.store,
@@ -590,6 +631,11 @@ type CompiledGraph struct {
 	channelProtos map[string]channels.Channel
 	edges         map[string][]string
 	conditional   map[string]ConditionalEdge
+	// pathMaps/entryPathMap are the static path maps registered on the
+	// builder (AddConditionalEdgesWithPathMap /
+	// SetConditionalEntryPointWithPathMap), kept for graph export (GetGraph).
+	pathMaps     map[string]map[string]string
+	entryPathMap map[string]string
 	// joins/joinsByParent are the compiled waiting edges (empty for graphs
 	// without AddJoinEdge): the executor appends an implicit barrier write to
 	// each parent task's commit batch and dispatches join children from the
@@ -599,7 +645,11 @@ type CompiledGraph struct {
 	entry         string
 	// entryRouter, when set, is the conditional entry point registered via
 	// SetConditionalEntryPoint; exactly one of entry/entryRouter is set.
-	entryRouter     ConditionalEdge
+	entryRouter ConditionalEdge
+	// subgraphs records the compiled children registered via
+	// StateGraph.AddSubgraph, keyed by node name (copied by Compile), so
+	// GetGraph can expand them (WithXrayDepth).
+	subgraphs       map[string]*CompiledGraph
 	checkpointer    checkpoint.Saver
 	cache           checkpoint.Cache
 	store           store.Store

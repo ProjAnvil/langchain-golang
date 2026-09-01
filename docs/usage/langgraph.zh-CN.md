@@ -269,6 +269,78 @@ g.AddEdge("c", types.END)
 > **不支持：** `defer=True` / `NamedBarrierValueAfterFinish` —— 边驱动
 > 执行器模型中没有等价物。
 
+## 图导出（`GetGraph` / `DrawMermaid`）
+
+`StateGraph` 与 `CompiledGraph` 都可导出图的静态结构，对齐 Python 的
+`get_graph()` + `draw_mermaid()`
+（`libs/langgraph/langgraph/pregel/main.py:845`、
+`libs/core/langchain_core/runnables/graph_mermaid.py`）：
+
+```go
+cg, _ := g.Compile()
+fmt.Println(cg.DrawMermaid()) // == cg.GetGraph().DrawMermaid()
+```
+
+`GetGraph()` 返回 `core/runnables.Graph`：全部已注册节点加上
+`types.START` / `types.END` 哨兵（绘制为圆角的首/末节点）、静态边与
+join 边（每个 join 父节点到子节点各一条实线），条件边绘制成虚线。
+Mermaid 输出遵循 Python 格式 —— `id(label)` 节点、
+`-- &nbsp;label&nbsp; -->` 带标签边、`-.->` 条件边，以及末尾的
+`classDef` 样式。
+
+Python 通过 mock state 干跑（dry-run）整张图来发现条件边目标；本移植改为
+**最佳努力探测**（默认开启，可用 `GetGraph(WithRouterProbing(false))`
+关闭）：用普通 `AddConditionalEdges` / `SetConditionalEntryPoint` 注册的
+router 会被空状态调用一次，返回的节点名、`types.END`、`*types.Send` 目标
+绘制成虚线边。报错或 panic 的 router（例如读取了探测空状态中不存在的
+state key）在图中会被省略。若需静态可枚举、编译期校验的边，请改用带
+path map 的注册方式 —— 即 Python 的 `path_map`：
+
+```go
+g.AddConditionalEdgesWithPathMap("model", router, map[string]string{
+	"tools": "tools",     // key == target: 边不带标签
+	"end":   types.END,   // key 不同: 绘制成 ` -. &nbsp;end&nbsp; .-> `
+})
+```
+
+### 子图展开（`WithXrayDepth`）
+
+子图节点（`AddSubgraph`）默认绘制为单节点。传入 `WithXrayDepth` —— 即
+Python 的 `xray` —— 可原地展开：负数深度展开所有嵌套层级（对应 Python 的
+`xray=True`），正数深度展开对应层数。被展开的节点替换为其子图（裁掉
+START/END 哨兵）并以 `parent:child` 前缀并入，父图中指向该节点的边重接到
+子图的首/末节点，Mermaid 按前缀渲染 `subgraph` 块：
+
+```go
+fmt.Println(cg.GetGraph(graph.WithXrayDepth(-1)).DrawMermaid())
+```
+
+### Mermaid 选项、interrupt 元数据与 ASCII 图
+
+`DrawMermaid` 透传 `core/runnables` 的 mermaid 选项，对齐 Python
+`draw_mermaid` 的关键字参数：
+
+```go
+cg.DrawMermaid(
+	runnables.WithStyles(false),       // 只输出 `graph TD;` + 边
+	runnables.WithCurveStyle("basis"), // frontmatter config.flowchart.curve
+	runnables.WithFrontmatterConfig(map[string]any{"theme": "neutral"}),
+	runnables.WithNodeStyles(runnables.NodeStyles{Default: "fill:#f9f"}),
+)
+```
+
+经 `WithInterruptBefore` / `WithInterruptAfter` 注册的节点在导出图中携带
+`__interrupt = before` / `after` / `before,after` 元数据，并渲染进节点标签
+（仅编译后的图 —— 与 Python 一致，边界是 compile 选项）。
+
+`runnables.Graph.DrawASCII` 把同一张图渲染为 ASCII 盒线图（Python 的
+`draw_ascii`）。布局采用 Go 自实现的 longest-path 分层而非 Python 的
+grandalf Sugiyama，输出遵循同一惯例但不与 Python 逐字节一致。
+
+与 Python 的分歧：router 目标发现是最佳努力探测（Python 是完整 dry-run
+模拟）；ASCII 布局不逐字节对齐；不支持 PNG 渲染
+（`runnables.Graph.DrawPNG` 报错）。
+
 ## Postgres checkpoint saver（`langgraph/checkpoint/postgres/`）
 
 基于 PostgreSQL 的持久化 `checkpoint.Saver` —— Python

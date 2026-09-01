@@ -21,12 +21,21 @@ type GraphEdge struct {
 	Source string
 	Target string
 	Label  string
+	// Conditional marks edges produced by a dynamic router (drawn dashed in
+	// Mermaid), mirroring Python's Edge.conditional.
+	Conditional bool
 }
 
 // Graph is a lightweight representation of a runnable composition graph.
 type Graph struct {
 	Nodes []GraphNode
 	Edges []GraphEdge
+	// FirstNode/LastNode optionally name the node IDs drawn with Mermaid's
+	// rounded first/last shapes and :::first/:::last classes (Python's
+	// draw_mermaid first_node/last_node). Empty means no such styling; core
+	// combinators leave them empty, langgraph sets them to START/END.
+	FirstNode string
+	LastNode  string
 }
 
 // MarshalJSONStable returns a deterministic JSON representation.
@@ -35,50 +44,164 @@ func (g Graph) MarshalJSONStable() ([]byte, error) {
 	return json.Marshal(normalized)
 }
 
-// DrawASCII renders a stable, compact ASCII representation of the graph.
-func (g Graph) DrawASCII() string {
-	g = g.normalized()
-	lines := []string{"graph:"}
-	for _, node := range g.Nodes {
-		lines = append(lines, fmt.Sprintf("  [%s] %s (%s)", node.ID, node.Name, node.Type))
-	}
-	if len(g.Edges) > 0 {
-		lines = append(lines, "edges:")
-	}
-	for _, edge := range g.Edges {
-		label := ""
-		if edge.Label != "" {
-			label = " --" + edge.Label + "-->"
-		} else {
-			label = " -->"
-		}
-		lines = append(lines, fmt.Sprintf("  %s%s %s", edge.Source, label, edge.Target))
-	}
-	return strings.Join(lines, "\n")
-}
-
-// DrawMermaid renders a Mermaid flowchart. It is text-only and does not call
-// remote rendering services.
-func (g Graph) DrawMermaid() string {
-	g = g.normalized()
-	lines := []string{"graph TD;"}
-	for _, node := range g.Nodes {
-		lines = append(lines, fmt.Sprintf("  %s[%q];", mermaidID(node.ID), node.Name))
-	}
-	for _, edge := range g.Edges {
-		if edge.Label == "" {
-			lines = append(lines, fmt.Sprintf("  %s --> %s;", mermaidID(edge.Source), mermaidID(edge.Target)))
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("  %s -->|%s| %s;", mermaidID(edge.Source), escapeMermaidLabel(edge.Label), mermaidID(edge.Target)))
-	}
-	return strings.Join(lines, "\n")
-}
-
 // DrawPNG explicitly reports that Go core does not render graph images without
 // an external renderer.
 func (g Graph) DrawPNG() ([]byte, error) {
 	return nil, fmt.Errorf("graph PNG rendering is not supported; use DrawMermaid or DrawASCII")
+}
+
+// Extend adds all nodes and edges from another graph, prefixing every node ID
+// with `prefix:` when prefix is non-empty, mirroring Python's Graph.extend
+// (graph.py:386-422). It does not connect the graphs. It returns the
+// (prefixed) first and last node IDs of the added subgraph, "" when the
+// subgraph has no unique one. Python's all-UUID prefix reset has no Go
+// equivalent (IDs here are plain names) and is not mirrored.
+func (g *Graph) Extend(other Graph, prefix string) (first, last string) {
+	prefixed := func(id string) string {
+		if prefix == "" {
+			return id
+		}
+		return prefix + ":" + id
+	}
+	for _, node := range other.Nodes {
+		node.ID = prefixed(node.ID)
+		node.Metadata = cloneGraphMetadata(node.Metadata)
+		g.Nodes = append(g.Nodes, node)
+	}
+	for _, edge := range other.Edges {
+		edge.Source = prefixed(edge.Source)
+		edge.Target = prefixed(edge.Target)
+		g.Edges = append(g.Edges, edge)
+	}
+	if id := other.FirstNodeID(); id != "" {
+		first = prefixed(id)
+	}
+	if id := other.LastNodeID(); id != "" {
+		last = prefixed(id)
+	}
+	return first, last
+}
+
+// FirstNodeID returns the unique root node's ID: the explicit FirstNode field
+// when set, otherwise the single node that is not a target of any edge
+// (Python's Graph.first_node). Returns "" when there is no unique root.
+func (g Graph) FirstNodeID() string {
+	if g.FirstNode != "" {
+		return g.FirstNode
+	}
+	return g.uniqueBoundaryNode(nil, true)
+}
+
+// LastNodeID returns the unique terminal node's ID: the explicit LastNode
+// field when set, otherwise the single node that is not a source of any edge
+// (Python's Graph.last_node). Returns "" when there is no unique terminal.
+func (g Graph) LastNodeID() string {
+	if g.LastNode != "" {
+		return g.LastNode
+	}
+	return g.uniqueBoundaryNode(nil, false)
+}
+
+// TrimFirstNode removes the first node if it exists, has exactly one
+// outgoing edge, and removing it still leaves a unique first node
+// (Python's Graph.trim_first_node, graph.py:483-494).
+func (g *Graph) TrimFirstNode() {
+	first := g.FirstNodeID()
+	if first == "" {
+		return
+	}
+	outgoing := 0
+	for _, edge := range g.Edges {
+		if edge.Source == first {
+			outgoing++
+		}
+	}
+	if outgoing != 1 {
+		return
+	}
+	if g.uniqueBoundaryNode(map[string]bool{first: true}, true) == "" {
+		return
+	}
+	g.removeNode(first)
+}
+
+// TrimLastNode removes the last node if it exists, has exactly one
+// incoming edge, and removing it still leaves a unique last node
+// (Python's Graph.trim_last_node, graph.py:496-507).
+func (g *Graph) TrimLastNode() {
+	last := g.LastNodeID()
+	if last == "" {
+		return
+	}
+	incoming := 0
+	for _, edge := range g.Edges {
+		if edge.Target == last {
+			incoming++
+		}
+	}
+	if incoming != 1 {
+		return
+	}
+	if g.uniqueBoundaryNode(map[string]bool{last: true}, false) == "" {
+		return
+	}
+	g.removeNode(last)
+}
+
+// uniqueBoundaryNode mirrors Python's _first_node/_last_node (graph.py:708-
+// 741): root=true finds the single node that is not a target of any edge
+// whose source is not excluded; root=false finds the single node that is not
+// a source of any edge whose target is not excluded. Excluded nodes are never
+// candidates.
+func (g Graph) uniqueBoundaryNode(exclude map[string]bool, root bool) string {
+	blocked := map[string]bool{}
+	for _, edge := range g.Edges {
+		if root {
+			if !exclude[edge.Source] {
+				blocked[edge.Target] = true
+			}
+		} else if !exclude[edge.Target] {
+			blocked[edge.Source] = true
+		}
+	}
+	found := ""
+	count := 0
+	for _, node := range g.Nodes {
+		if exclude[node.ID] || blocked[node.ID] {
+			continue
+		}
+		found = node.ID
+		count++
+	}
+	if count == 1 {
+		return found
+	}
+	return ""
+}
+
+// removeNode removes a node and every edge connected to it (Python's
+// Graph.remove_node), clearing FirstNode/LastNode if they point at it.
+func (g *Graph) removeNode(id string) {
+	nodes := make([]GraphNode, 0, len(g.Nodes))
+	for _, node := range g.Nodes {
+		if node.ID != id {
+			nodes = append(nodes, node)
+		}
+	}
+	g.Nodes = nodes
+	edges := make([]GraphEdge, 0, len(g.Edges))
+	for _, edge := range g.Edges {
+		if edge.Source != id && edge.Target != id {
+			edges = append(edges, edge)
+		}
+	}
+	g.Edges = edges
+	if g.FirstNode == id {
+		g.FirstNode = ""
+	}
+	if g.LastNode == id {
+		g.LastNode = ""
+	}
 }
 
 type graphProvider interface {
@@ -348,8 +471,10 @@ func cloneGraphMetadata(metadata map[string]any) map[string]any {
 
 func (g Graph) normalized() Graph {
 	out := Graph{
-		Nodes: make([]GraphNode, len(g.Nodes)),
-		Edges: make([]GraphEdge, len(g.Edges)),
+		Nodes:     make([]GraphNode, len(g.Nodes)),
+		Edges:     make([]GraphEdge, len(g.Edges)),
+		FirstNode: g.FirstNode,
+		LastNode:  g.LastNode,
 	}
 	for i, node := range g.Nodes {
 		node.Metadata = cloneGraphMetadata(node.Metadata)
@@ -363,20 +488,4 @@ func (g Graph) normalized() Graph {
 		return left < right
 	})
 	return out
-}
-
-func mermaidID(id string) string {
-	id = sanitizeGraphID(id)
-	id = strings.ReplaceAll(id, ".", "_")
-	id = strings.ReplaceAll(id, "-", "_")
-	if id == "" {
-		return "node"
-	}
-	return id
-}
-
-func escapeMermaidLabel(label string) string {
-	label = strings.ReplaceAll(label, "|", "/")
-	label = strings.ReplaceAll(label, "\n", " ")
-	return label
 }

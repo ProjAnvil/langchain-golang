@@ -413,13 +413,13 @@ func TestRunnableGraphExports(t *testing.T) {
 	}
 	graph := GetGraph(seq)
 	ascii := graph.DrawASCII()
-	for _, want := range []string{"graph:", "[first.first]", "first.first --then--> second.second"} {
+	for _, want := range []string{"| first |", "| second |", "*"} {
 		if !strings.Contains(ascii, want) {
 			t.Fatalf("ASCII %q missing %q", ascii, want)
 		}
 	}
 	mermaid := graph.DrawMermaid()
-	for _, want := range []string{"graph TD;", "first_first", "-->|then|"} {
+	for _, want := range []string{"graph TD;", `first\2efirst`, "-- &nbsp;then&nbsp; -->"} {
 		if !strings.Contains(mermaid, want) {
 			t.Fatalf("Mermaid %q missing %q", mermaid, want)
 		}
