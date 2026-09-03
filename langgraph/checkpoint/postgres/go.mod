@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/projanvil/langchain-golang v0.6.4
+	github.com/projanvil/langchain-golang v0.6.5
 )
 
 require (
