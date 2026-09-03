@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -106,6 +107,73 @@ type ToolStrategy struct {
 }
 
 type ToolStrategyOption func(*ToolStrategy)
+
+// structuredOutputErrorTemplate mirrors Python's STRUCTURED_OUTPUT_ERROR_TEMPLATE
+// (factory.py:113): the retry ToolMessage content shown to the model when a
+// ToolStrategy error is retried via HandleErrors.
+const structuredOutputErrorTemplate = "Error: %s\n Please fix your mistakes."
+
+// handleStructuredOutputError mirrors Python's `_handle_structured_output_error`
+// (factory.py:596-624): it decides whether a structured-output failure is
+// retried by injecting an error ToolMessage back into the loop (shouldRetry
+// true, with the message the model sees) or raised to the caller. Only a
+// ToolStrategy participates (a nil strategy means no retry, matching Python's
+// early return for non-ToolStrategy response formats).
+//
+// HandleErrors forms and their meaning:
+//   - nil, true: retry every error with the default template. nil is treated
+//     as true to match NewToolStrategy's default (Python's constructor
+//     default is handle_errors=True).
+//   - false: never retry; the error propagates.
+//   - string: retry every error with this custom message.
+//   - func(error) string: retry with the message the function returns.
+//   - []string: retry only when the error's Unwrap chain contains an error
+//     whose Go type name (base name, after the final dot) is listed — the Go
+//     stand-in for Python's type[Exception] / tuple-of-types matching.
+//   - any other type: no retry (Python cannot reach this case; an invalid Go
+//     value raises rather than guessing).
+func handleStructuredOutputError(strategy *ToolStrategy, exc error) (shouldRetry bool, message string) {
+	if strategy == nil {
+		return false, ""
+	}
+	switch handle := strategy.HandleErrors.(type) {
+	case nil:
+		return true, fmt.Sprintf(structuredOutputErrorTemplate, exc.Error())
+	case bool:
+		if !handle {
+			return false, ""
+		}
+		return true, fmt.Sprintf(structuredOutputErrorTemplate, exc.Error())
+	case string:
+		return true, handle
+	case func(error) string:
+		return true, handle(exc)
+	case []string:
+		for _, typeName := range handle {
+			if errorChainHasTypeName(exc, typeName) {
+				return true, fmt.Sprintf(structuredOutputErrorTemplate, exc.Error())
+			}
+		}
+		return false, ""
+	default:
+		return false, ""
+	}
+}
+
+// errorChainHasTypeName reports whether exc or any error in its Unwrap chain
+// has a Go type whose base name (after the final package dot) equals typeName.
+func errorChainHasTypeName(exc error, typeName string) bool {
+	for e := exc; e != nil; e = errors.Unwrap(e) {
+		t := fmt.Sprintf("%T", e)
+		if idx := strings.LastIndexByte(t, '.'); idx >= 0 {
+			t = t[idx+1:]
+		}
+		if t == typeName {
+			return true
+		}
+	}
+	return false
+}
 
 func WithToolMessageContent(content string) ToolStrategyOption {
 	return func(strategy *ToolStrategy) {

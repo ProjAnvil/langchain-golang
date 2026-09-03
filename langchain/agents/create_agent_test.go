@@ -388,7 +388,9 @@ func TestCreateAgentToolStrategyStructuredOutput(t *testing.T) {
 }
 
 func TestCreateAgentToolStrategyMultipleStructuredOutputsError(t *testing.T) {
-	strategy := NewToolStrategy(answerSchema())
+	// HandleErrors=false mirrors the Python tests for the raise path: the
+	// default (true) retries by injecting error ToolMessages instead.
+	strategy := NewToolStrategy(answerSchema(), WithHandleErrors(false))
 	toolName := strategy.SchemaSpecs[0].Name
 
 	model := &sequenceModel{responses: []messages.Message{
@@ -447,7 +449,9 @@ func TestCreateAgentRejectsUnsupportedResponseFormat(t *testing.T) {
 // overload (Python's `create_agent(response_format=dict)` form): a plain
 // map[string]any JSON schema is treated as structured-output intent and
 // auto-resolved against the model's capabilities (ToolCalling here), so the
-// schema is bound to the model as a structured-output tool.
+// schema is bound to the model as a structured-output tool. The model first
+// returns plain text (which, per _make_model_to_model_edge parity, loops back
+// to the model until a structured response lands) then the structured call.
 func TestCreateAgentRawDictResponseFormat(t *testing.T) {
 	rawSchema := map[string]any{
 		"type":        "object",
@@ -457,14 +461,24 @@ func TestCreateAgentRawDictResponseFormat(t *testing.T) {
 		"required":    []any{"text"},
 	}
 
-	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	model := &sequenceModel{responses: []messages.Message{
+		messages.AI("done"),
+		{
+			Role:      messages.RoleAI,
+			ToolCalls: []messages.ToolCall{{ID: "call_1", Name: "Answer", Args: map[string]any{"text": "42"}}},
+		},
+	}}
 
 	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(rawSchema))
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	if err != nil {
 		t.Fatalf("invoke: %v", err)
+	}
+	if structured, ok := state["structured_response"].(map[string]any); !ok || structured["text"] != "42" {
+		t.Fatalf("expected structured_response with text=42, got %#v", state["structured_response"])
 	}
 
 	if len(model.boundTools) != 1 {
@@ -480,11 +494,19 @@ func TestCreateAgentRawDictResponseFormat(t *testing.T) {
 }
 
 // TestCreateAgentSchemaResponseFormat covers the same raw-schema overload for
-// the schema.Schema spelling (the type the strategy constructors accept).
+// the schema.Schema spelling (the type the strategy constructors accept). As
+// in the raw-dict test, the model's first plain-text response loops back to
+// the model (structured-only retry loop) before the structured call lands.
 func TestCreateAgentSchemaResponseFormat(t *testing.T) {
 	sch := answerSchema()
 
-	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+	model := &sequenceModel{responses: []messages.Message{
+		messages.AI("done"),
+		{
+			Role:      messages.RoleAI,
+			ToolCalls: []messages.ToolCall{{ID: "call_1", Name: "Answer", Args: map[string]any{"text": "42"}}},
+		},
+	}}
 
 	agent, err := CreateAgent(model, nil, WithAgentResponseFormat(sch))
 	if err != nil {

@@ -27,21 +27,45 @@ type Tool interface {
 	Invoke(ctx context.Context, input map[string]any) (Result, error)
 }
 
+// ReturnDirecter is an optional Tool extension marking a tool as
+// return-direct, mirroring Python's `BaseTool.return_direct`: when every
+// client-side tool call in the model's response targets return-direct tools,
+// the agent loop ends after those tools execute instead of returning control
+// to the model (Python's `_make_tools_to_model_edge` exit condition). Tool
+// implementations opt in by implementing this interface; Func callers use
+// Func.WithReturnDirect instead.
+type ReturnDirecter interface {
+	ReturnDirect() bool
+}
+
+// IsReturnDirect reports whether t declares itself return-direct via the
+// optional ReturnDirecter interface. A tool that does not implement the
+// interface (or a nil tool) is never return-direct.
+func IsReturnDirect(t Tool) bool {
+	if t == nil {
+		return false
+	}
+	rd, ok := t.(ReturnDirecter)
+	return ok && rd.ReturnDirect()
+}
+
 // Simple is a single-input tool matching Python's Tool behavior. It accepts
 // exactly one string input and exposes the backwards-compatible tool_input
 // argument schema.
 type Simple struct {
-	name        string
-	description string
-	fn          func(context.Context, string) (Result, error)
+	name         string
+	description  string
+	fn           func(context.Context, string) (Result, error)
+	returnDirect bool
 }
 
 // Func is a tool backed by a Go function and an explicit schema.
 type Func struct {
-	name        string
-	description string
-	argsSchema  schema.Schema
-	fn          func(context.Context, map[string]any) (Result, error)
+	name         string
+	description  string
+	argsSchema   schema.Schema
+	fn           func(context.Context, map[string]any) (Result, error)
+	returnDirect bool
 }
 
 // NewSimple creates a single-input tool.
@@ -120,6 +144,19 @@ func (t Simple) InvokeString(ctx context.Context, input string) (Result, error) 
 	return t.fn(ctx, input)
 }
 
+// WithReturnDirect returns a copy of the Simple tool flagged return-direct,
+// the single-input sibling of Func.WithReturnDirect (see ReturnDirecter).
+func (t Simple) WithReturnDirect() Simple {
+	t.returnDirect = true
+	return t
+}
+
+// ReturnDirect reports whether the Simple tool is flagged return-direct,
+// satisfying the optional ReturnDirecter interface (see IsReturnDirect).
+func (t Simple) ReturnDirect() bool {
+	return t.returnDirect
+}
+
 // Invoke executes the single-input tool from a map. The map must contain
 // exactly one string value. Prefer key "tool_input"; a single alternate key is
 // accepted for compatibility with structured dispatchers.
@@ -165,6 +202,26 @@ func (t Func) Invoke(ctx context.Context, input map[string]any) (Result, error) 
 		return Result{}, fmt.Errorf("tool function is required")
 	}
 	return t.fn(ctx, input)
+}
+
+// WithReturnDirect returns a copy of the Func flagged return-direct,
+// mirroring Python's `tool.return_direct = True` on a BaseTool: when every
+// client-side tool call in a model response targets return-direct tools, an
+// agent built on this tool ends its loop after execution instead of handing
+// the result back to the model. The original Func is left unchanged (Func is
+// a value type), matching the codebase's copy-on-configure convention:
+//
+//	weather, _ := tools.NewFunc(...)
+//	weather = weather.WithReturnDirect()
+func (t Func) WithReturnDirect() Func {
+	t.returnDirect = true
+	return t
+}
+
+// ReturnDirect reports whether the Func is flagged return-direct,
+// satisfying the optional ReturnDirecter interface (see IsReturnDirect).
+func (t Func) ReturnDirect() bool {
+	return t.returnDirect
 }
 
 // ValidateArgsSchema checks the minimum JSON-schema shape expected by tool

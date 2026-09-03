@@ -21,7 +21,17 @@ package agents
 // InvokeWithOptions to resume). Structured output (`ToolStrategy`/
 // `ProviderStrategy`) IS wired via WithAgentResponseFormat — see its doc
 // comment for exact scope (ProviderStrategy's provider-native model-kwargs
-// binding is best-effort only). `BeforeAgent`/`AfterAgent` hooks ARE wired:
+// binding is best-effort only). A ToolStrategy's HandleErrors retry IS wired:
+// a multiple-structured-outputs error or a parse failure injects error
+// ToolMessages and loops back to the model when the policy elects retry
+// (mirroring factory.py:1204-1270), and raises otherwise. return_direct tools
+// ARE honored: when every executed client-side tool call targets a
+// return-direct tool (core/tools.ReturnDirecter / Func.WithReturnDirect), the
+// loop ends after the tools node instead of returning to the model
+// (_make_tools_to_model_edge parity). The compiled graph defaults to
+// recursion_limit 9999 (factory.py:1780), and a per-call DynamicModel resolver
+// is available (a superset mirroring langgraph.prebuilt's callable-model
+// overload). `BeforeAgent`/`AfterAgent` hooks ARE wired:
 // when at least one middleware implements BeforeAgentHook/AfterAgentHook,
 // CreateAgent adds dedicated "before_agent"/"after_agent" nodes around the
 // model<->tools loop (mirroring Python's `before_agent`/`after_agent` running
@@ -47,7 +57,9 @@ package agents
 // collapsing older messages into a summary); it is intentionally NOT
 // persisted into the graph's committed state (MessagesReducer now supports
 // RemoveMessage, including the empty-ID remove-all sentinel, but a
-// BeforeModelHook "messages" update is deliberately kept local-only).
+// BeforeModelHook "messages" update is deliberately kept local-only). Every
+// OTHER key a BeforeModelHook returns IS persisted, mirroring Python where
+// before_model hooks run as dedicated graph nodes whose state updates commit.
 // AfterModel "messages" updates are additive (new tool/AI messages) and are
 // persisted normally.
 
@@ -253,6 +265,30 @@ type AgentOptions struct {
 	// appended after the positional tool list at CreateAgent time. See
 	// WithAgentToolSpecs for the accepted dict shape and semantics.
 	ToolSpecs []map[string]any
+	// DynamicModel, when non-nil, resolves the agent's ChatModel per model
+	// call from the current state, mirroring langgraph.prebuilt
+	// create_react_agent's `model: Callable[[AgentState, Runtime],
+	// LanguageModel]` overload (chat_agent_executor.py). Note that
+	// langchain.agents.create_agent itself accepts only a static model — this
+	// option is a superset kept at the agents layer so the prebuilt entry can
+	// expose it without a parallel implementation. The resolver runs inside
+	// the model node, after BeforeModel hooks (so hooks can rewrite the state
+	// the resolver sees) and before middleware WrapModelCall composition. A
+	// nil return falls back to the static model; a nil resolver always uses
+	// the static model. AutoStrategy/ResponseFormat resolution still happens
+	// against the static build-time model.
+	DynamicModel func(state map[string]any, rt runtime.Runtime) language.ChatModel
+}
+
+// WithAgentDynamicModel installs a per-call model resolver, mirroring
+// langgraph.prebuilt create_react_agent's callable-model overload (see
+// AgentOptions.DynamicModel). It takes precedence over the positional model /
+// WithAgentModel for each model call where it returns a non-nil ChatModel.
+// The positional model arg may be nil when only a resolver is supplied
+// (CreateAgent(nil, tools, WithAgentDynamicModel(...)) is valid); the run then
+// fails only if the resolver itself returns nil.
+func WithAgentDynamicModel(resolver func(state map[string]any, rt runtime.Runtime) language.ChatModel) AgentOption {
+	return func(o *AgentOptions) { o.DynamicModel = resolver }
 }
 
 // AgentOption applies a functional option to AgentOptions.
@@ -409,8 +445,11 @@ func WithAgentInterruptAfter(nodes ...string) AgentOption {
 // the model's response is intercepted (never reaching the tools node),
 // parsed, and surfaces via the final state's "structured_response" key (see
 // Agent.InvokeWithState), ending the run. Multiple structured tool calls in
-// one response is an error (MultipleStructuredOutputsError), mirroring
-// Python.
+// one response raise MultipleStructuredOutputsError — unless the strategy's
+// HandleErrors policy elects retry, in which case error ToolMessages are
+// injected and the loop returns to the model (mirroring Python's
+// _handle_structured_output_error); see handleStructuredOutputError for the
+// accepted HandleErrors forms.
 //
 // ProviderStrategy is parsed on a best-effort basis: CreateAgent attempts to
 // JSON-decode the model's final text response against the schema whenever no
@@ -553,7 +592,10 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		model = resolved
 	}
 
-	if model == nil {
+	// A nil model is allowed only when a DynamicModel resolver (or a
+	// ModelString, already handled above) supplies the model; the model node
+	// fails the run if the resolver itself yields nil at call time.
+	if model == nil && options.DynamicModel == nil {
 		return nil, fmt.Errorf("agents: model is required")
 	}
 
@@ -617,7 +659,18 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		}
 		g.AddReducer(f.Name, r)
 	}
-	g.AddNode(ModelNodeName, buildModelNode(model, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, finalNode, options.Cache))
+	// resolveModel picks the model per call: the DynamicModel resolver when
+	// configured (nil return falls through), else the static model (positional
+	// arg or ModelString). See AgentOptions.DynamicModel.
+	resolveModel := func(rt runtime.Runtime, state map[string]any) language.ChatModel {
+		if options.DynamicModel != nil {
+			if m := options.DynamicModel(state, rt); m != nil {
+				return m
+			}
+		}
+		return model
+	}
+	g.AddNode(ModelNodeName, buildModelNode(resolveModel, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, finalNode, options.Cache))
 
 	entryNode := ModelNodeName
 	if hasHook[BeforeAgentHook](options.Middleware) {
@@ -638,8 +691,16 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 			return nil, err
 		}
 		g.AddNode(ToolsNodeName, toolNode)
-		g.AddEdge(ToolsNodeName, ModelNodeName)
-		g.AddConditionalEdges(ModelNodeName, buildRouteAfterModel(finalNode))
+		// tools -> (model | exit): exit when every executed client-side tool
+		// call targeted a return-direct tool, mirroring Python's
+		// `_make_tools_to_model_edge` (factory.py:1623-1649, 1921-1947).
+		g.AddConditionalEdges(ToolsNodeName, buildRouteAfterTools(toolsByNameFromList(toolList), finalNode))
+		g.AddConditionalEdges(ModelNodeName, buildRouteAfterModel(structuredBindings, finalNode))
+	} else if len(structuredBindings) > 0 {
+		// No client-side tools but structured-output tools are bound: loop the
+		// model back to itself until a structured response lands, mirroring
+		// Python's `_make_model_to_model_edge` branch (factory.py:1666-1677).
+		g.AddConditionalEdges(ModelNodeName, buildRouteStructuredOnly(finalNode))
 	} else {
 		g.AddEdge(ModelNodeName, finalNode)
 	}
@@ -648,9 +709,17 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 	if options.Checkpointer != nil {
 		compileOpts = append(compileOpts, graphpkg.WithCheckpointer(options.Checkpointer))
 	}
-	if options.RecursionLimit > 0 {
-		compileOpts = append(compileOpts, graphpkg.WithRecursionLimit(options.RecursionLimit))
+	// Python's create_agent compiles with recursion_limit=9999 (factory.py:1780,
+	// raised in langchain#7313) so long tool loops are gated by the caller
+	// rather than langgraph's much lower platform default. Mirror that here:
+	// an unset RecursionLimit becomes 9999 instead of the graph package's
+	// defaultRecursionLimit. Per-invoke overrides via
+	// CompiledGraph.InvokeWithOptions still take precedence.
+	recursionLimit := options.RecursionLimit
+	if recursionLimit <= 0 {
+		recursionLimit = 9999
 	}
+	compileOpts = append(compileOpts, graphpkg.WithRecursionLimit(recursionLimit))
 	if len(options.InterruptBefore) > 0 {
 		compileOpts = append(compileOpts, graphpkg.WithInterruptBefore(options.InterruptBefore...))
 	}
@@ -801,14 +870,132 @@ func (a *Agent) withRunTags(ctx context.Context) context.Context {
 	return context.WithValue(ctx, runNameCtxKey{}, a.Name)
 }
 
-func buildRouteAfterModel(finalNode string) graphpkg.ConditionalEdge {
+// buildRouteAfterModel is the model node's exit routing, mirroring Python's
+// `_make_model_to_tools_edge` (factory.py:1840-1897) step by step against the
+// committed state after the node's update lands:
+//
+//  1. (Python step 1, jump_to, is handled upstream: the model node returns a
+//     Command Goto for a jump, which bypasses this edge entirely.)
+//  2. no last AIMessage (e.g. messages were cleared) -> end
+//  3. the AI message has no tool calls -> end (the classic agent-loop exit)
+//  4. unanswered, non-structured-output tool calls -> tools
+//  5. a structured_response already in state -> end
+//  6. the AI message has tool calls but all are answered by tool messages
+//     (artificially injected ones, e.g. a structured-output retry's error
+//     ToolMessages) -> back to model
+func buildRouteAfterModel(structuredBindings map[string]OutputToolBinding, finalNode string) graphpkg.ConditionalEdge {
 	return func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		msgs, _ := state["messages"].([]messages.Message)
-		if agenttools.HasPendingToolCalls(msgs) {
+		lastAI, toolMsgs := fetchLastAIAndToolMessages(msgs)
+		if lastAI == nil {
+			return graphpkg.To(finalNode), nil
+		}
+		if len(lastAI.ToolCalls) == 0 {
+			return graphpkg.To(finalNode), nil
+		}
+		answered := make(map[string]bool, len(toolMsgs))
+		for _, m := range toolMsgs {
+			answered[m.ToolCallID] = true
+		}
+		pending := false
+		for _, call := range lastAI.ToolCalls {
+			if answered[call.ID] {
+				continue
+			}
+			if _, structured := structuredBindings[call.Name]; structured {
+				continue
+			}
+			pending = true
+			break
+		}
+		if pending {
 			return graphpkg.To(ToolsNodeName), nil
 		}
-		return graphpkg.To(finalNode), nil
+		if _, ok := state["structured_response"]; ok {
+			return graphpkg.To(finalNode), nil
+		}
+		return graphpkg.To(ModelNodeName), nil
 	}
+}
+
+// buildRouteAfterTools is the tools node's exit routing, mirroring Python's
+// `_make_tools_to_model_edge` (factory.py:1921-1947): the loop ends when every
+// executed client-side tool call targeted a return-direct tool (Python's
+// BaseTool.return_direct, surfaced in Go via core/tools.ReturnDirecter);
+// otherwise it continues to the model. Python's third condition — exit when a
+// structured-output tool was executed — has no Go counterpart here because
+// structured tool calls are intercepted in the model node and never reach the
+// tools node.
+func buildRouteAfterTools(toolsByName map[string]coretools.Tool, finalNode string) graphpkg.ConditionalEdge {
+	return func(_ runtime.Runtime, state map[string]any) ([]any, error) {
+		msgs, _ := state["messages"].([]messages.Message)
+		lastAI, _ := fetchLastAIAndToolMessages(msgs)
+		if lastAI == nil {
+			return graphpkg.To(ModelNodeName), nil
+		}
+		clientCalls := 0
+		allReturnDirect := true
+		for _, call := range lastAI.ToolCalls {
+			tool, ok := toolsByName[call.Name]
+			if !ok {
+				continue
+			}
+			clientCalls++
+			if !coretools.IsReturnDirect(tool) {
+				allReturnDirect = false
+			}
+		}
+		if clientCalls > 0 && allReturnDirect {
+			return graphpkg.To(finalNode), nil
+		}
+		return graphpkg.To(ModelNodeName), nil
+	}
+}
+
+// buildRouteStructuredOnly mirrors Python's `_make_model_to_model_edge`
+// (factory.py:1899-1916), wired when the agent has structured-output tools but
+// no client-side tools: the model loops back to itself until a structured
+// response lands in state (the match itself exits via its terminal Command,
+// which bypasses this edge), mirroring Python's retry-until-structured loop.
+func buildRouteStructuredOnly(finalNode string) graphpkg.ConditionalEdge {
+	return func(_ runtime.Runtime, state map[string]any) ([]any, error) {
+		if _, ok := state["structured_response"]; ok {
+			return graphpkg.To(finalNode), nil
+		}
+		return graphpkg.To(ModelNodeName), nil
+	}
+}
+
+// fetchLastAIAndToolMessages returns the most recent AI message (searching
+// from the end) together with any ToolMessages after it, mirroring Python's
+// `_fetch_last_ai_and_tool_messages` (factory.py:1819-1837). A nil first
+// return means no AIMessage exists in msgs.
+func fetchLastAIAndToolMessages(msgs []messages.Message) (*messages.Message, []messages.Message) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != messages.RoleAI {
+			continue
+		}
+		after := msgs[i+1:]
+		toolMsgs := make([]messages.Message, 0, len(after))
+		for _, m := range after {
+			if m.Role == messages.RoleTool {
+				toolMsgs = append(toolMsgs, m)
+			}
+		}
+		ai := msgs[i]
+		return &ai, toolMsgs
+	}
+	return nil, nil
+}
+
+// toolsByNameFromList indexes toolList by name for the tools node's
+// return-direct routing (see buildRouteAfterTools).
+func toolsByNameFromList(toolList []coretools.Tool) map[string]coretools.Tool {
+	byName := make(map[string]coretools.Tool, len(toolList))
+	for _, t := range toolList {
+		byName[t.Name()] = t
+	}
+	return byName
 }
 
 func resolveJumpTarget(jumpTo string, finalNode string) string {
@@ -1019,6 +1206,10 @@ func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 // BeforeModel hooks, the (middleware-wrapped) model invocation, then
 // AfterModel hooks.
 //
+// resolveModel picks the ChatModel for this call: the agent's static model,
+// or the DynamicModel resolver's answer when one is configured (resolved
+// after BeforeModel hooks so their state updates are visible to it).
+//
 // systemPrompt resolves the system-prompt string for this call: a literal when
 // WithAgentSystemPrompt is used, or a core/prompts render (with build-time +
 // per-Invoke variables) when WithAgentSystemPromptTemplate is used.
@@ -1026,7 +1217,7 @@ func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 // logger, when non-nil, emits verbose debug logs (see WithAgentDebug) for node
 // entry, the model call, and structured-output detection.
 func buildModelNode(
-	model language.ChatModel,
+	resolveModel func(rt runtime.Runtime, state map[string]any) language.ChatModel,
 	toolList []coretools.Tool,
 	systemPrompt func(ctx context.Context) string,
 	logger *slog.Logger,
@@ -1048,6 +1239,11 @@ func buildModelNode(
 				slog.Int("messages", len(localMessages)),
 				slog.Int("tools", len(toolsAny)))
 		}
+		// baseUpdate carries BeforeModel non-"messages" keys into this node's
+		// returned update so they persist, mirroring Python where before_model
+		// hooks are dedicated graph nodes whose state updates commit ("messages"
+		// stays local-only by design; see the package doc comment).
+		baseUpdate := map[string]any{}
 		for _, mw := range mws {
 			if hook, ok := mw.(BeforeModelCommandHook); ok {
 				cmd, err := hook.BeforeModel(rt, state)
@@ -1085,12 +1281,17 @@ func buildModelNode(
 			}
 			for k, v := range update {
 				state[k] = v
+				baseUpdate[k] = v
 			}
 		}
 
 		resolvedPrompt := systemPrompt(rt)
+		resolvedModel := resolveModel(rt, state)
+		if resolvedModel == nil {
+			return nil, fmt.Errorf("agents: model resolver returned nil for this model call")
+		}
 		req, err := middleware.NewModelRequest(middleware.ModelRequest{
-			Model:         model,
+			Model:         resolvedModel,
 			Messages:      localMessages,
 			Tools:         toolsAny,
 			SystemPrompt:  resolvedPrompt,
@@ -1220,14 +1421,34 @@ func buildModelNode(
 		// Structured output detection happens before AfterModel hooks (see
 		// WithAgentResponseFormat's doc comment): a matched structured tool
 		// call, or a ProviderStrategy JSON parse, ends the run immediately
-		// without executing any tools or running AfterModel hooks.
-		if cmd, handled, err := detectStructuredOutput(newMessages, structuredBindings, toolStrategy, providerStrategy, finalNode); err != nil {
+		// without executing any tools or running AfterModel hooks. A
+		// HandleErrors retry appends error ToolMessages after the model output
+		// (the calls count as answered, so routing loops back to the model);
+		// AfterModel hooks still run on the retry path, matching Python where
+		// after_model nodes sit between the model node and its routing edge.
+		decision, cmd, retryToolMsgs, err := detectStructuredOutput(newMessages, structuredBindings, toolStrategy, providerStrategy, finalNode)
+		if err != nil {
 			return nil, err
-		} else if handled {
+		}
+		switch decision {
+		case structuredDone:
+			// Persist any BeforeModel non-"messages" keys even on the
+			// structured-match exit: Python commits before_model updates in
+			// their own node before the model node's Command is produced.
+			for k, v := range baseUpdate {
+				if k != "messages" && k != "structured_response" {
+					cmd.Update[k] = v
+				}
+			}
 			return cmd, nil
+		case structuredRetry:
+			newMessages = append(newMessages, retryToolMsgs...)
 		}
 
 		update := map[string]any{"messages": newMessages}
+		for k, v := range baseUpdate {
+			update[k] = v
+		}
 
 		afterState := cloneMapState(state)
 		afterState["messages"] = append(append([]messages.Message(nil), localMessages...), newMessages...)
@@ -1348,25 +1569,53 @@ func providerStrategyModelSettings(providerStrategy *ProviderStrategy) map[strin
 	return providerStrategy.ToModelKwargs()
 }
 
+// structuredDecision is detectStructuredOutput's outcome for the model node.
+type structuredDecision int
+
+const (
+	// structuredPass: no structured-output involvement; the model node
+	// continues to AfterModel hooks and normal routing.
+	structuredPass structuredDecision = iota
+	// structuredDone: a structured response matched; cmd is a terminal
+	// Command carrying the parsed value under "structured_response".
+	structuredDone
+	// structuredRetry: a structured-output failure the strategy elected to
+	// retry; retryToolMsgs are error ToolMessages the model node appends after
+	// the model's output so the loop routes back to the model (which sees its
+	// own call plus the error and regenerates).
+	structuredRetry
+)
+
 // detectStructuredOutput inspects the model's newMessages for a
 // ResponseFormat match: a tool call into structuredBindings (ToolStrategy),
 // or — absent any tool calls — a ProviderStrategy JSON-decodable text
-// response. A match returns a terminal *types.Command (handled=true)
-// carrying the parsed value under state key "structured_response", ending
-// the run without visiting the tools node or running AfterModel hooks.
+// response. A match returns a terminal *types.Command (structuredDone)
+// carrying the parsed value under state key "structured_response", ending the
+// run without visiting the tools node or running AfterModel hooks.
+//
+// Failure retry: mirroring Python's model node (factory.py:1204-1270), a
+// multiple-structured-outputs error or a single call's parse failure consults
+// the ToolStrategy's HandleErrors policy (see handleStructuredOutputError).
+// When the policy elects retry, detectStructuredOutput returns structuredRetry
+// with one error ToolMessage per structured call; the model node appends them
+// to the update and the graph routes back to the model (the calls count as
+// answered, so buildRouteAfterModel's step 6 loops instead of dispatching
+// tools or exiting). When the policy elects raise, the error is returned
+// verbatim. ProviderStrategy parse failures always raise (Python does not
+// retry them either).
 func detectStructuredOutput(
 	newMessages []messages.Message,
 	structuredBindings map[string]OutputToolBinding,
 	toolStrategy *ToolStrategy,
 	providerStrategy *ProviderStrategy,
 	finalNode string,
-) (*types.Command, bool, error) {
+) (structuredDecision, *types.Command, []messages.Message, error) {
 	if len(newMessages) == 0 {
-		return nil, false, nil
+		return structuredPass, nil, nil, nil
 	}
 	last := newMessages[len(newMessages)-1]
 	if last.Role != messages.RoleAI {
-		return nil, false, nil
+		return structuredPass, nil, nil, nil
 	}
 
 	if len(structuredBindings) > 0 {
@@ -1381,14 +1630,30 @@ func detectStructuredOutput(
 			for i, call := range matched {
 				names[i] = call.Name
 			}
-			return nil, false, NewMultipleStructuredOutputsError(names, last)
+			exc := NewMultipleStructuredOutputsError(names, last)
+			if shouldRetry, message := handleStructuredOutputError(toolStrategy, exc); shouldRetry {
+				retry := make([]messages.Message, 0, len(matched))
+				for _, call := range matched {
+					m := messages.Tool(call.ID, message)
+					m.Name = call.Name
+					retry = append(retry, m)
+				}
+				return structuredRetry, nil, retry, nil
+			}
+			return structuredPass, nil, nil, exc
 		}
 		if len(matched) == 1 {
 			call := matched[0]
 			binding := structuredBindings[call.Name]
 			parsed, err := binding.Parse(call.Args)
 			if err != nil {
-				return nil, false, NewStructuredOutputValidationError(call.Name, err, last)
+				exc := NewStructuredOutputValidationError(call.Name, err, last)
+				if shouldRetry, message := handleStructuredOutputError(toolStrategy, exc); shouldRetry {
+					m := messages.Tool(call.ID, message)
+					m.Name = call.Name
+					return structuredRetry, nil, []messages.Message{m}, nil
+				}
+				return structuredPass, nil, nil, exc
 			}
 			content := ""
 			if toolStrategy != nil {
@@ -1400,13 +1665,13 @@ func detectStructuredOutput(
 			toolMsg := messages.Tool(call.ID, content)
 			toolMsg.Name = call.Name
 			updatedMessages := append(append([]messages.Message(nil), newMessages...), toolMsg)
-			return &types.Command{
+			return structuredDone, &types.Command{
 				Update: map[string]any{
 					"messages":            updatedMessages,
 					"structured_response": parsed,
 				},
 				Goto: graphpkg.To(finalNode),
-			}, true, nil
+			}, nil, nil
 		}
 	}
 
@@ -1414,18 +1679,18 @@ func detectStructuredOutput(
 		binding := ProviderStrategyBindingFromSchemaSpec(providerStrategy.SchemaSpec)
 		parsed, err := binding.Parse(last)
 		if err != nil {
-			return nil, false, err
+			return structuredPass, nil, nil, err
 		}
-		return &types.Command{
+		return structuredDone, &types.Command{
 			Update: map[string]any{
 				"messages":            newMessages,
 				"structured_response": parsed,
 			},
 			Goto: graphpkg.To(finalNode),
-		}, true, nil
+		}, nil, nil
 	}
 
-	return nil, false, nil
+	return structuredPass, nil, nil, nil
 }
 
 // providerStrategySchema returns the JSON schema the model should enforce
