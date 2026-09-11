@@ -9,9 +9,9 @@ import (
 
 func TestImageSourceVariants(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name  string
 		block map[string]any
-		want map[string]any
+		want  map[string]any
 	}{
 		{
 			name:  "source_type id",

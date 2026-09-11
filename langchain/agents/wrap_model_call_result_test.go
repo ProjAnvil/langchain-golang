@@ -39,8 +39,12 @@ func (m *alwaysFailModel) Stream(context.Context, []messages.Message, ...runnabl
 	return nil, fmt.Errorf("model error")
 }
 
-func (m *alwaysFailModel) InputSchema() schema.Schema  { return schema.Object(map[string]schema.Schema{}) }
-func (m *alwaysFailModel) OutputSchema() schema.Schema { return schema.Object(map[string]schema.Schema{}) }
+func (m *alwaysFailModel) InputSchema() schema.Schema {
+	return schema.Object(map[string]schema.Schema{})
+}
+func (m *alwaysFailModel) OutputSchema() schema.Schema {
+	return schema.Object(map[string]schema.Schema{})
+}
 
 func (m *alwaysFailModel) BindTools([]coretools.Tool) (language.ChatModel, error) { return m, nil }
 

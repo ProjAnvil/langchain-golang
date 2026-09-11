@@ -83,6 +83,7 @@ type messageStream struct {
 	done            bool
 	eventName       string
 	data            []string
+	usage           usagePayload
 	textBlocks      map[int]*streamTextBlock
 	toolBlocks      map[int]*streamToolBlock
 	thinkingBlocks  map[int]*streamThinkingBlock
@@ -187,6 +188,7 @@ func (s *messageStream) consumeEvent(ctx context.Context) (messages.Message, boo
 	switch eventType {
 	case "message_start":
 		s.output = event.Message.toMessage()
+		s.usage = event.Message.Usage
 		return messages.Message{}, false, nil
 	case "content_block_start":
 		return s.contentBlockStart(ctx, event)
@@ -195,10 +197,13 @@ func (s *messageStream) consumeEvent(ctx context.Context) (messages.Message, boo
 	case "content_block_stop":
 		return s.contentBlockStop(ctx, event.Index)
 	case "message_delta":
-		if event.Usage.OutputTokens != 0 {
-			s.output.UsageMetadata.OutputTokens = event.Usage.OutputTokens
-			s.output.UsageMetadata.TotalTokens = s.output.UsageMetadata.InputTokens + event.Usage.OutputTokens
-		}
+		// Newer API shapes report the complete usage (input tokens and the
+		// cache_read/cache_creation breakdown) at message_delta; older ones
+		// only carry output_tokens there. Merge into the message_start usage
+		// and recompute, mirroring Python's _create_usage_metadata on the
+		// delta event (chat_models.py:1704).
+		s.usage.merge(event.Usage)
+		s.output.UsageMetadata = s.usage.toUsageMetadata()
 		if event.Delta.StopReason != "" {
 			if s.output.ResponseMetadata == nil {
 				s.output.ResponseMetadata = map[string]any{}
@@ -327,8 +332,8 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		block.data = event.ContentBlock.Data
 		block.id = event.ContentBlock.ID
 		if err := s.emitProtocol(ctx, streamevents.Event{
-			Event: streamevents.EventContentBlockStart,
-			Index: event.Index,
+			Event:   streamevents.EventContentBlockStart,
+			Index:   event.Index,
 			Content: messages.ReasoningBlock{},
 		}); err != nil {
 			return messages.Message{}, false, err

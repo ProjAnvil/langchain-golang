@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	topPKey = "anthropic_top_p"
-	topKKey = "anthropic_top_k"
+	topPKey          = "anthropic_top_p"
+	topKKey          = "anthropic_top_k"
+	stopSequencesKey = "anthropic_stop_sequences"
 )
 
 // WithBetaHeaders sets the anthropic-beta request header to enable beta
@@ -29,4 +30,13 @@ func WithTopP(topP float64) modelconfig.Option {
 // top_k when extended thinking is enabled, so ChatModel omits it in that case.
 func WithTopK(topK int) modelconfig.Option {
 	return modelconfig.WithExtra(topKKey, topK)
+}
+
+// WithStopSequences sets the Anthropic stop_sequences request parameter:
+// custom strings that stop generation when the model produces them. Mirrors
+// Python ChatAnthropic's stop_sequences constructor field (alias "stop",
+// langchain_anthropic/chat_models.py:944); it applies to both streaming and
+// non-streaming requests.
+func WithStopSequences(sequences []string) modelconfig.Option {
+	return modelconfig.WithExtra(stopSequencesKey, append([]string(nil), sequences...))
 }

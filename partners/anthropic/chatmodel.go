@@ -358,6 +358,9 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	if topK, ok := m.config.Extra[topKKey].(int); ok {
 		payload.TopK = &topK
 	}
+	if stops, ok := m.config.Extra[stopSequencesKey].([]string); ok && len(stops) > 0 {
+		payload.StopSequences = append([]string(nil), stops...)
+	}
 
 	var systemText []string
 	var systemBlocks []contentBlock
@@ -445,6 +448,7 @@ type requestPayload struct {
 	Temperature       *float64         `json:"temperature,omitempty"`
 	TopP              *float64         `json:"top_p,omitempty"`
 	TopK              *int             `json:"top_k,omitempty"`
+	StopSequences     []string         `json:"stop_sequences,omitempty"`
 	Tools             []toolSpec       `json:"tools,omitempty"`
 	ToolChoice        map[string]any   `json:"tool_choice,omitempty"`
 	Stream            bool             `json:"stream,omitempty"`
@@ -492,19 +496,76 @@ type messagePayload struct {
 }
 
 type usagePayload struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	InputTokens              int                  `json:"input_tokens"`
+	OutputTokens             int                  `json:"output_tokens"`
+	CacheReadInputTokens     int                  `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int                  `json:"cache_creation_input_tokens"`
+	CacheCreation            cacheCreationPayload `json:"cache_creation"`
 }
 
+// cacheCreationPayload models the newer Anthropic usage.cache_creation object,
+// which breaks prompt-cache creation tokens down by TTL: 5-minute and 1-hour
+// ephemeral caches.
+type cacheCreationPayload struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+}
+
+// total returns the cache-creation tokens attributable to the specific
+// ephemeral TTLs.
+func (c cacheCreationPayload) total() int {
+	return c.Ephemeral5mInputTokens + c.Ephemeral1hInputTokens
+}
+
+// merge fills zero fields of the receiver with non-zero values from next.
+// Streaming message_delta events only carry the usage fields that changed
+// (older API shapes report just output_tokens there), so zero values in next
+// must not clobber what message_start already reported.
+func (u *usagePayload) merge(next usagePayload) {
+	if next.InputTokens != 0 {
+		u.InputTokens = next.InputTokens
+	}
+	if next.OutputTokens != 0 {
+		u.OutputTokens = next.OutputTokens
+	}
+	if next.CacheReadInputTokens != 0 {
+		u.CacheReadInputTokens = next.CacheReadInputTokens
+	}
+	if next.CacheCreationInputTokens != 0 {
+		u.CacheCreationInputTokens = next.CacheCreationInputTokens
+	}
+	if next.CacheCreation != (cacheCreationPayload{}) {
+		u.CacheCreation = next.CacheCreation
+	}
+}
+
+// toUsageMetadata mirrors Python's _create_usage_metadata
+// (langchain_anthropic/chat_models.py:2356): Anthropic's input_tokens excludes
+// cached tokens, so cache_read and cache_creation counts are added back to get
+// the true input total. When the newer usage.cache_creation TTL breakdown
+// reports specific ephemeral tokens, Python zeroes the generic cache_creation
+// count to avoid double counting; core's messages.InputTokenDetails has no
+// ephemeral_5m/1h fields (only the flat cache_read_input_tokens /
+// cache_creation_input_tokens ints), so the closest expression here folds the
+// specific ephemeral total into CacheCreationInputTokens.
 func (u usagePayload) toUsageMetadata() messages.UsageMetadata {
-	input := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
-	return messages.UsageMetadata{
+	cacheCreation := u.CacheCreationInputTokens
+	if specific := u.CacheCreation.total(); specific > 0 {
+		cacheCreation = specific
+	}
+	input := u.InputTokens + u.CacheReadInputTokens + cacheCreation
+	meta := messages.UsageMetadata{
 		InputTokens:  input,
 		OutputTokens: u.OutputTokens,
 		TotalTokens:  input + u.OutputTokens,
 	}
+	if u.CacheReadInputTokens != 0 || cacheCreation != 0 {
+		meta.InputTokenDetails = &messages.InputTokenDetails{
+			CacheReadInputTokens:     u.CacheReadInputTokens,
+			CacheCreationInputTokens: cacheCreation,
+		}
+	}
+	return meta
 }
 
 func (r messagePayload) toMessage() messages.Message {
