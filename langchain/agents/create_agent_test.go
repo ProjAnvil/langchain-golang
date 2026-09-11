@@ -1650,14 +1650,20 @@ func TestCreateAgentCacheHitWithDebugAndSystemPrompt(t *testing.T) {
 }
 
 func TestHashToolsAndSettingsNonMarshable(t *testing.T) {
-	if got := hashToolsAndSettings(nil, map[string]any{"fn": func() {}}); got != "" {
+	if got := hashToolsAndSettings(nil, map[string]any{"fn": func() {}}, nil); got != "" {
 		t.Fatalf("expected empty hash for non-JSON-marshable settings, got %q", got)
 	}
 	// A non-Tool entry in the tools list is skipped, not fatal.
-	a := hashToolsAndSettings([]any{"not-a-tool"}, nil)
-	b := hashToolsAndSettings(nil, nil)
+	a := hashToolsAndSettings([]any{"not-a-tool"}, nil, nil)
+	b := hashToolsAndSettings(nil, nil, nil)
 	if a != b {
 		t.Fatalf("non-Tool entries must not affect the hash: %q vs %q", a, b)
+	}
+	// A different tool_choice must change the key (Python's llm_string
+	// serializes the bound tool_choice).
+	c := hashToolsAndSettings(nil, nil, "any")
+	if c == b {
+		t.Fatal("expected a distinct hash when tool_choice differs")
 	}
 }
 

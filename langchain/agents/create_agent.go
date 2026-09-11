@@ -21,8 +21,14 @@ package agents
 // round-trip example using WithAgentCheckpointer + Agent.Graph.
 // InvokeWithOptions to resume). Structured output (`ToolStrategy`/
 // `ProviderStrategy`) IS wired via WithAgentResponseFormat — see its doc
-// comment for exact scope (ProviderStrategy's provider-native model-kwargs
-// binding is best-effort only). A ToolStrategy's HandleErrors retry IS wired:
+// comment for exact scope. Every model call (streaming and non-streaming)
+// re-normalizes the request's response_format into an effective strategy
+// (factory.py:1323-1344): middleware WithResponseFormat overrides — including
+// ToolStrategy↔ProviderStrategy switches — apply per call, an AutoStrategy
+// re-resolves against the model of the current call (so a DynamicModel swap
+// re-checks it), and the effective strategy drives the bind (final tools +
+// tool_choice + model kwargs) and the post-call structured detection. A
+// ToolStrategy's HandleErrors retry IS wired:
 // a multiple-structured-outputs error or a parse failure injects error
 // ToolMessages and loops back to the model when the policy elects retry
 // (mirroring factory.py:1204-1270), and raises otherwise. return_direct tools
@@ -83,6 +89,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/caches"
@@ -101,6 +108,7 @@ import (
 	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/langgraph/types"
+	"github.com/projanvil/langchain-golang/modelprofiles"
 
 	// Blank-import partners/openai so "openai:..." resolves out-of-the-box via
 	// its init() self-registration with chatmodels. Importing partners/openai
@@ -318,8 +326,12 @@ type AgentOptions struct {
 	// the model node, after BeforeModel hooks (so hooks can rewrite the state
 	// the resolver sees) and before middleware WrapModelCall composition. A
 	// nil return falls back to the static model; a nil resolver always uses
-	// the static model. AutoStrategy/ResponseFormat resolution still happens
-	// against the static build-time model.
+	// the static model. An AutoStrategy ResponseFormat is re-resolved against
+	// the model of each call (see buildModelNode /
+	// resolveEffectiveResponseFormat), so swapping models via the resolver
+	// re-checks the strategy; the build-time graph wiring (structured-output
+	// bindings, routing) still comes from the static model's eager
+	// resolution.
 	DynamicModel func(state map[string]any, rt runtime.Runtime) language.ChatModel
 }
 
@@ -438,8 +450,12 @@ func WithAgentStore(s store.Store) AgentOption {
 // so model_delta/model_end events always fire (a cache hit would otherwise
 // short-circuit the handler and emit no events). The cache key is
 // (promptString, llmString) as derived by cacheKey (the rendered, role-tagged
-// message text, and the model type plus a stable hash of the bound tools and
-// model settings).
+// message text, and the model type plus a stable hash of the request's tools,
+// ModelSettings — which the model node seeds with the per-call effective
+// strategy's kwargs — and ToolChoice), mirroring Python's llm_string, which
+// serializes the bound model INCLUDING its bind kwargs (langchain_core
+// caches.py:49-84) so different response formats / tool choices never
+// collide. See cacheKey for the runtime-override caveat this implies.
 func WithAgentCache(cache caches.Cache) AgentOption {
 	return func(o *AgentOptions) { o.Cache = cache }
 }
@@ -494,20 +510,35 @@ func WithAgentInterruptAfter(nodes ...string) AgentOption {
 // _handle_structured_output_error); see handleStructuredOutputError for the
 // accepted HandleErrors forms.
 //
-// ProviderStrategy is parsed on a best-effort basis: CreateAgent attempts to
-// JSON-decode the model's final text response against the schema whenever no
-// tool calls are present. Unlike Python, it does NOT pass model kwargs (e.g.
-// a provider's native `response_format`) to the underlying language.ChatModel
-// to request schema-constrained output, since that call shape isn't exposed
-// generically by the language.ChatModel interface yet; the model must be
-// separately configured (or reliably prompted) to emit matching JSON.
+// ProviderStrategy requests provider-native structured output: its kwargs
+// (to_model_kwargs, e.g. OpenAI's response_format json_schema dict) reach the
+// model on EVERY call — streaming and non-streaming — through, in order of
+// capability: the ModelSettingsBinder interface (models that accept per-call
+// bind kwargs), or language.StructuredCaller's InvokeStructured on the
+// non-streaming path. Models with neither capability degrade to a best-effort
+// post-hoc JSON-decode of the model's final text response (the structured
+// response plumbing is identical in all three cases). See ModelSettingsBinder
+// for why shipped partner models currently take the StructuredCaller /
+// post-hoc paths.
+//
+// Middleware may replace the per-call strategy via
+// ModelRequest.Override(WithResponseFormat(...)) — including switching
+// between ToolStrategy and ProviderStrategy (factory.py:1323-1344); a
+// ToolStrategy override may only narrow to structured tools declared in the
+// original response format (factory.py:1375-1385).
 //
 // AutoStrategy is resolved eagerly at CreateAgent time against the agent's
 // bound model into a concrete ToolStrategy or ProviderStrategy via its
 // Resolve method (ToolStrategy when Capabilities().ToolCalling, else
 // ProviderStrategy when Capabilities().StructuredOutput, else a
-// *StructuredOutputUnsupportedError). The resolved strategy then behaves
-// exactly as if the caller had supplied it directly.
+// *StructuredOutputUnsupportedError) — this fixes the graph wiring
+// (structured-output bindings, routing). On every model call the effective
+// strategy is then re-derived (resolveEffectiveResponseFormat): a
+// ProviderStrategy is chosen when the CURRENT model supports it
+// (SupportsProviderStrategy over the model's profile/name when exposed,
+// else its Capabilities().StructuredOutput flag), so a DynamicModel swap
+// onto a structured-output model switches to the provider path
+// mid-conversation, and middleware overrides apply per call.
 func WithAgentResponseFormat(format any) AgentOption {
 	return func(o *AgentOptions) { o.ResponseFormat = format }
 }
@@ -748,7 +779,7 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		}
 		return model
 	}
-	g.AddNode(ModelNodeName, buildModelNode(resolveModel, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, finalNode, options.Cache, options.Name))
+	g.AddNode(ModelNodeName, buildModelNode(resolveModel, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, normalizeInitialResponseFormat(options.ResponseFormat), finalNode, options.Cache, options.Name))
 
 	entryNode := ModelNodeName
 	if hasHook[BeforeAgentHook](options.Middleware) {
@@ -1400,6 +1431,18 @@ func validateMiddlewareNames(mws []any) error {
 // WithAgentSystemPrompt is used, or a core/prompts render (with build-time +
 // per-Invoke variables) when WithAgentSystemPromptTemplate is used.
 //
+// initialResponseFormat is the agent's configured ResponseFormat preserved in
+// pointer form (nil / *ToolStrategy / *ProviderStrategy / *AutoStrategy — raw
+// schemas are wrapped in an *AutoStrategy). Unlike the eagerly resolved
+// toolStrategy/providerStrategy (which freeze the graph wiring: structured
+// bindings, routing), it stays with the request so the strategy can be
+// re-normalized on EVERY model call against the request's actual model and
+// any middleware override (see resolveEffectiveResponseFormat; Python
+// factory.py:1323-1344 re-derives effective_response_format per call, so an
+// AutoStrategy is re-checked after a DynamicModel swap and a middleware
+// WithResponseFormat override — including ToolStrategy↔ProviderStrategy
+// switches — replaces the build-time strategy for that call).
+//
 // agentName, when non-empty, is stamped onto the model's output AIMessage
 // (factory.py:1418-1419: `if name: output.name = name` inside
 // _execute_model_sync — the create_agent name= value, applied before
@@ -1416,6 +1459,7 @@ func buildModelNode(
 	structuredBindings map[string]OutputToolBinding,
 	toolStrategy *ToolStrategy,
 	providerStrategy *ProviderStrategy,
+	initialResponseFormat any,
 	finalNode string,
 	cache caches.Cache,
 	agentName string,
@@ -1482,27 +1526,55 @@ func buildModelNode(
 		if resolvedModel == nil {
 			return nil, fmt.Errorf("agents: model resolver returned nil for this model call")
 		}
+		// Node-level strategy normalization (mirrors the request-construction
+		// half of Python's _get_bound_model): against the model resolved for
+		// THIS call, so a DynamicModel swap re-checks an AutoStrategy even
+		// before middleware runs. The derived ProviderStrategy kwargs seed the
+		// request's ModelSettings so WrapModelCall middleware can observe the
+		// intent and the cache key distinguishes the effective strategy (see
+		// cacheKey); the inner handler re-normalizes after middleware overrides.
+		nodeEffective, nodeBindings, err := resolveEffectiveResponseFormat(initialResponseFormat, resolvedModel, toolsAny, initialResponseFormat, toolStrategy, providerStrategy, structuredBindings)
+		if err != nil {
+			return nil, err
+		}
+		initialSettings := providerStrategyModelSettings(nodeEffective.provider)
+		initialToolChoice := structuredOutputToolChoice(toolStrategy)
 		req, err := middleware.NewModelRequest(middleware.ModelRequest{
-			Model:         resolvedModel,
-			Messages:      localMessages,
-			Tools:         toolsAny,
-			SystemPrompt:  resolvedPrompt,
-			State:         state,
-			Runtime:       rt,
-			ModelSettings: providerStrategyModelSettings(providerStrategy),
+			Model:    resolvedModel,
+			Messages: localMessages,
+			Tools:    toolsAny,
+			// initialResponseFormat rides on the request so WrapModelCall
+			// middleware observe the configured strategy and may replace it
+			// via ModelRequest.Override(middleware.WithResponseFormat(...))
+			// (Python's ModelRequest.response_format, factory.py:1438).
+			ResponseFormat: initialResponseFormat,
+			SystemPrompt:   resolvedPrompt,
+			State:          state,
+			Runtime:        rt,
+			ModelSettings:  initialSettings,
 			// Mirrors factory.py:1388 (`tool_choice = "any" if
 			// structured_output_tools else request.tool_choice`): a
 			// ToolStrategy binds its schema tools and forces the model to
 			// answer through one of them, so the request carries tool_choice
-			// "any" for WrapModelCall middleware to observe and for
-			// invokeModel to thread into the model when it implements
+			// "any" for WrapModelCall middleware to observe and for the bind
+			// to thread into the model when it implements
 			// language.ToolBinder. Middleware may still override it via
 			// ModelRequest.Override(middleware.WithToolChoice(...)).
-			ToolChoice: structuredOutputToolChoice(toolStrategy),
+			ToolChoice: initialToolChoice,
 		})
 		if err != nil {
 			return nil, err
 		}
+
+		// effectiveTool/effectiveProvider/effectiveBindings hold the strategy
+		// the handler's model call actually ran under. They start at the
+		// node-level normalization (so a cache hit — which skips the handler —
+		// still detects structured output under the current call's strategy,
+		// like Python whose cache sits inside the chat-model layer and whose
+		// _handle_model_output runs on the freshly re-derived effective
+		// format) and are overwritten by each handler run with the
+		// middleware-overridden normalization.
+		effectiveTool, effectiveProvider, effectiveBindings := nodeEffective.tool, nodeEffective.provider, nodeBindings
 
 		handler := func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
 			if logger != nil {
@@ -1510,6 +1582,25 @@ func buildModelNode(
 					slog.Int("messages", len(r.Messages)),
 					slog.Bool("has_system_prompt", r.SystemMessage != nil))
 			}
+			model, ok := r.Model.(language.ChatModel)
+			if !ok || model == nil {
+				return middleware.ModelResponse{}, fmt.Errorf("agents: ModelRequest.Model must be a language.ChatModel, got %T", r.Model)
+			}
+			// Per-call re-normalization after middleware overrides
+			// (factory.py:1323-1344): the request's response_format wins over
+			// the build-time strategy, an AutoStrategy re-resolves against the
+			// request's actual model, and the resulting effective strategy
+			// drives both the bind below and the post-call structured-output
+			// detection.
+			eff, effBindings, err := resolveEffectiveResponseFormat(r.ResponseFormat, model, r.Tools, initialResponseFormat, toolStrategy, providerStrategy, structuredBindings)
+			if err != nil {
+				return middleware.ModelResponse{}, err
+			}
+			prepared, err := prepareModelCall(r, model, eff, effBindings, initialToolChoice, initialSettings)
+			if err != nil {
+				return middleware.ModelResponse{}, err
+			}
+			effectiveTool, effectiveProvider, effectiveBindings = eff.tool, eff.provider, effBindings
 			// Streaming path: when an event sink is active (i.e. the run was
 			// started via Agent.StreamEvents / graph.InvokeStream), drive the
 			// model through Stream, emit a model_delta per chunk, and assemble
@@ -1517,9 +1608,9 @@ func buildModelNode(
 			// emitting model_end. When no sink is active, the non-streaming
 			// Invoke path is used with zero added overhead (see invokeModel).
 			if sink := sinkFromContext(c); sink != nil {
-				return invokeModelStreaming(c, r, sink, mws, agentName)
+				return invokeModelStreaming(c, r, prepared, sink, mws, agentName)
 			}
-			return invokeModel(c, r, providerStrategySchema(providerStrategy), agentName)
+			return invokeModel(c, r, prepared, agentName)
 		}
 		// mwCommands accumulates the update-only Commands returned by
 		// WrapModelCallResult middleware (each layer's
@@ -1652,7 +1743,11 @@ func buildModelNode(
 		// (the calls count as answered, so routing loops back to the model);
 		// AfterModel hooks still run on the retry path, matching Python where
 		// after_model nodes sit between the model node and its routing edge.
-		decision, cmd, retryToolMsgs, err := detectStructuredOutput(newMessages, structuredBindings, toolStrategy, providerStrategy, finalNode)
+		// The detection runs under the EFFECTIVE strategy of the model call
+		// (middleware override / AutoStrategy re-resolution included — Python's
+		// _handle_model_output receives effective_response_format from
+		// _get_bound_model, factory.py:1408-1413).
+		decision, cmd, retryToolMsgs, err := detectStructuredOutput(newMessages, effectiveBindings, effectiveTool, effectiveProvider, finalNode)
 		if err != nil {
 			return nil, err
 		}
@@ -1849,9 +1944,9 @@ func buildStructuredOutputTools(strategy *ToolStrategy) (map[string]OutputToolBi
 
 // providerStrategyModelSettings surfaces a ProviderStrategy's model kwargs
 // (e.g. a provider's native `response_format`) via ModelRequest.ModelSettings
-// so WrapModelCall middleware or a provider-aware language.ChatModel can
-// observe the caller's intent, even though invokeModel itself does not act
-// on them (see WithAgentResponseFormat's doc comment).
+// so WrapModelCall middleware can observe the caller's intent and the model
+// node's cache key distinguishes the strategy (see cacheKey). The kwargs also
+// reach the actual bind: see mergedBindSettings/prepareModelCall.
 func providerStrategyModelSettings(providerStrategy *ProviderStrategy) map[string]any {
 	if providerStrategy == nil {
 		return nil
@@ -1870,6 +1965,402 @@ func structuredOutputToolChoice(toolStrategy *ToolStrategy) any {
 	return string(language.ToolChoiceAny)
 }
 
+// ModelSettingsBinder is an optional language.ChatModel capability for models
+// that accept per-call model kwargs — the Go stand-in for Python's
+// `model.bind_tools(tools, **model_settings)` / `model.bind(**model_settings)`
+// kwargs passthrough (factory.py:1360-1404). Implementations return a copy of
+// the model configured with settings (e.g. a provider-native
+// "response_format" dict, a "temperature", or any other provider kwarg); the
+// agents layer calls it on EVERY model call (streaming and non-streaming
+// alike) with the merged settings (effective-strategy kwargs overlaid by
+// middleware ModelSettings overrides).
+//
+// Capability detection + degradation (this port does not modify partner
+// packages): no shipped partner model implements this interface yet —
+// partners/openai exposes WithResponseFormat and partners/anthropic
+// WithThinking/WithToolChoice, but each returns the partner's own concrete
+// type, which cannot be duck-typed generically from the agents layer. When a
+// model does not implement ModelSettingsBinder:
+//   - a ProviderStrategy's response_format still reaches the model through
+//     language.StructuredCaller on the non-streaming path (see invokeModel);
+//   - on the streaming path the settings degrade to the retained post-hoc
+//     detectStructuredOutput JSON parse (see invokeModelStreaming);
+//   - other settings (temperature, ...) are dropped, mirroring how
+//     bindModelTools drops tool_choice for models without language.ToolBinder.
+type ModelSettingsBinder interface {
+	// BindModelSettings returns a copy of the model carrying settings as
+	// per-call bind kwargs. settings must not be retained or mutated by the
+	// implementation.
+	BindModelSettings(settings map[string]any) (language.ChatModel, error)
+}
+
+// modelProfileProvider and modelNameProvider are the duck-typed surfaces
+// AutoStrategy re-resolution reads off a per-call model (Python's
+// `_supports_provider_strategy` reads `model.model_name`/`model.model`/
+// `model.model_id` and `model.profile`, factory.py:528-570). language's
+// FakeChatModel implements ModelProfile; partner chat models currently expose
+// neither (see ModelSettingsBinder's degradation note).
+type modelProfileProvider interface {
+	ModelProfile() modelprofiles.Profile
+}
+
+type modelNameProvider interface {
+	ModelName() string
+}
+
+// modelSupportsProviderStrategy reports whether the model of THIS call should
+// take the ProviderStrategy branch of AutoStrategy resolution, mirroring
+// `_supports_provider_strategy(request.model, tools=request.tools)`
+// (factory.py:1333). Models exposing a profile and/or a model name are
+// checked through the shared SupportsProviderStrategy (profile
+// structured_output flag first, then the fallback name regexes — including
+// the Gemini<3-with-tools exception). Models exposing neither (today's
+// partner chat models) degrade to the Capabilities().StructuredOutput flag,
+// the nearest existing signal; no partner package is modified for this.
+func modelSupportsProviderStrategy(model language.ChatModel, tools []any) bool {
+	if model == nil {
+		return false
+	}
+	info := ModelInfo{}
+	found := false
+	if namer, ok := model.(modelNameProvider); ok {
+		name := namer.ModelName()
+		info.ModelName, info.Model, info.ModelID = name, name, name
+		found = true
+	}
+	if profiler, ok := model.(modelProfileProvider); ok {
+		info.Profile = profiler.ModelProfile()
+		found = true
+	}
+	if found {
+		return SupportsProviderStrategy(info, tools)
+	}
+	return model.Capabilities().StructuredOutput
+}
+
+// normalizeInitialResponseFormat canonicalizes a configured ResponseFormat
+// into pointer form (nil / *ToolStrategy / *ProviderStrategy / *AutoStrategy)
+// so the request can carry it without Go interface-value comparison pitfalls
+// and so sameStrategyInstance can compare identity. A raw JSON schema
+// (Python's `response_format: dict` overload) is wrapped in an
+// *AutoStrategy, exactly like factory.py:1327-1331 normalizes raw schemas.
+func normalizeInitialResponseFormat(format any) any {
+	switch v := format.(type) {
+	case nil:
+		return nil
+	case ToolStrategy:
+		return &v
+	case *ToolStrategy:
+		if v == nil {
+			return nil
+		}
+		return v
+	case ProviderStrategy:
+		return &v
+	case *ProviderStrategy:
+		if v == nil {
+			return nil
+		}
+		return v
+	case AutoStrategy:
+		return &v
+	case *AutoStrategy:
+		if v == nil {
+			return nil
+		}
+		return v
+	case map[string]any:
+		auto := NewAutoStrategy(schema.Schema(v))
+		return &auto
+	case schema.Schema:
+		auto := NewAutoStrategy(v)
+		return &auto
+	default:
+		return format
+	}
+}
+
+// sameStrategyInstance reports whether a and b are the same strategy instance
+// (pointer identity per strategy type). Used to distinguish "the request
+// still carries the agent's initial response format" from "middleware
+// replaced it" (Python compares `response_format is initial_response_format`,
+// factory.py:1336).
+func sameStrategyInstance(a, b any) bool {
+	switch av := a.(type) {
+	case *ToolStrategy:
+		bv, ok := b.(*ToolStrategy)
+		return ok && av == bv
+	case *ProviderStrategy:
+		bv, ok := b.(*ProviderStrategy)
+		return ok && av == bv
+	case *AutoStrategy:
+		bv, ok := b.(*AutoStrategy)
+		return ok && av == bv
+	}
+	return false
+}
+
+// effectiveFormat is the per-call normalized response format: at most one of
+// tool/provider is non-nil (nil/nil = no structured output). It is the Go
+// analog of Python's `effective_response_format` returned by
+// _get_bound_model (factory.py:1323-1344).
+type effectiveFormat struct {
+	tool     *ToolStrategy
+	provider *ProviderStrategy
+}
+
+// resolveEffectiveResponseFormat re-derives the effective strategy for one
+// model call from the (possibly middleware-overridden) requested format,
+// mirroring factory.py:1323-1344:
+//
+//   - nil → the agent's build-time strategies (toolStrategy/providerStrategy);
+//   - a raw JSON schema → wrapped in an AutoStrategy;
+//   - an AutoStrategy → ProviderStrategy when the CURRENT model supports it
+//     (modelSupportsProviderStrategy), else the build-time ToolStrategy when
+//     the request still carries the initial format (preserving tool names and
+//     HandleErrors config, factory.py:1336-1339), else a fresh ToolStrategy;
+//   - an explicit ToolStrategy → used as-is, validated as a subset of the
+//     structured tools declared at build time (factory.py:1375-1385:
+//     middleware may narrow but not introduce structured tools);
+//   - an explicit ProviderStrategy → used as-is.
+//
+// setupBindings are the build-time structured-output bindings (empty when the
+// build-time resolution was a ProviderStrategy or no format). The returned
+// bindings map is what structured-output detection should match against for
+// this call: the build-time map, extended with fresh bindings when an
+// AutoStrategy re-resolution synthesizes a ToolStrategy the build-time setup
+// never declared (a DynamicModel swap onto a tool-calling model after a
+// provider-only build-time resolution — Python's setup always declares the
+// structured tools for an AutoStrategy, so its effective ToolStrategy can
+// always reuse them; the Go port reconstructs them here instead).
+func resolveEffectiveResponseFormat(
+	requested any,
+	model language.ChatModel,
+	tools []any,
+	initialFormat any,
+	setupTool *ToolStrategy,
+	setupProvider *ProviderStrategy,
+	setupBindings map[string]OutputToolBinding,
+) (effectiveFormat, map[string]OutputToolBinding, error) {
+	rf := normalizeInitialResponseFormat(requested)
+	if rf == nil {
+		return effectiveFormat{tool: setupTool, provider: setupProvider}, setupBindings, nil
+	}
+	switch v := rf.(type) {
+	case *AutoStrategy:
+		if modelSupportsProviderStrategy(model, tools) {
+			ps := NewProviderStrategy(v.Schema)
+			return effectiveFormat{provider: &ps}, setupBindings, nil
+		}
+		if sameStrategyInstance(rf, initialFormat) && setupTool != nil {
+			// Reuse the setup strategy to preserve tool names (factory.py:1336-1339).
+			return effectiveFormat{tool: setupTool}, setupBindings, nil
+		}
+		ts := NewToolStrategy(v.Schema)
+		if !sameStrategyInstance(rf, initialFormat) && len(setupBindings) > 0 {
+			// Middleware replaced the AutoStrategy: the derived ToolStrategy
+			// may only narrow to the declared structured tools.
+			if err := validateToolStrategySpecsDeclared(&ts, setupBindings); err != nil {
+				return effectiveFormat{}, nil, err
+			}
+			return effectiveFormat{tool: &ts}, setupBindings, nil
+		}
+		// Initial AutoStrategy whose build-time resolution declared no
+		// structured tools (eager ProviderStrategy resolution): synthesize the
+		// bindings the ToolStrategy needs for this call.
+		bindings, _, err := buildStructuredOutputTools(&ts)
+		if err != nil {
+			return effectiveFormat{}, nil, err
+		}
+		return effectiveFormat{tool: &ts}, bindings, nil
+	case *ToolStrategy:
+		if !sameStrategyInstance(rf, initialFormat) {
+			if err := validateToolStrategySpecsDeclared(v, setupBindings); err != nil {
+				return effectiveFormat{}, nil, err
+			}
+		}
+		return effectiveFormat{tool: v}, setupBindings, nil
+	case *ProviderStrategy:
+		return effectiveFormat{provider: v}, setupBindings, nil
+	default:
+		return effectiveFormat{}, nil, fmt.Errorf("agents: unsupported ResponseFormat type %T (expected ToolStrategy, ProviderStrategy, AutoStrategy, or a raw JSON schema)", requested)
+	}
+}
+
+// validateToolStrategySpecsDeclared enforces factory.py:1375-1385: every
+// schema spec of a middleware-supplied ToolStrategy must name a structured
+// tool declared in the agent's original response_format at build time.
+func validateToolStrategySpecsDeclared(strategy *ToolStrategy, setupBindings map[string]OutputToolBinding) error {
+	for _, spec := range strategy.SchemaSpecs {
+		if _, ok := setupBindings[spec.Name]; !ok {
+			return fmt.Errorf("agents: ToolStrategy specifies tool %q which wasn't declared in the original response format when creating the agent", spec.Name)
+		}
+	}
+	return nil
+}
+
+// toolChoiceKey flattens a ModelRequest.ToolChoice value to a comparable
+// string for "was it middleware-overridden?" comparisons.
+func toolChoiceKey(choice any) string {
+	switch v := choice.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case language.ToolChoice:
+		return string(v)
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+// mergedBindSettings computes the per-call bind kwargs, mirroring
+// factory.py:1361 (`bind_kwargs = {**kwargs, **request.model_settings}` — the
+// request's settings win conflicts) and :1392/:1397 (tool-strategy /
+// no-strategy binds pass request.model_settings alone):
+//   - effective ProviderStrategy kwargs form the base (or none, when the
+//     effective strategy is Tool/none);
+//   - the request's ModelSettings overlay them ONLY when middleware actually
+//     replaced them — a request still carrying the node-seeded initial value
+//     (the node-level ProviderStrategy kwargs, kept for middleware
+//     observability and cache-key separation) was not overridden, and the
+//     stale build-time kwargs must not leak into a call whose effective
+//     strategy changed (e.g. a Tool override of a ProviderStrategy setup).
+func mergedBindSettings(eff effectiveFormat, requestSettings, initialSettings map[string]any) map[string]any {
+	merged := map[string]any{}
+	if eff.provider != nil {
+		for k, v := range eff.provider.ToModelKwargs() {
+			merged[k] = v
+		}
+	}
+	if !reflect.DeepEqual(requestSettings, initialSettings) {
+		for k, v := range requestSettings {
+			merged[k] = v
+		}
+	}
+	return merged
+}
+
+// effectiveBindToolChoice computes the tool_choice for the bind, mirroring
+// factory.py:1366-1371 (ProviderStrategy: no tool_choice at all, even an
+// overridden one), :1388 (`tool_choice = "any" if structured_output_tools
+// else request.tool_choice`), and :1397 (no strategy: request.tool_choice).
+// initialChoice is the value the model node seeded the request with; a
+// request still carrying it was not middleware-overridden, and the seeded
+// "any" default mirrors Python's None at bind time (it exists on the request
+// only for WrapModelCall middleware observability).
+func effectiveBindToolChoice(requestChoice, initialChoice any, eff effectiveFormat, bindings map[string]OutputToolBinding) any {
+	overridden := toolChoiceKey(requestChoice) != toolChoiceKey(initialChoice)
+	if eff.provider != nil {
+		return nil
+	}
+	if eff.tool != nil && len(bindings) > 0 {
+		return string(language.ToolChoiceAny)
+	}
+	if overridden {
+		return requestChoice
+	}
+	return nil
+}
+
+// preparedModelCall carries the per-call bind result shared by the streaming
+// and non-streaming model invocations: the bound model, the merged settings
+// (and whether the model actually accepted them), and the effective strategy.
+type preparedModelCall struct {
+	model         language.ChatModel
+	eff           effectiveFormat
+	settings      map[string]any
+	settingsBound bool
+}
+
+// prepareModelCall binds a (possibly middleware-overridden) ModelRequest for
+// invocation — the Go equivalent of Python's `_get_bound_model`
+// (factory.py:1350-1404), split into the capability calls the Go ChatModel
+// interface actually exposes:
+//
+//   - ModelSettingsBinder.BindModelSettings receives the merged kwargs
+//     (effective ProviderStrategy response_format overlaid by middleware
+//     model_settings) on every call, streaming included. Models without the
+//     capability degrade (see ModelSettingsBinder's doc comment).
+//   - final tools: the request's tools minus the structured-output tools when
+//     the effective strategy is not the ToolStrategy (factory.py:1351-1355),
+//     plus any bindings the effective ToolStrategy synthesized at resolution
+//     time; tool_choice per effectiveBindToolChoice threads through
+//     language.ToolBinder (factory.py:1366-1404).
+func prepareModelCall(
+	req middleware.ModelRequest,
+	model language.ChatModel,
+	eff effectiveFormat,
+	bindings map[string]OutputToolBinding,
+	initialToolChoice any,
+	initialSettings map[string]any,
+) (*preparedModelCall, error) {
+	settings := mergedBindSettings(eff, req.ModelSettings, initialSettings)
+	prepared := &preparedModelCall{model: model, eff: eff, settings: settings}
+
+	// Settings bind first: Python threads the kwargs through the single
+	// bind_tools call; Go splits it, and partner-style copy-semantics models
+	// carry the settings field through the subsequent tool bind.
+	if len(settings) > 0 {
+		if binder, ok := model.(ModelSettingsBinder); ok {
+			bound, err := binder.BindModelSettings(settings)
+			if err != nil {
+				return nil, fmt.Errorf("agents: bind model settings: %w", err)
+			}
+			if bound != nil {
+				prepared.model = bound
+				prepared.settingsBound = true
+			}
+		}
+		// No ModelSettingsBinder: capability detection + degrade — see
+		// ModelSettingsBinder's doc comment (StructuredCaller / post-hoc parse
+		// still cover the ProviderStrategy response_format).
+	}
+
+	finalTools, err := toolsFromAny(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+	if eff.tool != nil {
+		// Ensure the effective strategy's structured tools are present (they
+		// are pre-baked from the setup except when resolution synthesized
+		// fresh bindings for a dynamic-swap ToolStrategy).
+		present := make(map[string]bool, len(finalTools))
+		for _, t := range finalTools {
+			present[t.Name()] = true
+		}
+		for name, binding := range bindings {
+			if !present[name] {
+				finalTools = append(finalTools, binding.Tool)
+			}
+		}
+	} else if len(bindings) > 0 {
+		// Not in tool mode: strip the structured-output tools from the bind
+		// (factory.py:1351-1355 adds them only for a ToolStrategy).
+		structured := make(map[string]bool, len(bindings))
+		for name := range bindings {
+			structured[name] = true
+		}
+		filtered := make([]coretools.Tool, 0, len(finalTools))
+		for _, t := range finalTools {
+			if !structured[t.Name()] {
+				filtered = append(filtered, t)
+			}
+		}
+		finalTools = filtered
+	}
+
+	if len(finalTools) > 0 {
+		choice := effectiveBindToolChoice(req.ToolChoice, initialToolChoice, eff, bindings)
+		bound, err := bindModelTools(prepared.model, finalTools, choice, settings)
+		if err != nil {
+			return nil, err
+		}
+		prepared.model = bound
+	}
+	return prepared, nil
+}
+
 // bindModelTools binds tools on model, threading toolChoice through when the
 // model implements the optional language.ToolBinder capability. Models that
 // only implement the base BindTools keep today's behavior: the choice cannot
@@ -1877,7 +2368,12 @@ func structuredOutputToolChoice(toolStrategy *ToolStrategy) any {
 // kwargs are honored per provider. toolChoice values that are not a string
 // (or language.ToolChoice) are likewise dropped rather than fatal — before
 // this capability existed ModelRequest.ToolChoice was never applied at all.
-func bindModelTools(model language.ChatModel, boundTools []coretools.Tool, toolChoice any) (language.ChatModel, error) {
+//
+// settings is the per-call merged kwargs (see prepareModelCall); the
+// "parallel_tool_calls" entry maps onto language.BindToolsOptions for
+// ToolBinder models, the one bind_tools kwarg the Go options struct carries
+// today.
+func bindModelTools(model language.ChatModel, boundTools []coretools.Tool, toolChoice any, settings map[string]any) (language.ChatModel, error) {
 	binder, ok := model.(language.ToolBinder)
 	if !ok {
 		return model.BindTools(boundTools)
@@ -1892,6 +2388,9 @@ func bindModelTools(model language.ChatModel, boundTools []coretools.Tool, toolC
 	default:
 		// Non-string tool_choice shapes (e.g. provider-native dicts) are not
 		// expressible in language.BindToolsOptions yet; leave unconstrained.
+	}
+	if parallel, ok := settings["parallel_tool_calls"].(bool); ok {
+		opts.ParallelToolCalls = &parallel
 	}
 	return binder.BindToolsWithOptions(boundTools, opts)
 }
@@ -1913,8 +2412,12 @@ const (
 	structuredRetry
 )
 
-// detectStructuredOutput inspects the model's newMessages for a
-// ResponseFormat match: a tool call into structuredBindings (ToolStrategy),
+// detectStructuredOutput inspects the model's newMessages for a match against
+// the EFFECTIVE strategy of the model call (middleware override / AutoStrategy
+// re-resolution included — the model node passes the per-call strategies and
+// bindings from resolveEffectiveResponseFormat, mirroring how Python's
+// _handle_model_output receives _get_bound_model's effective_response_format,
+// factory.py:1408-1413): a tool call into structuredBindings (ToolStrategy),
 // or — absent any tool calls — a ProviderStrategy JSON-decodable text
 // response. A match returns a terminal *types.Command (structuredDone)
 // carrying the parsed value under state key "structured_response", ending the
@@ -1945,7 +2448,7 @@ func detectStructuredOutput(
 		return structuredPass, nil, nil, nil
 	}
 
-	if len(structuredBindings) > 0 {
+	if toolStrategy != nil && len(structuredBindings) > 0 {
 		matched := make([]messages.ToolCall, 0, 1)
 		for _, call := range last.ToolCalls {
 			if _, ok := structuredBindings[call.Name]; ok {
@@ -2021,10 +2524,9 @@ func detectStructuredOutput(
 }
 
 // providerStrategySchema returns the JSON schema the model should enforce
-// natively when the agent's ResponseFormat is a ProviderStrategy, or nil when
-// no ProviderStrategy is in play (or no schema is available). A nil/empty
-// return tells invokeModel to skip the native StructuredCaller path and fall
-// through to plain model.Invoke.
+// natively for a ProviderStrategy, or nil when none is in play. Kept for
+// callers holding a bare *ProviderStrategy; the model node passes the
+// effective strategy through preparedModelCall instead.
 func providerStrategySchema(providerStrategy *ProviderStrategy) schema.Schema {
 	if providerStrategy == nil {
 		return nil
@@ -2049,16 +2551,22 @@ func applyAgentName(msgs []messages.Message, agentName string) {
 }
 
 // invokeModel runs the actual chat model call for a (possibly
-// middleware-overridden) ModelRequest, binding req.Tools if present.
+// middleware-overridden) ModelRequest, using the bind prepared by
+// prepareModelCall (tools + tool_choice + model settings already applied; see
+// preparedModelCall).
 //
-// When structuredSchema is non-empty AND the (possibly tool-bound) model
-// implements language.StructuredCaller, the call routes through
-// language.InvokeStructured — the provider-native structured-output path
-// (e.g. OpenAI's response_format). The native path produces JSON text that
-// detectStructuredOutput's post-hoc parse still handles, so the
+// When the effective strategy is a ProviderStrategy whose response_format
+// kwargs were NOT already bound via ModelSettingsBinder AND the (possibly
+// tool-bound) model implements language.StructuredCaller, the call routes
+// through language.InvokeStructured — the provider-native structured-output
+// path (e.g. OpenAI's response_format). The native path produces JSON text
+// that detectStructuredOutput's post-hoc parse still handles, so the
 // structured_response plumbing is unchanged. Models that do NOT implement
 // StructuredCaller fall through to plain model.Invoke, preserving the existing
-// post-hoc JSON-decode behavior.
+// post-hoc JSON-decode behavior. (When the kwargs WERE bound via
+// ModelSettingsBinder the bound model already carries the provider-native
+// response_format, so plain Invoke is used — Python parity, where the kwargs
+// travel through bind_tools and model_.invoke is called directly.)
 //
 // Tool binding (if any) runs BEFORE the StructuredCaller check, so a model
 // whose bound form implements StructuredCaller still takes the native path —
@@ -2067,29 +2575,13 @@ func applyAgentName(msgs []messages.Message, agentName string) {
 // agentName, when non-empty, is stamped onto the resulting AI message(s) (see
 // applyAgentName).
 //
-// The streaming path (invokeModelStreaming) is intentionally out of scope:
-// StructuredCaller only exposes a non-streaming InvokeStructured, so streaming
-// + ProviderStrategy continues to work via the existing post-hoc
-// detectStructuredOutput parse on the assembled message.
-func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSchema schema.Schema, agentName string) (middleware.ModelResponse, error) {
-	model, ok := req.Model.(language.ChatModel)
-	if !ok || model == nil {
-		return middleware.ModelResponse{}, fmt.Errorf("agents: ModelRequest.Model must be a language.ChatModel, got %T", req.Model)
-	}
-	if len(req.Tools) > 0 {
-		boundTools, err := toolsFromAny(req.Tools)
-		if err != nil {
-			return middleware.ModelResponse{}, err
-		}
-		// Tool binding (below) threads req.ToolChoice through when the model
-		// implements language.ToolBinder — a ToolStrategy sets it to "any" so
-		// the model must answer through a structured-output tool.
-		bound, err := bindModelTools(model, boundTools, req.ToolChoice)
-		if err != nil {
-			return middleware.ModelResponse{}, err
-		}
-		model = bound
-	}
+// The streaming sibling (invokeModelStreaming) shares the same prepared bind,
+// so a ProviderStrategy's response_format reaches the model on both paths
+// when it implements ModelSettingsBinder; streaming additionally keeps the
+// post-hoc detectStructuredOutput parse as the fallback for models that only
+// implement StructuredCaller (or neither).
+func invokeModel(ctx context.Context, req middleware.ModelRequest, prepared *preparedModelCall, agentName string) (middleware.ModelResponse, error) {
+	model := prepared.model
 
 	invokeMessages := req.Messages
 	if req.SystemMessage != nil {
@@ -2104,7 +2596,7 @@ func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSch
 	// non-StructuredCaller models, which would surface schema-violation
 	// errors here rather than letting the existing detectStructuredOutput
 	// post-hoc parse own that behavior (preserving backward compatibility).
-	if len(structuredSchema) > 0 {
+	if structuredSchema := providerStrategySchema(prepared.eff.provider); len(structuredSchema) > 0 && !prepared.settingsBound {
 		if _, ok := model.(language.StructuredCaller); ok {
 			result, err := language.InvokeStructured(ctx, model, invokeMessages, structuredSchema)
 			if err != nil {
@@ -2141,11 +2633,27 @@ func anyResultHasToolCalls(msgs []messages.Message) bool {
 }
 
 // cacheKey derives (promptString, llmString) for a model request, mirroring
-// langchain_core's BaseCache contract. promptString is the role-tagged,
-// rendered message text (each message's role + messages.Text of its content);
-// llmString identifies the model and its configuration as the model type plus a
-// stable hash of the bound tool names and ModelSettings (so two requests that
-// differ only in tools or settings do not collide).
+// langchain_core's BaseCache contract (caches.py:49-84: lookup/update key on
+// `(prompt, llm_string)`, where llm_string serializes the model INCLUDING its
+// bound kwargs — so in Python two calls whose bind differs, e.g. a different
+// response_format or tool_choice, can never collide). promptString is the
+// role-tagged, rendered message text (each message's role + messages.Text of
+// its content); llmString identifies the model and its configuration as the
+// model type plus a stable hash of the bound tool names, ModelSettings, and
+// ToolChoice (so two requests that differ only in tools, settings, or tool
+// choice do not collide).
+//
+// The request's ModelSettings carries the node-level effective strategy's
+// kwargs (see buildModelNode), so two calls resolving to different effective
+// response formats — e.g. an AutoStrategy re-checked after a DynamicModel
+// swap — produce different keys, matching Python's bound-model llm_string.
+// Known limitation, inherent to this port's intentional cache divergence (a
+// hit skips the whole WrapModelCall chain — see WithAgentCache): middleware
+// runtime overrides apply INSIDE the chain, after this key is derived, so a
+// state-dependent override that flips response_format between two identical
+// prompts cannot be distinguished by the key; the first cached entry is then
+// served. Deterministic middleware overrides stay consistent (the same
+// override produced the cached entry).
 func cacheKey(req middleware.ModelRequest) (string, string) {
 	var sb strings.Builder
 	for _, m := range req.Messages {
@@ -2163,18 +2671,19 @@ func cacheKey(req middleware.ModelRequest) (string, string) {
 	promptString := sb.String()
 
 	modelID := fmt.Sprintf("%T", req.Model)
-	llmString := modelID + "|" + hashToolsAndSettings(req.Tools, req.ModelSettings)
+	llmString := modelID + "|" + hashToolsAndSettings(req.Tools, req.ModelSettings, req.ToolChoice)
 	return promptString, llmString
 }
 
 // hashToolsAndSettings returns a stable, 16-char hex digest of the bound tool
-// names and model settings. Tool names are collected in order; the names slice
-// and the settings map are JSON-encoded together (encoding/json sorts map keys,
-// so the encoding is deterministic) and sha256-hashed. An encode failure (which
-// would only occur for non-JSON-representable settings values) yields an empty
-// string, which collapses all such requests onto the same key rather than
-// panicking — the cache is best-effort.
-func hashToolsAndSettings(tools []any, settings map[string]any) string {
+// names, model settings, and tool choice. Tool names are collected in order;
+// the names slice, the settings map, and the flattened tool choice are
+// JSON-encoded together (encoding/json sorts map keys, so the encoding is
+// deterministic) and sha256-hashed. An encode failure (which would only occur
+// for non-JSON-representable settings values) yields an empty string, which
+// collapses all such requests onto the same key rather than panicking — the
+// cache is best-effort.
+func hashToolsAndSettings(tools []any, settings map[string]any, toolChoice any) string {
 	toolNames := make([]string, 0, len(tools))
 	for _, t := range tools {
 		if tool, ok := t.(coretools.Tool); ok {
@@ -2182,8 +2691,9 @@ func hashToolsAndSettings(tools []any, settings map[string]any) string {
 		}
 	}
 	payload := map[string]any{
-		"tools":    toolNames,
-		"settings": settings,
+		"tools":       toolNames,
+		"settings":    settings,
+		"tool_choice": toolChoiceKey(toolChoice),
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -2194,10 +2704,15 @@ func hashToolsAndSettings(tools []any, settings map[string]any) string {
 }
 
 // invokeModelStreaming is the streaming counterpart of invokeModel, used when
-// an event sink is active (see buildModelNode's handler). It binds tools the
-// same way, then drives model.Stream and projects the chunks through
-// core/streamevents.ChatModelStream — emitting one model_delta event per v3
-// protocol event and a single model_end with the assembled message at the end.
+// an event sink is active (see buildModelNode's handler). It uses the same
+// prepared bind (prepareModelCall): tools + tool_choice + model settings —
+// including a ProviderStrategy's response_format kwargs when the model
+// implements ModelSettingsBinder — are applied before model.Stream, so the
+// effective per-call strategy reaches the streaming path exactly like the
+// non-streaming one (Python binds once and the bound model serves both invoke
+// and stream). For models without ModelSettingsBinder the ProviderStrategy
+// degrades to the retained post-hoc detectStructuredOutput parse of the
+// assembled message (language.StructuredCaller has no streaming form).
 //
 // The assembled message is returned in a ModelResponse exactly like
 // invokeModel, so the rest of the model node (structured-output detection,
@@ -2211,23 +2726,8 @@ func hashToolsAndSettings(tools []any, settings map[string]any) string {
 // it is emitted as a model_delta, and rewrites the assembled model_end text so
 // the two stay consistent. When no middleware implements the hook, transform
 // stays identity and this path is identical to the no-middleware behavior.
-func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink *eventSink, mws []any, agentName string) (middleware.ModelResponse, error) {
-	model, ok := req.Model.(language.ChatModel)
-	if !ok || model == nil {
-		return middleware.ModelResponse{}, fmt.Errorf("agents: ModelRequest.Model must be a language.ChatModel, got %T", req.Model)
-	}
-	if len(req.Tools) > 0 {
-		boundTools, err := toolsFromAny(req.Tools)
-		if err != nil {
-			return middleware.ModelResponse{}, err
-		}
-		// Same ToolChoice threading as invokeModel (see its comment).
-		bound, err := bindModelTools(model, boundTools, req.ToolChoice)
-		if err != nil {
-			return middleware.ModelResponse{}, err
-		}
-		model = bound
-	}
+func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, prepared *preparedModelCall, sink *eventSink, mws []any, agentName string) (middleware.ModelResponse, error) {
+	model := prepared.model
 
 	invokeMessages := req.Messages
 	if req.SystemMessage != nil {
