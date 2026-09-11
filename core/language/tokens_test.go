@@ -3,26 +3,28 @@ package language
 import (
 	"testing"
 
+	"github.com/tiktoken-go/tokenizer"
+
 	"github.com/projanvil/langchain-golang/core/messages"
 )
 
 // Mirrors Python's base get_num_tokens = len(get_token_ids)
-// (language_models/base.py:433). The default approximation splits text into
-// 4-rune chunks (the chars-per-token heuristic of
-// messages.CountTokensApproximately), so "hello world" (11 runes) is 3 tokens.
+// (language_models/base.py:433). The default fallback is the real GPT-2 BPE
+// tokenizer (language_models/base.py:98-104), so "hello world" is 2 tokens.
 func TestGetNumTokensIsTokenIDCount(t *testing.T) {
-	if got := GetNumTokens(nil, "hello world"); got != 3 {
-		t.Fatalf("GetNumTokens = %d, want 3", got)
+	if got := GetNumTokens(nil, "hello world"); got != 2 {
+		t.Fatalf("GetNumTokens = %d, want 2", got)
 	}
 	if got := GetNumTokens(nil, ""); got != 0 {
 		t.Fatalf("GetNumTokens(empty) = %d, want 0", got)
 	}
-	if got := GetNumTokens(NewFakeChatModel(), "hello world"); got != 3 {
-		t.Fatalf("GetNumTokens(FakeChatModel) = %d, want 3", got)
+	if got := GetNumTokens(NewFakeChatModel(), "hello world"); got != 2 {
+		t.Fatalf("GetNumTokens(FakeChatModel) = %d, want 2", got)
 	}
 }
 
-// Default token IDs are deterministic, non-negative, and chunk-sized.
+// Default token IDs are real GPT-2 BPE IDs: deterministic, non-negative, and
+// within the r50k_base vocabulary size (50257).
 func TestDefaultGetTokenIDsDeterministic(t *testing.T) {
 	first := DefaultGetTokenIDs("表情符号是\n🦜🔗")
 	second := DefaultGetTokenIDs("表情符号是\n🦜🔗")
@@ -36,9 +38,60 @@ func TestDefaultGetTokenIDsDeterministic(t *testing.T) {
 		if first[i] < 0 {
 			t.Fatalf("id %d negative: %d", i, first[i])
 		}
+		if first[i] >= 50257 {
+			t.Fatalf("id %d outside r50k_base vocabulary: %d", i, first[i])
+		}
 	}
 	if got := DefaultGetTokenIDs(""); len(got) != 0 {
 		t.Fatalf("DefaultGetTokenIDs(empty) = %v, want empty", got)
+	}
+}
+
+// DefaultGetTokenIDs encodes with the real GPT-2 BPE tokenizer (gpt2 =
+// r50k_base), mirroring Python's fallback get_token_ids
+// (language_models/base.py:98-104): "hello world" is 2 tokens with the true
+// GPT-2 token IDs, and the output matches a direct tokenizer.Encode call.
+func TestDefaultGetTokenIDsUsesGPT2BPE(t *testing.T) {
+	ids := DefaultGetTokenIDs("hello world")
+	if len(ids) != 2 {
+		t.Fatalf("DefaultGetTokenIDs(\"hello world\") = %v, want 2 ids", ids)
+	}
+	codec, err := tokenizer.Get(tokenizer.R50kBase)
+	if err != nil {
+		t.Fatalf("tokenizer.Get(GPT2Enc): %v", err)
+	}
+	want, _, err := codec.Encode("hello world")
+	if err != nil {
+		t.Fatalf("codec.Encode: %v", err)
+	}
+	if len(ids) != len(want) {
+		t.Fatalf("len = %d, want %d (direct encode)", len(ids), len(want))
+	}
+	for i := range ids {
+		if ids[i] != int(want[i]) {
+			t.Fatalf("id %d = %d, want %d (direct encode)", i, ids[i], want[i])
+		}
+	}
+	// Two calls return equal IDs (cached tokenizer, deterministic encoding).
+	again := DefaultGetTokenIDs("hello world")
+	for i := range ids {
+		if ids[i] != again[i] {
+			t.Fatalf("second call id %d = %d, want %d", i, again[i], ids[i])
+		}
+	}
+}
+
+// Multi-byte text tokenizes by UTF-8 bytes under BPE, so CJK is not collapsed
+// into one fake chunk: r50k_base's byte-level vocabulary expands "你好" to 4
+// tokens (each CJK character spans multiple byte-level tokens), and multi-byte
+// emoji likewise count more than one token each.
+func TestDefaultGetTokenIDsMultibyte(t *testing.T) {
+	if got := DefaultGetTokenIDs("你好"); len(got) != 4 {
+		t.Fatalf("DefaultGetTokenIDs(\"你好\") = %v, want 4 ids", got)
+	}
+	emoji := DefaultGetTokenIDs("🦜🔗")
+	if len(emoji) != 6 { // three byte-level tokens per 4-byte emoji
+		t.Fatalf("DefaultGetTokenIDs(\"🦜🔗\") = %v, want 6 ids", emoji)
 	}
 }
 

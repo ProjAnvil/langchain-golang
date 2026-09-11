@@ -1,7 +1,9 @@
 package language
 
 import (
-	"hash/fnv"
+	"sync"
+
+	"github.com/tiktoken-go/tokenizer"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -21,32 +23,53 @@ type MessageTokenCounter interface {
 	GetNumTokensFromMessages(msgs []messages.Message) (int, error)
 }
 
-// approximateCharsPerToken mirrors the chars-per-token heuristic used by
-// messages.CountTokensApproximately (core/messages/trim.go).
-const approximateCharsPerToken = 4
+// gpt2Tokenizer lazily caches the GPT-2 (r50k_base) BPE tokenizer used by
+// DefaultGetTokenIDs. The tiktoken-go vocabulary is embedded in the library,
+// so constructing it does no network I/O; sync.Once builds it once per
+// process.
+var (
+	gpt2Once        sync.Once
+	gpt2Tokenizer   tokenizer.Codec
+	gpt2TokenizerEr error
+)
 
-// DefaultGetTokenIDs approximates Python's fallback get_token_ids
-// (language_models/base.py:104, a GPT-2 tokenizer) without shipping a BPE
-// tokenizer: text is split into chunks of approximateCharsPerToken runes and
-// each chunk is mapped to a deterministic non-negative FNV-1a 31-bit ID.
-// Counts are approximate; IDs are stable but are NOT real tokenizer IDs.
-// Models with a real tokenizer should implement TokenCounter.
+// getGPT2Tokenizer returns the cached GPT-2 codec, constructing it on first
+// use. It requests R50kBase rather than GPT2Enc because tiktoken-go v0.8.1's
+// Get does not register the "gpt2" spelling (ForModel(GPT2) routes to it and
+// fails); r50k_base is the identical GPT-2 vocabulary.
+func getGPT2Tokenizer() (tokenizer.Codec, error) {
+	gpt2Once.Do(func() {
+		gpt2Tokenizer, gpt2TokenizerEr = tokenizer.Get(tokenizer.R50kBase)
+	})
+	return gpt2Tokenizer, gpt2TokenizerEr
+}
+
+// DefaultGetTokenIDs mirrors Python's fallback get_token_ids
+// (language_models/base.py:98-104): models without a tokenizer of their own
+// get token IDs from the real GPT-2 BPE tokenizer (gpt2 = r50k_base, the
+// vocabulary behind transformers' GPT2TokenizerFast). Counts are true BPE
+// counts ("hello world" is 2 tokens). Models with a provider-specific
+// tokenizer should implement TokenCounter.
 func DefaultGetTokenIDs(text string) []int {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return []int{}
+	codec, err := getGPT2Tokenizer()
+	if err != nil {
+		// Unreachable in practice: R50kBase is a compile-time constant whose
+		// vocabulary ships embedded in tiktoken-go, so Get cannot fail here.
+		// Panicking surfaces the programming error (e.g. a future encoding
+		// constant change) instead of silently returning fabricated IDs.
+		panic("language: failed to load embedded GPT-2 tokenizer: " + err.Error())
 	}
-	ids := make([]int, 0, (len(runes)+approximateCharsPerToken-1)/approximateCharsPerToken)
-	for start := 0; start < len(runes); start += approximateCharsPerToken {
-		end := start + approximateCharsPerToken
-		if end > len(runes) {
-			end = len(runes)
-		}
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(string(runes[start:end])))
-		ids = append(ids, int(h.Sum32()&0x7FFFFFFF))
+	ids, _, err := codec.Encode(text)
+	if err != nil {
+		// Equally unreachable: encoding with the embedded r50k_base codec
+		// cannot fail for arbitrary text. Panic rather than swallow.
+		panic("language: GPT-2 tokenizer failed to encode: " + err.Error())
 	}
-	return ids
+	out := make([]int, len(ids))
+	for i, id := range ids {
+		out[i] = int(id)
+	}
+	return out
 }
 
 // GetTokenIDs returns the token IDs for text, dispatching to the model's

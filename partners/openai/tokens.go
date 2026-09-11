@@ -85,7 +85,7 @@ func (m ChatModel) getEncodingModel() (string, tokenizer.Codec, error) {
 // a real tiktoken BPE encoding (cl100k_base/o200k_base, selected like Python's
 // _get_encoding_model). The signature has no error return, so on an
 // (unexpected) codec load failure it falls back to
-// language.DefaultGetTokenIDs' 4-rune approximation.
+// language.DefaultGetTokenIDs' real GPT-2 BPE (r50k_base) encoding.
 func (m ChatModel) GetTokenIDs(text string) []int {
 	_, codec, err := m.getEncodingModel()
 	if err != nil {
