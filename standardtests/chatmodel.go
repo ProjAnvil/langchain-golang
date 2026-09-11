@@ -213,13 +213,22 @@ func RunChatModelBasics(
 	}
 }
 
-// RunChatModelUnitTests runs the full unit-test conformance suite mirroring
+// RunChatModelUnitTests runs the basic unit-test conformance suite mirroring
 // Python's ChatModelUnitTests. It includes RunChatModelBasics plus structural
 // validations that can be run offline without a live model: response shape,
 // streaming, and usage metadata paths.
 //
 // Providers that do not support certain features should pass an appropriate
 // ChatModelCapabilities and call DeclareUnsupported for logging.
+//
+// This entry point covers only the always-required surface. Deeper,
+// capability-gated conformance lives in the layered suites (see
+// chatmodel_suites.go): RunChatModelToolCallingSuite,
+// RunChatModelToolChoiceSuite, RunChatModelStructuredOutputSuite,
+// RunChatModelMultimodalInputSuite, and RunChatModelStreamingSuite — or run
+// them all via RunChatModelStandardSuites. Those suites mirror the
+// feature-scoped tests of Python's ChatModelIntegrationTests and fail on
+// declared-but-unimplemented capabilities.
 func RunChatModelUnitTests(
 	t *testing.T,
 	factory ChatModelFactory,

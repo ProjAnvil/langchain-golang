@@ -28,6 +28,14 @@ func TestImageSourceVariants(t *testing.T) {
 			block: map[string]any{"type": "image", "source_type": "id", "file_id": "file_3"},
 			want:  map[string]any{"type": "file", "file_id": "file_3"},
 		},
+		{
+			// The standard LangChain image-input shape (typed ImageBlock via
+			// BlockToMap) carries base64 without source_type; found by the
+			// standardtests multimodal suite.
+			name:  "base64 without source_type",
+			block: map[string]any{"type": "image", "base64": "QUJD", "mime_type": "image/png"},
+			want:  map[string]any{"type": "base64", "media_type": "image/png", "data": "QUJD"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source, err := imageSource(tc.block)

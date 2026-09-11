@@ -98,6 +98,18 @@ func imageSource(m map[string]any) (map[string]any, error) {
 	case "id":
 		return map[string]any{"type": "file", "file_id": stringValue(m["id"], m["file_id"])}, nil
 	}
+	// Typed Go blocks (messages.ImageBlock serialized via BlockToMap) carry a
+	// plain "base64" key without an explicit source_type — the standard
+	// LangChain image-input shape Python's _format_image accepts by computing
+	// source_type from the fields. Mirror documentSource's fallback so those
+	// blocks serialize instead of erroring.
+	if _, ok := m["base64"]; ok {
+		return map[string]any{
+			"type":       "base64",
+			"media_type": m["mime_type"],
+			"data":       stringValue(m["data"], m["base64"]),
+		}, nil
+	}
 	if fileID, ok := m["file_id"].(string); ok && fileID != "" {
 		return map[string]any{"type": "file", "file_id": fileID}, nil
 	}
