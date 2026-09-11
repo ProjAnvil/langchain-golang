@@ -205,7 +205,27 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) (chatCo
 	if m.toolChoice != nil {
 		payload.ToolChoice = m.toolChoice.value
 	}
-	if m.responseFormat != nil {
+	// Same precedence as the Responses builder (buildRequest): a
+	// structuredOutput binding (InvokeStructured / WithStructuredOutput) wins
+	// over a raw responseFormat dict. On the wire the json_schema config takes
+	// the CC-native nested form
+	// {"type":"json_schema","json_schema":{name,schema,strict}}; strict is
+	// omitted when false, mirroring the Responses path's responseFormat
+	// serialization (json:"strict,omitempty"). json_mode / raw dicts
+	// ({"type":"json_object"}, ...) pass through verbatim.
+	if m.structuredOutput != nil {
+		jsonSchema := map[string]any{
+			"name":   m.structuredOutput.Name,
+			"schema": m.structuredOutput.Schema,
+		}
+		if m.structuredOutput.Strict {
+			jsonSchema["strict"] = true
+		}
+		payload.ResponseFormat = map[string]any{
+			"type":        "json_schema",
+			"json_schema": jsonSchema,
+		}
+	} else if m.responseFormat != nil {
 		payload.ResponseFormat = m.responseFormat
 	}
 
