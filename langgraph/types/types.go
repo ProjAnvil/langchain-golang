@@ -83,6 +83,15 @@ type Interrupt struct {
 	Value any
 	// ID identifies this interrupt so a Command.Resume map can target it.
 	ID string
+	// NS is the full task checkpoint namespace of the interrupted task:
+	// "<parentNS>/<node>:<taskID>" for a task inside a subgraph, or
+	// "<node>:<taskID>" at the root level (the namespace the task's own
+	// checkpoints live under, see graph.taskCheckpointNS). Boundary
+	// interrupts (interrupt_before/interrupt_after) carry the node-only
+	// namespace "<parentNS>/<node>". A resume map may address an interrupt
+	// by NS as well as by ID. Interrupts persisted before this field existed
+	// deserialize with NS == "" and are matched by ID only.
+	NS string
 }
 
 // GraphInterrupt is the sentinel error a node's execution stops with when it

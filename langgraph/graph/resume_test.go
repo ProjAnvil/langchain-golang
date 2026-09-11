@@ -616,12 +616,18 @@ func TestResumeNilResumeRepausesKeepsPrefix(t *testing.T) {
 	}
 }
 
-func TestPersistInterruptsEmptyIsNoOp(t *testing.T) {
-	// Even with a failing saver, persisting zero interrupts must not call it.
-	err := persistInterrupts(context.Background(), &putWritesErrSaver{Saver: checkpoint.NewMemorySaver()},
-		checkpoint.Config{ThreadID: "t"}, "task", nil)
+func TestPutPauseWritesEmptyIsNoOp(t *testing.T) {
+	// Even with a failing saver, persisting zero writes must not call it.
+	sink := newCheckpointSink(&putWritesErrSaver{Saver: checkpoint.NewMemorySaver()}, DurabilitySync, context.Background(), nil)
+	err := sink.putPauseWrites(context.Background(), checkpoint.Config{ThreadID: "t"}, nil, "task")
 	if err != nil {
-		t.Fatalf("persistInterrupts(nil) error = %v, want nil", err)
+		t.Fatalf("putPauseWrites(nil) error = %v, want nil", err)
+	}
+	if interruptWrites(nil) != nil {
+		t.Fatalf("interruptWrites(nil) = %v, want nil", interruptWrites(nil))
+	}
+	if interruptAndResumeWrites(nil, nil) != nil {
+		t.Fatalf("interruptAndResumeWrites(nil, nil) = %v, want nil", interruptAndResumeWrites(nil, nil))
 	}
 }
 
@@ -646,11 +652,212 @@ func TestPlanResumeSkipsEndDestinations(t *testing.T) {
 			},
 		},
 	}
-	plan, err := planResume(tup, nil)
+	plan, err := planResume(tup, nil, "")
 	if err != nil {
 		t.Fatalf("planResume() error = %v", err)
 	}
 	if len(plan.tasks) != 1 || plan.tasks[0].node != "a" {
 		t.Fatalf("planResume().tasks = %+v, want only node %q (END destinations skipped)", plan.tasks, "a")
+	}
+}
+
+// TestInterruptNSIDFormatRootLevel snapshots the NS/ID format of a root-level
+// in-node interrupt: ID stays "<node>-<counter>" (backward compatible), NS is
+// the task's own checkpoint namespace "<node>:<plannedTaskID>" where the
+// planned task ID is the dispatch-time identity (TaskID anchored on the
+// checkpoint position the task was planned against — the same ID the run loop
+// publishes via plannedTaskIDKey for subgraph namespacing), and the persisted
+// ReservedInterrupt copy carries the same NS.
+func TestInterruptNSIDFormatRootLevel(t *testing.T) {
+	ctx := context.Background()
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		Interrupt(rt, "q")
+		return nil, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("Interrupts = %+v, want one", res.Interrupts)
+	}
+	intr := res.Interrupts[0]
+	if intr.ID != "ask-1" {
+		t.Fatalf("interrupt ID = %q, want %q", intr.ID, "ask-1")
+	}
+
+	// The ask task dispatched as superstep 0 against the input checkpoint, so
+	// its dispatch-time planned ID is TaskID(inputCheckpoint, 0, "ask", nil).
+	tups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	inputID := ""
+	for _, tt := range tups {
+		if tt.Metadata.Source == "input" {
+			inputID = tt.Config.CheckpointID
+		}
+	}
+	if inputID == "" {
+		t.Fatalf("no input checkpoint in history: %+v", tups)
+	}
+	wantNS := "ask:" + TaskID(inputID, 0, "ask", nil)
+	if intr.NS != wantNS {
+		t.Fatalf("interrupt NS = %q, want %q (node + dispatch-time planned task ID)", intr.NS, wantNS)
+	}
+	// Format snapshot: "<node>:<16-hex task ID>".
+	if !strings.HasPrefix(intr.NS, "ask:") || len(intr.NS) != len("ask:")+16 {
+		t.Fatalf("interrupt NS = %q, want <node>:<16-hex task ID>", intr.NS)
+	}
+
+	tup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple() = (%v, %v), want the pause checkpoint", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 1 || tup.Checkpoint.Next[0].Node != "ask" {
+		t.Fatalf("pause checkpoint Next = %+v, want the ask task", tup.Checkpoint.Next)
+	}
+	sawCopy := false
+	for _, w := range tup.PendingWrites {
+		if w.Channel != checkpoint.ReservedInterrupt {
+			continue
+		}
+		cp, ok := w.Value.(types.Interrupt)
+		if !ok {
+			t.Fatalf("ReservedInterrupt write value is %T, want types.Interrupt", w.Value)
+		}
+		if cp.NS != wantNS || cp.ID != "ask-1" {
+			t.Fatalf("persisted interrupt copy = %+v, want NS %q ID %q", cp, wantNS, "ask-1")
+		}
+		sawCopy = true
+	}
+	if !sawCopy {
+		t.Fatalf("pause checkpoint has no ReservedInterrupt pending write: %+v", tup.PendingWrites)
+	}
+}
+
+// TestBoundaryInterruptNSRootLevel pins the boundary interrupt NS format at
+// the root level: node-only namespace (no task ID), ID unchanged.
+func TestBoundaryInterruptNSRootLevel(t *testing.T) {
+	ctx := context.Background()
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddEdge(types.START, "a")
+	g.AddEdge("a", "b")
+	g.AddEdge("b", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver), WithInterruptBefore("b"))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("Interrupts = %+v, want one", res.Interrupts)
+	}
+	if res.Interrupts[0].NS != "b" {
+		t.Fatalf("boundary interrupt NS = %q, want %q", res.Interrupts[0].NS, "b")
+	}
+	if res.Interrupts[0].ID != "interrupt-before-b" {
+		t.Fatalf("boundary interrupt ID = %q, want %q", res.Interrupts[0].ID, "interrupt-before-b")
+	}
+}
+
+// TestResumeMapByNSAddressesRootInterrupt verifies a map resume keyed by an
+// interrupt's NS (not its ID) reaches the pending root-level interrupt.
+func TestResumeMapByNSAddressesRootInterrupt(t *testing.T) {
+	ctx := context.Background()
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		v := Interrupt(rt, "q")
+		s, _ := v.(string)
+		return map[string]any{"answer": s}, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"})
+	if err != nil || len(res.Interrupts) != 1 {
+		t.Fatalf("pause Invoke() = (%+v, %v), want one interrupt", res.Interrupts, err)
+	}
+	res, err = cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: map[string]any{res.Interrupts[0].NS: "42"}})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if len(res.Interrupts) != 0 {
+		t.Fatalf("resume re-paused with %+v", res.Interrupts)
+	}
+	if res.Values["answer"] != "42" {
+		t.Fatalf("answer = %v, want 42 (NS-keyed resume did not match)", res.Values["answer"])
+	}
+}
+
+// TestInterruptOwnedBy covers the namespace-ownership predicate used by
+// resumeSkipNode: only boundary interrupts owned by the resuming run's own
+// namespace may drive the first-superstep skip.
+func TestInterruptOwnedBy(t *testing.T) {
+	cases := []struct {
+		ownNS, interruptNS string
+		want               bool
+	}{
+		{"", "ask:abc", true},                     // root run, root in-node interrupt
+		{"", "b", true},                           // root run, root boundary interrupt
+		{"", "sub:t1/ask:t2", false},              // root run, subgraph-internal interrupt
+		{"", "sub:t1/b", false},                   // root run, subgraph boundary interrupt
+		{"sub:t1", "sub:t1/ask:t2", true},         // sub run, own in-node interrupt
+		{"sub:t1", "sub:t1/b", true},              // sub run, own boundary interrupt
+		{"sub:t1", "sub:t1/mid:t2/ask:t3", false}, // sub run, grandchild interrupt
+		{"sub:t1", "other:9/ask:t1", false},       // different branch
+		{"sub:t1", "", true},                      // legacy persisted interrupt
+	}
+	for _, c := range cases {
+		if got := interruptOwnedBy(c.ownNS, c.interruptNS); got != c.want {
+			t.Fatalf("interruptOwnedBy(%q, %q) = %v, want %v", c.ownNS, c.interruptNS, got, c.want)
+		}
+	}
+}
+
+// TestResumeSkipNodeOwnership pins that a subgraph's internal
+// interrupt-before-<node> does not make the parent run skip its own
+// same-named node, while owned and legacy boundary interrupts still do.
+func TestResumeSkipNodeOwnership(t *testing.T) {
+	rootPending := []types.Interrupt{
+		{Value: "v", ID: "interrupt-before-b", NS: "sub:t1/b"}, // child's boundary interrupt
+	}
+	if got := resumeSkipNode(rootPending, ""); got != "" {
+		t.Fatalf("resumeSkipNode(child boundary, ownNS root) = %q, want \"\"", got)
+	}
+	childPending := []types.Interrupt{
+		{Value: "v", ID: "interrupt-before-b", NS: "sub:t1/b"},
+	}
+	if got := resumeSkipNode(childPending, "sub:t1"); got != "b" {
+		t.Fatalf("resumeSkipNode(own boundary, ownNS sub:t1) = %q, want %q", got, "b")
+	}
+	legacy := []types.Interrupt{
+		{Value: "v", ID: "interrupt-before-b", NS: ""}, // pre-NS persisted data
+	}
+	if got := resumeSkipNode(legacy, ""); got != "b" {
+		t.Fatalf("resumeSkipNode(legacy boundary, ownNS root) = %q, want %q", got, "b")
+	}
+	nonBoundary := []types.Interrupt{
+		{Value: "v", ID: "ask-1", NS: "ask:t1"},
+	}
+	if got := resumeSkipNode(nonBoundary, ""); got != "" {
+		t.Fatalf("resumeSkipNode(in-node interrupt) = %q, want \"\"", got)
 	}
 }

@@ -69,11 +69,14 @@ func TestJSONSerializerRegistryRoundTrip(t *testing.T) {
 		"[]messages.Message": []messages.Message{messages.Human("q"), msg},
 		"types.Send":         types.Send{Node: "worker", Arg: map[string]any{"task": "a", "n": 1.5}},
 		"types.Interrupt":    types.Interrupt{Value: map[string]any{"reason": "approve?", "options": []any{"y", "n"}}, ID: "i1"},
-		"time.Time":          ts,
-		"[]byte":             []byte{0x00, 0x01, 0xff},
-		"int64":              int64(1<<40 + 7),
-		"int":                int(42),
-		"[]string":           []string{"a", "b"},
+		// The NS field must survive the envelope (interrupts persisted by
+		// JSON-encoding savers feed NS-keyed resume matching).
+		"types.Interrupt with NS": types.Interrupt{Value: "v", ID: "ask-1", NS: "ask:0123456789abcdef"},
+		"time.Time":               ts,
+		"[]byte":                  []byte{0x00, 0x01, 0xff},
+		"int64":                   int64(1<<40 + 7),
+		"int":                     int(42),
+		"[]string":                []string{"a", "b"},
 	}
 	for name, v := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -1104,8 +1104,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// to it, stamping Metadata.Parents with the child namespaces used so far
 	// and — for a subgraph run — the parent's current position. A successful
 	// save emits the stream layer's debug checkpoint chunk and, when active,
-	// the checkpoints chunk (a StateSnapshot).
-	save := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
+	// the checkpoints chunk (a StateSnapshot). savePause is the pause-checkpoint
+	// variant: it routes the write through cpSink.putPauseCheckpoint, which
+	// guarantees durability before the run returns under every Durability mode
+	// (see checkpointSink.putPauseCheckpoint).
+	persist := func(pause bool, md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
 		md.Parents = children.snapshot()
 		if isSubgraph && parentSC.current != nil && parentSC.current.CheckpointID != "" {
 			if md.Parents == nil {
@@ -1113,7 +1116,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			}
 			md.Parents[parentSC.ns] = parentSC.current.CheckpointID
 		}
-		cfg, err := g.saveCheckpoint(ctx, cpSink, opts, rs, *currentCfg, md, next)
+		cfg, err := g.saveCheckpoint(ctx, cpSink, opts, rs, *currentCfg, md, next, pause)
 		if err != nil {
 			return err
 		}
@@ -1121,6 +1124,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		em.emitCheckpointSnapshot(md, cfg, *currentCfg, rs.snapshot(), next)
 		*currentCfg = cfg
 		return nil
+	}
+	save := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
+		return persist(false, md, next)
+	}
+	savePause := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
+		return persist(true, md, next)
 	}
 
 	// Run mode selection. An explicit Options.Resume always resumes (the
@@ -1142,12 +1151,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, opts.Resume)
+		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, opts.Resume, "")
 		if err != nil {
 			return Result{}, err
 		}
 	case tup != nil && len(input) == 0:
-		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, nil)
+		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, nil, "")
 		if err != nil {
 			return Result{}, err
 		}
@@ -1254,13 +1263,14 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			interrupt := types.Interrupt{
 				Value: fmt.Sprintf("interrupt_before: %s", pausedBefore),
 				ID:    interruptBeforeID + pausedBefore,
+				NS:    taskCheckpointNS(opts.checkpointNS, pausedBefore, ""),
 			}
 			if checkpointing {
-				if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step},
+				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step},
 					plannedTasks(active)); err != nil {
 					return Result{}, err
 				}
-				if err := persistInterrupts(ctx, g.checkpointer, *currentCfg, pausedBefore, []types.Interrupt{interrupt}); err != nil {
+				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedBefore); err != nil {
 					return Result{}, err
 				}
 			}
@@ -1281,11 +1291,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 
 		type outcome struct {
-			update      map[string]any
-			cmd         *types.Command
-			interrupted *types.Interrupt
-			consumed    []any
-			err         error
+			update     map[string]any
+			cmd        *types.Command
+			interrupts []types.Interrupt
+			consumed   []any
+			err        error
 		}
 		outcomes := make([]outcome, len(active))
 
@@ -1380,7 +1390,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// subgraph checkpoint namespacing; see plannedTaskIDKey).
 			taskCtx := context.WithValue(em.nodeContext(runCtx, t.node, rs.step+1),
 				plannedTaskIDKey{}, t.plannedID(*currentCfg, rs.step+1))
-			update, cmd, interrupted, consumed, err := g.runTask(taskCtx, t, state, resumeValues[t.id])
+			update, cmd, interrupts, consumed, err := g.runTask(taskCtx, t, state, resumeValues[t.id])
 			if sink != nil {
 				// Always emit node_end so start/end pairs are balanced per
 				// invocation, even on the error/interrupt paths. The pair
@@ -1388,7 +1398,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				// one start/end pair regardless of attempt count.
 				sink.EmitRawEvent(RawEvent{Kind: RawNodeEnd, Node: t.node})
 			}
-			outcomes[i] = outcome{update: update, cmd: cmd, interrupted: interrupted, consumed: consumed, err: err}
+			outcomes[i] = outcome{update: update, cmd: cmd, interrupts: interrupts, consumed: consumed, err: err}
 		})
 		resumeValues = nil
 
@@ -1401,7 +1411,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// from a human's resume value cached under the pre-interrupt input key
 		// would poison later fresh runs with that same input.
 		for i, o := range outcomes {
-			if !missed[i] || o.err != nil || o.interrupted != nil {
+			if !missed[i] || o.err != nil || len(o.interrupts) > 0 {
 				continue
 			}
 			writes, err := completedTaskWrites(o.update, o.cmd)
@@ -1426,7 +1436,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// this pass, so they stay free of control-plane keys; a cache-hit
 		// parent still records its arrival here.
 		for i, t := range active {
-			if len(g.joinsByParent[t.node]) == 0 || outcomes[i].err != nil || outcomes[i].interrupted != nil {
+			if len(g.joinsByParent[t.node]) == 0 || outcomes[i].err != nil || len(outcomes[i].interrupts) > 0 {
 				continue
 			}
 			if outcomes[i].update == nil {
@@ -1443,13 +1453,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// tasks of the superstep complete, so updates bunch here.)
 		var interrupts []types.Interrupt
 		for i, o := range outcomes {
-			var taskInterrupts []types.Interrupt
-			if o.interrupted != nil {
-				taskInterrupts = []types.Interrupt{*o.interrupted}
-				interrupts = append(interrupts, *o.interrupted)
-			}
+			interrupts = append(interrupts, o.interrupts...)
 			pub := g.dropJoinKeys(o.update)
-			em.debugTaskResult(rs.step+1, active[i], pub, o.err, taskInterrupts)
+			em.debugTaskResult(rs.step+1, active[i], pub, o.err, o.interrupts)
 			em.emitUpdate(active[i].node, pub)
 		}
 		for _, o := range outcomes {
@@ -1470,13 +1476,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// pending writes are keyed by the task's planned ID (D5).
 			if checkpointing {
 				next := plannedTasks(active)
-				if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step}, next); err != nil {
+				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next); err != nil {
 					return Result{}, err
 				}
 				for i, o := range outcomes {
 					taskID := next[i].ID
-					if o.interrupted != nil {
-						if err := persistInterruptAndResume(ctx, g.checkpointer, *currentCfg, taskID, []types.Interrupt{*o.interrupted}, o.consumed); err != nil {
+					if len(o.interrupts) > 0 {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptAndResumeWrites(o.interrupts, o.consumed), taskID); err != nil {
 							return Result{}, err
 						}
 						continue
@@ -1486,7 +1492,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						return Result{}, err
 					}
 					if len(writes) > 0 {
-						if err := cpSink.putWrites(ctx, *currentCfg, writes, taskID); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, writes, taskID); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
 						}
 					}
@@ -1605,12 +1611,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			interrupt := types.Interrupt{
 				Value: fmt.Sprintf("interrupt_after: %s", pausedAfter),
 				ID:    interruptAfterID + pausedAfter,
+				NS:    taskCheckpointNS(opts.checkpointNS, pausedAfter, ""),
 			}
 			if checkpointing {
-				if err := save(checkpoint.Metadata{Source: "loop", Step: rs.step}, planned); err != nil {
+				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, planned); err != nil {
 					return Result{}, err
 				}
-				if err := persistInterrupts(ctx, g.checkpointer, *currentCfg, pausedAfter, []types.Interrupt{interrupt}); err != nil {
+				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedAfter); err != nil {
 					return Result{}, err
 				}
 			}
@@ -1701,8 +1708,10 @@ func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cpSink *che
 // Config. parent is the executor's current checkpoint position: its
 // CheckpointID is passed to Put so the new checkpoint's ParentConfig links to
 // its actual predecessor (D3). Planned task IDs bind to the new checkpoint's
-// ID and the superstep the tasks will run in (md.Step + 1).
-func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSink, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask) (checkpoint.Config, error) {
+// ID and the superstep the tasks will run in (md.Step + 1). pause selects the
+// sink's pause path (putPauseCheckpoint), which makes the write durable under
+// every Durability mode instead of deferring it (async/exit).
+func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSink, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask, pause bool) (checkpoint.Config, error) {
 	// Advance the per-delta-channel (updates, supersteps) counters for this
 	// checkpoint, then decide which delta channels snapshot now. Mirrors
 	// Python's _loop._put_checkpoint counter advancement + create_checkpoint
@@ -1756,7 +1765,11 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 		next[i].ID = TaskID(cp.ID, md.Step+1, next[i].Node, next[i].Arg)
 	}
 	cp.Next = next
-	cfg, err := cpSink.putCheckpoint(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil)
+	put := cpSink.putCheckpoint
+	if pause {
+		put = cpSink.putPauseCheckpoint
+	}
+	cfg, err := put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil)
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("graph: saving checkpoint for thread %q: %w", opts.ThreadID, err)
 	}
@@ -1889,7 +1902,7 @@ func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state m
 // Events: the RawNodeStart/RawNodeEnd pair (in run's task wrapper) and the
 // debug task_result emission bracket the whole attempt loop, so exactly one
 // of each appears per task regardless of attempt count.
-func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]any, resumeQueue []any) (update map[string]any, cmd *types.Command, interrupted *types.Interrupt, consumed []any, err error) {
+func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]any, resumeQueue []any) (update map[string]any, cmd *types.Command, interrupts []types.Interrupt, consumed []any, err error) {
 	var retry *RetryPolicy
 	if policies, ok := g.policies[t.node]; ok && policies.Retry != nil {
 		p := policies.Retry.withDefaults()
@@ -1899,7 +1912,7 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 	}
 	for attempt := 1; ; attempt++ {
 		result, intr, cons, rerr := g.runNode(ctx, t, state, resumeQueue, attempt)
-		if intr != nil {
+		if len(intr) > 0 {
 			return nil, nil, intr, cons, nil
 		}
 		if rerr == nil {
@@ -1927,7 +1940,11 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 // persist it as a single full-list ReservedResume write. Retry/error paths discard it: an
 // errored task produces no pause checkpoint, so the prefix has nowhere to
 // land.
-func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any, attempt int) (result any, interrupted *types.Interrupt, consumed []any, err error) {
+//
+// interrupts is a slice so a single node invocation can surface more than one
+// interrupt (today: one per GraphInterrupt panic; a subgraph node's paused
+// child run propagates its whole interrupt list the same way).
+func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]any, resumeQueue []any, attempt int) (result any, interrupts []types.Interrupt, consumed []any, err error) {
 	fn, ok := g.nodes[t.node]
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("graph: unknown node %q", t.node)
@@ -1943,16 +1960,21 @@ func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]an
 	// Refresh the execution meta's attempt for this invocation so
 	// buildRuntime's ExecutionInfo reflects the current retry attempt (the
 	// run loop publishes attempt=0 as a placeholder; runNode owns the real
-	// value because it runs once per attempt).
+	// value because it runs once per attempt). The same meta carries the
+	// run's checkpoint namespace, which together with the planned task ID
+	// published by the run loop yields this task's checkpoint namespace —
+	// the NS every Interrupt() raised by this invocation is stamped with.
 	if m, ok := nodeCtx.Value(executionMetaKey{}).(executionMeta); ok {
 		m.attempt = attempt
 		nodeCtx = context.WithValue(nodeCtx, executionMetaKey{}, m)
+		taskID, _ := ctx.Value(plannedTaskIDKey{}).(string)
+		ist.ns = taskCheckpointNS(m.opts.checkpointNS, t.node, taskID)
 	}
 
 	defer func() {
 		if r := recover(); r != nil {
 			if gi, ok := r.(*types.GraphInterrupt); ok {
-				interrupted = &gi.Interrupt
+				interrupts = []types.Interrupt{gi.Interrupt}
 				ist.mu.Lock()
 				consumed = append([]any{}, ist.resumeQueue[:ist.idx]...)
 				ist.mu.Unlock()
@@ -2150,6 +2172,11 @@ type taskInterruptState struct {
 	idx         int
 	counter     int
 	nodeName    string
+	// ns is this task's checkpoint namespace ("<parentNS>/<node>:<taskID>",
+	// computed by runNode from the run's checkpoint namespace and the planned
+	// task ID). Every Interrupt() raised by the invocation is stamped with it
+	// so resume maps can address interrupts by namespace.
+	ns string
 }
 
 // Interrupt pauses the current node's execution, matching Python's
@@ -2182,6 +2209,7 @@ func Interrupt(ctx context.Context, value any) any {
 	panic(&types.GraphInterrupt{Interrupt: types.Interrupt{
 		Value: value,
 		ID:    fmt.Sprintf("%s-%d", st.nodeName, st.counter),
+		NS:    st.ns,
 	}})
 }
 

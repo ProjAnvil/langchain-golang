@@ -42,6 +42,12 @@ type checkpointSink struct {
 	initialCfg         checkpoint.Config
 	// exit mode: current superstep (updated by the invoke loop)
 	currentStep int
+	// exitPauseFlushed records that a pause checkpoint (and its pending
+	// writes) were already persisted synchronously by putPauseCheckpoint,
+	// so the deferred flushExit must not write anything else: its final
+	// checkpoint would reuse the pause checkpoint's ID with an empty Next,
+	// clobbering the planned resume tasks.
+	exitPauseFlushed bool
 
 	// flush context (set by invoke loop, read by flush/flushExit)
 	flushCtx  context.Context
@@ -173,6 +179,98 @@ func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, w
 	return nil
 }
 
+// putPauseCheckpoint persists a PAUSE checkpoint (interrupt_before /
+// interrupt_after / in-node interrupt), which — unlike a regular loop
+// checkpoint — must be durable before the run returns, or the thread is not
+// resumable at all:
+//
+//   - sync: identical to putCheckpoint (direct saver call).
+//   - async: identical to putCheckpoint (enqueued); FIFO order with the
+//     putPauseWrites calls that follow guarantees the checkpoint lands before
+//     its pending writes.
+//   - exit: writes the checkpoint (plus the run's accumulated per-task delta
+//     writes, anchored on the checkpoint itself) DIRECTLY to the saver,
+//     bypassing the exit deferral, and marks the sink so the deferred
+//     flushExit becomes a no-op. This mirrors Python, where
+//     _suppress_interrupt force-calls _put_checkpoint + _put_pending_writes
+//     even under durability="exit" (_loop.py:1319-1329).
+func (s *checkpointSink) putPauseCheckpoint(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (checkpoint.Config, error) {
+	if s.mode == DurabilityExit {
+		return s.putPauseCheckpointExit(ctx, cfg, cp, md, newVersions)
+	}
+	return s.putCheckpoint(ctx, cfg, cp, md, newVersions)
+}
+
+// putPauseCheckpointExit is the exit-mode branch of putPauseCheckpoint. It
+// persists the pause checkpoint synchronously and directly, then anchors the
+// run's accumulated per-task delta writes (which exit mode normally defers to
+// flushExit) on that checkpoint, under their step-prefixed synthetic task IDs
+// — the same reconstruction the ancestor-write walk performs for flushExit's
+// writes, which also collects the starting tuple's pending writes
+// (snapshot.go's reconstructDeltaChannels).
+//
+// The pause checkpoint's ParentConfig is rewritten to the last PERSISTED
+// checkpoint (initialCfg, when one exists): the in-memory parent chain (this
+// run's input and loop checkpoints) was never persisted under exit mode, so
+// linking to it would strand the ancestor walk. Unlike flushExit, no stub
+// anchor is created: writes land on the pause checkpoint itself, which avoids
+// minting any ID after the pause checkpoint's (a stub minted in a later
+// millisecond would sort AFTER the pause checkpoint and shadow it as the
+// namespace's latest).
+func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (checkpoint.Config, error) {
+	parentCfg := checkpoint.Config{ThreadID: cfg.ThreadID, CheckpointNS: cfg.CheckpointNS}
+	if s.hasPersistedParent {
+		parentCfg.CheckpointID = s.initialCfg.CheckpointID
+	}
+	resultCfg, err := s.saver.Put(ctx, parentCfg, cp, md, newVersions)
+	if err != nil {
+		return checkpoint.Config{}, err
+	}
+
+	// Delta channels whose cadence fired at this save embed a snapshot blob in
+	// the pause checkpoint itself (saveCheckpoint already advanced the
+	// counters and computed the set); accumulated writes for them are
+	// redundant — the blob seeds reconstruction and the writes would
+	// double-apply. Everything else must be materialized now, since the
+	// deferred flush below is suppressed.
+	for _, w := range s.exitDeltaWrites {
+		if _, ok := channels.UnwrapDeltaSnapshot(cp.ChannelValues[w.channel]); ok {
+			continue
+		}
+		synthTID := exitDeltaTaskID(w.step, w.taskID)
+		if err := s.saver.PutWrites(ctx, resultCfg, []checkpoint.Write{{Channel: w.channel, Value: w.value}}, synthTID, ""); err != nil {
+			return checkpoint.Config{}, err
+		}
+	}
+
+	// The pause state is now complete and durable. Record it in the sink:
+	// exitPauseFlushed suppresses the deferred flushExit (whose final
+	// checkpoint would overwrite the pause checkpoint's ID with an empty
+	// Next), and hasPersistedParent/initialCfg keep the sink self-consistent
+	// were any further write to occur.
+	s.exitPauseFlushed = true
+	s.hasPersistedParent = true
+	s.initialCfg = resultCfg
+	return resultCfg, nil
+}
+
+// putPauseWrites persists the pending writes of a pause (interrupt records,
+// consumed-resume prefixes, and completed-sibling writes of the interrupted
+// superstep) against the pause checkpoint identified by cfg. Like
+// putPauseCheckpoint it must not be deferred: sync persists directly, async
+// enqueues on the same FIFO channel as the pause checkpoint (which therefore
+// lands first), and exit writes directly to the saver. A nil/empty writes
+// slice is a no-op so callers need not pre-check.
+func (s *checkpointSink) putPauseWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID string) error {
+	if len(writes) == 0 {
+		return nil
+	}
+	if s.mode == DurabilityExit {
+		return s.saver.PutWrites(ctx, cfg, writes, taskID, "")
+	}
+	return s.putWrites(ctx, cfg, writes, taskID)
+}
+
 // setFlushContext stores the context needed by flushExit. Called by the invoke
 // loop so that flush() remains parameterless (amendment C7).
 func (s *checkpointSink) setFlushContext(ctx context.Context, opts Options, rs *runState, currentCfg checkpoint.Config, md checkpoint.Metadata) {
@@ -257,6 +355,13 @@ func (s *checkpointSink) accumulateExitWrites(writes []checkpoint.Write, taskID 
 
 func (s *checkpointSink) flushExit() error {
 	if s.saver == nil || s.flushRS == nil {
+		return nil
+	}
+	// A pause already persisted its definitive state synchronously
+	// (putPauseCheckpointExit): there is nothing left to flush, and the final
+	// checkpoint this method would write reuses the pause checkpoint's ID
+	// with an empty Next — clobbering the resume plan.
+	if s.exitPauseFlushed {
 		return nil
 	}
 

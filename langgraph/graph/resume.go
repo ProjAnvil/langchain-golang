@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"sort"
@@ -50,11 +49,12 @@ func interruptsFromWrites(writes []checkpoint.Write) []types.Interrupt {
 	return out
 }
 
-// persistInterrupts records each pending interrupt as a ReservedInterrupt
-// pending write against the checkpoint identified by cfg, stamped with
-// taskID (the interrupted task's planned ID, or the boundary node name for
-// interrupt_before/interrupt_after pauses).
-func persistInterrupts(ctx context.Context, saver checkpoint.Saver, cfg checkpoint.Config, taskID string, interrupts []types.Interrupt) error {
+// interruptWrites builds the ReservedInterrupt pending writes recording each
+// pending interrupt, to be persisted against the pause checkpoint via
+// checkpointSink.putPauseWrites (stamped with the task's planned ID, or the
+// boundary node name for interrupt_before/interrupt_after pauses). Returns nil
+// for an empty list.
+func interruptWrites(interrupts []types.Interrupt) []checkpoint.Write {
 	if len(interrupts) == 0 {
 		return nil
 	}
@@ -62,20 +62,24 @@ func persistInterrupts(ctx context.Context, saver checkpoint.Saver, cfg checkpoi
 	for i, intr := range interrupts {
 		writes[i] = checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: intr}
 	}
-	return saver.PutWrites(ctx, cfg, writes, taskID, "")
+	return writes
 }
 
-// persistInterruptAndResume records a paused in-node task's pending
-// interrupts plus, when the task has already consumed resume values, ONE
-// ReservedResume write whose value is the whole ordered consumed prefix —
-// mirroring Python, where every RESUME write carries the full accumulated
-// scratchpad list (types.py:905-925). A single full-list write keeps the
-// prefix intact under savers that assign __resume__ one reserved write slot
-// (sqlite/postgres idx -4, INSERT OR REPLACE last-write-wins): one write,
-// nothing to collapse. The next resume rebuilds the full ordered queue from
-// this prefix (see resumeValuesFor). Boundary interrupts keep using
-// persistInterrupts — no node ran, so there is no consumed prefix.
-func persistInterruptAndResume(ctx context.Context, saver checkpoint.Saver, cfg checkpoint.Config, taskID string, interrupts []types.Interrupt, consumed []any) error {
+// interruptAndResumeWrites builds a paused in-node task's pending writes:
+// each pending interrupt as a ReservedInterrupt write, plus — when the task
+// has already consumed resume values — ONE ReservedResume write whose value
+// is the whole ordered consumed prefix, mirroring Python, where every RESUME
+// write carries the full accumulated scratchpad list (types.py:905-925). A
+// single full-list write keeps the prefix intact under savers that assign
+// __resume__ one reserved write slot (sqlite/postgres idx -4, INSERT OR
+// REPLACE last-write-wins): one write, nothing to collapse. The next resume
+// rebuilds the full ordered queue from this prefix (see resumeValuesFor).
+// Boundary interrupts keep using interruptWrites — no node ran, so there is
+// no consumed prefix.
+func interruptAndResumeWrites(interrupts []types.Interrupt, consumed []any) []checkpoint.Write {
+	if len(interrupts) == 0 {
+		return nil
+	}
 	writes := make([]checkpoint.Write, 0, len(interrupts)+1)
 	for _, intr := range interrupts {
 		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: intr})
@@ -83,7 +87,7 @@ func persistInterruptAndResume(ctx context.Context, saver checkpoint.Saver, cfg 
 	if len(consumed) > 0 {
 		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedResume, Value: []any(consumed)})
 	}
-	return saver.PutWrites(ctx, cfg, writes, taskID, "")
+	return writes
 }
 
 // completedTaskWrites builds the pending writes persisting a completed
@@ -177,14 +181,19 @@ type resumePlan struct {
 // superstep starts; replay exposes those writes (nil when there are none) so
 // the stream emission layer can re-emit them as `updates` chunks (Python
 // parity: cached writes are re-streamed on resume, `_loop.py:676-679`).
-func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
+//
+// graphNS optionally restricts/validates resume matching to pending
+// interrupts whose NS it hits (strict NS addressing). All current entry
+// points pass "" (match by interrupt ID, or by interrupt NS for map resumes
+// — see resumeValuesFor).
+func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any, graphNS string) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
 	// Seed deltaCounters from the loaded checkpoint so resume continues the
 	// per-channel cadence (S3). Cloned so rs.deltaCounters is independent of
 	// the (shared) loaded metadata map.
 	rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
-	plan, err := planResume(tup, resume)
+	plan, err := planResume(tup, resume, graphNS)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -211,7 +220,11 @@ func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any) (tasks []t
 // A non-map resume value with more than one pending interrupt across the
 // checkpoint is an error, mirroring Python's requirement that multiple
 // pending interrupts be resumed with an interrupt-ID map.
-func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
+//
+// graphNS optionally restricts/validates resume matching to pending
+// interrupts whose NS it hits (strict NS addressing); current entry points
+// pass "" (see resumeFromTuple).
+func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, error) {
 	pending := interruptsFromWrites(tup.PendingWrites)
 	if resume != nil {
 		if _, isMap := resume.(map[string]any); !isMap && len(pending) > 1 {
@@ -261,7 +274,7 @@ func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
 		switch {
 		case len(interrupts) > 0:
 			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg})
-			plan.resumeValues[pt.ID] = resumeValuesFor(interrupts, resumePrefix, resume)
+			plan.resumeValues[pt.ID] = resumeValuesFor(interrupts, resumePrefix, resume, graphNS)
 		case len(update) > 0 || len(sends) > 0:
 			plan.replayWrites = append(plan.replayWrites, taskWrites{node: pt.Node, update: update})
 			for _, s := range sends {
@@ -272,7 +285,12 @@ func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
 		}
 	}
 	plan.tasks = append(plan.tasks, replaySends...)
-	plan.skipNode = resumeSkipNode(pending)
+	// Only boundary interrupts OWNED by this run's namespace may drive the
+	// first-superstep skip: a subgraph's internal interrupt-before-<node>
+	// must not make the parent skip its own same-named node (see
+	// interruptOwnedBy). ownNS is the namespace of the checkpoint being
+	// resumed, which is the resuming run's own namespace.
+	plan.skipNode = resumeSkipNode(pending, tup.Config.CheckpointNS)
 	return plan, nil
 }
 
@@ -280,25 +298,38 @@ func planResume(tup *checkpoint.Tuple, resume any) (resumePlan, error) {
 // prefix of already-consumed resume values (the single ReservedResume write's
 // full list, in consumption order) followed by the values matched from THIS
 // resume call, mirroring Python's accumulated (RESUME, ...) scratchpad list
-// (`types.py:905-925`). Matching rules for the new value are unchanged: a
-// map[string]any addresses pending interrupts by ID (unmatched ones re-fire
-// on re-run), a nil resume appends nothing (the pending interrupt re-fires,
-// the run re-pauses), any other scalar feeds the first pending interrupt.
-// Values for interrupts already answered in earlier cycles are carried by
-// prefix, so a map entry naming an already-answered interrupt ID is ignored.
+// (`types.py:905-925`). Matching rules for the new value: a map[string]any
+// addresses pending interrupts by NS first and by ID second (an interrupt
+// whose NS is "" — persisted before NS stamping — matches by ID only;
+// unmatched ones re-fire on re-run), a nil resume appends nothing (the
+// pending interrupt re-fires, the run re-pauses), any other scalar feeds the
+// first pending interrupt. Values for interrupts already answered in earlier
+// cycles are carried by prefix, so a map entry naming an already-answered
+// interrupt is ignored.
+//
+// graphNS is reserved for strict NS-addressed resume routing (it restricts
+// matching to NS-hit interrupts); current entry points pass "".
 //
 // Boundary interrupts (interrupt_before/interrupt_after) never reach this
 // function: their pending writes are stamped with the node name, not a
 // PlannedTask.ID, so their resume path never consults resume queues and a
 // nil-resume boundary resume keeps working unchanged.
-func resumeValuesFor(pending []types.Interrupt, prefix []any, resume any) []any {
+func resumeValuesFor(pending []types.Interrupt, prefix []any, resume any, graphNS string) []any {
 	queue := append([]any{}, prefix...)
 	if len(pending) == 0 || resume == nil {
 		return queue
 	}
-	if byID, ok := resume.(map[string]any); ok {
+	if byKey, ok := resume.(map[string]any); ok {
 		for _, p := range pending {
-			if v, ok := byID[p.ID]; ok {
+			var v any
+			matched := false
+			if p.NS != "" {
+				v, matched = byKey[p.NS] // NS addressing takes precedence
+			}
+			if !matched {
+				v, matched = byKey[p.ID]
+			}
+			if matched {
 				queue = append(queue, v)
 			}
 		}
@@ -310,13 +341,40 @@ func resumeValuesFor(pending []types.Interrupt, prefix []any, resume any) []any 
 // resumeSkipNode returns the node whose interrupt_before check should be
 // skipped on the first superstep of a resume, reconstructed from the
 // checkpoint's pending interrupts (D5): the node named by a pending
-// interrupt-before-<node> interrupt ID, or "" when the pause was produced by
-// interrupt_after or an in-node interrupt.
-func resumeSkipNode(pending []types.Interrupt) string {
+// interrupt-before-<node> interrupt ID OWNED by this run (see
+// interruptOwnedBy — a subgraph's internal boundary interrupt must not skip
+// the parent's same-named node), or "" when the pause was produced by
+// interrupt_after, an in-node interrupt, or a foreign-namespace boundary
+// interrupt.
+func resumeSkipNode(pending []types.Interrupt, ownNS string) string {
 	for _, p := range pending {
-		if node, ok := strings.CutPrefix(p.ID, interruptBeforeID); ok {
+		if node, ok := strings.CutPrefix(p.ID, interruptBeforeID); ok && interruptOwnedBy(ownNS, p.NS) {
 			return node
 		}
 	}
 	return ""
+}
+
+// interruptOwnedBy reports whether an interrupt stamped with checkpoint
+// namespace interruptNS belongs to the graph run whose own checkpoint
+// namespace is ownNS: stripping the ownNS prefix (and its "/" separator, for
+// a non-root ownNS) from interruptNS leaves a remainder with no further "/",
+// meaning the interrupting task ran directly in this graph rather than in a
+// nested subgraph (the root run has ownNS == "", where any interrupt NS
+// without a "/" is owned). Legacy interrupts persisted before NS stamping
+// carry NS == "" and count as owned: pre-NS data can only contain
+// same-level interrupts, since subgraph interrupts never paused a parent.
+func interruptOwnedBy(ownNS, interruptNS string) bool {
+	if interruptNS == "" {
+		return true
+	}
+	rest := interruptNS
+	if ownNS != "" {
+		var ok bool
+		rest, ok = strings.CutPrefix(interruptNS, ownNS+"/")
+		if !ok {
+			return false
+		}
+	}
+	return !strings.Contains(rest, "/")
 }

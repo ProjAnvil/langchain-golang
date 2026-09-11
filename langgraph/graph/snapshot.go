@@ -188,7 +188,7 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	return g.saveCheckpoint(ctx,
 		updateSink,
 		Options{ThreadID: cfg.ThreadID, checkpointNS: cfg.CheckpointNS}, rs, tup.Config,
-		md, plannedTasks(dests))
+		md, plannedTasks(dests), false)
 }
 
 // BulkUpdateState applies a sequence of state-update supersteps to the

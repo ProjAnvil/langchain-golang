@@ -314,6 +314,209 @@ func TestRunDurabilityPropagatesToSubgraphs(t *testing.T) {
 	}
 }
 
+// interruptResumeGraph builds a -> ask -> b where "ask" interrupts in-node,
+// so a pause happens in the second superstep with one committed superstep
+// ("a") already behind it. opts are appended after the checkpointer.
+func interruptResumeGraph(t *testing.T, saver checkpoint.Saver, opts ...CompileOption) *CompiledGraph {
+	t.Helper()
+	g := NewStateGraph()
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"x": 1}, nil
+	})
+	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		v := Interrupt(rt, "who?")
+		return map[string]any{"answer": v}, nil
+	})
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"done": true}, nil
+	})
+	g.AddEdge(types.START, "a")
+	g.AddEdge("a", "ask")
+	g.AddEdge("ask", "b")
+	g.AddEdge("b", types.END)
+	cg, err := g.Compile(append([]CompileOption{WithCheckpointer(saver)}, opts...)...)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	return cg
+}
+
+// TestPauseDurabilityMatrixRootInterrupt is the T15 PR-1 regression gate: a
+// pause is a state that must be immediately resumable, so under EVERY
+// durability mode the pause checkpoint and its pending writes must be durably
+// persisted before Invoke returns (Python forces the write in
+// _suppress_interrupt, _loop.py:1319-1329). Before the fix, async mode raced
+// the direct PutWrites against the queued checkpoint Put and exit mode never
+// persisted the checkpoint at all — both surfaced "PutWrites: no checkpoint".
+func TestPauseDurabilityMatrixRootInterrupt(t *testing.T) {
+	for _, mode := range []Durability{DurabilitySync, DurabilityAsync, DurabilityExit} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx := context.Background()
+			saver := checkpoint.NewMemorySaver()
+			cg := interruptResumeGraph(t, saver, WithDurability(mode))
+
+			res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t-" + string(mode)})
+			if err != nil {
+				t.Fatalf("pause Invoke() error = %v", err)
+			}
+			if len(res.Interrupts) != 1 || res.Interrupts[0].Value != "who?" {
+				t.Fatalf("expected one interrupt (who?), got %+v", res.Interrupts)
+			}
+
+			// Same-instance resume: the pause state is durable, a scalar resume
+			// answers the single pending interrupt, and the run completes.
+			res, err = cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t-" + string(mode), Resume: "42"})
+			if err != nil {
+				t.Fatalf("resume Invoke() error = %v", err)
+			}
+			if len(res.Interrupts) != 0 {
+				t.Fatalf("resume re-paused with %+v", res.Interrupts)
+			}
+			if v, _ := res.Values["answer"].(string); v != "42" {
+				t.Fatalf("resumed answer = %v, want 42", res.Values["answer"])
+			}
+			if v, _ := res.Values["x"].(int); v != 1 {
+				t.Fatalf("resumed x = %v, want 1", res.Values["x"])
+			}
+			if v, _ := res.Values["done"].(bool); !v {
+				t.Fatalf("resumed done = %v, want true", res.Values["done"])
+			}
+		})
+	}
+}
+
+// TestPauseDurabilityCrossInstanceResume resumes a paused thread through a
+// DIFFERENT CompiledGraph instance sharing the saver, proving the persisted
+// pause state is complete without any in-memory carryover.
+func TestPauseDurabilityCrossInstanceResume(t *testing.T) {
+	for _, mode := range []Durability{DurabilityAsync, DurabilityExit} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx := context.Background()
+			saver := checkpoint.NewMemorySaver()
+			first := interruptResumeGraph(t, saver, WithDurability(mode))
+
+			res, err := first.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "x-" + string(mode)})
+			if err != nil {
+				t.Fatalf("pause Invoke() error = %v", err)
+			}
+			if len(res.Interrupts) != 1 {
+				t.Fatalf("expected one interrupt, got %+v", res.Interrupts)
+			}
+
+			second := interruptResumeGraph(t, saver, WithDurability(mode))
+			res, err = second.InvokeWithOptions(ctx, nil, Options{ThreadID: "x-" + string(mode), Resume: "42"})
+			if err != nil {
+				t.Fatalf("cross-instance resume Invoke() error = %v", err)
+			}
+			if len(res.Interrupts) != 0 {
+				t.Fatalf("cross-instance resume re-paused with %+v", res.Interrupts)
+			}
+			if v, _ := res.Values["answer"].(string); v != "42" {
+				t.Fatalf("cross-instance resumed answer = %v, want 42", res.Values["answer"])
+			}
+		})
+	}
+}
+
+// TestPauseDurabilityBoundaryInterrupts runs the interrupt_before pause
+// through the durability matrix (nil resume, Python's invoke(None, config)):
+// the boundary pause checkpoint and its ReservedInterrupt pending write must
+// be durable in every mode.
+func TestPauseDurabilityBoundaryInterrupts(t *testing.T) {
+	for _, mode := range []Durability{DurabilitySync, DurabilityAsync, DurabilityExit} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx := context.Background()
+			saver := checkpoint.NewMemorySaver()
+			g := NewStateGraph()
+			g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+				return map[string]any{"x": 1}, nil
+			})
+			g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+				return map[string]any{"done": true}, nil
+			})
+			g.AddEdge(types.START, "a")
+			g.AddEdge("a", "b")
+			g.AddEdge("b", types.END)
+			cg, err := g.Compile(WithCheckpointer(saver), WithDurability(mode), WithInterruptBefore("b"))
+			if err != nil {
+				t.Fatalf("Compile() error = %v", err)
+			}
+
+			res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "b-" + string(mode)})
+			if err != nil {
+				t.Fatalf("pause Invoke() error = %v", err)
+			}
+			if len(res.Interrupts) != 1 {
+				t.Fatalf("expected one boundary interrupt, got %+v", res.Interrupts)
+			}
+
+			res, err = cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "b-" + string(mode)})
+			if err != nil {
+				t.Fatalf("resume Invoke() error = %v", err)
+			}
+			if len(res.Interrupts) != 0 {
+				t.Fatalf("resume re-paused with %+v", res.Interrupts)
+			}
+			if v, _ := res.Values["done"].(bool); !v {
+				t.Fatalf("resumed done = %v, want true", res.Values["done"])
+			}
+		})
+	}
+}
+
+// TestPauseDurabilityExitDeltaChannelSurvivesPause pins the exit-mode pause
+// path's accumulated-write anchoring: with a never-snapshotted delta channel
+// (snapshotFrequency=100), the input delta write deferred by exit mode must
+// still be materialized when the pause forces a synchronous write, anchored on
+// the pause checkpoint itself (no stub), so GetState's ancestor walk
+// reconstructs the value from the paused thread. (Resume-time in-memory delta
+// reconstruction across a pause is a pre-existing limitation shared with sync
+// mode and is out of scope here.)
+func TestPauseDurabilityExitDeltaChannelSurvivesPause(t *testing.T) {
+	ctx := context.Background()
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddChannel("msgs", channels.NewDeltaChannel(stringBatchReducer, func() any { return []string{} }, 100))
+	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		Interrupt(rt, "q")
+		return nil, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver), WithDurability(DurabilityExit))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{"msgs": []string{"t1", "turn"}}, Options{ThreadID: "dp"})
+	if err != nil {
+		t.Fatalf("pause Invoke() error = %v", err)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("expected one interrupt, got %+v", res.Interrupts)
+	}
+
+	// The pause checkpoint must be the namespace's LATEST checkpoint (an
+	// anchor minted after it would shadow it and break resume).
+	tup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "dp"})
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple() = (%v, %v), want the pause checkpoint", tup, err)
+	}
+	if len(tup.Checkpoint.Next) != 1 || tup.Checkpoint.Next[0].Node != "ask" {
+		t.Fatalf("latest checkpoint Next = %+v, want the paused ask task", tup.Checkpoint.Next)
+	}
+
+	// GetState reconstructs the delta channel from the pause state.
+	snap, err := cg.GetState(ctx, checkpoint.Config{ThreadID: "dp"})
+	if err != nil {
+		t.Fatalf("GetState() error = %v", err)
+	}
+	got, _ := snap.Values["msgs"].([]string)
+	if !reflect.DeepEqual(got, []string{"t1", "turn"}) {
+		t.Fatalf("paused msgs = %v, want [t1 turn] (input delta write lost at pause)", snap.Values["msgs"])
+	}
+}
+
 // stringBatchReducer is a BatchReducer that concatenates existing (a []string)
 // with each update in the batch, mirroring intBatchReducer for string tokens.
 // NewDeltaChannel takes a BatchReducer directly, NOT BatchFromReducer(Reducer).
