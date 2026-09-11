@@ -206,7 +206,7 @@ func TestFuncWrapModelCallResultAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WrapModelCallResult: %v", err)
 	}
-	resp, err := middleware.NormalizeModelCallResult(result)
+	resp, _, err := middleware.NormalizeModelCallResult(result)
 	if err != nil || len(resp.Result) != 1 || resp.Result[0].Content != "ok" {
 		t.Fatalf("normalized response: err=%v resp=%#v", err, resp)
 	}

@@ -27,6 +27,14 @@ type ModelResponse struct {
 	StructuredResponse any
 }
 
+// ExtendedModelResponse is a wrap_model_call layer's ModelResponse plus a
+// Command carrying an additional state update (Python's
+// `ExtendedModelResponse`, middleware/types.py). Only the Command's Update is
+// honored: the model node applies it on top of the node's default
+// messages/structured_response update (middleware keys win conflicts, matching
+// Python's `commands.extend` ordering in factory._build_commands), and a
+// Command carrying Goto/Resume/Graph is rejected — see
+// ValidateForWrapModelCall. A nil Command means no additional update.
 type ExtendedModelResponse struct {
 	ModelResponse ModelResponse
 	Command       *Command
@@ -37,7 +45,8 @@ type ExtendedModelResponse struct {
 // A model-call handler result may be any of:
 //   - ModelResponse / *ModelResponse — passed through unchanged
 //   - ExtendedModelResponse / *ExtendedModelResponse — unwrapped to its
-//     embedded ModelResponse
+//     embedded ModelResponse, with its Command surfaced for the model node
+//     to accumulate and apply
 //   - messages.Message with Role == messages.RoleAI — the AIMessage short
 //     form, normalized to ModelResponse{Result: [msg]}
 //
@@ -46,35 +55,44 @@ type ExtendedModelResponse struct {
 type ModelCallResult = any
 
 // NormalizeModelCallResult mirrors Python's `factory._normalize_to_model_response`
-// (factory.py:177): a bare AI message becomes ModelResponse{Result: [msg]} and
-// an ExtendedModelResponse unwraps to its embedded ModelResponse, so the inner
-// composition boundary always sees a ModelResponse.
-func NormalizeModelCallResult(result ModelCallResult) (ModelResponse, error) {
+// (factory.py:177) plus the command extraction of `_to_composed_result`
+// (factory.py:258): a bare AI message becomes ModelResponse{Result: [msg]}
+// and an ExtendedModelResponse unwraps to its embedded ModelResponse while
+// surfacing its Command, so the inner composition boundary always sees a
+// ModelResponse and the caller can accumulate the Commands returned by each
+// wrap_model_call layer (inner-first) instead of dropping them. The returned
+// Command is nil for every non-extended result shape.
+func NormalizeModelCallResult(result ModelCallResult) (ModelResponse, *Command, error) {
 	switch r := result.(type) {
 	case ModelResponse:
-		return r, nil
+		return r, nil, nil
 	case *ModelResponse:
 		if r == nil {
-			return ModelResponse{}, fmt.Errorf("middleware: nil *ModelResponse is not a valid ModelCallResult")
+			return ModelResponse{}, nil, fmt.Errorf("middleware: nil *ModelResponse is not a valid ModelCallResult")
 		}
-		return *r, nil
+		return *r, nil, nil
 	case ExtendedModelResponse:
-		return r.ModelResponse, nil
+		return r.ModelResponse, r.Command, nil
 	case *ExtendedModelResponse:
 		if r == nil {
-			return ModelResponse{}, fmt.Errorf("middleware: nil *ExtendedModelResponse is not a valid ModelCallResult")
+			return ModelResponse{}, nil, fmt.Errorf("middleware: nil *ExtendedModelResponse is not a valid ModelCallResult")
 		}
-		return r.ModelResponse, nil
+		return r.ModelResponse, r.Command, nil
 	case messages.Message:
 		if r.Role != messages.RoleAI {
-			return ModelResponse{}, fmt.Errorf("middleware: ModelCallResult message must have role %q, got %q", messages.RoleAI, r.Role)
+			return ModelResponse{}, nil, fmt.Errorf("middleware: ModelCallResult message must have role %q, got %q", messages.RoleAI, r.Role)
 		}
-		return ModelResponse{Result: []messages.Message{r}}, nil
+		return ModelResponse{Result: []messages.Message{r}}, nil, nil
 	default:
-		return ModelResponse{}, fmt.Errorf("middleware: unsupported ModelCallResult type %T", result)
+		return ModelResponse{}, nil, fmt.Errorf("middleware: unsupported ModelCallResult type %T", result)
 	}
 }
 
+// Command mirrors Python's langgraph Command as produced by agent middleware
+// hooks (before_model jump control, and wrap_model_call results via
+// ExtendedModelResponse). In a wrap_model_call result only Update is applied
+// by the model node; Goto/Resume/Graph are rejected there — see
+// ValidateForWrapModelCall.
 type Command struct {
 	Update map[string]any
 	Goto   string
@@ -236,15 +254,21 @@ func (r ToolCallRequest) Override(opts ...ToolCallRequestOverride) ToolCallReque
 	return next
 }
 
+// ValidateForWrapModelCall reports whether c is an update-only Command usable
+// as a wrap_model_call return value. Routing controls are not supported
+// there, mirroring factory._build_commands (factory.py:210-216): goto,
+// resume, and graph each yield an error, while an empty or update-only
+// Command is valid. The model node enforces this before applying the
+// command's Update.
 func (c Command) ValidateForWrapModelCall() error {
 	if c.Goto != "" {
-		return fmt.Errorf("Command goto is not supported in wrap_model_call")
+		return fmt.Errorf("middleware: Command goto is not supported in wrap_model_call middleware. Use the jump_to state field with before_model/after_model hooks instead")
 	}
 	if c.Resume != nil {
-		return fmt.Errorf("Command resume is not supported in wrap_model_call")
+		return fmt.Errorf("middleware: Command resume is not supported in wrap_model_call middleware")
 	}
 	if c.Graph != "" {
-		return fmt.Errorf("Command graph is not supported in wrap_model_call")
+		return fmt.Errorf("middleware: Command graph is not supported in wrap_model_call middleware")
 	}
 	return nil
 }

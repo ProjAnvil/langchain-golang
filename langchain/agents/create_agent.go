@@ -151,6 +151,12 @@ type WrapModelCallHook interface {
 // (factory._normalize_to_model_response, factory.py:177). When a middleware
 // implements both WrapModelCallHook and WrapModelCallResultHook, the Result
 // variant takes precedence.
+//
+// An ExtendedModelResponse may carry a Command: its Update is applied on top
+// of the model node's default messages/structured_response state update
+// (middleware keys win conflicts, mirroring factory._build_commands'
+// `commands.extend` ordering); a Command with Goto/Resume/Graph fails the run
+// with an error (middleware.Command.ValidateForWrapModelCall).
 type WrapModelCallResultHook interface {
 	WrapModelCallResult(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error)
 }
@@ -1320,6 +1326,19 @@ func buildModelNode(
 			}
 			return invokeModel(c, r, providerStrategySchema(providerStrategy))
 		}
+		// mwCommands accumulates the update-only Commands returned by
+		// WrapModelCallResult middleware (each layer's
+		// ExtendedModelResponse.command, surfaced by
+		// middleware.NormalizeModelCallResult), inner-first then outer —
+		// mirroring factory._chain_model_call_handlers' command accumulation
+		// (factory.py:258-275). They are validated and applied by
+		// applyModelNodeCommands once the model call returns. A middleware
+		// that successfully invokes its inner handler more than once would
+		// accumulate the inner command per pass; no shipped middleware does
+		// (retry middleware only re-invokes on error, and inner commands only
+		// materialize on success), whereas Python additionally clears its
+		// per-pair accumulator on each inner call (factory.py:311).
+		var mwCommands []*middleware.Command
 		for i := len(mws) - 1; i >= 0; i-- {
 			if hook, ok := mws[i].(WrapModelCallResultHook); ok {
 				next := handler
@@ -1330,8 +1349,16 @@ func buildModelNode(
 					}
 					// Normalize the ModelCallResult union (AIMessage short form,
 					// ExtendedModelResponse unwrap) at the composition boundary,
-					// mirroring factory._normalize_to_model_response.
-					return middleware.NormalizeModelCallResult(result)
+					// mirroring factory._normalize_to_model_response, and capture
+					// any ExtendedModelResponse command for the node to apply.
+					resp, cmd, err := middleware.NormalizeModelCallResult(result)
+					if err != nil {
+						return middleware.ModelResponse{}, err
+					}
+					if cmd != nil {
+						mwCommands = append(mwCommands, cmd)
+					}
+					return resp, nil
 				}
 				continue
 			}
@@ -1440,6 +1467,12 @@ func buildModelNode(
 					cmd.Update[k] = v
 				}
 			}
+			// wrap_model_call middleware commands apply on this exit path too
+			// (Python's model node returns them alongside the structured
+			// response command).
+			if err := applyModelNodeCommands(cmd.Update, mwCommands); err != nil {
+				return nil, err
+			}
 			return cmd, nil
 		case structuredRetry:
 			newMessages = append(newMessages, retryToolMsgs...)
@@ -1448,6 +1481,16 @@ func buildModelNode(
 		update := map[string]any{"messages": newMessages}
 		for k, v := range baseUpdate {
 			update[k] = v
+		}
+		if err := applyModelNodeCommands(update, mwCommands); err != nil {
+			return nil, err
+		}
+		// Keep newMessages in sync with any middleware-appended messages so
+		// AfterModel hooks (and the afterState they observe) see the merged
+		// view — Python's after_model nodes run after the model node's
+		// commands, middleware commands included, are committed.
+		if merged, ok := update["messages"].([]messages.Message); ok {
+			newMessages = merged
 		}
 
 		afterState := cloneMapState(state)
@@ -1486,6 +1529,54 @@ func buildModelNode(
 		}
 		return update, nil
 	}
+}
+
+// applyModelNodeCommands applies the update-only Commands returned by
+// wrap_model_call middleware (each layer's ExtendedModelResponse.command,
+// accumulated inner-first at the composition boundary) to the model node's
+// pending update, mirroring factory._build_commands (factory.py:193-232):
+// the node's default state update commits first and the middleware Commands
+// are appended after it as additional Commands.
+//
+// Go graph nodes commit a single update per execution (unlike Python's
+// list-of-Commands node return), so the additional Commands are folded into
+// that one update map while preserving their sequential semantics:
+//   - a Command carrying Goto/Resume/Graph is a hard error
+//     (middleware.Command.ValidateForWrapModelCall — Python raises
+//     NotImplementedError there);
+//   - "messages" (an append-reducer channel) is concatenated after the
+//     default messages, matching the result of Python's two sequential
+//     add_messages writes;
+//   - every other key is overridden by the middleware value, matching the
+//     last-write-wins application of Python's sequential Commands (so on a
+//     conflicting key the later — outer — middleware Command wins).
+//
+// AfterModel hook updates are applied after this and still win conflicts,
+// matching Python where after_model nodes run after the model node's
+// commands are committed.
+func applyModelNodeCommands(update map[string]any, mwCommands []*middleware.Command) error {
+	for _, cmd := range mwCommands {
+		if err := cmd.ValidateForWrapModelCall(); err != nil {
+			return err
+		}
+		if len(cmd.Update) == 0 {
+			continue
+		}
+		for k, v := range cmd.Update {
+			if k == "messages" {
+				if extra, ok := v.([]messages.Message); ok {
+					base, _ := update["messages"].([]messages.Message)
+					merged := make([]messages.Message, 0, len(base)+len(extra))
+					merged = append(merged, base...)
+					merged = append(merged, extra...)
+					update["messages"] = merged
+					continue
+				}
+			}
+			update[k] = v
+		}
+	}
+	return nil
 }
 
 // resolveResponseFormat validates and unpacks an AgentOptions.ResponseFormat
