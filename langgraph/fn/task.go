@@ -19,7 +19,9 @@ import (
 // arguments.
 type TaskOpts struct {
 	// Retry enables automatic retry of the task's failures (see
-	// graph.RetryPolicy). Nil means never retry.
+	// graph.RetryPolicy). Nil falls back to the enclosing Entrypoint's Retry
+	// (EntrypointOpts.Retry — Python parity: PUSH calls inherit the graph
+	// default); with neither set the task is never retried.
 	Retry *graph.RetryPolicy
 	// Cache enables result caching for the task (see graph.CachePolicy). It
 	// is inert unless the enclosing Entrypoint has a checkpoint.Cache
@@ -195,6 +197,8 @@ func startTask[I, O any](d *dispatcher, ctx context.Context, parentRt runtime.Ru
 		if t.opts.Retry != nil {
 			r := t.opts.Retry.Resolved()
 			retry = &r
+		} else if d.defaultRetry != nil {
+			retry = d.defaultRetry // entrypoint-level default (Python: call.retry_policy or retry_policy)
 		}
 		for attempt := 1; ; attempt++ {
 			val, gi, err := runAttempt(taskCtx, parentRt, t, in)

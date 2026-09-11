@@ -226,6 +226,48 @@ func TestRetryOnFalseNeverRetries(t *testing.T) {
 	}
 }
 
+func TestRetryPlainErrorUnderRelaxedDefaultRetryOn(t *testing.T) {
+	// RetryOn nil -> graph.DefaultRetryOn, which since the Python-alignment
+	// change retries PLAIN errors (not just net.Error/DeadlineExceeded/5xx):
+	// a task failing with a plain error exhausts MaxAttempts.
+	d := newDispatcher(nil)
+	ctx := contextWithDispatcher(context.Background(), d)
+	var calls atomic.Int32
+	task := NewTask[int, int]("plain", func(_ runtime.Runtime, in int) (int, error) {
+		calls.Add(1)
+		return 0, errors.New("provider overloaded")
+	}, TaskOpts{Retry: &graph.RetryPolicy{MaxAttempts: 3, InitialInterval: time.Millisecond, NoJitter: true}})
+
+	_, err := task.Call(ctx, 1).Get(ctx)
+	if err == nil || !strings.Contains(err.Error(), "provider overloaded") {
+		t.Fatalf("Get error = %v, want the last plain error", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("calls = %d, want 3 (plain error retried by DefaultRetryOn)", got)
+	}
+}
+
+func TestRetryNonRetryableErrorNeverRetries(t *testing.T) {
+	// graph.NonRetryable opts an error out of the relaxed default: a task
+	// wrapping its error is executed exactly once.
+	d := newDispatcher(nil)
+	ctx := contextWithDispatcher(context.Background(), d)
+	var calls atomic.Int32
+	sentinel := errors.New("permanent")
+	task := NewTask[int, int]("perm", func(_ runtime.Runtime, in int) (int, error) {
+		calls.Add(1)
+		return 0, graph.NonRetryable(sentinel)
+	}, TaskOpts{Retry: &graph.RetryPolicy{MaxAttempts: 5, InitialInterval: time.Millisecond, NoJitter: true}})
+
+	_, err := task.Call(ctx, 1).Get(ctx)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Get error = %v, want the wrapped sentinel", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1 (NonRetryable is never retried)", got)
+	}
+}
+
 func TestTaskCache(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
 	var calls atomic.Int32

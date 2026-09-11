@@ -8,7 +8,6 @@ import (
 	"errors"
 	"math"
 	"math/rand"
-	"net"
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
@@ -17,10 +16,10 @@ import (
 
 // RetryPolicy configures per-node automatic retry with exponential backoff,
 // mirroring Python's `langgraph.types.RetryPolicy` (`pregel/_retry.py`). It is
-// installed per node via StateGraph.AddNodeWithPolicies; nodes added with
-// AddNode carry no policy and are never retried. A graph-level default retry
-// is deliberately NOT provided (Python has `retry_policy=` on compile; per-node
-// policies suffice — documented divergence, YAGNI).
+// installed per node via StateGraph.AddNodeWithPolicies or graph-wide as the
+// compile-time default via WithDefaultRetryPolicy (a node's own policy always
+// takes precedence); nodes with neither carry no policy and are never
+// retried.
 //
 // The retry loop lives in the executor's task wrapper (see
 // CompiledGraph.runTask); its interrupt, resume, event, and cancellation
@@ -116,42 +115,71 @@ func (p RetryPolicy) Resolved() RetryPolicy { return p.withDefaults() }
 // (1-based) failed attempt (see backoff). Exported for the fn package.
 func (p RetryPolicy) BackoffDelay(attempt int) time.Duration { return p.backoff(attempt) }
 
-// DefaultRetryOn is the default RetryPolicy.RetryOn. It retries:
+// DefaultRetryOn is the default RetryPolicy.RetryOn. It retries EVERY error
+// except a small exclusion set, aligning with Python's `default_retry_on`
+// (`langgraph/_internal/_retry.py`), which returns True for any exception
+// outside its programming-error list (ValueError/TypeError & co.).
 //
-//   - net.Error (and anything wrapping one): transient network failures.
-//   - context.DeadlineExceeded: a deadline hit by the node's OWN work. Parent
-//     cancellation is handled separately by the retry loop itself, which
-//     aborts on ctx.Done() and surfaces the parent's ctx error (see
-//     CompiledGraph.runTask).
-//   - errors implementing `interface{ HTTPStatus() int }` with a 5xx status
-//     (the Go stand-in for Python's HTTP-server-error retry; 4xx is not
-//     retried).
+// Exclusions (never retried):
 //
-// It never retries *channels.InvalidUpdateError-style programming errors, and
-// GraphInterrupt is not an error at all (it is a panic, converted to a
-// terminal interrupted outcome before the retry loop — see runTask).
+//   - errors wrapped by NonRetryable — the exported opt-out for callers who
+//     know an error is permanent (the Go analogue of Python's exception-class
+//     list: Go error values carry no such hierarchy, so the classification is
+//     explicit instead of type-based);
+//   - context.Canceled — the analogue of Python's CancelledError exclusion:
+//     the parent run was aborted, so retrying is pointless (the retry loop
+//     itself also aborts on ctx.Done() during backoff; see runTask);
+//   - *channels.InvalidUpdateError — a write-path programming error (two
+//     writes to a non-merging channel in one superstep); retrying a
+//     deterministic bug never helps.
 //
-// Go has no exception hierarchy to mirror Python's `retry_on` exception
-// tuple, so this predicate is intentionally small and explicit: callers with
-// domain errors should supply their own RetryOn.
+// Note the previous narrow predicate (net.Error / DeadlineExceeded / 5xx
+// HTTPStatus only) is gone: a provider-wrapped 429 or any other transient
+// plain error is now retried by default. Callers wanting the old behavior
+// supply their own RetryOn. GraphInterrupt is not an error at all (it is a
+// panic, converted to a terminal interrupted outcome before the retry loop —
+// see runTask).
 func DefaultRetryOn(err error) bool {
 	var invalidUpdate *channels.InvalidUpdateError
 	if errors.As(err, &invalidUpdate) {
 		return false
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
+	if errors.Is(err, context.Canceled) {
+		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
+	var nonRetryable *nonRetryableError
+	if errors.As(err, &nonRetryable) {
+		return false
 	}
-	var statusErr interface{ HTTPStatus() int }
-	if errors.As(err, &statusErr) {
-		return statusErr.HTTPStatus() >= 500
-	}
-	return false
+	return true
 }
+
+// NonRetryable wraps err into an error that DefaultRetryOn will never retry —
+// the exported exclusion mechanism for the retry-everything default: Python's
+// default_retry_on refuses programming-error exception classes, while Go
+// runtime errors carry no such hierarchy, so an error opts out explicitly by
+// wrapping. A custom RetryOn keeps full control (mirroring Python's custom
+// retry_on tuples, which ignore the default's exclusions); one that wants to
+// honor the marker should delegate to DefaultRetryOn.
+//
+// The wrapper is transparent: Error() and Unwrap() both delegate to err, so
+// errors.Is/As matching against the original sentinel keeps working through
+// any number of intermediate fmt.Errorf("%w") wraps. NonRetryable(nil)
+// returns nil.
+func NonRetryable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &nonRetryableError{err: err}
+}
+
+// nonRetryableError is the marker type installed by NonRetryable; matched via
+// errors.As so the exclusion survives wrapping.
+type nonRetryableError struct{ err error }
+
+func (e *nonRetryableError) Error() string { return e.err.Error() }
+
+func (e *nonRetryableError) Unwrap() error { return e.err }
 
 // NodePolicies bundles the optional per-node execution policies installed via
 // StateGraph.AddNodeWithPolicies. A nil field means the corresponding policy

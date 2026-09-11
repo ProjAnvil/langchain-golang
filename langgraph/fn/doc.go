@@ -29,9 +29,12 @@
 //  3. No checkpointer means hasPrev=false: Python passes previous=None;
 //     Go uses an explicit bool so a zero save value is never misread.
 //
-//  4. No store: Python's `@entrypoint(checkpointer=..., store=...)`
-//     cross-thread BaseStore is not ported; EntrypointOpts has no such
-//     field.
+//  4. Store is supported: EntrypointOpts.Store mirrors Python's
+//     `@entrypoint(checkpointer=..., store=...)` cross-thread BaseStore,
+//     installed on the internal graph via graph.WithStore and surfaced on
+//     Runtime.Store for the entrypoint function and every task it dispatches.
+//     (An earlier revision of this port lacked the field; the item stays
+//     numbered so cross-references to later items remain stable.)
 //
 //  5. Replayed errors lose their concrete type: only the message is
 //     persisted (the __error__ write) and Get returns errors.New(msg) on
@@ -92,17 +95,20 @@
 //     persistence invariant (a persisted consumed count never exceeds the
 //     resume queue).
 //
-//  16. Default retry predicate is narrower: graph.DefaultRetryOn does NOT
-//     retry errors outside its listed categories (net.Error,
-//     context.DeadlineExceeded, 5xx HTTPStatus), while Python's
-//     `default_retry_on` retries everything except its exclusions. Task
-//     retries reuse the graph policy, so fn.Task inherits this divergence
-//     (declared at graph/policy.go: DefaultRetryOn); supply RetryOn for
-//     domain errors.
+//  16. Default retry predicate excludes by opt-in, not by type: Python's
+//     `default_retry_on` refuses built-in programming-error exception
+//     classes (ValueError/TypeError & co.), but Go error values carry no
+//     such hierarchy — graph.DefaultRetryOn retries EVERY error except
+//     context.Canceled, *channels.InvalidUpdateError, and errors wrapped
+//     via graph.NonRetryable (the exported opt-out). Task retries reuse the
+//     graph policy, so fn.Task inherits this; a custom RetryOn keeps full
+//     control.
 //
 //  17. Single retry policy only: TaskOpts.Retry takes ONE *graph.RetryPolicy,
 //     while Python's `@task(retry_policy=...)` accepts a SEQUENCE of policies
 //     (tried in order per attempt). Modeling per-attempt policy switching has
 //     no Go equivalent — a functional narrowing, not a behavior difference
-//     for the single-policy case.
+//     for the single-policy case. (EntrypointOpts.Retry likewise covers one
+//     policy, installed as the internal graph's graph-level default so tasks
+//     without their own TaskOpts.Retry inherit it, mirroring Python.)
 package fn

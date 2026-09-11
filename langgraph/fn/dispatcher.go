@@ -22,8 +22,13 @@ type dispatcher struct {
 	ns       string                      // checkpoint namespace (always "" — fn runs are root-namespace)
 	step     int                         // replay base: that checkpoint's Metadata.Step
 	cache    checkpoint.Cache            // EntrypointOpts.Cache; nil disables task caching
-	results  []taskResult                // every outcome completed this run (execution, replay, cache hit)
-	sealed   bool                        // set at run end (after cancel); record() drops everything once sealed
+	// defaultRetry is the EntrypointOpts.Retry policy (defaults-resolved at
+	// run start), applied to tasks without their own TaskOpts.Retry — Python
+	// parity: the internal Pregel's graph-level default, inherited by PUSH
+	// calls (`call.retry_policy or retry_policy`). Read-only after prepare.
+	defaultRetry *graph.RetryPolicy
+	results      []taskResult // every outcome completed this run (execution, replay, cache hit)
+	sealed       bool         // set at run end (after cancel); record() drops everything once sealed
 }
 
 type taskResult struct {

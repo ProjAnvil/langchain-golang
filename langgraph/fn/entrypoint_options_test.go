@@ -218,3 +218,102 @@ func TestEntrypointFinalOptions(t *testing.T) {
 		t.Fatalf("calls = %d, want 1 (second invoke served from cache)", got)
 	}
 }
+
+// TestEntrypointRetryDefaultsToTasks mirrors Python's wiring of
+// @entrypoint(retry_policy=...) (func/__init__.py:607 passes it as the
+// internal Pregel's graph-level default, which PUSH calls inherit via
+// `call.retry_policy or retry_policy`): a task without its own TaskOpts.Retry
+// inherits the entrypoint's Retry. The task failing twice and succeeding on
+// its third attempt must NOT re-run the entrypoint function (the retry stays
+// inside the task), so fnCalls == 1 distinguishes inheritance from the node
+// re-executing everything.
+func TestEntrypointRetryDefaultsToTasks(t *testing.T) {
+	var taskCalls, fnCalls atomic.Int32
+	task := NewTask[int, int]("inherit", func(_ runtime.Runtime, in int) (int, error) {
+		if taskCalls.Add(1) < 3 {
+			return 0, errors.New("transient") // plain error: retryable under DefaultRetryOn
+		}
+		return in * 2, nil
+	}, TaskOpts{}) // no Retry of its own
+
+	e, err := NewEntrypoint[int, int, int](
+		EntrypointOpts{Retry: &graph.RetryPolicy{MaxAttempts: 3, InitialInterval: time.Millisecond, NoJitter: true}},
+		func(rt runtime.Runtime, in int, _ int, _ bool) (int, error) {
+			fnCalls.Add(1)
+			return task.Call(rt, in).Get(rt)
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
+
+	v, err := e.Invoke(context.Background(), 5, graph.Options{})
+	if err != nil || v != 10 {
+		t.Fatalf("Invoke = (%v, %v), want (10, nil)", v, err)
+	}
+	if got := fnCalls.Load(); got != 1 {
+		t.Fatalf("entrypoint calls = %d, want 1 (retry stayed inside the task)", got)
+	}
+	if got := taskCalls.Load(); got != 3 {
+		t.Fatalf("task calls = %d, want 3 (task inherited the entrypoint's retry policy)", got)
+	}
+}
+
+// TestTaskRetryOverridesEntrypointDefault: a task's own TaskOpts.Retry beats
+// the entrypoint-level default (per-task precedence, `call.retry_policy or
+// retry_policy`). The default's MaxAttempts is 1 and the task's own is 2 with
+// every error retryable: the task must run exactly 2 attempts (inheriting the
+// default instead would cap it at 1), and the node inherits MaxAttempts 1 so
+// nothing re-runs at the entrypoint level.
+func TestTaskRetryOverridesEntrypointDefault(t *testing.T) {
+	var taskCalls atomic.Int32
+	task := NewTask[int, int]("own", func(_ runtime.Runtime, in int) (int, error) {
+		taskCalls.Add(1)
+		return 0, errors.New("transient")
+	}, TaskOpts{Retry: &graph.RetryPolicy{MaxAttempts: 2, InitialInterval: time.Millisecond, NoJitter: true}})
+
+	e, err := NewEntrypoint[int, int, int](
+		EntrypointOpts{Retry: &graph.RetryPolicy{MaxAttempts: 1, InitialInterval: time.Millisecond, NoJitter: true, RetryOn: func(error) bool { return true }}},
+		func(rt runtime.Runtime, in int, _ int, _ bool) (int, error) {
+			return task.Call(rt, in).Get(rt)
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
+
+	_, err = e.Invoke(context.Background(), 5, graph.Options{})
+	if err == nil {
+		t.Fatal("Invoke error = nil, want the task's error")
+	}
+	if got := taskCalls.Load(); got != 2 {
+		t.Fatalf("task calls = %d, want 2 (task's own policy overrides the entrypoint default)", got)
+	}
+}
+
+// TestEntrypointRetriesEntrypointFunction: the entrypoint-level Retry also
+// retries the entrypoint function itself (the internal graph's single node,
+// which has no own policy and so falls back to the graph default).
+func TestEntrypointRetriesEntrypointFunction(t *testing.T) {
+	var fnCalls atomic.Int32
+	e, err := NewEntrypoint[int, int, int](
+		EntrypointOpts{Retry: &graph.RetryPolicy{MaxAttempts: 3, InitialInterval: time.Millisecond, NoJitter: true, RetryOn: func(error) bool { return true }}},
+		func(_ runtime.Runtime, in int, _ int, _ bool) (int, error) {
+			if fnCalls.Add(1) < 3 {
+				return 0, errors.New("transient")
+			}
+			return in * 2, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewEntrypoint: %v", err)
+	}
+
+	v, err := e.Invoke(context.Background(), 5, graph.Options{})
+	if err != nil || v != 10 {
+		t.Fatalf("Invoke = (%v, %v), want (10, nil)", v, err)
+	}
+	if got := fnCalls.Load(); got != 3 {
+		t.Fatalf("entrypoint calls = %d, want 3", got)
+	}
+}

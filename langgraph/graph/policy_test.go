@@ -70,15 +70,16 @@ func TestRetryPolicyFlakyNodeSucceeds(t *testing.T) {
 
 func TestRetryPolicyNonRetryableFailsImmediately(t *testing.T) {
 	var attempts atomic.Int32
-	// RetryOn nil -> DefaultRetryOn, which does not retry a plain error.
+	// RetryOn nil -> DefaultRetryOn, which retries plain errors but never a
+	// NonRetryable-wrapped one (the exported opt-out, see NonRetryable).
 	cg := compileRetryGraph(t, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		attempts.Add(1)
-		return nil, errFlaky
+		return nil, NonRetryable(errFlaky)
 	}, NodePolicies{Retry: &RetryPolicy{InitialInterval: time.Millisecond, MaxAttempts: 5, NoJitter: true}})
 
 	_, err := cg.Invoke(context.Background(), nil)
 	if !errors.Is(err, errFlaky) {
-		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
+		t.Fatalf("Invoke() error = %v, want %v (NonRetryable must not mask the wrapped error)", err, errFlaky)
 	}
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("attempts = %d, want 1 (non-retryable error must not retry)", got)
@@ -309,15 +310,24 @@ func TestDefaultRetryOn(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"plain error", errFlaky, false},
+		// The relaxed default retries everything except its explicit
+		// exclusions (Python _retry.py parity: default_retry_on returns True
+		// for anything outside its programming-error list).
+		{"plain error", errFlaky, true},
+		{"wrapped plain error", fmt.Errorf("call: %w", errFlaky), true},
 		{"net.Error", &net.DNSError{Err: "timeout", Name: "example.com", IsTimeout: true}, true},
 		{"wrapped net.Error", fmt.Errorf("call: %w", &net.DNSError{Err: "timeout", Name: "example.com", IsTimeout: true}), true},
 		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
 		{"wrapped context.DeadlineExceeded", fmt.Errorf("call: %w", context.DeadlineExceeded), true},
-		{"context.Canceled", context.Canceled, false},
+		{"HTTP 429 wrapped", fmt.Errorf("provider: %w", httpStatusErr{429}), true},
+		{"HTTP 404", httpStatusErr{404}, true},
 		{"HTTP 500", httpStatusErr{500}, true},
 		{"HTTP 503", httpStatusErr{503}, true},
-		{"HTTP 404", httpStatusErr{404}, false},
+		// Exclusions.
+		{"context.Canceled", context.Canceled, false},
+		{"wrapped context.Canceled", fmt.Errorf("call: %w", context.Canceled), false},
+		{"NonRetryable", NonRetryable(errFlaky), false},
+		{"NonRetryable nested in %w", fmt.Errorf("call: %w", NonRetryable(errFlaky)), false},
 		{"InvalidUpdateError", &channels.InvalidUpdateError{Channel: "LastValue", Reason: "too many writes"}, false},
 	}
 	for _, tc := range cases {
@@ -326,6 +336,19 @@ func TestDefaultRetryOn(t *testing.T) {
 				t.Fatalf("DefaultRetryOn(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNonRetryableWrapping(t *testing.T) {
+	if NonRetryable(nil) != nil {
+		t.Fatal("NonRetryable(nil) != nil, want nil")
+	}
+	err := NonRetryable(errFlaky)
+	if !errors.Is(err, errFlaky) {
+		t.Fatalf("errors.Is(NonRetryable(errFlaky), errFlaky) = false, want true (sentinel matching must survive the wrap)")
+	}
+	if err.Error() != errFlaky.Error() {
+		t.Fatalf("Error() = %q, want %q (the wrapper is transparent in message)", err.Error(), errFlaky.Error())
 	}
 }
 
@@ -407,21 +430,184 @@ func TestTimeoutPolicyRejectsNegativeIdleTimeout(t *testing.T) {
 	}
 }
 
-// deadlineOnlyViaIs matches context.DeadlineExceeded through a custom Is
-// method without itself (or its chain) implementing net.Error, exercising
-// DefaultRetryOn's errors.Is branch (context.DeadlineExceeded itself
-// implements net.Error, so it is caught by the earlier net.Error branch).
-type deadlineOnlyViaIs struct{ error }
+// deadlineOnlyViaIs matched context.DeadlineExceeded through a custom Is
+// method; under the relaxed DefaultRetryOn every error outside the exclusion
+// set is retryable, so the branch-specific coverage is obsolete and the case
+// is covered by the plain-error rows of TestDefaultRetryOn.
 
-func (deadlineOnlyViaIs) Is(err error) bool { return err == context.DeadlineExceeded }
+// --- graph-level default retry policy (WithDefaultRetryPolicy) ---
 
-func TestDefaultRetryOnDeadlineExceededViaCustomIs(t *testing.T) {
-	err := deadlineOnlyViaIs{errFlaky}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		t.Fatal("test setup broken: deadlineOnlyViaIs must not match net.Error")
+// flakyNode returns a NodeFunc failing with errFlaky until its attempts
+// counter reaches succeedAt, then returning a done write. Pass a huge
+// succeedAt for an always-failing node.
+func flakyNode(attempts *atomic.Int32, succeedAt int32) NodeFunc {
+	return func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		if attempts.Add(1) < succeedAt {
+			return nil, errFlaky
+		}
+		return map[string]any{"done": true}, nil
 	}
-	if !DefaultRetryOn(err) {
-		t.Fatalf("DefaultRetryOn(%v) = false, want true (matches DeadlineExceeded via custom Is)", err)
+}
+
+func TestWithDefaultRetryPolicyRetriesNodesWithoutOwnPolicy(t *testing.T) {
+	// The node was added via AddNode (no own policy). The graph-level default
+	// applies, and its nil RetryOn -> the relaxed DefaultRetryOn, so the PLAIN
+	// errFlaky is retried and the run succeeds on attempt 3.
+	var attempts atomic.Int32
+	g := NewStateGraph()
+	g.AddNode("node", flakyNode(&attempts, 3))
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	cg, err := g.Compile(WithDefaultRetryPolicy(&RetryPolicy{
+		InitialInterval: time.Millisecond,
+		MaxAttempts:     3,
+		NoJitter:        true,
+	}))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	result, err := cg.Invoke(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3 (graph default retried a plain error)", got)
+	}
+	if result.Values["done"] != true {
+		t.Fatalf("done = %v, want true", result.Values["done"])
+	}
+}
+
+func TestPerNodeRetryPolicyOverridesGraphDefault(t *testing.T) {
+	// The node's own policy (MaxAttempts 2) wins over the graph default
+	// (MaxAttempts 5): the run fails after exactly 2 attempts.
+	var attempts atomic.Int32
+	g := NewStateGraph()
+	g.AddNodeWithPolicies("node", flakyNode(&attempts, math.MaxInt32), NodePolicies{Retry: fastRetryPolicy(2)})
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	cg, err := g.Compile(WithDefaultRetryPolicy(&RetryPolicy{
+		InitialInterval: time.Millisecond,
+		MaxAttempts:     5,
+		NoJitter:        true,
+		RetryOn:         alwaysRetry,
+	}))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	_, err = cg.Invoke(context.Background(), nil)
+	if !errors.Is(err, errFlaky) {
+		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want 2 (per-node policy overrides the graph default)", got)
+	}
+}
+
+func TestGraphDefaultAppliesToNodeWithOtherPoliciesOnly(t *testing.T) {
+	// A node registered via AddNodeWithPolicies with only a Timeout policy has
+	// Retry == nil, so the graph-level default still applies.
+	var attempts atomic.Int32
+	g := NewStateGraph()
+	g.AddNodeWithPolicies("node", flakyNode(&attempts, 3), NodePolicies{Timeout: &TimeoutPolicy{RunTimeout: time.Minute}})
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	cg, err := g.Compile(WithDefaultRetryPolicy(fastRetryPolicy(3)))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	if _, err := cg.Invoke(context.Background(), nil); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3 (Retry-less NodePolicies falls back to the graph default)", got)
+	}
+}
+
+func TestWithoutDefaultRetryPolicyNoRetry(t *testing.T) {
+	// No graph default, no per-node policy: never retried, even for an error
+	// DefaultRetryOn would happily retry.
+	var attempts atomic.Int32
+	g := NewStateGraph()
+	g.AddNode("node", flakyNode(&attempts, math.MaxInt32))
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	_, err = cg.Invoke(context.Background(), nil)
+	if !errors.Is(err, errFlaky) {
+		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (no policy anywhere means no retry)", got)
+	}
+}
+
+func TestWithDefaultRetryPolicyNilDisables(t *testing.T) {
+	var attempts atomic.Int32
+	g := NewStateGraph()
+	g.AddNode("node", flakyNode(&attempts, math.MaxInt32))
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	cg, err := g.Compile(WithDefaultRetryPolicy(nil))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	if _, err := cg.Invoke(context.Background(), nil); !errors.Is(err, errFlaky) {
+		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (nil default = no retry)", got)
+	}
+}
+
+func TestWithDefaultRetryPolicyNonRetryableNotRetried(t *testing.T) {
+	// The graph default has a nil RetryOn -> DefaultRetryOn, which retries
+	// everything EXCEPT a NonRetryable-wrapped error: exactly one attempt.
+	// (A custom RetryOn keeps full control, mirroring Python's custom
+	// retry_on tuples ignoring the default's exclusions.)
+	var attempts atomic.Int32
+	g := NewStateGraph()
+	g.AddNode("node", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		attempts.Add(1)
+		return nil, NonRetryable(errFlaky)
+	})
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	cg, err := g.Compile(WithDefaultRetryPolicy(&RetryPolicy{
+		InitialInterval: time.Millisecond,
+		MaxAttempts:     5,
+		NoJitter:        true,
+	}))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	_, err = cg.Invoke(context.Background(), nil)
+	if !errors.Is(err, errFlaky) {
+		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (NonRetryable beats the graph default)", got)
+	}
+}
+
+func TestCompileValidatesDefaultRetryPolicy(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNode("node", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return nil, nil
+	})
+	g.AddEdge(types.START, "node")
+	g.AddEdge("node", types.END)
+	_, err := g.Compile(WithDefaultRetryPolicy(&RetryPolicy{MaxAttempts: -1}))
+	if err == nil || !strings.Contains(err.Error(), "default retry policy") {
+		t.Fatalf("Compile() error = %v, want a default retry policy validation error", err)
 	}
 }

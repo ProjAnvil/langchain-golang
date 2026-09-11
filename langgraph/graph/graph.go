@@ -192,11 +192,9 @@ func (g *StateGraph) AddNode(name string, fn NodeFunc) *StateGraph {
 }
 
 // AddNodeWithPolicies registers a node together with its per-node execution
-// policies (see NodePolicies). Policies are validated at Compile time.
-//
-// There is deliberately no graph-level default retry (Python has
-// `retry_policy=` on compile; per-node policies suffice — documented
-// divergence, YAGNI).
+// policies (see NodePolicies). Policies are validated at Compile time. A node
+// without its own retry policy also inherits the graph-level default
+// installed via WithDefaultRetryPolicy (if any).
 func (g *StateGraph) AddNodeWithPolicies(name string, fn NodeFunc, policies NodePolicies) *StateGraph {
 	if name == "" || name == types.START || name == types.END {
 		g.setErr(fmt.Errorf("graph: invalid node name %q", name))
@@ -414,6 +412,7 @@ type compileOptions struct {
 	interruptBefore map[string]bool
 	interruptAfter  map[string]bool
 	durability      Durability
+	defaultRetry    *RetryPolicy
 }
 
 // WithCheckpointer installs a checkpoint.Saver, enabling Interrupt/Resume
@@ -445,6 +444,21 @@ func WithStore(s store.Store) CompileOption {
 // infinite loops in a graph's routing.
 func WithRecursionLimit(limit int) CompileOption {
 	return func(o *compileOptions) { o.recursionLimit = limit }
+}
+
+// WithDefaultRetryPolicy installs a graph-level default RetryPolicy applied
+// to every node that does not carry its own retry policy
+// (StateGraph.AddNodeWithPolicies), mirroring Python's graph-level default
+// retry (`retry_policy=` on compile / `set_node_defaults`). A node's own
+// policy always takes precedence; nodes with neither retry anywhere. Like
+// Python's defaults, the policy is NOT inherited by subgraphs (each subgraph
+// is compiled separately). Passing nil disables the default (and unsets a
+// previous option in the same Compile call).
+//
+// The default is validated at Compile time; an invalid policy fails Compile
+// with a "default retry policy" error.
+func WithDefaultRetryPolicy(p *RetryPolicy) CompileOption {
+	return func(o *compileOptions) { o.defaultRetry = p }
 }
 
 // Durability selects when the executor flushes checkpoint writes, mirroring
@@ -581,6 +595,14 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	var defaultRetry *RetryPolicy
+	if options.defaultRetry != nil {
+		if err := options.defaultRetry.validate(); err != nil {
+			return nil, fmt.Errorf("graph: default retry policy: %w", err)
+		}
+		p := options.defaultRetry.withDefaults()
+		defaultRetry = &p
+	}
 
 	// Register one barrier channel prototype per waiting edge (Python's
 	// attach_edge, state.py:1546-1561). The clone keeps the builder's own
@@ -620,6 +642,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		durability:      options.durability,
 		interruptBefore: options.interruptBefore,
 		interruptAfter:  options.interruptAfter,
+		defaultRetry:    defaultRetry,
 	}, nil
 }
 
@@ -657,6 +680,10 @@ type CompiledGraph struct {
 	durability      Durability
 	interruptBefore map[string]bool
 	interruptAfter  map[string]bool
+	// defaultRetry is the graph-level default retry policy installed via
+	// WithDefaultRetryPolicy, defaults-resolved at Compile; nil when absent.
+	// It applies only to nodes without their own retry policy (see runTask).
+	defaultRetry *RetryPolicy
 }
 
 // ClearCache removes every cached entry in namespace ns, delegating to the
@@ -1726,9 +1753,11 @@ func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state m
 }
 
 // runTask executes one task, wrapping runNode in the node's RetryPolicy
-// attempt loop (installed via StateGraph.AddNodeWithPolicies). Nodes without
-// a retry policy take exactly one attempt, preserving the pre-policy
-// behavior.
+// attempt loop. The effective policy is the node's own (installed via
+// StateGraph.AddNodeWithPolicies) or, when the node has none, the graph-level
+// default installed via WithDefaultRetryPolicy (already defaults-resolved at
+// Compile). Nodes with neither take exactly one attempt, preserving the
+// pre-policy behavior.
 //
 // Semantics (Python parity, `pregel/_retry.py`):
 //
@@ -1754,6 +1783,8 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 	if policies, ok := g.policies[t.node]; ok && policies.Retry != nil {
 		p := policies.Retry.withDefaults()
 		retry = &p
+	} else if g.defaultRetry != nil {
+		retry = g.defaultRetry // resolved once at Compile (WithDefaultRetryPolicy)
 	}
 	for attempt := 1; ; attempt++ {
 		result, intr, cons, rerr := g.runNode(ctx, t, state, resumeQueue, attempt)

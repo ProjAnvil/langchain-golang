@@ -37,8 +37,12 @@ type EntrypointOpts struct {
 	// Cache is the backend for task-level Cache policies (TaskOpts.Cache)
 	// and is simply installed on the internal graph via graph.WithCache.
 	Cache checkpoint.Cache
-	// Retry retries the entrypoint function as a whole (it is the internal
-	// graph node's retry policy, installed via AddNodeWithPolicies).
+	// Retry retries the workflow's failures: it is installed as the internal
+	// graph's graph-level default (graph.WithDefaultRetryPolicy — Python
+	// parity: func/__init__.py:607 passes retry_policy to the internal Pregel,
+	// not to the node), so it retries BOTH the entrypoint function (the single
+	// node, which has no own policy) AND every task without its own
+	// TaskOpts.Retry (PUSH calls inherit the graph default).
 	Retry *graph.RetryPolicy
 	// CachePolicy caches the whole workflow's writes (the __end__/__previous__
 	// result) on the internal entrypoint node, mirroring Python's
@@ -186,7 +190,10 @@ func validateEntrypointContext(schema func(any) error, rt runtime.Runtime) error
 // compileEntrypoint builds the single-node StateGraph every Entrypoint
 // compiles to: three reserved channels (__start__ ephemeral input, __end__
 // and __previous__ last-value saves) plus one "entrypoint" node (Python
-// parity `func/__init__.py:576-609`). Compile can fail on user-supplied
+// parity `func/__init__.py:576-609`). opts.Retry is installed as the
+// graph-level default (not the node's policy — mirroring Python, which passes
+// retry_policy to the internal Pregel), so it also reaches tasks via the
+// dispatcher (see dispatcher.defaultRetry). Compile can fail on user-supplied
 // policies (opts.Timeout / opts.Retry are validated there), so the error is
 // returned to the constructor rather than panicking.
 func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) (*Entrypoint[I, O, S], error) {
@@ -194,10 +201,13 @@ func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) 
 		AddChannel(channelStart, channels.NewEphemeral(true)).
 		AddChannel(channelEnd, channels.NewLastValue()).
 		AddChannel(channelPrevious, channels.NewLastValue()).
-		AddNodeWithPolicies(entrypointNode, nodeFn, graph.NodePolicies{Retry: opts.Retry, Cache: opts.CachePolicy, Timeout: opts.Timeout}).
+		AddNodeWithPolicies(entrypointNode, nodeFn, graph.NodePolicies{Cache: opts.CachePolicy, Timeout: opts.Timeout}).
 		SetEntryPoint(entrypointNode).
 		AddEdge(entrypointNode, types.END)
 	var copts []graph.CompileOption
+	if opts.Retry != nil {
+		copts = append(copts, graph.WithDefaultRetryPolicy(opts.Retry))
+	}
 	if opts.Checkpointer != nil {
 		copts = append(copts, graph.WithCheckpointer(opts.Checkpointer))
 	}
@@ -222,6 +232,13 @@ func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) 
 func (e *Entrypoint[I, O, S]) prepare(ctx context.Context, in I, opts graph.Options) (context.Context, map[string]any, context.CancelFunc, *dispatcher, error) {
 	input := map[string]any{channelStart: in}
 	d := newDispatcher(e.opts.Cache)
+	if e.opts.Retry != nil {
+		// The graph-level default also retries tasks without their own
+		// policy (Python: PUSH calls inherit it). Resolved once here, before
+		// the run starts, so startTask's goroutines only read it.
+		r := e.opts.Retry.Resolved()
+		d.defaultRetry = &r
+	}
 	if e.opts.Checkpointer != nil && opts.ThreadID != "" {
 		tup, err := e.opts.Checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointID: opts.CheckpointID})
 		if err != nil {
