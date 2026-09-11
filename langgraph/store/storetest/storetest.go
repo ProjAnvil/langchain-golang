@@ -6,10 +6,11 @@
 // every implementation must satisfy: put/get round-trip, delete, search by
 // namespace prefix, search with filter (exact + comparison operators),
 // search limit/offset pagination, put-update-replaces, hierarchical
-// namespaces, and concurrent put/get. Semantic (query) search is intentionally
-// NOT exercised — it is an optional capability the InMemoryStore does not
-// provide; implementations that add it should cover ranking in their own
-// package tests.
+// namespaces, and concurrent put/get. Semantic (query) search is an OPTIONAL
+// capability: Run asserts only that a Query is accepted without error on a
+// store built WITHOUT an index (mirroring Python's InMemoryStore(index=None),
+// which silently ignores it); RunSemantic (semantic.go) exercises cosine
+// ranking for implementations constructed WITH an index.
 package storetest
 
 import (
@@ -38,6 +39,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("search_filter_operators", func(t *testing.T) { testSearchFilterOperators(t, newStore) })
 	t.Run("search_limit_offset", func(t *testing.T) { testSearchLimitOffset(t, newStore) })
 	t.Run("search_empty_prefix_matches_all", func(t *testing.T) { testSearchEmptyPrefixMatchesAll(t, newStore) })
+	t.Run("query_ignored_without_index", func(t *testing.T) { testQueryIgnoredWithoutIndex(t, newStore) })
 	t.Run("put_updates_existing", func(t *testing.T) { testPutUpdatesExisting(t, newStore) })
 	t.Run("namespaces_hierarchical", func(t *testing.T) { testNamespacesHierarchical(t, newStore) })
 	t.Run("put_rejects_invalid_namespace", func(t *testing.T) { testPutRejectsInvalidNamespace(t, newStore) })
@@ -316,6 +318,34 @@ func testSearchEmptyPrefixMatchesAll(t *testing.T, newStore func(t *testing.T) s
 	}
 	if len(results) != 2 {
 		t.Fatalf("Search() = %d items, want 2: %+v", len(results), results)
+	}
+}
+
+// testQueryIgnoredWithoutIndex: a store built without a semantic index accepts
+// SearchOptions.Query without error and ignores it — results keep the
+// deterministic (namespace, key) order with zero scores, mirroring Python's
+// InMemoryStore(index=None), whose _batch_search drops the query silently.
+func testQueryIgnoredWithoutIndex(t *testing.T, newStore func(t *testing.T) store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	s := newStore(t)
+
+	for _, key := range []string{"b", "a", "c"} {
+		if err := s.Put(ctx, []string{"ns"}, key, map[string]any{"text": key}, nil); err != nil {
+			t.Fatalf("Put %s: %v", key, err)
+		}
+	}
+	results, err := s.Search(ctx, []string{"ns"}, store.SearchOptions{Query: "ignored"})
+	if err != nil {
+		t.Fatalf("Search with a query on a non-indexed store: %v", err)
+	}
+	if got := keysOf(results); got != "a,b,c" {
+		t.Fatalf("Search(query, no index) = %q, want %q in deterministic order (query ignored)", got, "a,b,c")
+	}
+	for _, r := range results {
+		if r.Score != 0 {
+			t.Errorf("result %s scored %v on a non-indexed store, want 0", r.Key, r.Score)
+		}
 	}
 }
 

@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/projanvil/langchain-golang/core/embeddings"
 )
 
 // Item is a stored key-value pair with metadata, mirroring Python's
@@ -45,25 +47,51 @@ type Item struct {
 }
 
 // SearchItem is an Item returned from Search, carrying a relevance score,
-// mirroring Python's `langgraph.store.base.SearchItem`. Score is the similarity
-// score when semantic search ranks results; for non-semantic Search it is the
-// zero value (Python uses None, which Go represents as 0.0 in a float64).
+// mirroring Python's `langgraph.store.base.SearchItem`. Score is the cosine
+// similarity when semantic search ranks results; it is the zero value for
+// non-semantic Search and for items returned without a similarity (Python uses
+// None there, which Go represents as 0.0 in a float64).
 type SearchItem struct {
 	Item
 	// Score is the semantic similarity score (0 for non-semantic search).
 	Score float64
 }
 
+// IndexConfig configures semantic (vector) indexing for a store, mirroring the
+// `index` dict of Python's `langgraph.store.base.IndexConfig` as consumed by
+// `langgraph.store.memory.InMemoryStore(index=...)`. A store constructed
+// WITHOUT an index (Python's index=None) does not embed anything on Put and
+// silently ignores SearchOptions.Query — exactly like Python.
+type IndexConfig struct {
+	// Dims is the number of dimensions of the embedding vectors. Retained for
+	// parity with Python's `index={"dims": ...}`; the InMemoryStore does not
+	// enforce it (neither does Python's).
+	Dims int
+	// Embed generates embedding vectors from text. Required: constructors
+	// taking an IndexConfig panic when Embed is nil, mirroring the ValueError
+	// Python's ensure_embeddings raises for embed=None.
+	Embed embeddings.Embeddings
+	// Fields selects which value fields are embedded on Put. Each entry is a
+	// plain field name (the field's value is embedded as text; strings as-is,
+	// maps/slices as sorted-key JSON, mirroring get_text_at_path for simple
+	// fields) or "$", which embeds the sorted-key JSON of the whole value.
+	// nil defaults to []string{"$"}, mirroring Python's default
+	// fields=["$"]. Documented divergence: Python's dotted paths, "[i]"/"[*]"
+	// indexing, "*", and "{a,b}" multi-field expressions are not supported.
+	Fields []string
+}
+
 // SearchOptions configures a Search call, mirroring the keyword arguments of
 // Python's `BaseStore.search` (namespace_prefix is a separate Store.Search
 // parameter, matching Python's positional `namespace_prefix`).
 type SearchOptions struct {
-	// Query is a natural-language search query for semantic ranking. Requires
-	// an index/embeddings configuration on the store implementation; the
-	// InMemoryStore in this package does NOT perform semantic ranking (it has
-	// no index configured), so Query is accepted but ignored — items matching
-	// the namespace prefix and filter are returned unranked, mirroring Python's
-	// InMemoryStore(index=None).
+	// Query is a natural-language search query for semantic ranking. When the
+	// store was constructed with an index (see NewInMemoryStoreWithIndex),
+	// matching items are ranked by cosine similarity to the embedded query,
+	// descending (mirroring Python's InMemoryStore._batch_search), and items
+	// whose fields were never embedded are appended last with score 0. On a
+	// store WITHOUT an index (Python's index=None), Query is accepted but
+	// silently ignored.
 	Query string
 	// Filter is a set of key/value predicates matched against each item's
 	// Value. A scalar filter value matches the corresponding Value field by
@@ -118,10 +146,13 @@ type Store interface {
 	// Put stores value under (namespace, key), replacing any existing item
 	// (a fresh Item is created with both timestamps set to now, mirroring
 	// Python's _apply_put_ops — CreatedAt is NOT preserved across updates).
-	// index selects the value fields to index for semantic search; the
-	// InMemoryStore in this package does not index, so index is accepted but
-	// ignored (mirroring Python's InMemoryStore(index=None)). Mirrors Python's
-	// BaseStore.put.
+	// index selects the value fields to index for semantic search: nil uses
+	// the store's configured index fields, and a non-nil slice embeds exactly
+	// those fields for this item (an empty non-nil slice embeds nothing,
+	// standing in for Python's put(..., index=False)). On a store without an
+	// index, index is accepted but ignored (mirroring Python's
+	// InMemoryStore(index=None), where all index arguments to put have no
+	// effect). Mirrors Python's BaseStore.put.
 	Put(ctx context.Context, namespace []string, key string, value map[string]any, index []string) error
 
 	// Delete removes the item stored under (namespace, key). It is NOT an
@@ -131,10 +162,11 @@ type Store interface {
 
 	// Search returns items whose Namespace has namespacePrefix as a prefix
 	// (element-wise; an empty prefix matches every namespace), filtered by
-	// opts.Filter, ordered deterministically by (namespace, key), then
-	// paginated by opts.Offset/opts.Limit. Mirrors Python's BaseStore.search
-	// (the non-query path: Query-based semantic ranking is not supported by
-	// the InMemoryStore in this package).
+	// opts.Filter, then paginated by opts.Offset/opts.Limit. Without a Query
+	// (or without an index), results are ordered deterministically by
+	// (namespace, key); with an index and a non-empty Query they are ranked by
+	// cosine similarity, descending (see SearchOptions.Query). Mirrors
+	// Python's BaseStore.search.
 	Search(ctx context.Context, namespacePrefix []string, opts SearchOptions) ([]SearchItem, error)
 
 	// ListNamespaces returns the distinct namespaces present in the store,
