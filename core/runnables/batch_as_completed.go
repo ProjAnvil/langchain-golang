@@ -28,9 +28,10 @@ type BatchResult[O any] struct {
 // one pair, including inputs skipped after ctx cancellation, which yield
 // context.Cause(ctx).
 //
-// Stop ranging early to abandon the run: the iterator returns, in-flight
-// invocations finish (cancellation reaches them through ctx), and pending
-// inputs are skipped without leaking goroutines.
+// Stop ranging early to abandon the run: the iterator does NOT cancel ctx —
+// cancellation only ever arrives from the caller cancelling the ctx passed
+// in. The sequence function blocks until the in-flight invocations finish
+// (leaking no goroutines), and inputs that never started are skipped.
 func BatchAsCompleted[I any, O any](
 	ctx context.Context,
 	r Runnable[I, O],

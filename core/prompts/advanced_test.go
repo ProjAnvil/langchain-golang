@@ -585,6 +585,15 @@ func TestFewShotChatMessagePromptTemplateConstructorValidation(t *testing.T) {
 	); err == nil {
 		t.Fatal("expected error for both examples and selector")
 	}
+	// An EMPTY non-nil examples list still counts as "provided": any non-nil
+	// examples together with a selector is the both-provided error, matching
+	// Python's None-vs-list distinction.
+	if _, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{}, staticSelector{},
+		"What is {{.input}}?", "{{.output}}", nil,
+	); err == nil {
+		t.Fatal("expected error for an empty non-nil examples list together with a selector")
+	}
 	if _, err := NewFewShotChatMessagePromptTemplate(
 		[]map[string]any{{"input": "a"}}, nil, "{{.input", "{{.output}}", nil,
 	); err == nil {

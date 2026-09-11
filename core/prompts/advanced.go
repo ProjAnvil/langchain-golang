@@ -202,10 +202,13 @@ type FewShotChatMessagePromptTemplate struct {
 // NewFewShotChatMessagePromptTemplate creates a chat few-shot prompt template.
 // Exactly one of examples or selector must be provided (few_shot.py:44-69):
 // examples may be an empty non-nil slice (renders no messages, matching
-// Python where examples=[] is accepted), while nil means "not provided".
-// humanTemplate and aiTemplate use Go text/template syntax, e.g.
-// "What is {{.input}}?" / "{{.output}}". inputVariables is only meaningful in
-// selector mode, where the render values are forwarded to the selector.
+// Python where examples=[] is accepted), while nil means "not provided" — and
+// providing ANY non-nil examples (an empty list included) together with a
+// selector is the both-provided error, since a non-None examples always wins
+// in Python's either/or contract. humanTemplate and aiTemplate use Go
+// text/template syntax, e.g. "What is {{.input}}?" / "{{.output}}".
+// inputVariables is only meaningful in selector mode, where the render values
+// are forwarded to the selector.
 func NewFewShotChatMessagePromptTemplate(
 	examples []map[string]any,
 	selector ExampleSelector,
@@ -213,7 +216,7 @@ func NewFewShotChatMessagePromptTemplate(
 	aiTemplate string,
 	inputVariables []string,
 ) (FewShotChatMessagePromptTemplate, error) {
-	if examples != nil && selector != nil && len(examples) > 0 {
+	if examples != nil && selector != nil {
 		return FewShotChatMessagePromptTemplate{}, fmt.Errorf("only one of examples and example selector should be provided")
 	}
 	if examples == nil && selector == nil {

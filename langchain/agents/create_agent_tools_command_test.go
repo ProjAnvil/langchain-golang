@@ -154,9 +154,10 @@ func TestCreateAgentToolsNodeCommandMessagesMerge(t *testing.T) {
 }
 
 // TestCreateAgentToolsNodeCommandResumeRejected verifies the Go create_agent
-// tools node rejects Command Resume (and non-empty Graph other than the
-// reserved passthrough), documenting the scoped-down subset relative to
-// Python's langgraph, which supports both.
+// tools node rejects Command Resume and ANY non-empty Command Graph
+// (including types.ParentGraph — the check is cmd.Graph != "", with no
+// reserved-passthrough exception), documenting the scoped-down subset
+// relative to Python's langgraph, which supports both.
 func TestCreateAgentToolsNodeCommandResumeRejected(t *testing.T) {
 	model := &sequenceModel{responses: []messages.Message{
 		{

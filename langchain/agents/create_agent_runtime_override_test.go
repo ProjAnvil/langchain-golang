@@ -573,6 +573,77 @@ func TestMiddlewareToolStrategyOverrideRequiresUpfrontDeclaredSpecs(t *testing.T
 	}
 }
 
+// TestMiddlewareToolStrategyOverrideNarrowsBoundStructuredTools mirrors
+// factory.py:1375-1385: a middleware ToolStrategy override that narrows to a
+// declared subset must bind ONLY the retained structured tools to the model
+// (the effective strategy's own narrow set, like the AutoStrategy synthesized
+// path) and detect structured output against that narrow set alone. A model
+// call into the EXCLUDED structured tool therefore no longer surfaces its
+// args as structured_response; under Go's routing the loop just returns to
+// the model (the excluded call is not dispatched like an unknown client tool
+// — buildRouteStructuredOnly/buildRouteAfterModel key structured calls off
+// the build-time bindings), so the model re-answers through the retained
+// tool.
+func TestMiddlewareToolStrategyOverrideNarrowsBoundStructuredTools(t *testing.T) {
+	buildTime := NewToolStrategy(schema.Schema{"oneOf": []any{weatherSchema(), locationSchema()}})
+	narrowed := NewToolStrategy(weatherSchema())
+
+	model := newBindRecordingModel(
+		language.ChatModelCapabilities{ToolCalling: true},
+		// Call 1: the model (incorrectly) answers through the EXCLUDED
+		// structured tool.
+		messages.Message{
+			Role: messages.RoleAI,
+			ToolCalls: []messages.ToolCall{
+				{ID: "call_1", Name: "location_schema", Args: map[string]any{"city": "Paris", "country": "France"}},
+			},
+		},
+		// Call 2: it answers through the RETAINED structured tool.
+		messages.Message{
+			Role: messages.RoleAI,
+			ToolCalls: []messages.ToolCall{
+				{ID: "call_2", Name: "weather_schema", Args: map[string]any{"temperature": 72, "condition": "sunny"}},
+			},
+		},
+	)
+
+	agent, err := CreateAgent(model, nil,
+		WithAgentResponseFormat(buildTime),
+		WithAgentMiddleware(responseFormatOverrideMiddleware{rf: narrowed}),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	// Only the retained structured tool may be bound; the excluded one must
+	// not leak from the build-time set into the per-call bind.
+	binds := model.recordedBoundToolNames()
+	if len(binds) == 0 {
+		t.Fatal("expected the structured tool(s) to be bound at least once")
+	}
+	for _, names := range binds {
+		if len(names) != 1 || names[0] != "weather_schema" {
+			t.Fatalf("expected only the retained structured tool bound, got %v", binds)
+		}
+	}
+
+	// The excluded-tool call must NOT produce a structured_response for the
+	// location schema: the run only ends through the retained tool, after a
+	// second model call.
+	structured, ok := state["structured_response"].(map[string]any)
+	if !ok || structured["condition"] != "sunny" {
+		t.Fatalf("expected structured_response from the retained weather_schema call, got %#v", state["structured_response"])
+	}
+	if model.invokeCount() != 2 {
+		t.Fatalf("expected the excluded-tool call to loop back to the model (2 invokes), got %d", model.invokeCount())
+	}
+}
+
 // compile-time guard: the recorder really implements the capabilities under test.
 var (
 	_ language.ToolBinder  = (*bindRecordingModel)(nil)

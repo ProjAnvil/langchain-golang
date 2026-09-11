@@ -1538,7 +1538,12 @@ func buildModelNode(
 			return nil, err
 		}
 		initialSettings := providerStrategyModelSettings(nodeEffective.provider)
-		initialToolChoice := structuredOutputToolChoice(toolStrategy)
+		// Seeded from the PER-CALL effective strategy (not the build-time
+		// toolStrategy), so the request WrapModelCall middleware observe is
+		// self-consistent with initialSettings: an AutoStrategy whose
+		// node-level re-resolution swapped Tool↔Provider (e.g. a DynamicModel
+		// swap) seeds "any"/"" matching what the bind will actually thread.
+		initialToolChoice := structuredOutputToolChoice(nodeEffective.tool)
 		req, err := middleware.NewModelRequest(middleware.ModelRequest{
 			Model:    resolvedModel,
 			Messages: localMessages,
@@ -1596,7 +1601,7 @@ func buildModelNode(
 			if err != nil {
 				return middleware.ModelResponse{}, err
 			}
-			prepared, err := prepareModelCall(r, model, eff, effBindings, initialToolChoice, initialSettings)
+			prepared, err := prepareModelCall(r, model, eff, effBindings, structuredBindings, initialToolChoice, initialSettings)
 			if err != nil {
 				return middleware.ModelResponse{}, err
 			}
@@ -2121,18 +2126,21 @@ type effectiveFormat struct {
 //     HandleErrors config, factory.py:1336-1339), else a fresh ToolStrategy;
 //   - an explicit ToolStrategy → used as-is, validated as a subset of the
 //     structured tools declared at build time (factory.py:1375-1385:
-//     middleware may narrow but not introduce structured tools);
+//     middleware may narrow but not introduce structured tools), with the
+//     bindings narrowed to the override's own specs;
 //   - an explicit ProviderStrategy → used as-is.
 //
 // setupBindings are the build-time structured-output bindings (empty when the
 // build-time resolution was a ProviderStrategy or no format). The returned
 // bindings map is what structured-output detection should match against for
-// this call: the build-time map, extended with fresh bindings when an
-// AutoStrategy re-resolution synthesizes a ToolStrategy the build-time setup
-// never declared (a DynamicModel swap onto a tool-calling model after a
-// provider-only build-time resolution — Python's setup always declares the
-// structured tools for an AutoStrategy, so its effective ToolStrategy can
-// always reuse them; the Go port reconstructs them here instead).
+// this call: the build-time map, narrowed to the override's own specs when
+// middleware supplies a narrower ToolStrategy, and extended with fresh
+// bindings when an AutoStrategy re-resolution synthesizes a ToolStrategy the
+// build-time never declared (a DynamicModel swap onto a tool-calling model
+// after a provider-only build-time resolution — Python's setup always
+// declares the structured tools for an AutoStrategy, so its effective
+// ToolStrategy can always reuse them; the Go port reconstructs them here
+// instead).
 func resolveEffectiveResponseFormat(
 	requested any,
 	model language.ChatModel,
@@ -2178,6 +2186,11 @@ func resolveEffectiveResponseFormat(
 			if err := validateToolStrategySpecsDeclared(v, setupBindings); err != nil {
 				return effectiveFormat{}, nil, err
 			}
+			// Middleware narrowed the strategy: the bind and structured-output
+			// detection run against the OVERRIDE's own specs, not the
+			// build-time superset (factory.py:1375-1385 binds the effective
+			// strategy's structured_output_tools).
+			return effectiveFormat{tool: v}, filterBindingsToSpecs(v, setupBindings), nil
 		}
 		return effectiveFormat{tool: v}, setupBindings, nil
 	case *ProviderStrategy:
@@ -2197,6 +2210,21 @@ func validateToolStrategySpecsDeclared(strategy *ToolStrategy, setupBindings map
 		}
 	}
 	return nil
+}
+
+// filterBindingsToSpecs narrows setupBindings to the specs a middleware
+// ToolStrategy override declared (already validated by
+// validateToolStrategySpecsDeclared), mirroring factory.py:1375-1385: the
+// effective strategy binds and matches structured output against its own
+// narrow set, never the build-time superset.
+func filterBindingsToSpecs(strategy *ToolStrategy, setupBindings map[string]OutputToolBinding) map[string]OutputToolBinding {
+	filtered := make(map[string]OutputToolBinding, len(strategy.SchemaSpecs))
+	for _, spec := range strategy.SchemaSpecs {
+		if binding, ok := setupBindings[spec.Name]; ok {
+			filtered[spec.Name] = binding
+		}
+	}
+	return filtered
 }
 
 // toolChoiceKey flattens a ModelRequest.ToolChoice value to a comparable
@@ -2285,13 +2313,24 @@ type preparedModelCall struct {
 //   - final tools: the request's tools minus the structured-output tools when
 //     the effective strategy is not the ToolStrategy (factory.py:1351-1355),
 //     plus any bindings the effective ToolStrategy synthesized at resolution
-//     time; tool_choice per effectiveBindToolChoice threads through
-//     language.ToolBinder (factory.py:1366-1404).
+//     time; the setup structured tools that ride on the request (the Go
+//     stand-in for Python extending final_tools with them — Python's
+//     request.tools carries no structured tools) are narrowed to the
+//     effective ToolStrategy's own specs, so a middleware override that
+//     narrows a union ToolStrategy restricts which structured tools the model
+//     may answer through (upstream factory.py #39259); tool_choice per
+//     effectiveBindToolChoice threads through language.ToolBinder
+//     (factory.py:1366-1404).
+//
+// setupBindings are the agent's build-time structured-output bindings (empty
+// when the build-time resolution declared none) — the superset a narrowed
+// effective ToolStrategy is filtered against.
 func prepareModelCall(
 	req middleware.ModelRequest,
 	model language.ChatModel,
 	eff effectiveFormat,
 	bindings map[string]OutputToolBinding,
+	setupBindings map[string]OutputToolBinding,
 	initialToolChoice any,
 	initialSettings map[string]any,
 ) (*preparedModelCall, error) {
@@ -2322,13 +2361,31 @@ func prepareModelCall(
 		return nil, err
 	}
 	if eff.tool != nil {
-		// Ensure the effective strategy's structured tools are present (they
-		// are pre-baked from the setup except when resolution synthesized
-		// fresh bindings for a dynamic-swap ToolStrategy).
 		present := make(map[string]bool, len(finalTools))
 		for _, t := range finalTools {
 			present[t.Name()] = true
 		}
+		// Narrow the setup structured tools that ride on the request down to
+		// the effective strategy's own specs: middleware may narrow a union
+		// ToolStrategy to a subset, and the bind must restrict the model to
+		// that subset (upstream factory.py #39259 binds only the tools present
+		// in the possibly middleware-narrowed response format).
+		if len(setupBindings) > 0 {
+			filtered := make([]coretools.Tool, 0, len(finalTools))
+			for _, t := range finalTools {
+				if _, setup := setupBindings[t.Name()]; setup {
+					if _, keep := bindings[t.Name()]; keep {
+						filtered = append(filtered, t)
+					}
+					continue
+				}
+				filtered = append(filtered, t)
+			}
+			finalTools = filtered
+		}
+		// Ensure the effective strategy's structured tools are present (they
+		// are pre-baked from the setup except when resolution synthesized
+		// fresh bindings for a dynamic-swap ToolStrategy).
 		for name, binding := range bindings {
 			if !present[name] {
 				finalTools = append(finalTools, binding.Tool)

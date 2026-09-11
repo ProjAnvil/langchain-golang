@@ -56,14 +56,14 @@ func TestInvokeUsageCacheDetailsEphemeral(t *testing.T) {
 			"output_tokens":5,
 			"cache_read_input_tokens":100,
 			"cache_creation_input_tokens":50,
-			"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":20}
+			"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":10}
 		}
 	}`)
 	defer server.Close()
 
 	response := invokeCacheModel(t, server)
 	usage := response.UsageMetadata
-	if usage.InputTokens != 160 || usage.OutputTokens != 5 || usage.TotalTokens != 165 {
+	if usage.InputTokens != 150 || usage.OutputTokens != 5 || usage.TotalTokens != 155 {
 		t.Fatalf("usage: %+v", usage)
 	}
 	details := usage.InputTokenDetails
@@ -74,9 +74,11 @@ func TestInvokeUsageCacheDetailsEphemeral(t *testing.T) {
 		t.Fatalf("cache read tokens: %+v", details)
 	}
 	// Go core's InputTokenDetails has no ephemeral_5m/1h fields, so the
-	// specific ephemeral total (30+20) folds into the flat cache-creation
-	// count instead of Python's zeroed generic count.
-	if details.CacheCreationInputTokens != 50 {
+	// specific ephemeral total (30+10=40 — deliberately distinct from the
+	// generic 50 so the specific-supersedes-generic branch is pinned) folds
+	// into the flat cache-creation count instead of Python's zeroed generic
+	// count.
+	if details.CacheCreationInputTokens != 40 {
 		t.Fatalf("cache creation tokens: %+v", details)
 	}
 }
