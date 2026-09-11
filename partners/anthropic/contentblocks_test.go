@@ -106,6 +106,62 @@ func TestDocumentSourceVariants(t *testing.T) {
 	}
 }
 
+func TestImageSourceDataURLValidation(t *testing.T) {
+	// Python _format_image raises ValueError for non-base64 data URIs and for
+	// media types outside image/*; the Go port surfaces equivalent errors
+	// instead of silently sending the raw "data:" string as a url source.
+	for _, tc := range []struct {
+		name string
+		url  string
+	}{
+		{name: "non-base64 data uri", url: "data:image/png,rawbytes"},
+		{name: "data uri without comma", url: "data:image/png"},
+		{name: "non-image media type", url: "data:text/plain;base64,aGVsbG8="},
+		{name: "defaulted non-image media type", url: "data:;base64,aGVsbG8="},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := imageSource(map[string]any{"type": "image", "url": tc.url}); err == nil {
+				t.Fatalf("imageSource(%q) should fail", tc.url)
+			}
+		})
+	}
+}
+
+func TestImageSourceDataURLAndURLPassThrough(t *testing.T) {
+	source, err := imageSource(map[string]any{"type": "image", "url": "data:image/png;base64,Zm9v"})
+	if err != nil {
+		t.Fatalf("imageSource base64 data uri: %v", err)
+	}
+	if source["type"] != "base64" || source["media_type"] != "image/png" || source["data"] != "Zm9v" {
+		t.Fatalf("base64 data uri source: %v", source)
+	}
+
+	source, err = imageSource(map[string]any{"type": "image", "url": "https://example.com/cat.png"})
+	if err != nil {
+		t.Fatalf("imageSource https url: %v", err)
+	}
+	if source["type"] != "url" || source["url"] != "https://example.com/cat.png" {
+		t.Fatalf("url source: %v", source)
+	}
+}
+
+func TestDocumentSourceDataURLValidation(t *testing.T) {
+	// Non-base64 data URIs are rejected for documents just like images.
+	if _, err := documentSource(map[string]any{"type": "file", "url": "data:application/pdf,rawbytes"}); err == nil {
+		t.Fatal("documentSource with non-base64 data URI should fail")
+	}
+
+	// Python does not validate document media types, so an image/* data URI
+	// stays accepted here too (only the base64 shape is enforced).
+	source, err := documentSource(map[string]any{"type": "file", "url": "data:image/png;base64,Zm9v"})
+	if err != nil {
+		t.Fatalf("documentSource image data uri: %v", err)
+	}
+	if source["type"] != "base64" || source["media_type"] != "image/png" || source["data"] != "Zm9v" {
+		t.Fatalf("document image data uri source: %v", source)
+	}
+}
+
 func TestDocumentSourceMissingFails(t *testing.T) {
 	if _, err := documentSource(map[string]any{"type": "file"}); err == nil {
 		t.Fatal("documentSource without any payload should fail")

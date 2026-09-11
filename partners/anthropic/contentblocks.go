@@ -67,9 +67,21 @@ func formatContentBlock(block messages.ContentBlock) (contentBlock, error) {
 }
 
 // imageSource builds the Anthropic "source" object for an image content block.
+// Matches Python's _format_image (chat_models.py): inline "data:" URLs must be
+// base64 data URIs with an image/* media type; anything else that starts with
+// "data:" is rejected with an explicit error (Python raises ValueError for
+// malformed inputs) rather than being sent as a broken url source. Non-data
+// URLs pass through as-is.
 func imageSource(m map[string]any) (map[string]any, error) {
 	if url, ok := m["url"].(string); ok && url != "" {
-		if mediaType, data, isData := parseDataURI(url); isData {
+		if strings.HasPrefix(url, "data:") {
+			mediaType, data, isData := parseDataURI(url)
+			if !isData {
+				return nil, fmt.Errorf("anthropic: only base64 data URIs are supported for image sources: %q", url)
+			}
+			if !strings.HasPrefix(mediaType, "image/") {
+				return nil, fmt.Errorf("anthropic: image data URI media type must be image/*, got %q", mediaType)
+			}
 			return map[string]any{"type": "base64", "media_type": mediaType, "data": data}, nil
 		}
 		return map[string]any{"type": "url", "url": url}, nil
@@ -93,9 +105,18 @@ func imageSource(m map[string]any) (map[string]any, error) {
 }
 
 // documentSource builds the Anthropic "source" object for a file/document block.
+// Inline "data:" URLs must be base64 data URIs; non-base64 data URIs are
+// rejected with an explicit error (Python raises ValueError for malformed
+// inputs) instead of being sent as a broken url source. Unlike images, the
+// media type is not validated here because Python does not validate document
+// media types either. Non-data URLs pass through as-is.
 func documentSource(m map[string]any) (map[string]any, error) {
 	if url, ok := m["url"].(string); ok && url != "" {
-		if mediaType, data, isData := parseDataURI(url); isData {
+		if strings.HasPrefix(url, "data:") {
+			mediaType, data, isData := parseDataURI(url)
+			if !isData {
+				return nil, fmt.Errorf("anthropic: only base64 data URIs are supported for document sources: %q", url)
+			}
 			return map[string]any{"type": "base64", "media_type": mediaType, "data": data}, nil
 		}
 		return map[string]any{"type": "url", "url": url}, nil
@@ -130,7 +151,9 @@ func documentSource(m map[string]any) (map[string]any, error) {
 }
 
 // parseDataURI decodes a "data:<media_type>;base64,<data>" URI used for inline
-// image/file payloads. Non-base64 data URIs are not supported.
+// image/file payloads. Non-base64 data URIs are not supported: callers
+// (imageSource/documentSource) turn ok=false into an explicit error, matching
+// the ValueError Python raises for malformed data URI inputs.
 func parseDataURI(uri string) (mediaType, data string, ok bool) {
 	if !strings.HasPrefix(uri, "data:") {
 		return "", "", false
