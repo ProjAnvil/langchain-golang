@@ -41,6 +41,11 @@ type ChatModel struct {
 // refactor that drops InvokeStructured fails here.
 var _ language.StructuredCaller = ChatModel{}
 
+// Compile-time guard: ChatModel satisfies the optional language.ToolBinder
+// capability so agent code can thread bind_tools tool_choice
+// (agents.bindModelTools → BindToolsWithOptions).
+var _ language.ToolBinder = ChatModel{}
+
 // NewChatModel creates an OpenAI chat model adapter.
 func NewChatModel(opts ...modelconfig.Option) ChatModel {
 	cfg := modelconfig.New(opts...)
@@ -131,10 +136,50 @@ func (m ChatModel) OutputSchema() schema.Schema {
 }
 
 // BindTools returns a copy of the model with function tools bound.
+// It is equivalent to BindToolsWithOptions(tools, language.BindToolsOptions{}).
 func (m ChatModel) BindTools(boundTools []tools.Tool) (language.ChatModel, error) {
 	next := m
 	next.boundTools = append([]tools.Tool(nil), boundTools...)
 	return next, nil
+}
+
+// BindToolsWithOptions implements language.ToolBinder, mapping the core
+// ToolChoice modes onto this adapter's serialization: "auto"→"auto",
+// "none"→"none", "any"→"required" (Python bind_tools' "any"/True mapping),
+// and any other non-empty string to the named function tool
+// ({"type":"function","function":{"name":X}}, flattened for the Responses
+// API by the existing request builders). A zero-value ToolChoice keeps any
+// constructor-level WithToolChoice value. ParallelToolCalls is NOT yet
+// supported by either payload struct and is silently ignored (the
+// Responses/Chat-Completions `parallel_tool_calls` field is not modeled).
+func (m ChatModel) BindToolsWithOptions(boundTools []tools.Tool, opts language.BindToolsOptions) (language.ChatModel, error) {
+	next := m
+	next.boundTools = append([]tools.Tool(nil), boundTools...)
+	if opts.ToolChoice != "" {
+		next.toolChoice = ptrToolChoice(toolChoiceFromCore(opts.ToolChoice))
+	}
+	// opts.ParallelToolCalls intentionally ignored: no payload field yet.
+	return next, nil
+}
+
+// toolChoiceFromCore translates a language.ToolChoice into this package's
+// ToolChoice value, reusing the provider mapping Python's bind_tools applies.
+func toolChoiceFromCore(choice language.ToolChoice) ToolChoice {
+	switch choice {
+	case language.ToolChoiceAuto:
+		return ToolChoiceAuto()
+	case language.ToolChoiceNone:
+		return ToolChoiceNone()
+	case language.ToolChoiceAny:
+		return ToolChoiceRequired()
+	default:
+		// Any other string names the specific tool to force.
+		return ToolChoiceFunction(string(choice))
+	}
+}
+
+func ptrToolChoice(choice ToolChoice) *ToolChoice {
+	return &choice
 }
 
 // WithChatCompletions returns a copy of the model that targets the Chat

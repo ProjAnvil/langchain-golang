@@ -35,6 +35,11 @@ type ChatModel struct {
 // (agents.invokeModel → language.InvokeStructured) can use it.
 var _ language.StructuredCaller = ChatModel{}
 
+// Compile-time guard: ChatModel satisfies the optional language.ToolBinder
+// capability so agent code can thread bind_tools tool_choice
+// (agents.bindModelTools → BindToolsWithOptions).
+var _ language.ToolBinder = ChatModel{}
+
 // NewChatModel creates an Anthropic chat model adapter.
 func NewChatModel(opts ...modelconfig.Option) ChatModel {
 	cfg := modelconfig.New(opts...)
@@ -119,11 +124,55 @@ func (m ChatModel) OutputSchema() schema.Schema {
 }
 
 // BindTools returns a copy of the model with Anthropic tools bound.
+// It is equivalent to BindToolsWithOptions(tools, language.BindToolsOptions{}).
 func (m ChatModel) BindTools(boundTools []tools.Tool) (language.ChatModel, error) {
 	next := m
 	next.boundTools = append([]tools.Tool(nil), boundTools...)
 	next.toolStrict = nil
 	return next, nil
+}
+
+// BindToolsWithOptions implements language.ToolBinder, mapping the core
+// ToolChoice modes onto the Messages API tool_choice shape: "auto"→
+// {"type":"auto"}, "any"→{"type":"any"}, and any other non-empty string to
+// the named tool {"type":"tool","name":X} — mirroring Python
+// langchain-anthropic's bind_tools tool_choice conversion. "none" is NOT
+// supported by the Messages API (there is no none tool_choice type; the way
+// to express it is binding no tools), so it fails loudly rather than
+// silently misrouting. A zero-value ToolChoice keeps any constructor-level
+// WithToolChoice value. ParallelToolCalls is NOT supported (Anthropic
+// expresses it as disable_parallel_tool_use inside tool_choice, which this
+// adapter does not synthesize from the flag) and is silently ignored.
+func (m ChatModel) BindToolsWithOptions(boundTools []tools.Tool, opts language.BindToolsOptions) (language.ChatModel, error) {
+	next := m
+	next.boundTools = append([]tools.Tool(nil), boundTools...)
+	next.toolStrict = nil
+	if opts.ToolChoice != "" {
+		choice, err := toolChoiceFromCore(opts.ToolChoice)
+		if err != nil {
+			return nil, err
+		}
+		next.toolChoice = choice
+	}
+	// opts.ParallelToolCalls intentionally ignored: no payload field
+	// (see the godoc above).
+	return next, nil
+}
+
+// toolChoiceFromCore translates a language.ToolChoice into the Anthropic
+// tool_choice request object.
+func toolChoiceFromCore(choice language.ToolChoice) (map[string]any, error) {
+	switch choice {
+	case language.ToolChoiceAuto:
+		return map[string]any{"type": "auto"}, nil
+	case language.ToolChoiceAny:
+		return map[string]any{"type": "any"}, nil
+	case language.ToolChoiceNone:
+		return nil, fmt.Errorf("anthropic: tool_choice %q is not supported by the Messages API (bind no tools instead)", choice)
+	default:
+		// Any other string names the specific tool to force.
+		return map[string]any{"type": "tool", "name": string(choice)}, nil
+	}
 }
 
 // BindToolsStrict returns a copy of the model with Anthropic tools bound and

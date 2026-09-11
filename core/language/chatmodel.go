@@ -53,17 +53,64 @@ type ChatModel interface {
 	Capabilities() ChatModelCapabilities
 }
 
+// ToolChoice constrains how a model with bound tools must call them — the Go
+// form of Python's bind_tools(tool_choice=...). The zero value means "no
+// constraint" (the provider default). Recognized modes are ToolChoiceAuto,
+// ToolChoiceNone, and ToolChoiceAny; any other non-empty string names the
+// specific tool the model must call (Python's str form). Providers translate
+// these to their native shapes (e.g. OpenAI maps "any" to "required",
+// Anthropic to {"type":"any"}).
+type ToolChoice string
+
+const (
+	// ToolChoiceAuto lets the model decide whether to call a tool.
+	ToolChoiceAuto ToolChoice = "auto"
+	// ToolChoiceNone forbids tool calls.
+	ToolChoiceNone ToolChoice = "none"
+	// ToolChoiceAny forces the model to call at least one tool. This is what
+	// an agent's ToolStrategy structured-output path uses so the model must
+	// answer through the schema tool (langchain factory.py:1388).
+	ToolChoiceAny ToolChoice = "any"
+)
+
+// BindToolsOptions carries the optional bind_tools kwargs from Python's
+// BaseChatModel.bind_tools(tools, *, tool_choice=None, **kwargs)
+// (langchain_core/language_models/chat_models.py:2338-2344). The zero value
+// requests no constraint and no parallel-tool-calls override.
+type BindToolsOptions struct {
+	// ToolChoice constrains tool calling (see ToolChoice). Empty = no
+	// constraint.
+	ToolChoice ToolChoice
+	// ParallelToolCalls enables/disables parallel tool calls. nil leaves the
+	// provider default. Providers without a payload field for it ignore it
+	// (see each adapter's godoc).
+	ParallelToolCalls *bool
+}
+
+// ToolBinder is the optional capability interface for chat models that accept
+// bind_tools options such as tool_choice. It exists so BindTools' signature
+// stays stable: models that only implement ChatModel keep working unchanged,
+// while models implementing ToolBinder additionally receive the options.
+//
+// Implementations MUST treat BindTools(tools) as equivalent to
+// BindToolsWithOptions(tools, BindToolsOptions{}) — a zero-value opts call
+// binds the tools exactly like the base method.
+type ToolBinder interface {
+	BindToolsWithOptions(boundTools []tools.Tool, opts BindToolsOptions) (ChatModel, error)
+}
+
 // FakeChatModel is a deterministic chat model for unit tests and standard
 // conformance suites.
 type FakeChatModel struct {
-	mu           sync.Mutex
-	responses    []messages.Message
-	responseIdx  int
-	streamChunks []messages.Message
-	boundTools   []tools.Tool
-	capabilities ChatModelCapabilities
-	rateLimiter  ratelimiters.RateLimiter
-	profile      modelprofiles.Profile
+	mu              sync.Mutex
+	responses       []messages.Message
+	responseIdx     int
+	streamChunks    []messages.Message
+	boundTools      []tools.Tool
+	boundToolChoice ToolChoice
+	capabilities    ChatModelCapabilities
+	rateLimiter     ratelimiters.RateLimiter
+	profile         modelprofiles.Profile
 }
 
 // FakeChatModelOption configures a FakeChatModel.
@@ -219,7 +266,21 @@ func (m *FakeChatModel) OutputSchema() schema.Schema {
 }
 
 // BindTools returns a copy of the model with the provided tools bound.
+// It is equivalent to BindToolsWithOptions(tools, BindToolsOptions{}).
 func (m *FakeChatModel) BindTools(boundTools []tools.Tool) (ChatModel, error) {
+	return m.bindTools(boundTools, BindToolsOptions{})
+}
+
+// BindToolsWithOptions implements ToolBinder. The received ToolChoice is
+// recorded on both the receiver and the returned copy so tests can assert
+// what an agent threaded into the model (BoundToolChoice).
+// ParallelToolCalls is recorded for symmetry but has no behavioral effect on
+// the fake.
+func (m *FakeChatModel) BindToolsWithOptions(boundTools []tools.Tool, opts BindToolsOptions) (ChatModel, error) {
+	return m.bindTools(boundTools, opts)
+}
+
+func (m *FakeChatModel) bindTools(boundTools []tools.Tool, opts BindToolsOptions) (ChatModel, error) {
 	if len(boundTools) > 0 && !m.capabilities.ToolCalling {
 		return nil, fmt.Errorf("tool calling is not supported")
 	}
@@ -227,16 +288,22 @@ func (m *FakeChatModel) BindTools(boundTools []tools.Tool) (ChatModel, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Record the received choice on the receiver for test assertions (the
+	// fake is a test double; the returned copy stays the authoritative value
+	// holder for chained binds).
+	m.boundToolChoice = opts.ToolChoice
+
 	// Construct the copy field-by-field instead of `*m` so no sync.Mutex value
 	// is copied (go vet copylocks). Each copy owns a fresh zero-value mutex.
 	next := &FakeChatModel{
-		responses:    append([]messages.Message(nil), m.responses...),
-		responseIdx:  m.responseIdx,
-		streamChunks: append([]messages.Message(nil), m.streamChunks...),
-		boundTools:   append([]tools.Tool(nil), boundTools...),
-		capabilities: m.capabilities,
-		rateLimiter:  m.rateLimiter,
-		profile:      cloneProfile(m.profile),
+		responses:       append([]messages.Message(nil), m.responses...),
+		responseIdx:     m.responseIdx,
+		streamChunks:    append([]messages.Message(nil), m.streamChunks...),
+		boundTools:      append([]tools.Tool(nil), boundTools...),
+		boundToolChoice: opts.ToolChoice,
+		capabilities:    m.capabilities,
+		rateLimiter:     m.rateLimiter,
+		profile:         cloneProfile(m.profile),
 	}
 	return next, nil
 }
@@ -251,6 +318,15 @@ func (m *FakeChatModel) BoundTools() []tools.Tool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]tools.Tool(nil), m.boundTools...)
+}
+
+// BoundToolChoice returns the ToolChoice most recently received via
+// BindToolsWithOptions (also recorded when BindTools is called, as the zero
+// value). For test assertions on what an agent threaded into the model.
+func (m *FakeChatModel) BoundToolChoice() ToolChoice {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.boundToolChoice
 }
 
 // ModelProfile returns explicit profile metadata or a profile derived from

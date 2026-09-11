@@ -1304,6 +1304,15 @@ func buildModelNode(
 			State:         state,
 			Runtime:       rt,
 			ModelSettings: providerStrategyModelSettings(providerStrategy),
+			// Mirrors factory.py:1388 (`tool_choice = "any" if
+			// structured_output_tools else request.tool_choice`): a
+			// ToolStrategy binds its schema tools and forces the model to
+			// answer through one of them, so the request carries tool_choice
+			// "any" for WrapModelCall middleware to observe and for
+			// invokeModel to thread into the model when it implements
+			// language.ToolBinder. Middleware may still override it via
+			// ModelRequest.Override(middleware.WithToolChoice(...)).
+			ToolChoice: structuredOutputToolChoice(toolStrategy),
 		})
 		if err != nil {
 			return nil, err
@@ -1660,6 +1669,43 @@ func providerStrategyModelSettings(providerStrategy *ProviderStrategy) map[strin
 	return providerStrategy.ToModelKwargs()
 }
 
+// structuredOutputToolChoice returns the tool_choice the model-node request
+// should carry: "any" when a ToolStrategy's structured-output tools are in
+// play (forcing the model to answer through one of them, factory.py:1388),
+// or "" (no constraint) otherwise.
+func structuredOutputToolChoice(toolStrategy *ToolStrategy) any {
+	if toolStrategy == nil {
+		return ""
+	}
+	return string(language.ToolChoiceAny)
+}
+
+// bindModelTools binds tools on model, threading toolChoice through when the
+// model implements the optional language.ToolBinder capability. Models that
+// only implement the base BindTools keep today's behavior: the choice cannot
+// be enforced and is silently dropped, mirroring Python where bind_tools
+// kwargs are honored per provider. toolChoice values that are not a string
+// (or language.ToolChoice) are likewise dropped rather than fatal — before
+// this capability existed ModelRequest.ToolChoice was never applied at all.
+func bindModelTools(model language.ChatModel, boundTools []coretools.Tool, toolChoice any) (language.ChatModel, error) {
+	binder, ok := model.(language.ToolBinder)
+	if !ok {
+		return model.BindTools(boundTools)
+	}
+	opts := language.BindToolsOptions{}
+	switch choice := toolChoice.(type) {
+	case nil:
+	case string:
+		opts.ToolChoice = language.ToolChoice(choice)
+	case language.ToolChoice:
+		opts.ToolChoice = choice
+	default:
+		// Non-string tool_choice shapes (e.g. provider-native dicts) are not
+		// expressible in language.BindToolsOptions yet; leave unconstrained.
+	}
+	return binder.BindToolsWithOptions(boundTools, opts)
+}
+
 // structuredDecision is detectStructuredOutput's outcome for the model node.
 type structuredDecision int
 
@@ -1826,7 +1872,10 @@ func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSch
 		if err != nil {
 			return middleware.ModelResponse{}, err
 		}
-		bound, err := model.BindTools(boundTools)
+		// Tool binding (below) threads req.ToolChoice through when the model
+		// implements language.ToolBinder — a ToolStrategy sets it to "any" so
+		// the model must answer through a structured-output tool.
+		bound, err := bindModelTools(model, boundTools, req.ToolChoice)
 		if err != nil {
 			return middleware.ModelResponse{}, err
 		}
@@ -1959,7 +2008,8 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 		if err != nil {
 			return middleware.ModelResponse{}, err
 		}
-		bound, err := model.BindTools(boundTools)
+		// Same ToolChoice threading as invokeModel (see its comment).
+		bound, err := bindModelTools(model, boundTools, req.ToolChoice)
 		if err != nil {
 			return middleware.ModelResponse{}, err
 		}
