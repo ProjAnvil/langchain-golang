@@ -3,6 +3,7 @@ package runnables
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -462,6 +463,124 @@ func TestWithFallbacksStreamReturnsFirstError(t *testing.T) {
 	}
 	if _, err := runnable.Stream(context.Background(), "x"); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
+	}
+}
+
+var (
+	errRateLimited = errors.New("rate limited")
+	errAuthFailed  = errors.New("auth failed")
+)
+
+func TestWithFallbacksExceptionFilterMatchedErrorFallsBack(t *testing.T) {
+	primary := NewFunc(func(context.Context, string, ...Option) (string, error) {
+		return "", fmt.Errorf("wrapped: %w", errRateLimited)
+	}, schema.String(""), schema.String(""))
+	fallbackCalls := 0
+	fallback := NewFunc(func(_ context.Context, input string, _ ...Option) (string, error) {
+		fallbackCalls++
+		return input + "-fallback", nil
+	}, schema.String(""), schema.String(""))
+
+	runnable, err := NewWithFallbacks[string, string](primary, fallback)
+	if err != nil {
+		t.Fatalf("new fallbacks: %v", err)
+	}
+	runnable.ExceptionsToHandle = []func(error) bool{MatchErrors(errRateLimited)}
+
+	got, err := runnable.Invoke(context.Background(), "ok")
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if got != "ok-fallback" {
+		t.Fatalf("got %q", got)
+	}
+	if fallbackCalls != 1 {
+		t.Fatalf("fallback calls = %d, want 1", fallbackCalls)
+	}
+}
+
+func TestWithFallbacksExceptionFilterUnmatchedErrorPropagates(t *testing.T) {
+	primary := NewFunc(func(context.Context, string, ...Option) (string, error) {
+		return "", errAuthFailed
+	}, schema.String(""), schema.String(""))
+	fallbackCalls := 0
+	fallback := NewFunc(func(_ context.Context, _ string, _ ...Option) (string, error) {
+		fallbackCalls++
+		return "fallback", nil
+	}, schema.String(""), schema.String(""))
+
+	runnable, err := NewWithFallbacks[string, string](primary, fallback)
+	if err != nil {
+		t.Fatalf("new fallbacks: %v", err)
+	}
+	runnable.ExceptionsToHandle = []func(error) bool{MatchErrors(errRateLimited)}
+
+	_, err = runnable.Invoke(context.Background(), "ok")
+	if !errors.Is(err, errAuthFailed) {
+		t.Fatalf("invoke err: got %v want %v", err, errAuthFailed)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("fallback calls = %d, want 0 for unmatched error", fallbackCalls)
+	}
+
+	if _, err := runnable.Batch(context.Background(), []string{"ok"}); !errors.Is(err, errAuthFailed) {
+		t.Fatalf("batch err: got %v want %v", err, errAuthFailed)
+	}
+	if _, err := runnable.Stream(context.Background(), "ok"); !errors.Is(err, errAuthFailed) {
+		t.Fatalf("stream err: got %v want %v", err, errAuthFailed)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("fallback calls = %d, want 0 across batch and stream too", fallbackCalls)
+	}
+}
+
+func TestWithFallbacksExceptionFilterAppliesToFallbacksToo(t *testing.T) {
+	primary := NewFunc(func(context.Context, string, ...Option) (string, error) {
+		return "", errRateLimited
+	}, schema.String(""), schema.String(""))
+	first := NewFunc(func(context.Context, string, ...Option) (string, error) {
+		return "", errAuthFailed // matched? no: filter only matches errRateLimited
+	}, schema.String(""), schema.String(""))
+	secondCalls := 0
+	second := NewFunc(func(_ context.Context, _ string, _ ...Option) (string, error) {
+		secondCalls++
+		return "second", nil
+	}, schema.String(""), schema.String(""))
+
+	runnable, err := NewWithFallbacks[string, string](primary, first, second)
+	if err != nil {
+		t.Fatalf("new fallbacks: %v", err)
+	}
+	runnable.ExceptionsToHandle = []func(error) bool{MatchErrors(errRateLimited)}
+
+	_, err = runnable.Invoke(context.Background(), "ok")
+	if !errors.Is(err, errAuthFailed) {
+		t.Fatalf("invoke err: got %v want %v (unmatched fallback error must propagate)", err, errAuthFailed)
+	}
+	if secondCalls != 0 {
+		t.Fatalf("second fallback calls = %d, want 0", secondCalls)
+	}
+}
+
+func TestWithFallbacksDefaultFilterHandlesAllErrors(t *testing.T) {
+	primary := NewFunc(func(context.Context, string, ...Option) (string, error) {
+		return "", errAuthFailed
+	}, schema.String(""), schema.String(""))
+	fallback := NewFunc(func(_ context.Context, input string, _ ...Option) (string, error) {
+		return input + "-fallback", nil
+	}, schema.String(""), schema.String(""))
+
+	runnable, err := NewWithFallbacks[string, string](primary, fallback)
+	if err != nil {
+		t.Fatalf("new fallbacks: %v", err)
+	}
+	// ExceptionsToHandle left nil: every error activates the fallback chain.
+	got, err := runnable.Invoke(context.Background(), "ok")
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if got != "ok-fallback" {
+		t.Fatalf("got %q", got)
 	}
 }
 

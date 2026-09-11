@@ -213,6 +213,17 @@ func (r Branch[I, O]) ConfigSchema() schema.Schema {
 type WithFallbacks[I any, O any] struct {
 	Runnable  Runnable[I, O]
 	Fallbacks []Runnable[I, O]
+	// ExceptionsToHandle gates when fallbacks activate (Python base.py:2007
+	// RunnableWithFallbacks.exceptions_to_handle). An error from the primary
+	// runnable or a fallback triggers the next fallback only when at least one
+	// matcher returns true; any other error is returned immediately without
+	// trying further fallbacks. nil means every error activates the fallback
+	// chain, matching Python's default of (Exception,).
+	//
+	// Build matchers with MatchErrors for sentinel errors, or supply an
+	// errors.As closure for typed errors — the Go counterpart of Python's
+	// isinstance check.
+	ExceptionsToHandle []func(error) bool
 }
 
 // NewWithFallbacks creates a fallback runnable.
@@ -226,7 +237,9 @@ func NewWithFallbacks[I any, O any](runnable Runnable[I, O], fallbacks ...Runnab
 	}, nil
 }
 
-// Invoke tries the primary runnable and fallbacks in order.
+// Invoke tries the primary runnable and fallbacks in order. Only errors
+// matched by ExceptionsToHandle move on to the next fallback; unmatched
+// errors propagate immediately.
 func (r WithFallbacks[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
 	var firstErr error
 	runnables := append([]Runnable[I, O]{r.Runnable}, r.Fallbacks...)
@@ -235,12 +248,29 @@ func (r WithFallbacks[I, O]) Invoke(ctx context.Context, input I, opts ...Option
 		if err == nil {
 			return output, nil
 		}
+		if !r.handles(err) {
+			var zero O
+			return zero, err
+		}
 		if firstErr == nil {
 			firstErr = err
 		}
 	}
 	var zero O
 	return zero, firstErr
+}
+
+// handles reports whether err should activate the fallback chain.
+func (r WithFallbacks[I, O]) handles(err error) bool {
+	if len(r.ExceptionsToHandle) == 0 {
+		return true
+	}
+	for _, match := range r.ExceptionsToHandle {
+		if match(err) {
+			return true
+		}
+	}
+	return false
 }
 
 // Batch invokes fallback behavior for each input.
@@ -253,7 +283,8 @@ func (r WithFallbacks[I, O]) Batch(ctx context.Context, inputs []I, opts ...Opti
 	return outputs, errors.Join(errs...)
 }
 
-// Stream tries each runnable's stream in order.
+// Stream tries each runnable's stream in order, gated by ExceptionsToHandle
+// exactly like Invoke.
 func (r WithFallbacks[I, O]) Stream(ctx context.Context, input I, opts ...Option) (Stream[O], error) {
 	var firstErr error
 	runnables := append([]Runnable[I, O]{r.Runnable}, r.Fallbacks...)
@@ -261,6 +292,9 @@ func (r WithFallbacks[I, O]) Stream(ctx context.Context, input I, opts ...Option
 		stream, err := runnable.Stream(ctx, input, childOptions(fallbackChildName(i), opts...)...)
 		if err == nil {
 			return stream, nil
+		}
+		if !r.handles(err) {
+			return nil, err
 		}
 		if firstErr == nil {
 			firstErr = err
@@ -301,4 +335,29 @@ func fallbackChildName(index int) string {
 		return "fallback:primary"
 	}
 	return fmt.Sprintf("fallback:%d", index)
+}
+
+// MatchErrors builds an ExceptionsToHandle matcher for WithFallbacks that
+// reports true when err matches any target sentinel via errors.Is (the Go
+// counterpart of Python's isinstance check against exceptions_to_handle). It
+// also matches wrapped errors, unlike a bare == comparison.
+//
+// For typed errors, supply an errors.As closure directly:
+//
+//	fb.ExceptionsToHandle = []func(error) bool{
+//	    runnables.MatchErrors(errRateLimited),
+//	    func(err error) bool {
+//	        var timeout *net.DNSError
+//	        return errors.As(err, &timeout)
+//	    },
+//	}
+func MatchErrors(targets ...error) func(error) bool {
+	return func(err error) bool {
+		for _, target := range targets {
+			if errors.Is(err, target) {
+				return true
+			}
+		}
+		return false
+	}
 }
