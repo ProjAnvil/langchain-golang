@@ -82,3 +82,18 @@ When `WithAgentCache` is configured, the cache is consulted only on the
 non-streaming `Invoke` path. `StreamEvents` always bypasses the cache so that
 `model_delta` / `model_end` events fire on every run — a cache hit would
 otherwise short-circuit the model call and emit nothing.
+
+## Provider notes
+
+- **`partners/openai` usage chunk.** The OpenAI chat model's `Stream` opts
+  into usage accounting (`stream_options.include_usage`): the stream ends
+  with a usage-only chunk — an empty AI message carrying `UsageMetadata`,
+  including cached-token / reasoning-token details where the provider reports
+  them. It emits no `model_delta` through `StreamEvents` (the text is
+  empty); consume `model.Stream` directly to read it.
+- **Structured output while streaming.** The streaming path applies the same
+  per-call bind as `Invoke`: middleware `WithResponseFormat` /
+  `WithToolChoice` / `WithModelSettings` overrides and a `ProviderStrategy`'s
+  model kwargs (via `ModelSettingsBinder`, when the model implements it)
+  reach the `Stream` call, not just the non-streaming one; models without
+  that capability keep the post-hoc JSON parse of the assembled message.

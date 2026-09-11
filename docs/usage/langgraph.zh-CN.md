@@ -128,15 +128,21 @@ g.AddNodeWithPolicies("flaky", flakyNode, graphpkg.NodePolicies{
 - **Jitter** —— 在 `MaxInterval` 截断之后追加的 `[0, 1s)` 均匀随机
   抖动 —— 默认**开启**（Python 对齐）；设 `NoJitter: true` 关闭。
 - **`RetryOn`** 判定失败尝试的错误是否可重试；nil 表示
-  `DefaultRetryOn`，它重试 `net.Error`、
-  `context.DeadlineExceeded`（节点自身工作触发的超时 —— 父级取消会中止
-  重试循环本身并上抛父级 ctx 错误），以及实现
-  `interface{ HTTPStatus() int }` 且状态码为 5xx 的错误。它永不重试
-  `channels.InvalidUpdateError` 一类的编程错误或 4xx；领域错误请提供
-  自定义 `RetryOn`。被中断的节点是终态，重试循环不会重新执行它。
+  `DefaultRetryOn`，它重试**一切**错误，只排除一个很小的集合：被
+  `graph.NonRetryable` 包装的错误（为已知永久性错误提供的显式退出通道 ——
+  Go 错误不像 Python 默认判定所参考的那样带有异常类层级）、
+  `context.Canceled`（父级运行已中止；退避期间重试循环本身也会因
+  `ctx.Done()` 中止），以及 `*channels.InvalidUpdateError`（写入路径的编程
+  错误）。早先的窄判定（仅网络错误 / 5xx）已移除 —— provider 的 429 或任何
+  其他普通瞬时错误现在默认重试；需要更窄的行为请提供自定义 `RetryOn`。被
+  中断的节点是终态，重试循环不会重新执行它。
 
-> **分歧说明：** 刻意**不提供图级默认 retry**（Python 的
-> `retry_policy=` 编译参数）—— 节点级策略已足够（YAGNI）。
+**图级默认 retry。** `Compile(graphpkg.WithDefaultRetryPolicy(
+&graphpkg.RetryPolicy{MaxAttempts: 5}))` 安装一个图级默认策略，应用于所有
+不带自身策略的节点（对齐 Python 的 `retry_policy=` 编译参数）。节点自身
+的策略总是胜出；默认策略不会被子图继承（每个子图单独编译）；传 nil 关闭
+它。函数式 API 中，`EntrypointOpts.Retry` 走同一机制，因此它既重试
+entrypoint 函数，也重试没有自身 `TaskOpts.Retry` 的每个 task。
 
 ## 节点级 cache（`graph.CachePolicy` + `checkpoint.Cache`）
 
@@ -440,7 +446,8 @@ n, err = entry.Invoke(ctx, "hi", graph.Options{ThreadID: "t-1"})     // n == 7
 `graph.Options.ThreadID`（配合 checkpointer）把多次调用串成一条线程；
 没有 checkpointer 时每次运行都是无状态的。`EntrypointOpts` 还可接受
 `checkpoint.Cache` 后端（供任务 cache 策略使用）、`graph.RetryPolicy`
-（整体重试 entrypoint 函数），以及 `store.Store`（跨线程 BaseStore，
+（作为图级默认安装，因此既重试 entrypoint 函数，也重试没有自身
+`TaskOpts.Retry` 的每个 task），以及 `store.Store`（跨线程 BaseStore，
 见本节末尾的说明）。
 
 ### 跨轮状态：`previous`
@@ -577,8 +584,13 @@ resume 时 entrypoint 函数**从头重跑**；每个 `Call` 的确定性任务 
 > 程 `BaseStore` **已支持**：设置 `EntrypointOpts.Store`（如
 > `store.NewInMemoryStore()`），它经 `graph.WithStore` 安装到内部图，并在
 > entrypoint 函数及其派发的每个 task 内以 `rt.Store` 浮现 —— 同一实例跨调
-> 用、跨线程共享（使用前需判 nil）。其余分歧清单（重放的错误丢失具体类
-> 型、失败的运行会"毒化"其线程、cache +
+> 用、跨线程共享（使用前需判 nil）。内存 store 还支持语义检索：
+> `store.NewInMemoryStoreWithIndex(store.IndexConfig{Embed: embedder,
+> Fields: []string{"text"}})`（对齐 Python 的 `InMemoryStore(index=...)`）
+> 在 `Put` 时对 value 的每个索引字段做嵌入，带 `Query` 的 `Search` 按余弦
+> 相似度降序排序；用普通 `NewInMemoryStore` 构建的 store 没有索引，会静默
+> 忽略 `Query`（即 Python 的 `index=None`）。其余分歧清单（重放的错误丢失具
+> 体类型、失败的运行会"毒化"其线程、cache +
 > interrupt-in-task 是不支持的组合，等等）见 `langgraph/fn` 包 godoc。
 
 ## Breaking 变更（M5 saver 接口）

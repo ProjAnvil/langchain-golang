@@ -79,3 +79,17 @@ content-block 协议事件（例如 reasoning 增量），读 `ev.Delta`。
 配置了 `WithAgentCache` 时，缓存只在非 streaming 的 `Invoke` 路径上被
 查询。`StreamEvents` 总是绕过缓存，使 `model_delta` / `model_end` 事件在
 每次运行都会触发 —— 否则缓存命中会短路模型调用，什么事件也发不出来。
+
+## Provider 说明
+
+- **`partners/openai` 的 usage chunk。** OpenAI chat 模型的 `Stream` 会
+  opt in usage 统计（`stream_options.include_usage`）：流的末尾会出现一个
+  仅含 usage 的 chunk —— 一条携带 `UsageMetadata` 的空 AI 消息，并在
+  provider 上报时包含缓存 token / reasoning token 细节。它经
+  `StreamEvents` 不会发出 `model_delta`（文本为空）；需要读取它请直接消费
+  `model.Stream`。
+- **流式下的结构化输出。** 流式路径应用与 `Invoke` 相同的按次绑定：
+  middleware 的 `WithResponseFormat` / `WithToolChoice` /
+  `WithModelSettings` 覆盖，以及 `ProviderStrategy` 的 model kwargs（在模型
+  实现 `ModelSettingsBinder` 时）同样作用于 `Stream` 调用，而不仅限非流式
+  路径；不具备该能力的模型保持对组装后消息的事后 JSON 解析。

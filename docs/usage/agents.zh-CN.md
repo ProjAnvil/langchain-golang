@@ -74,6 +74,13 @@ search, _ := coretools.FromFunc("search", "search the web",
 agent, _ := agents.CreateAgent(model, []coretools.Tool{echo, search})
 ```
 
+工具也可以写图状态（或跳转）：在工具的 `Result.Artifact` 中放置
+`*types.Command`（它实现了 `messages.ToolOutput`）。内置 tools 节点会消费
+这些命令 —— 各命令的 update 合并进节点的状态更新（`messages` 拼接，其他键
+按后写覆盖），`Goto` 目标拼接进路由；`Command.Resume` 或非空的
+`Command.Graph` 会使运行失败。`TodoListMiddleware` 的 `write_todos` 工具
+正是借此把 todos 落进图状态。
+
 ## Middleware
 
 Middleware 包装模型调用与每次工具调用。用 `WithAgentMiddleware` 组合：
@@ -118,7 +125,24 @@ BeforeAgent → BeforeModel → WrapModelCall → WrapToolCall → AfterModel �
 每个钩子都收到一个 `context.Context`，因此任何一个都可以调用
 `graphpkg.Interrupt` 暂停运行、等待外部输入（见下文 *Interrupt / resume*）。
 钩子还可以通过把 `update["jump_to"]` 设为 `"model"`、`"tools"` 或 `"end"`
-来短路路由。
+来短路路由：对 `before_agent` 而言，该跳转决定运行是否进入 model↔tools
+循环（`"model"`/`"tools"`），还是直接经 `after_agent` 走向结束（`"end"`）；
+对返回 update 的 `after_agent` 钩子，`"model"` 会重新进入循环，而
+`"end"`（或不跳转）完成本次运行。
+
+Middleware 贡献的工具与状态字段会被自动收集：实现了
+`middleware.ToolProvider`（`ProvidedTools`）或
+`middleware.StateSchemaContributor`（`StateSchema`）的 middleware 会把其
+工具与状态键注册进 agent —— 无需手工 append 工具列表，也无需在
+`WithAgentStateFields` 里重复声明。两个同名 middleware（经
+`MiddlewareNamer` 显式给出 `Name()`，或同为某个 Go 类型）会在构建期被
+拒绝，对齐 Python 的重名 middleware 检查。
+
+`wrap_model_call` 钩子可以返回 `middleware.ExtendedModelResponse`（实现
+`WrapModelCallResultHook`）：其中内嵌 `Command` 的 `Update` 会被叠加应用到
+模型节点自身的状态更新之上（冲突时 middleware 的键胜出），而携带
+`Goto` / `Resume` / `Graph` 的 `Command` 会使运行失败 —— 路由控制仍归上面的
+`jump_to` 约定。
 
 ## 结构化输出
 
@@ -152,6 +176,14 @@ result := state["structured_response"] // parsed per the schema
 
 > `ProviderStrategy` 的 provider 原生 model-kwargs 绑定是尽力而为的：模型
 > 被单独配置（或提示）输出匹配的 JSON，然后最终文本响应按 schema 解析。
+
+Middleware 可以在 `wrap_model_call` 内部经 `request.Override(...)` 调整
+绑定。`middleware.WithResponseFormat` —— 包括 ToolStrategy↔ProviderStrategy
+切换（ToolStrategy 覆盖只能收窄到 agent 原始 response format 中声明的结构化
+工具）—— `middleware.WithToolChoice` 与 `middleware.WithModelSettings` 按每次
+模型调用生效（覆盖型 middleware 每执行一次就生效一次），流式也包括在内；
+`AutoStrategy` 会在每次调用时针对当前模型重新解析，因此 `DynamicModel` 换模
+后会重新检查。
 
 ## Interrupt / resume（human-in-the-loop）
 
@@ -274,7 +306,8 @@ supervisor, err := agents.CreateAgent(model, []coretools.Tool{callWeather}, agen
 在嵌套运行内部，`agents.NameFromContext(ctx)` 返回的是内层 agent 的名字
 （`"weather_agent"`）而非 supervisor 的，因为 `InvokeWithState` 会重新绑定
 run-name 上下文标签。用 `WithAgentName` 构建内层 agent，使其对 middleware、
-日志与 tracing 可区分。
+日志与 tracing 可区分。该名字还会被盖到 agent 模型产出的每条 AI 消息上，
+因此从多个子 agent 汇集的消息历史仍可归因。
 
 内层 agent 的错误会穿过工具、以错误 `ToolMessage` 的形式浮现（经由
 `ToolNode` 默认的 `HandleToolErrors`），因此 supervisor 的运行仍会完成，
@@ -293,12 +326,5 @@ stream-transformer 工作（v1-final-parity spec 中的 Design Decision 4）。
 
 - **`transformers` / `run.subagents`** —— 不暴露；流式 PII 脱敏改由
   `WrapModelStreamHook` middleware 的增量层提供。
-- **`CreateAgent` 循环内的工具返回 `Command`** —— 运行时本身支持工具返回
-  命令：工具把 `*types.Command`（实现了 `messages.ToolOutput`）放进其
-  `Result.Artifact`，`langchain/tools.ToolNode.InvokeToolCallsFull` 以
-  `ToolCallOutcome.Command` 浮现该命令，`langgraph/prebuilt.ToolNode` 把它
-  应用到图状态（同一批的多个命令合并为一次 update，`Goto` 列表拼接）。
-  `CreateAgent` 内置的 tools 节点有意不响应它 —— 其 model↔tools 路由是固定
-  的；需要让工具驱动路由时，围绕 `prebuilt.ToolNode` 手工搭建循环。
 - **工具返回 `Send`** —— 不支持（没有按工具调用的 Send 分发；并行工具调用
   改为在单一节点内并发执行）。

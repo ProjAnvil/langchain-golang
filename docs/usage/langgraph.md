@@ -135,17 +135,26 @@ g.AddNodeWithPolicies("flaky", flakyNode, graphpkg.NodePolicies{
   clamp — is **on by default** (Python parity); set `NoJitter: true` to
   disable it.
 - **`RetryOn`** decides whether a failed attempt's error is retryable; nil
-  means `DefaultRetryOn`, which retries `net.Error`s,
-  `context.DeadlineExceeded` (a deadline hit by the node's own work — parent
-  cancellation aborts the retry loop itself and surfaces the parent's ctx
-  error), and errors implementing `interface{ HTTPStatus() int }` with a 5xx
-  status. It never retries `channels.InvalidUpdateError`-style programming
-  errors or 4xx; supply your own `RetryOn` for domain errors. An interrupted
-  node is terminal and never re-executed by the retry loop.
+  means `DefaultRetryOn`, which retries **every** error except a small
+  exclusion set: errors wrapped by `graph.NonRetryable` (the explicit opt-out
+  for errors you know are permanent — Go errors carry no exception-class
+  hierarchy like the one Python's default predicate consults),
+  `context.Canceled` (the parent run was aborted; the retry loop itself also
+  aborts on `ctx.Done()` during backoff), and `*channels.InvalidUpdateError`
+  (a write-path programming error). The earlier narrow predicate (network
+  errors / 5xx only) is gone — a provider 429 or any other plain transient
+  error now retries by default; supply your own `RetryOn` to restore narrower
+  behavior. An interrupted node is terminal and never re-executed by the
+  retry loop.
 
-> **Divergence note:** there is deliberately **no graph-level default
-> retry** (Python's `retry_policy=` compile kwarg) — per-node policies
-> suffice (YAGNI).
+**Graph-level default retry.** `Compile(graphpkg.WithDefaultRetryPolicy(
+&graphpkg.RetryPolicy{MaxAttempts: 5}))` installs a graph-wide default
+applied to every node that does not carry its own policy (mirroring Python's
+`retry_policy=` compile kwarg). A node's own policy always wins; the default
+is not inherited by subgraphs (each subgraph compiles separately), and a nil
+policy disables it. In the functional API, `EntrypointOpts.Retry` feeds the
+same mechanism, so it retries both the entrypoint function and every task
+without its own `TaskOpts.Retry`.
 
 ## Per-node cache (`graph.CachePolicy` + `checkpoint.Cache`)
 
@@ -474,9 +483,10 @@ n, err = entry.Invoke(ctx, "hi", graph.Options{ThreadID: "t-1"})     // n == 7
 `graph.Options.ThreadID` (together with a checkpointer) ties invocations
 into a thread; without a checkpointer every run is stateless.
 `EntrypointOpts` also accepts a `checkpoint.Cache` backend (for task cache
-policies), a `graph.RetryPolicy` (retries the entrypoint function as a
-whole), and a `store.Store` (the cross-thread BaseStore; see the note at the
-end of this section).
+policies), a `graph.RetryPolicy` (installed as the graph-level default, so it
+retries the entrypoint function and every task without its own
+`TaskOpts.Retry`), and a `store.Store` (the cross-thread BaseStore; see the
+note at the end of this section).
 
 ### State across runs: `previous`
 
@@ -627,9 +637,16 @@ correct exactly when replays are deterministic:
 > via `graph.WithStore` and surfaced as `rt.Store` — the same instance
 > shared across invocations and threads — inside the entrypoint function
 > and every task it dispatches (nil-check `rt.Store` before use). The
-> remaining divergence list (replayed errors lose their concrete type, a
-> failed run poisons its thread, cache + interrupt-in-task is an unsupported
-> combination, ...) lives in the `langgraph/fn` package godoc.
+> in-memory store also supports semantic search:
+> `store.NewInMemoryStoreWithIndex(store.IndexConfig{Embed: embedder,
+> Fields: []string{"text"}})` (mirrors Python's `InMemoryStore(index=...)`)
+> embeds each indexed field of a value on `Put`, and `Search` with a
+> `Query` ranks results by cosine similarity, descending; a store built with
+> plain `NewInMemoryStore` has no index and silently ignores `Query`
+> (Python's `index=None`). The remaining divergence list (replayed errors
+> lose their concrete type, a failed run poisons its thread, cache +
+> interrupt-in-task is an unsupported combination, ...) lives in the
+> `langgraph/fn` package godoc.
 
 ## Breaking changes (M5 saver interface)
 

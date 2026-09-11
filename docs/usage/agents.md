@@ -77,6 +77,14 @@ Pass them to `CreateAgent`; the model decides when to call them:
 agent, _ := agents.CreateAgent(model, []coretools.Tool{echo, search})
 ```
 
+A tool can also write graph state (or jump): place a `*types.Command` (which
+implements `messages.ToolOutput`) in the tool's `Result.Artifact`. The
+built-in tools node consumes these commands — their updates merge into the
+node's state update (`messages` concatenates, other keys are last-write-wins)
+and their `Goto` destinations concatenate onto the routing; a `Command.Resume`
+or a non-empty `Command.Graph` fails the run. This is how
+`TodoListMiddleware`'s `write_todos` tool lands its todos in graph state.
+
 ## Middleware
 
 Middleware wrap the model call and each tool call. Compose them with
@@ -122,7 +130,25 @@ BeforeAgent → BeforeModel → WrapModelCall → WrapToolCall → AfterModel �
 Every hook receives a `context.Context`, so any of them can call
 `graphpkg.Interrupt` to pause the run for external input (see *Interrupt /
 resume* below). A hook can also short-circuit routing by setting
-`update["jump_to"]` to `"model"`, `"tools"`, or `"end"`.
+`update["jump_to"]` to `"model"`, `"tools"`, or `"end"`: for `before_agent`
+the jump decides whether the run enters the model↔tools loop at all
+(`"model"`/`"tools"`) or exits straight through `after_agent` to the end
+(`"end"`); for an update-returning `after_agent` hook, `"model"` re-enters the
+loop while `"end"` (or no jump) completes the run.
+
+Middleware-contributed tools and state fields are collected automatically:
+middleware implementing `middleware.ToolProvider` (`ProvidedTools`) or
+`middleware.StateSchemaContributor` (`StateSchema`) register their tools and
+state keys with the agent — no manual append to the tool list and no mirrored
+`WithAgentStateFields` entry. Two middleware sharing a name (an explicit
+`Name()` via `MiddlewareNamer`, or the same Go type) are rejected at build
+time, mirroring Python's duplicate-middleware check.
+
+A `wrap_model_call` hook may return `middleware.ExtendedModelResponse`
+(implement `WrapModelCallResultHook`): the embedded `Command`'s `Update` is
+applied on top of the model node's own state update (middleware keys win
+conflicts), while a `Command` carrying `Goto` / `Resume` / `Graph` fails the
+run — routing stays with the `jump_to` convention above.
 
 ## Structured output
 
@@ -158,6 +184,15 @@ result := state["structured_response"] // parsed per the schema
 > `ProviderStrategy`'s provider-native model-kwargs binding is best-effort: the
 > model is separately configured (or prompted) to emit matching JSON, then the
 > final text response is parsed against the schema.
+
+Middleware can retune the bind from inside `wrap_model_call` via
+`request.Override(...)`. `middleware.WithResponseFormat` — including
+ToolStrategy↔ProviderStrategy switches (a ToolStrategy override may only
+narrow to structured tools declared in the agent's original response format)
+— `middleware.WithToolChoice`, and `middleware.WithModelSettings` are applied
+per model call (each time the overriding middleware runs), streaming included;
+an `AutoStrategy` re-resolves against the model of the current call, so a
+`DynamicModel` swap re-checks it.
 
 ## Interrupt / resume (human-in-the-loop)
 
@@ -282,7 +317,9 @@ supervisor, err := agents.CreateAgent(model, []coretools.Tool{callWeather}, agen
 Inside the nested run, `agents.NameFromContext(ctx)` returns the inner agent's
 name (`"weather_agent"`), not the supervisor's, because `InvokeWithState`
 rebinds the run-name context tag. Build the inner agent with `WithAgentName`
-so it is distinguishable to middleware, logging, and tracing.
+so it is distinguishable to middleware, logging, and tracing. The name is also
+stamped onto every AI message the agent's model produces, so message
+histories collected from multiple subagents stay attributable.
 
 Errors from the inner agent propagate through the tool and surface as an error
 `ToolMessage` (via `ToolNode`'s default `HandleToolErrors`), so the supervisor
@@ -302,15 +339,6 @@ Mirroring the scoped-port stance (only a subset of `langgraph` is ported):
 
 - **`transformers` / `run.subagents`** — not exposed; streaming PII redaction is
   delivered via the `WrapModelStreamHook` middleware delta layer instead.
-- **Tool-returned `Command` inside `CreateAgent`** — the runtime does support
-  commands from tools: a tool places a `*types.Command` (which implements
-  `messages.ToolOutput`) in its `Result.Artifact`;
-  `langchain/tools.ToolNode.InvokeToolCallsFull` surfaces it as
-  `ToolCallOutcome.Command`, and `langgraph/prebuilt.ToolNode` applies it to
-  graph state (a batch's commands merge into one update with concatenated
-  `Goto`). `CreateAgent`'s built-in tools node deliberately does not act on
-  it — its model↔tools routing is fixed; build the loop by hand around
-  `prebuilt.ToolNode` when tools must drive routing.
 - **`Send` returned from tools** — not supported (there is no
   Send-per-tool-call dispatch; parallel tool calls run concurrently inside a
   single node instead).
