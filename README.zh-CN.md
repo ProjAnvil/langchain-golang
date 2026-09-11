@@ -280,8 +280,8 @@ langchain-golang/
 - `langchain_classic`（遗留链/智能体/记忆）—— 被 `CreateAgent` 替代
 - langgraph CLI / SDK / Server
 - `defer=True` 节点（`NamedBarrierValueAfterFinish`）
-- 动态 provider 导入（`init_chat_model` 动态链）
-- YAML / Jinja / Hub 提示词（仅字符串 + 本地 JSON）
+- 运行时动态导入 provider —— `chatmodels.InitChatModel` / `ParseModelString` 可解析 `"provider:model"` 字符串，`Resolve` 从 `RegisterProvider` 注册表构建模型，但 partner 包必须在编译期链接（blank import）；Go 无法像 Python `init_chat_model` 那样按字符串运行时导入包
+- YAML / Jinja 提示词（仅字符串 + 本地 JSON；`lc://` Hub 加载在上游同样已移除）
 
 ---
 

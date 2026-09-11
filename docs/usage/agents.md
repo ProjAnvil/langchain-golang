@@ -302,4 +302,15 @@ Mirroring the scoped-port stance (only a subset of `langgraph` is ported):
 
 - **`transformers` / `run.subagents`** — not exposed; streaming PII redaction is
   delivered via the `WrapModelStreamHook` middleware delta layer instead.
-- **`Command` / `Send` returned directly from tools** — out of scope.
+- **Tool-returned `Command` inside `CreateAgent`** — the runtime does support
+  commands from tools: a tool places a `*types.Command` (which implements
+  `messages.ToolOutput`) in its `Result.Artifact`;
+  `langchain/tools.ToolNode.InvokeToolCallsFull` surfaces it as
+  `ToolCallOutcome.Command`, and `langgraph/prebuilt.ToolNode` applies it to
+  graph state (a batch's commands merge into one update with concatenated
+  `Goto`). `CreateAgent`'s built-in tools node deliberately does not act on
+  it — its model↔tools routing is fixed; build the loop by hand around
+  `prebuilt.ToolNode` when tools must drive routing.
+- **`Send` returned from tools** — not supported (there is no
+  Send-per-tool-call dispatch; parallel tool calls run concurrently inside a
+  single node instead).

@@ -439,8 +439,9 @@ n, err = entry.Invoke(ctx, "hi", graph.Options{ThreadID: "t-1"})     // n == 7
 
 `graph.Options.ThreadID`（配合 checkpointer）把多次调用串成一条线程；
 没有 checkpointer 时每次运行都是无状态的。`EntrypointOpts` 还可接受
-`checkpoint.Cache` 后端（供任务 cache 策略使用）与 `graph.RetryPolicy`
-（整体重试 entrypoint 函数）。
+`checkpoint.Cache` 后端（供任务 cache 策略使用）、`graph.RetryPolicy`
+（整体重试 entrypoint 函数），以及 `store.Store`（跨线程 BaseStore，
+见本节末尾的说明）。
 
 ### 跨轮状态：`previous`
 
@@ -572,9 +573,12 @@ resume 时 entrypoint 函数**从头重跑**；每个 `Call` 的确定性任务 
   （JSON 原生值或封闭类型注册表）；使用持久化 saver 时，未注册类型是
   明确的描述性错误，永不静默降级。
 
-> **未移植：** Python `@entrypoint(checkpointer=..., store=...)` 的跨线
-> 程 `BaseStore` —— `EntrypointOpts` 没有 store 字段。完整 15 条分歧清
-> 单（重放的错误丢失具体类型、失败的运行会"毒化"其线程、cache +
+> **Store：** Python `@entrypoint(checkpointer=..., store=...)` 的跨线
+> 程 `BaseStore` **已支持**：设置 `EntrypointOpts.Store`（如
+> `store.NewInMemoryStore()`），它经 `graph.WithStore` 安装到内部图，并在
+> entrypoint 函数及其派发的每个 task 内以 `rt.Store` 浮现 —— 同一实例跨调
+> 用、跨线程共享（使用前需判 nil）。其余分歧清单（重放的错误丢失具体类
+> 型、失败的运行会"毒化"其线程、cache +
 > interrupt-in-task 是不支持的组合，等等）见 `langgraph/fn` 包 godoc。
 
 ## Breaking 变更（M5 saver 接口）
@@ -606,11 +610,13 @@ type Write struct { TaskID string; Channel string; Value any; TaskPath string }
   `writes` 表缺少 `task_path` 列则以 `ALTER TABLE ... ADD COLUMN` 添加
   （Python 在它自己的 migration v9 中添加了同一列）。
 
-## `create_react_agent` ≡ `agents.CreateAgent`
+## `create_react_agent` ≡ `prebuilt.CreateReactAgent`
 
-Python 的 `langgraph.prebuilt.create_react_agent` **刻意不移植**（设计决
-策，2026-08-08）：它自 langgraph v1.0 起已在上游废弃，其能力 —— 上文
-的 model ↔ tools 循环 —— 是 `langchain/agents.CreateAgent` 的严格子集；
-后者在本运行时之上构建完全相同的循环，并增加了中间件、结构化输出与
-interrupt 支持。请使用 [`agents.CreateAgent`](agents.md)；只在需要
-`CreateAgent` 未暴露的图级控制时，才用 `prebuilt.ToolNode` 手工搭建循环。
+Python 的 `langgraph.prebuilt.create_react_agent` 以
+`langgraph/prebuilt.CreateReactAgent(model, toolList, opts...)` 提供。它自
+langgraph v1.0 起已在上游被 `langchain.agents.create_agent` 取代，因此这里
+是对 `langchain/agents.CreateAgent` 的轻量委托：每个选项都是按原义应用的
+`agents.AgentOption`，返回的也是同一个包裹编译图（`agent.Graph`）的
+`*agents.Agent`。新代码请直接使用 [`agents.CreateAgent`](agents.md)；只在
+需要 `CreateAgent` 未暴露的图级控制时，才用 `prebuilt.ToolNode` 手工搭建
+循环。

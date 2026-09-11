@@ -229,7 +229,10 @@ type ImagePromptTemplate struct {
 }
 
 // NewImagePromptTemplate creates an image prompt template. Template string
-// values may use the same Go text/template syntax as PromptTemplate.
+// values may use the same Go text/template syntax as PromptTemplate. A
+// "path" key is rejected — this matches Python (removed for security):
+// langchain_core 0.3.15 dropped loading images from 'path'; images must be
+// specified by "url".
 func NewImagePromptTemplate(template map[string]any) (ImagePromptTemplate, error) {
 	if _, ok := template["path"]; ok {
 		return ImagePromptTemplate{}, fmt.Errorf("image prompt template path is not supported; use url")

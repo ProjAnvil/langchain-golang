@@ -170,8 +170,11 @@ type Options struct {
 	SourceIDKey      string
 	Cleanup          CleanupMode
 	// KeyEncoder selects the hash algorithm used to derive each document's
-	// deduplication key. Empty defaults to KeyEncoderSHA256, matching the
-	// pre-existing HashDocument behavior and Python's default.
+	// deduplication key. Empty defaults to KeyEncoderSHA256 — a deliberate,
+	// safer choice: Python's default is sha1 (deprecated upstream with a
+	// warning). Keys derived under the two defaults are NOT interchangeable;
+	// for cross-language interop with collections indexed by Python, set
+	// KeyEncoderSHA1 explicitly.
 	KeyEncoder KeyEncoder
 	// KeyEncoderFunc derives each document's deduplication key directly and
 	// overrides KeyEncoder when set, mirroring Python's callable key_encoder

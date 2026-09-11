@@ -280,8 +280,8 @@ This is a **faithful port** — every design decision defaults to "what Python d
 - `langchain_classic` (legacy chains/agents/memory) — replaced by `CreateAgent`
 - langgraph CLI / SDK / Server
 - `defer=True` nodes (`NamedBarrierValueAfterFinish`)
-- Dynamic provider import (`init_chat_model` dynamic chain)
-- YAML / Jinja / Hub prompts (string + local JSON only)
+- Runtime dynamic provider import — `chatmodels.InitChatModel` / `ParseModelString` parse `"provider:model"` strings and `Resolve` builds the model from the `RegisterProvider` registry, but the partner package must be linked in (blank import); Go cannot import a package by string the way Python's `init_chat_model` does
+- YAML / Jinja prompts (string + local JSON only; `lc://` Hub loading was removed upstream as well)
 
 ---
 

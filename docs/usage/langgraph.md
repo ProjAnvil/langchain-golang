@@ -474,8 +474,9 @@ n, err = entry.Invoke(ctx, "hi", graph.Options{ThreadID: "t-1"})     // n == 7
 `graph.Options.ThreadID` (together with a checkpointer) ties invocations
 into a thread; without a checkpointer every run is stateless.
 `EntrypointOpts` also accepts a `checkpoint.Cache` backend (for task cache
-policies) and a `graph.RetryPolicy` (retries the entrypoint function as a
-whole).
+policies), a `graph.RetryPolicy` (retries the entrypoint function as a
+whole), and a `store.Store` (the cross-thread BaseStore; see the note at the
+end of this section).
 
 ### State across runs: `previous`
 
@@ -620,9 +621,13 @@ correct exactly when replays are deterministic:
   persistent saver an unregistered type is a descriptive error, never a
   silent downgrade.
 
-> **Not ported:** Python's `@entrypoint(checkpointer=..., store=...)`
-> cross-thread `BaseStore` — `EntrypointOpts` has no store field. The full
-> 15-item divergence list (replayed errors lose their concrete type, a
+> **Store:** Python's `@entrypoint(checkpointer=..., store=...)`
+> cross-thread `BaseStore` **is supported**: set `EntrypointOpts.Store`
+> (e.g. `store.NewInMemoryStore()`). It is installed on the internal graph
+> via `graph.WithStore` and surfaced as `rt.Store` — the same instance
+> shared across invocations and threads — inside the entrypoint function
+> and every task it dispatches (nil-check `rt.Store` before use). The
+> remaining divergence list (replayed errors lose their concrete type, a
 > failed run poisons its thread, cache + interrupt-in-task is an unsupported
 > combination, ...) lives in the `langgraph/fn` package godoc.
 
@@ -659,13 +664,14 @@ Migration notes for custom savers:
   with `ALTER TABLE ... ADD COLUMN` (Python added the same column in its own
   migration v9).
 
-## `create_react_agent` ≡ `agents.CreateAgent`
+## `create_react_agent` ≡ `prebuilt.CreateReactAgent`
 
-Python's `langgraph.prebuilt.create_react_agent` is **deliberately not
-ported** (design decision, 2026-08-08): it has been deprecated upstream
-since langgraph v1.0, and its capability — the model ↔ tools loop above — is
-a strict subset of `langchain/agents.CreateAgent`, which builds exactly that
-loop on this runtime and adds middleware, structured output, and interrupt
-support. Use [`agents.CreateAgent`](agents.md); build the loop by hand with
+Python's `langgraph.prebuilt.create_react_agent` is available as
+`langgraph/prebuilt.CreateReactAgent(model, toolList, opts...)`. Deprecated
+upstream since langgraph v1.0 in favor of `langchain.agents.create_agent`,
+it is a thin delegation to `langchain/agents.CreateAgent`: every option is
+an `agents.AgentOption` applied verbatim, and it returns the same
+`*agents.Agent` wrapping the compiled graph (`agent.Graph`). Prefer
+[`agents.CreateAgent`](agents.md) directly; build the loop by hand with
 `prebuilt.ToolNode` only when you need graph-level control `CreateAgent`
 does not expose.

@@ -293,4 +293,12 @@ stream-transformer 工作（v1-final-parity spec 中的 Design Decision 4）。
 
 - **`transformers` / `run.subagents`** —— 不暴露；流式 PII 脱敏改由
   `WrapModelStreamHook` middleware 的增量层提供。
-- **工具直接返回 `Command` / `Send`** —— 范围之外。
+- **`CreateAgent` 循环内的工具返回 `Command`** —— 运行时本身支持工具返回
+  命令：工具把 `*types.Command`（实现了 `messages.ToolOutput`）放进其
+  `Result.Artifact`，`langchain/tools.ToolNode.InvokeToolCallsFull` 以
+  `ToolCallOutcome.Command` 浮现该命令，`langgraph/prebuilt.ToolNode` 把它
+  应用到图状态（同一批的多个命令合并为一次 update，`Goto` 列表拼接）。
+  `CreateAgent` 内置的 tools 节点有意不响应它 —— 其 model↔tools 路由是固定
+  的；需要让工具驱动路由时，围绕 `prebuilt.ToolNode` 手工搭建循环。
+- **工具返回 `Send`** —— 不支持（没有按工具调用的 Send 分发；并行工具调用
+  改为在单一节点内并发执行）。

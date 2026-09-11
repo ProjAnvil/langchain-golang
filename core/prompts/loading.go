@@ -14,6 +14,9 @@ type TextPrompt interface {
 }
 
 // LoadPrompt reads a local JSON prompt config and constructs a text prompt.
+// A path starting with "lc://" is rejected — this matches Python behavior:
+// Hub loading was removed upstream as well (langchain_core's loader raises
+// on lc:// paths).
 func LoadPrompt(path string, allowDangerousPaths bool) (TextPrompt, error) {
 	if strings.HasPrefix(path, "lc://") {
 		return nil, fmt.Errorf("loading deprecated lc:// hub prompts is not supported")
@@ -60,6 +63,10 @@ func loadPromptTemplate(config map[string]any, opts LoadPromptOptions) (PromptTe
 	if err := loadTemplateValue(config, "template", opts); err != nil {
 		return PromptTemplate{}, err
 	}
+	// jinja2 templates remain unsupported (Go prompts render Go text/template
+	// syntax only). Migration: rewrite the template with Go template
+	// placeholders ({{.var}}) — or pre-render it with a template engine of
+	// your choice (e.g. mustache) and load the result as a plain string.
 	if format, _ := config["template_format"].(string); format == "jinja2" {
 		return PromptTemplate{}, fmt.Errorf("loading templates with jinja2 is not supported")
 	}
