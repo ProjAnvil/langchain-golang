@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 func TestTodoListMiddlewareToolInvocation(t *testing.T) {
@@ -24,6 +25,45 @@ func TestTodoListMiddlewareToolInvocation(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "Updated todo list") {
 		t.Fatalf("result content mismatch: %q", result.Content)
+	}
+}
+
+// TestWriteTodosToolReturnsCommand verifies write_todos signals its state
+// write via a *types.Command artifact, mirroring Python's write_todos
+// returning Command(update={"todos": ...}) (todo.py:139-149): the ToolMessage
+// text arrives via Result.Content (the Go ToolNode convention) and the
+// "todos" persistence via the Command update consumed by create_agent's
+// tools node.
+func TestWriteTodosToolReturnsCommand(t *testing.T) {
+	tool, err := NewWriteTodosTool(WriteTodosToolDescription)
+	if err != nil {
+		t.Fatalf("new write_todos tool: %v", err)
+	}
+	result, err := tool.Invoke(context.Background(), map[string]any{
+		"todos": []any{
+			map[string]any{"content": "step one", "status": "completed"},
+			map[string]any{"content": "step two", "status": "in_progress"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if !strings.Contains(result.Content, "Updated todo list") {
+		t.Fatalf("content mismatch: %q", result.Content)
+	}
+	cmd, ok := result.Artifact.(*types.Command)
+	if !ok {
+		t.Fatalf("artifact should be a *types.Command, got %T", result.Artifact)
+	}
+	todos, ok := cmd.Update["todos"].([]Todo)
+	if !ok {
+		t.Fatalf("command update todos mismatch: %#v", cmd.Update["todos"])
+	}
+	if len(todos) != 2 || todos[0].Content != "step one" || todos[0].Status != TodoCompleted || todos[1].Status != TodoInProgress {
+		t.Fatalf("todos mismatch: %#v", todos)
+	}
+	if _, hasMessages := cmd.Update["messages"]; hasMessages {
+		t.Fatalf("command update should not carry messages (the ToolNode derives the ToolMessage from Result.Content): %#v", cmd.Update)
 	}
 }
 

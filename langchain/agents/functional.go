@@ -33,11 +33,27 @@ type (
 
 type beforeModelFuncAdapter struct{ fn BeforeModelFunc }
 
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a beforeModelFuncAdapter) Name() string { return fmt.Sprintf("beforeModelFuncAdapter(%p)", a.fn) }
+
 func (a beforeModelFuncAdapter) BeforeModel(ctx context.Context, state map[string]any) (map[string]any, error) {
 	return a.fn(ctx, state)
 }
 
 type beforeModelCommandFuncAdapter struct{ fn BeforeModelCommandFunc }
+
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a beforeModelCommandFuncAdapter) Name() string {
+	return fmt.Sprintf("beforeModelCommandFuncAdapter(%p)", a.fn)
+}
 
 func (a beforeModelCommandFuncAdapter) BeforeModel(ctx context.Context, state map[string]any) (*middleware.Command, error) {
 	return a.fn(ctx, state)
@@ -45,11 +61,27 @@ func (a beforeModelCommandFuncAdapter) BeforeModel(ctx context.Context, state ma
 
 type afterModelFuncAdapter struct{ fn AfterModelFunc }
 
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a afterModelFuncAdapter) Name() string { return fmt.Sprintf("afterModelFuncAdapter(%p)", a.fn) }
+
 func (a afterModelFuncAdapter) AfterModel(ctx context.Context, state map[string]any) (map[string]any, error) {
 	return a.fn(ctx, state)
 }
 
 type wrapModelCallFuncAdapter struct{ fn WrapModelCallFunc }
+
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a wrapModelCallFuncAdapter) Name() string {
+	return fmt.Sprintf("wrapModelCallFuncAdapter(%p)", a.fn)
+}
 
 func (a wrapModelCallFuncAdapter) WrapModelCall(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
 	return a.fn(ctx, request, handler)
@@ -57,17 +89,40 @@ func (a wrapModelCallFuncAdapter) WrapModelCall(ctx context.Context, request mid
 
 type wrapToolCallFuncAdapter struct{ fn WrapToolCallFunc }
 
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a wrapToolCallFuncAdapter) Name() string {
+	return fmt.Sprintf("wrapToolCallFuncAdapter(%p)", a.fn)
+}
+
 func (a wrapToolCallFuncAdapter) WrapToolCall(ctx context.Context, request middleware.ToolCallRequest, handler middleware.ToolHandler) (messages.Message, error) {
 	return a.fn(ctx, request, handler)
 }
 
 type beforeAgentFuncAdapter struct{ fn BeforeAgentFunc }
 
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a beforeAgentFuncAdapter) Name() string { return fmt.Sprintf("beforeAgentFuncAdapter(%p)", a.fn) }
+
 func (a beforeAgentFuncAdapter) BeforeAgent(ctx context.Context, state map[string]any) (map[string]any, error) {
 	return a.fn(ctx, state)
 }
 
 type afterAgentFuncAdapter struct{ fn AfterAgentFunc }
+
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a afterAgentFuncAdapter) Name() string { return fmt.Sprintf("afterAgentFuncAdapter(%p)", a.fn) }
 
 func (a afterAgentFuncAdapter) AfterAgent(ctx context.Context, state map[string]any) error {
 	return a.fn(ctx, state)
@@ -85,7 +140,9 @@ func FuncBeforeModelCommand(fn BeforeModelCommandFunc) BeforeModelCommandHook {
 func FuncAfterModel(fn AfterModelFunc) AfterModelHook { return afterModelFuncAdapter{fn: fn} }
 
 // FuncWrapModelCall returns a WrapModelCallHook backed by fn.
-func FuncWrapModelCall(fn WrapModelCallFunc) WrapModelCallHook { return wrapModelCallFuncAdapter{fn: fn} }
+func FuncWrapModelCall(fn WrapModelCallFunc) WrapModelCallHook {
+	return wrapModelCallFuncAdapter{fn: fn}
+}
 
 // FuncWrapToolCall returns a WrapToolCallHook backed by fn.
 func FuncWrapToolCall(fn WrapToolCallFunc) WrapToolCallHook { return wrapToolCallFuncAdapter{fn: fn} }
@@ -106,6 +163,15 @@ func FuncAfterAgent(fn AfterAgentFunc) AfterAgentHook { return afterAgentFuncAda
 type DynamicPromptFunc func(ctx context.Context, request middleware.ModelRequest) (any, error)
 
 type dynamicPromptAdapter struct{ fn DynamicPromptFunc }
+
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a distinct
+// middleware class name from each decorated function, so the Go adapter
+// folds in the wrapped function's address — the same function lifted twice
+// collides, two different functions do not.
+func (a dynamicPromptAdapter) Name() string {
+	return fmt.Sprintf("dynamicPromptAdapter(%p)", a.fn)
+}
 
 func (a dynamicPromptAdapter) WrapModelCall(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
 	prompt, err := a.fn(ctx, request)
@@ -180,6 +246,15 @@ type beforeModelConfiguredAdapter struct {
 	canJumpTo []string
 }
 
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a beforeModelConfiguredAdapter) Name() string {
+	return fmt.Sprintf("beforeModelConfiguredAdapter(%p)", a.fn)
+}
+
 func (a beforeModelConfiguredAdapter) BeforeModel(ctx context.Context, state map[string]any) (map[string]any, error) {
 	return a.fn(ctx, state)
 }
@@ -201,6 +276,15 @@ func FuncBeforeModelWithConfig(fn BeforeModelFunc, cfg HookConfig) BeforeModelHo
 type afterModelConfiguredAdapter struct {
 	fn        AfterModelFunc
 	canJumpTo []string
+}
+
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a afterModelConfiguredAdapter) Name() string {
+	return fmt.Sprintf("afterModelConfiguredAdapter(%p)", a.fn)
 }
 
 func (a afterModelConfiguredAdapter) AfterModel(ctx context.Context, state map[string]any) (map[string]any, error) {
@@ -225,6 +309,15 @@ func FuncAfterModelWithConfig(fn AfterModelFunc, cfg HookConfig) AfterModelHook 
 type WrapModelCallResultFunc func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error)
 
 type wrapModelCallResultFuncAdapter struct{ fn WrapModelCallResultFunc }
+
+// Name gives the adapter a per-function middleware identity (see
+// CreateAgent's duplicate-middleware validation): Python derives a
+// distinct middleware class name from each decorated function, so the Go
+// adapter folds in the wrapped function's address — the same function
+// lifted twice collides, two different functions do not.
+func (a wrapModelCallResultFuncAdapter) Name() string {
+	return fmt.Sprintf("wrapModelCallResultFuncAdapter(%p)", a.fn)
+}
 
 func (a wrapModelCallResultFuncAdapter) WrapModelCallResult(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error) {
 	return a.fn(ctx, request, handler)

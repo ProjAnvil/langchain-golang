@@ -20,6 +20,11 @@ type fullStackRecorder struct {
 	log *[]string
 }
 
+// Name distinguishes instances for CreateAgent's duplicate-middleware check
+// (two same-type instances in one agent are, like two instances of one
+// Python middleware class, a duplicate unless explicitly named).
+func (r *fullStackRecorder) Name() string { return "fullStackRecorder[" + r.tag + "]" }
+
 func (r *fullStackRecorder) BeforeAgent(_ context.Context, _ map[string]any) (map[string]any, error) {
 	*r.log = append(*r.log, r.tag+":before_agent")
 	return nil, nil

@@ -14,13 +14,17 @@ package agents
 // Explicit non-goals (deferred per the spec):
 //   - No field-visibility metadata (Python's EphemeralValue / PrivateStateAttr
 //     / OmitFromInput). Every Go node sees every state key today.
-//   - No StateExtender middleware interface (letting middleware declare state
-//     fields). Tracked as a later Step 3c sub-item.
 //   - No typed-accessor helper (GetStateField[T]). Plain type assertion is
 //     adequate for Phase 1.
 //   - No Initial seed value on StateField. The graph exposes no seed hook for
 //     custom fields; nodes tolerate an absent key on first read (Go idiom:
 //     `v, ok := state[name]`).
+//
+// Middleware state-schema contributions ARE supported (see
+// middleware.StateSchemaContributor in the middleware package and
+// CreateAgent's registration loop): middleware-declared fields register ahead
+// of the caller's StateFields so the caller's declaration wins a name
+// conflict, mirroring factory.py:1150-1156.
 
 import (
 	"github.com/projanvil/langchain-golang/langgraph/channels"

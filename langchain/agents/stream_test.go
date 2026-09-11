@@ -844,6 +844,9 @@ type prefixStreamMW struct {
 	marker string
 }
 
+// Name distinguishes instances for CreateAgent's duplicate-middleware check.
+func (m prefixStreamMW) Name() string { return "prefixStreamMW[" + m.marker + "]" }
+
 // TransformModelStream implements middleware.WrapModelStreamHook.
 func (m prefixStreamMW) TransformModelStream(inner middleware.DeltaTransform) middleware.DeltaTransform {
 	return func(s string) string {

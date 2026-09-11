@@ -172,6 +172,14 @@ func NewShellToolMiddleware(workspaceRoot string, opts ...ShellToolOption) (*She
 	return m, nil
 }
 
+// ProvidedTools implements ToolProvider: the shell tool is registered with
+// the agent's ToolNode automatically (factory.py:1005 collects
+// AgentMiddleware.tools; the Go method name differs because the public Tools
+// field must stay and Go forbids a field/method name collision).
+func (m *ShellToolMiddleware) ProvidedTools() []tools.Tool {
+	return m.Tools
+}
+
 type ShellToolOption func(*ShellToolMiddleware)
 
 func WithShellExecutionPolicy(policy ShellExecutionPolicy) ShellToolOption {

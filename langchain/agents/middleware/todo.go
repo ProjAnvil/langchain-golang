@@ -7,6 +7,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/tools"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 type TodoStatus string
@@ -47,6 +48,31 @@ func NewTodoListMiddleware() (*TodoListMiddleware, error) {
 	return m, nil
 }
 
+// ProvidedTools implements ToolProvider: the write_todos tool is registered
+// with the agent's ToolNode automatically (factory.py:1005 collects
+// AgentMiddleware.tools; the Go method name differs because the public Tools
+// field must stay and Go forbids a field/method name collision).
+func (m *TodoListMiddleware) ProvidedTools() []tools.Tool {
+	return m.Tools
+}
+
+// StateSchema implements StateSchemaContributor: the middleware's
+// PlanningState declares the "todos" key (todo.py:35-42, a NotRequired
+// list[Todo] with Python's default LastValue semantics), so CreateAgent
+// registers it as a state field alongside the caller's state_schema
+// (factory.py:1150-1156).
+func (m *TodoListMiddleware) StateSchema() []StateField {
+	return []StateField{{Name: "todos"}}
+}
+
+// NewWriteTodosTool builds the write_todos tool. Mirroring Python's
+// write_todos (todo.py:139-149), which returns
+// Command(update={"todos": todos, "messages": [ToolMessage(...)]}), the Go
+// tool signals the todos write via a *types.Command in Result.Artifact —
+// the Go ToolNode derives the ToolMessage from Result.Content (the port's
+// documented convention, langchain/tools/tool_node.go), so the Command's
+// Update carries only "todos"; create_agent's tools node commits it to
+// PlanningState.todos in the same superstep.
 func NewWriteTodosTool(description string) (tools.Tool, error) {
 	return tools.NewFunc(
 		WriteTodosToolName,
@@ -61,9 +87,35 @@ func NewWriteTodosTool(description string) (tools.Tool, error) {
 			},
 		}, "todos"),
 		func(_ context.Context, input map[string]any) (tools.Result, error) {
-			return tools.Result{Content: fmt.Sprintf("Updated todo list to %v", input["todos"])}, nil
+			todos := todosFromInput(input["todos"])
+			return tools.Result{
+				Content: fmt.Sprintf("Updated todo list to %v", input["todos"]),
+				Artifact: &types.Command{
+					Update: map[string]any{"todos": todos},
+				},
+			}, nil
 		},
 	)
+}
+
+// todosFromInput normalizes the raw decoded "todos" argument (a []any of
+// map[string]any) into []Todo. Values that do not match the expected shape
+// are coerced field-by-field (missing keys become zero values), matching the
+// lenient dict → TypedDict coercion Python performs on tool args.
+func todosFromInput(raw any) []Todo {
+	items, _ := raw.([]any)
+	out := make([]Todo, 0, len(items))
+	for _, item := range items {
+		var todo Todo
+		if m, ok := item.(map[string]any); ok {
+			todo.Content, _ = m["content"].(string)
+			if status, ok := m["status"].(string); ok {
+				todo.Status = TodoStatus(status)
+			}
+		}
+		out = append(out, todo)
+	}
+	return out
 }
 
 func (m *TodoListMiddleware) WrapModelCall(ctx context.Context, request ModelRequest, handler ModelHandler) (ModelResponse, error) {

@@ -37,6 +37,15 @@ type FilesystemFileSearchMiddleware struct {
 	UseRipgrep bool
 }
 
+// ProvidedTools implements ToolProvider: the glob_search/grep_search tools
+// are registered with the agent's ToolNode automatically (factory.py:1005
+// collects AgentMiddleware.tools; the Go method name differs because the
+// public Tools field must stay and Go forbids a field/method name
+// collision).
+func (m *FilesystemFileSearchMiddleware) ProvidedTools() []tools.Tool {
+	return m.Tools
+}
+
 func NewFilesystemFileSearchMiddleware(rootPath string, maxFileSizeMB int) (*FilesystemFileSearchMiddleware, error) {
 	if maxFileSizeMB <= 0 {
 		maxFileSizeMB = 10

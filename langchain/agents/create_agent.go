@@ -9,9 +9,10 @@ package agents
 // `langchain/agents` for the authoritative list): this deliberately does not
 // port subagent transformer behavior (this also requires a middleware-facing
 // streaming layer that doesn't exist in this port yet — see
-// migration_plan/core-v1-migration-todo.md), or Command/Send returned
-// directly from tools (langgraph's ToolNode `Command` support is out of
-// scope; see langchain/tools/tool_node.go). Interrupts ARE wired through
+// migration_plan/core-v1-migration-todo.md). Command returned from tools IS
+// wired: the tools node consumes the *types.Command a tool places in its
+// Result.Artifact (see newToolsNode; Send remains out of scope — see
+// langchain/tools/tool_node.go). Interrupts ARE wired through
 // CreateAgent: every model-loop hook (BeforeModelHook/BeforeModelCommandHook/
 // AfterModelHook/WrapModelCallHook/WrapToolCallHook), not just
 // BeforeAgentHook/AfterAgentHook, receives a context.Context a middleware can
@@ -32,12 +33,19 @@ package agents
 // recursion_limit 9999 (factory.py:1780), and a per-call DynamicModel resolver
 // is available (a superset mirroring langgraph.prebuilt's callable-model
 // overload). `BeforeAgent`/`AfterAgent` hooks ARE wired:
-// when at least one middleware implements BeforeAgentHook/AfterAgentHook,
-// CreateAgent adds dedicated "before_agent"/"after_agent" nodes around the
-// model<->tools loop (mirroring Python's `before_agent`/`after_agent` running
-// once per run, not once per model call); every "end" routing decision
-// (normal completion, a jump_to "end", or a structured-output match) is
-// redirected through "after_agent" first when present.
+// when at least one middleware implements BeforeAgentHook/AfterAgentHook/
+// AfterAgentUpdateHook, CreateAgent adds dedicated "before_agent"/
+// "after_agent" nodes around the model<->tools loop (mirroring Python's
+// `before_agent`/`after_agent` running once per run, not once per model
+// call); every "end" routing decision (normal completion, a jump_to "end",
+// or a structured-output match) is redirected through "after_agent" first
+// when present. Middleware-contributed tools and state fields ARE
+// auto-collected: middleware implementing middleware.ToolProvider/
+// StateSchemaContributor register their tools and state keys with the agent
+// without any manual wiring (factory.py:1005, 1054-1055, 1150-1156), and
+// duplicate middleware names are rejected at build time (factory.py:
+// 1080-1082). The agent's Name, when set, is stamped onto every AI message
+// the model produces (factory.py:1418-1419).
 //
 // Middleware hook discovery: unlike Python's `AgentMiddleware` base class
 // (which defines every hook as a no-op an implementation can selectively
@@ -45,11 +53,16 @@ package agents
 // instead uses type assertions against the *Hook interfaces below, so a
 // middleware value need only implement the hooks it cares about.
 //
-// "jump_to" convention: a BeforeModel/AfterModel hook can short-circuit
-// normal routing by setting update["jump_to"] to "model", "tools", or "end"
-// (mirroring Python's `AgentState.jump_to` field). CreateAgent consumes this
-// key out of the update before merging it into graph state (it is never
-// itself persisted).
+// "jump_to" convention: a BeforeModel/AfterModel/BeforeAgent hook (or an
+// AfterAgentUpdateHook) can short-circuit normal routing by setting
+// update["jump_to"] to "model", "tools", or "end" (mirroring Python's
+// `AgentState.jump_to` field, routed by the middleware conditional edges —
+// factory.py:1694-1713 before_agent, :1753-1776 after_agent). CreateAgent
+// consumes this key out of the update before merging it into graph state (it
+// is never itself persisted). For before_agent, "model" enters the
+// model<->tools loop (the default) and "end" exits through "after_agent"
+// when present; for after_agent, "model" re-enters the loop and "end"
+// (or no jump) completes the run.
 //
 // BeforeModel "messages" scope note: a BeforeModelHook's returned
 // update["messages"], if present, reshapes only the *local* view of the
@@ -172,6 +185,9 @@ type WrapToolCallHook interface {
 // starts, mirroring Python's `AgentMiddleware.before_agent`. It receives a
 // context.Context (unlike BeforeModelHook/AfterModelHook) since it runs as
 // its own dedicated graph node rather than inline within the model node.
+// Returning an update with update["jump_to"] set to "model"/"tools"/"end"
+// short-circuits the node's default edge into the model<->tools loop (see
+// the package doc comment's jump_to note).
 type BeforeAgentHook interface {
 	BeforeAgent(ctx context.Context, state map[string]any) (map[string]any, error)
 }
@@ -184,6 +200,27 @@ type BeforeAgentHook interface {
 // that existing implementation, does not itself produce a state update.
 type AfterAgentHook interface {
 	AfterAgent(ctx context.Context, state map[string]any) error
+}
+
+// AfterAgentUpdateHook is the update-returning sibling of AfterAgentHook for
+// middleware whose after_agent hook produces state (Python's after_agent may
+// return a dict). Mirroring Python's after_agent edge wiring
+// (factory.py:1753-1776, model_destination=loop entry), an update carrying
+// update["jump_to"] = "model" re-enters the model<->tools loop ("end", or no
+// jump, finishes the run). A middleware implements AfterAgentHook OR
+// AfterAgentUpdateHook — Go forbids two AfterAgent methods on one type — and
+// the after_agent node checks the update variant first.
+type AfterAgentUpdateHook interface {
+	AfterAgent(ctx context.Context, state map[string]any) (map[string]any, error)
+}
+
+// MiddlewareNamer is implemented by middleware that carry an explicit
+// instance name, mirroring Python's AgentMiddleware.name property
+// (middleware/types.py:410-417; the default there is the class name, the Go
+// analog of which is the type name — see middlewareName). The name drives
+// the duplicate-middleware validation (see CreateAgent).
+type MiddlewareNamer interface {
+	Name() string
 }
 
 // AgentOptions configures CreateAgent.
@@ -609,6 +646,13 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		return nil, err
 	}
 
+	// Duplicate middleware validation (factory.py:1080-1082): two middleware
+	// sharing a name — an explicit Name() or the same Go type — are rejected,
+	// matching Python's default class-name identity.
+	if err := validateMiddlewareNames(options.Middleware); err != nil {
+		return nil, err
+	}
+
 	// Convert any dict tool specs (Python's `tools: [... | dict]` form) into
 	// core/tools tools and append them after the positional tool list, so they
 	// are bound to the model and routed through the tools node exactly like
@@ -620,6 +664,13 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		}
 		toolList = append(append([]coretools.Tool(nil), toolList...), specTools...)
 	}
+
+	// Middleware tool auto-collection (factory.py:1005: `middleware_tools =
+	// [t for m in middleware for t in getattr(m, "tools", [])]`; merged ahead
+	// of the caller's tools at factory.py:1054-1055). Middleware implementing
+	// middleware.ToolProvider contribute their tools to both the ToolNode and
+	// the model's default bound tools, with no manual append at the call site.
+	toolList = mergeMiddlewareTools(options.Middleware, toolList)
 
 	toolStrategy, providerStrategy, err := resolveResponseFormat(options.ResponseFormat, model)
 	if err != nil {
@@ -640,10 +691,10 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 	// finalNode is where every "run is over" routing decision (normal
 	// completion, a jump_to "end", or a matched structured-output response)
 	// goes: types.END directly, or through a dedicated "after_agent" node
-	// first when at least one AfterAgentHook is configured (see the package
-	// doc comment).
+	// first when at least one AfterAgentHook/AfterAgentUpdateHook is
+	// configured (see the package doc comment).
 	finalNode := types.END
-	hasAfterAgent := hasHook[AfterAgentHook](options.Middleware)
+	hasAfterAgent := hasHook[AfterAgentHook](options.Middleware) || hasHook[AfterAgentUpdateHook](options.Middleware)
 	if hasAfterAgent {
 		finalNode = AfterAgentNodeName
 	}
@@ -652,6 +703,27 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 
 	g := graphpkg.NewStateGraph()
 	g.AddReducer("messages", channels.MessagesReducer)
+	// Register middleware-contributed state fields (factory.py:1150-1156:
+	// `state_schemas = [*(m.state_schema for m in middleware), base_state]`,
+	// merged in order with later declarations winning field conflicts).
+	// Middleware schemas run FIRST so the caller's explicit StateFields below
+	// override any middleware contribution on a name conflict — the Go
+	// AddReducer map is last-call-wins, which reproduces Python's
+	// base_state-wins merge. A nil reducer defaults to
+	// channels.LastValueReducer (replace semantics).
+	for _, mw := range options.Middleware {
+		contributor, ok := mw.(middleware.StateSchemaContributor)
+		if !ok {
+			continue
+		}
+		for _, f := range contributor.StateSchema() {
+			r := f.Reducer
+			if r == nil {
+				r = channels.LastValueReducer
+			}
+			g.AddReducer(f.Name, r)
+		}
+	}
 	// Register user-supplied state fields (Python state_schema). A nil reducer
 	// defaults to channels.LastValueReducer (replace semantics), which is also
 	// the implicit reducer for any unregistered key, so a nil-reducer field is
@@ -676,12 +748,12 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		}
 		return model
 	}
-	g.AddNode(ModelNodeName, buildModelNode(resolveModel, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, finalNode, options.Cache))
+	g.AddNode(ModelNodeName, buildModelNode(resolveModel, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, finalNode, options.Cache, options.Name))
 
 	entryNode := ModelNodeName
 	if hasHook[BeforeAgentHook](options.Middleware) {
 		entryNode = BeforeAgentNodeName
-		g.AddNode(BeforeAgentNodeName, buildBeforeAgentNode(options.Middleware, logger))
+		g.AddNode(BeforeAgentNodeName, buildBeforeAgentNode(options.Middleware, logger, finalNode))
 		g.AddEdge(BeforeAgentNodeName, ModelNodeName)
 	}
 	g.AddEdge(types.START, entryNode)
@@ -1158,10 +1230,56 @@ func hasHook[T any](mws []any) bool {
 	return false
 }
 
+// mergeMiddlewareTools returns the effective tool list for an agent: every
+// middleware's ProvidedTools() (in middleware registration order) followed by
+// the caller's tools, mirroring Python's
+// `available_tools = middleware_tools + regular_tools` (factory.py:1054-1055)
+// and the ToolNode's dict registration (langgraph prebuilt tool_node.py:784),
+// where a later tool with the same name silently replaces an earlier one
+// while keeping the first registration's position — so on a name conflict the
+// caller's tool wins over the middleware's. When no middleware provides
+// tools, userTools is returned unchanged (same slice, no copy).
+func mergeMiddlewareTools(mws []any, userTools []coretools.Tool) []coretools.Tool {
+	var middlewareTools []coretools.Tool
+	for _, mw := range mws {
+		if provider, ok := mw.(middleware.ToolProvider); ok {
+			middlewareTools = append(middlewareTools, provider.ProvidedTools()...)
+		}
+	}
+	if len(middlewareTools) == 0 {
+		return userTools
+	}
+	out := make([]coretools.Tool, 0, len(middlewareTools)+len(userTools))
+	indexByName := make(map[string]int, len(middlewareTools)+len(userTools))
+	add := func(t coretools.Tool) {
+		if t == nil {
+			return
+		}
+		if i, ok := indexByName[t.Name()]; ok {
+			out[i] = t // later registration replaces, first position kept
+			return
+		}
+		indexByName[t.Name()] = len(out)
+		out = append(out, t)
+	}
+	for _, t := range middlewareTools {
+		add(t)
+	}
+	for _, t := range userTools {
+		add(t)
+	}
+	return out
+}
+
 // buildBeforeAgentNode returns the "before_agent" graph node, running every
 // BeforeAgentHook middleware once (in order) before the model<->tools loop
-// starts. logger, when non-nil, emits a debug log at node entry.
-func buildBeforeAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
+// starts. A hook update carrying "jump_to" ("model"/"tools"/"end"
+// — factory.py:1694-1713: the before_agent conditional edge routes jump_to
+// "model" to the loop entry and "end" to the exit node) makes the node return
+// a *types.Command whose Goto bypasses the default before_agent→model edge;
+// the key is consumed (never persisted). logger, when non-nil, emits a debug
+// log at node entry.
+func buildBeforeAgentNode(mws []any, logger *slog.Logger, finalNode string) graphpkg.NodeFunc {
 	return func(rt runtime.Runtime, rawState map[string]any) (any, error) {
 		if logger != nil {
 			logger.Info("agents: before_agent node entry")
@@ -1182,20 +1300,40 @@ func buildBeforeAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 				update[k] = v
 			}
 		}
+		if jumpTo, ok := popJumpTo(update); ok {
+			return &types.Command{Update: update, Goto: graphpkg.To(resolveJumpTarget(jumpTo, finalNode))}, nil
+		}
 		return update, nil
 	}
 }
 
 // buildAfterAgentNode returns the "after_agent" graph node, running every
-// AfterAgentHook middleware once (in order) after the model<->tools loop
-// ends. Matching AfterAgentHook's signature, it does not produce a state
-// update. logger, when non-nil, emits a debug log at node entry.
+// AfterAgentHook/AfterAgentUpdateHook middleware once (in order) after the
+// model<->tools loop ends. Update-returning hooks' keys commit to state; an
+// update carrying "jump_to" = "model" re-enters the model<->tools loop
+// (factory.py:1753-1776: the after_agent→END edge declares
+// model_destination=loop entry), consumed like the model-node jump_to so it
+// never persists. "end" (or no jump) completes the run through the node's
+// END edge. logger, when non-nil, emits a debug log at node entry.
 func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
-	return func(rt runtime.Runtime, state map[string]any) (any, error) {
+	return func(rt runtime.Runtime, rawState map[string]any) (any, error) {
 		if logger != nil {
 			logger.Info("agents: after_agent node entry")
 		}
+		state := cloneMapState(rawState)
+		update := map[string]any{}
 		for _, mw := range mws {
+			if hook, ok := mw.(AfterAgentUpdateHook); ok {
+				hookUpdate, err := hook.AfterAgent(rt, state)
+				if err != nil {
+					return nil, err
+				}
+				for k, v := range hookUpdate {
+					state[k] = v
+					update[k] = v
+				}
+				continue
+			}
 			hook, ok := mw.(AfterAgentHook)
 			if !ok {
 				continue
@@ -1204,8 +1342,50 @@ func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 				return nil, err
 			}
 		}
-		return nil, nil
+		if len(update) == 0 {
+			return nil, nil
+		}
+		if jumpTo, ok := popJumpTo(update); ok {
+			// "end" maps to END directly: finalNode here IS the after_agent
+			// node itself, so routing to it would re-enter the node forever.
+			return &types.Command{Update: update, Goto: graphpkg.To(resolveJumpTarget(jumpTo, types.END))}, nil
+		}
+		return update, nil
 	}
+}
+
+// middlewareName returns a middleware's identity for the duplicate check,
+// mirroring Python's AgentMiddleware.name (types.py:410-417): an explicit
+// Name() when the middleware implements MiddlewareNamer, else the Go type
+// name (the analog of Python's class-name default). Functional adapters
+// (FuncBeforeModel and friends) share one Go type, so their name folds in
+// the wrapped function's address — two adapters around different functions
+// are distinct middleware (Python derives distinct class names from the
+// function names), while the same function lifted twice collides exactly as
+// two instances of one Python function middleware do.
+func middlewareName(mw any) string {
+	if namer, ok := mw.(MiddlewareNamer); ok {
+		if name := namer.Name(); name != "" {
+			return name
+		}
+	}
+	return fmt.Sprintf("%T", mw)
+}
+
+// validateMiddlewareNames rejects duplicate middleware names at build time,
+// mirroring factory.py:1080-1082 (`len({m.name for m in middleware}) !=
+// len(middleware)` → AssertionError "Please remove duplicate middleware
+// instances.").
+func validateMiddlewareNames(mws []any) error {
+	seen := make(map[string]struct{}, len(mws))
+	for _, mw := range mws {
+		name := middlewareName(mw)
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("agents: duplicate middleware instances (name %q); please remove duplicate middleware instances", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
 }
 
 // buildModelNode returns the graph node function driving one model call:
@@ -1220,6 +1400,11 @@ func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 // WithAgentSystemPrompt is used, or a core/prompts render (with build-time +
 // per-Invoke variables) when WithAgentSystemPromptTemplate is used.
 //
+// agentName, when non-empty, is stamped onto the model's output AIMessage
+// (factory.py:1418-1419: `if name: output.name = name` inside
+// _execute_model_sync — the create_agent name= value, applied before
+// wrap_model_call middleware observe the result).
+//
 // logger, when non-nil, emits verbose debug logs (see WithAgentDebug) for node
 // entry, the model call, and structured-output detection.
 func buildModelNode(
@@ -1233,6 +1418,7 @@ func buildModelNode(
 	providerStrategy *ProviderStrategy,
 	finalNode string,
 	cache caches.Cache,
+	agentName string,
 ) graphpkg.NodeFunc {
 	toolsAny := toolsToAny(toolList)
 
@@ -1331,9 +1517,9 @@ func buildModelNode(
 			// emitting model_end. When no sink is active, the non-streaming
 			// Invoke path is used with zero added overhead (see invokeModel).
 			if sink := sinkFromContext(c); sink != nil {
-				return invokeModelStreaming(c, r, sink, mws)
+				return invokeModelStreaming(c, r, sink, mws, agentName)
 			}
-			return invokeModel(c, r, providerStrategySchema(providerStrategy))
+			return invokeModel(c, r, providerStrategySchema(providerStrategy), agentName)
 		}
 		// mwCommands accumulates the update-only Commands returned by
 		// WrapModelCallResult middleware (each layer's
@@ -1417,6 +1603,10 @@ func buildModelNode(
 				for _, g := range gens {
 					cached = append(cached, messages.AI(g.Text))
 				}
+				// Cache-served outputs get the agent name too: Python's
+				// `output.name = name` runs after model_.invoke returns,
+				// which is where a cache hit surfaces (factory.py:1418-1419).
+				applyAgentName(cached, agentName)
 				resp = middleware.ModelResponse{Result: cached}
 				cacheHit = true
 				if logger != nil {
@@ -1842,6 +2032,22 @@ func providerStrategySchema(providerStrategy *ProviderStrategy) schema.Schema {
 	return providerStrategy.Schema
 }
 
+// applyAgentName stamps agentName onto every AI-role message in msgs,
+// mirroring `output.name = name` in factory.py:1418-1419 (the create_agent
+// name= value set on the model's output inside _execute_model_sync, before
+// wrap_model_call middleware observe the result). A empty agentName is a
+// no-op; non-AI messages are left untouched.
+func applyAgentName(msgs []messages.Message, agentName string) {
+	if agentName == "" {
+		return
+	}
+	for i := range msgs {
+		if msgs[i].Role == messages.RoleAI {
+			msgs[i].Name = agentName
+		}
+	}
+}
+
 // invokeModel runs the actual chat model call for a (possibly
 // middleware-overridden) ModelRequest, binding req.Tools if present.
 //
@@ -1858,11 +2064,14 @@ func providerStrategySchema(providerStrategy *ProviderStrategy) schema.Schema {
 // whose bound form implements StructuredCaller still takes the native path —
 // the bound value (not the original) is what gets passed to InvokeStructured.
 //
+// agentName, when non-empty, is stamped onto the resulting AI message(s) (see
+// applyAgentName).
+//
 // The streaming path (invokeModelStreaming) is intentionally out of scope:
 // StructuredCaller only exposes a non-streaming InvokeStructured, so streaming
 // + ProviderStrategy continues to work via the existing post-hoc
 // detectStructuredOutput parse on the assembled message.
-func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSchema schema.Schema) (middleware.ModelResponse, error) {
+func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSchema schema.Schema, agentName string) (middleware.ModelResponse, error) {
 	model, ok := req.Model.(language.ChatModel)
 	if !ok || model == nil {
 		return middleware.ModelResponse{}, fmt.Errorf("agents: ModelRequest.Model must be a language.ChatModel, got %T", req.Model)
@@ -1901,7 +2110,9 @@ func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSch
 			if err != nil {
 				return middleware.ModelResponse{}, err
 			}
-			return middleware.ModelResponse{Result: []messages.Message{result}}, nil
+			resultMsgs := []messages.Message{result}
+			applyAgentName(resultMsgs, agentName)
+			return middleware.ModelResponse{Result: resultMsgs}, nil
 		}
 	}
 
@@ -1909,7 +2120,9 @@ func invokeModel(ctx context.Context, req middleware.ModelRequest, structuredSch
 	if err != nil {
 		return middleware.ModelResponse{}, err
 	}
-	return middleware.ModelResponse{Result: []messages.Message{result}}, nil
+	resultMsgs := []messages.Message{result}
+	applyAgentName(resultMsgs, agentName)
+	return middleware.ModelResponse{Result: resultMsgs}, nil
 }
 
 // anyResultHasToolCalls reports whether any of msgs carries tool calls (i.e.
@@ -1998,7 +2211,7 @@ func hashToolsAndSettings(tools []any, settings map[string]any) string {
 // it is emitted as a model_delta, and rewrites the assembled model_end text so
 // the two stay consistent. When no middleware implements the hook, transform
 // stays identity and this path is identical to the no-middleware behavior.
-func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink *eventSink, mws []any) (middleware.ModelResponse, error) {
+func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink *eventSink, mws []any, agentName string) (middleware.ModelResponse, error) {
 	model, ok := req.Model.(language.ChatModel)
 	if !ok || model == nil {
 		return middleware.ModelResponse{}, fmt.Errorf("agents: ModelRequest.Model must be a language.ChatModel, got %T", req.Model)
@@ -2141,8 +2354,13 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 			return middleware.ModelResponse{}, err
 		}
 		out = applyDeltaTransform(out)
-		sink.emitModelEnd(out)
-		return middleware.ModelResponse{Result: []messages.Message{out}}, nil
+		// Same agent-name stamping as invokeModel (factory.py:1418-1419),
+		// applied to the assembled message after the delta transform so
+		// model_end and the returned ModelResponse stay consistent.
+		resultMsgs := []messages.Message{out}
+		applyAgentName(resultMsgs, agentName)
+		sink.emitModelEnd(resultMsgs[0])
+		return middleware.ModelResponse{Result: resultMsgs}, nil
 	}
 	// Stream ended without an explicit message-finish (provider quirk): fall
 	// back to a non-streaming Invoke so the caller still gets a well-formed
@@ -2154,8 +2372,10 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 		return middleware.ModelResponse{}, err
 	}
 	result = applyDeltaTransform(result)
-	sink.emitModelEnd(result)
-	return middleware.ModelResponse{Result: []messages.Message{result}}, nil
+	resultMsgs := []messages.Message{result}
+	applyAgentName(resultMsgs, agentName)
+	sink.emitModelEnd(resultMsgs[0])
+	return middleware.ModelResponse{Result: resultMsgs}, nil
 }
 
 // newToolsNode builds the "tools" graph node backed by a
@@ -2165,6 +2385,22 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, sink
 // non-nil, is installed on the ToolNode so each ToolCallRequest.Store is
 // populated for tools/wrappers that need it (mirroring Python's
 // `create_agent(store=...)`).
+//
+// Commands a tool returns via Result.Artifact are consumed here (T12b):
+// Python's ToolNode returns tool Commands straight through to langgraph
+// (langgraph/prebuilt/tool_node.py:864-912, `_combine_tool_outputs`: a
+// Command output stays a Command; non-command outputs become the node's
+// `{"messages": [...]}` update), and langgraph applies each Command's Update
+// and honors its goto — goto is neither an error nor ignored under
+// create_agent's fixed routing. A Go graph node commits a single value, so
+// the Commands are folded into that one return (mirroring
+// applyModelNodeCommands): updates merge into the node's update in call order
+// ("messages" concatenates, other keys last-write-wins) and every Goto
+// destination is concatenated onto the returned *types.Command's Goto (empty
+// when no tool jumped, falling back to the tools node's normal conditional
+// edges). Command Resume and non-empty Graph are rejected: the Go tools node
+// cannot forward them (Python's langgraph supports both; documented
+// divergence).
 func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s store.Store) (graphpkg.NodeFunc, error) {
 	nodeOpts := make([]agenttools.ToolNodeOption, 0, 2)
 	if wrap := composeToolCallWrapper(mws, logger); wrap != nil {
@@ -2189,12 +2425,71 @@ func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s s
 			}
 			logger.Info("agents: tools node entry", slog.Int("pending_tool_calls", pending))
 		}
-		results, err := toolNode.Invoke(rt, msgs, state)
+		outcomes, err := toolNode.InvokeToolCallsFull(rt, agenttools.PendingToolCalls(msgs), state)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"messages": results}, nil
+		results := make([]messages.Message, len(outcomes))
+		var commands []*types.Command
+		for i, outcome := range outcomes {
+			results[i] = outcome.Message
+			if outcome.Command != nil {
+				commands = append(commands, outcome.Command)
+			}
+		}
+		if len(commands) == 0 {
+			return map[string]any{"messages": results}, nil
+		}
+		update := map[string]any{"messages": results}
+		gotoDests, err := applyToolNodeCommands(update, commands)
+		if err != nil {
+			return nil, err
+		}
+		if len(gotoDests) > 0 {
+			return &types.Command{Update: update, Goto: gotoDests}, nil
+		}
+		return update, nil
 	}, nil
+}
+
+// applyToolNodeCommands merges the Commands returned by tools (via
+// Result.Artifact, surfaced by langchain/tools.ToolNode.InvokeToolCallsFull)
+// into the tools node's pending update, mirroring the sequential application
+// of Python's ToolNode list-of-Commands return (langgraph/prebuilt/
+// tool_node.py:864-912: the node's `{"messages": [...]}` update plus each
+// Command, applied in order). The fold rules match applyModelNodeCommands:
+//   - "messages" (an append-reducer channel) concatenates after the tool
+//     messages, matching two sequential add_messages writes;
+//   - every other key is overridden by the later Command's value;
+//   - every Goto destination is collected, in order, onto the returned slice
+//     (langgraph fans out to the union of the Commands' gotos);
+//   - Command Resume and non-empty Graph are hard errors (unsupported in the
+//     Go create_agent tools node).
+func applyToolNodeCommands(update map[string]any, commands []*types.Command) ([]any, error) {
+	var gotoDests []any
+	for _, cmd := range commands {
+		if cmd.Resume != nil {
+			return nil, fmt.Errorf("agents: tool Command resume is not supported by create_agent's tools node")
+		}
+		if cmd.Graph != "" {
+			return nil, fmt.Errorf("agents: tool Command graph %q is not supported by create_agent's tools node", cmd.Graph)
+		}
+		for k, v := range cmd.Update {
+			if k == "messages" {
+				if extra, ok := v.([]messages.Message); ok {
+					base, _ := update["messages"].([]messages.Message)
+					merged := make([]messages.Message, 0, len(base)+len(extra))
+					merged = append(merged, base...)
+					merged = append(merged, extra...)
+					update["messages"] = merged
+					continue
+				}
+			}
+			update[k] = v
+		}
+		gotoDests = append(gotoDests, cmd.Goto...)
+	}
+	return gotoDests, nil
 }
 
 func composeToolCallWrapper(mws []any, logger *slog.Logger) agenttools.ToolCallWrapper {

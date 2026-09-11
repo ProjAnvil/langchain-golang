@@ -236,6 +236,13 @@ type recordingWrapModelCallMiddleware struct {
 	log *[]string
 }
 
+// Name distinguishes instances for CreateAgent's duplicate-middleware check
+// (two same-type instances in one agent are, like two instances of one
+// Python middleware class, a duplicate unless explicitly named).
+func (r *recordingWrapModelCallMiddleware) Name() string {
+	return "recordingWrapModelCallMiddleware[" + r.tag + "]"
+}
+
 func (r *recordingWrapModelCallMiddleware) WrapModelCall(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
 	*r.log = append(*r.log, r.tag+":before")
 	resp, err := handler(ctx, request)

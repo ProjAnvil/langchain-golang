@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -16,6 +17,16 @@ import (
 // `ExtendedModelResponse(model_response=..., command=Command(update=...))`.
 type commandWrapMiddleware struct {
 	command *middleware.Command
+}
+
+// Name distinguishes instances for CreateAgent's duplicate-middleware check
+// (derived from the wrapped command's address; a nil command falls back to
+// the type name).
+func (m *commandWrapMiddleware) Name() string {
+	if m.command == nil {
+		return "commandWrapMiddleware"
+	}
+	return fmt.Sprintf("commandWrapMiddleware(%p)", m.command)
 }
 
 func (m *commandWrapMiddleware) WrapModelCallResult(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error) {

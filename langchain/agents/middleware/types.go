@@ -6,6 +6,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/tools"
+	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/store"
 )
 
@@ -150,6 +151,49 @@ type WrapModelStreamHook interface {
 // just as Python falls through when `_llm_type` is unrecognized.
 type LLMTypeProvider interface {
 	LLMType() string
+}
+
+// ToolProvider is implemented by middleware that contribute tools to the
+// agent's ToolNode and default model bindings, mirroring Python's
+// AgentMiddleware.tools attribute (middleware/types.py:395) collected by
+// create_agent (factory.py:1005: `middleware_tools = [t for m in middleware
+// for t in getattr(m, "tools", [])]`, merged ahead of the caller's tools at
+// factory.py:1054-1055).
+//
+// The method is deliberately named ProvidedTools rather than Tools: several
+// middleware (TodoListMiddleware, FilesystemFileSearchMiddleware,
+// ShellToolMiddleware) already expose their tools as a public `Tools` field,
+// Go forbids a method and a field sharing a name, and the field must stay
+// non-breaking — those middleware simply return the field from the method.
+type ToolProvider interface {
+	// ProvidedTools returns the tools this middleware registers. The slice is
+	// not copied; CreateAgent treats it as read-only.
+	ProvidedTools() []tools.Tool
+}
+
+// StateField describes one state key a middleware contributes to the agent's
+// state schema. It is the middleware-package mirror of agents.StateField:
+// the middleware package cannot import the agents package (which imports
+// this one) without an import cycle, so the small struct is duplicated here
+// and converted at collection time.
+type StateField struct {
+	// Name is the state key, e.g. "todos".
+	Name string
+	// Reducer is the merge strategy for successive writes to Name. Nil means
+	// last-write-wins (channels.LastValueReducer), Python's LastValue channel.
+	Reducer channels.Reducer
+}
+
+// StateSchemaContributor is implemented by middleware that contribute state
+// keys to the agent's state schema, mirroring Python's
+// AgentMiddleware.state_schema attribute (middleware/types.py:395-401) merged
+// by create_agent (factory.py:1150-1156: middleware schemas first in
+// registration order, the caller's state_schema last so it wins any field
+// conflict).
+type StateSchemaContributor interface {
+	// StateSchema returns the state fields this middleware declares. The
+	// slice is not copied; CreateAgent treats it as read-only.
+	StateSchema() []StateField
 }
 
 func (c ToolCall) Clone() ToolCall {
