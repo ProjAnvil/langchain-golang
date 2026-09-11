@@ -2,7 +2,10 @@ package prompts
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+
+	"github.com/projanvil/langchain-golang/core/messages"
 )
 
 func TestFewShotPromptTemplate(t *testing.T) {
@@ -481,4 +484,219 @@ func TestDictPromptTemplateSliceValues(t *testing.T) {
 	if got["count"] != 7 {
 		t.Fatalf("count: %#v", got["count"])
 	}
+}
+
+func TestFewShotChatMessagePromptTemplateFormatMessages(t *testing.T) {
+	// Mirrors the Python docstring example (few_shot.py:289-310): each example
+	// renders as one human message followed by one AI message, flattened in
+	// order (few_shot.py:393-412 _format_messages).
+	fewShot, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{
+			{"input": "2+2", "output": "4"},
+			{"input": "2+3", "output": "5"},
+		},
+		nil,
+		"What is {{.input}}?",
+		"{{.output}}",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("new few-shot chat prompt: %v", err)
+	}
+	if got := fewShot.InputVariables(); len(got) != 0 {
+		t.Fatalf("input variables: %#v", got)
+	}
+
+	got, err := fewShot.FormatMessages(nil)
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("messages: %#v", got)
+	}
+	wantRoles := []messages.Role{
+		messages.RoleHuman, messages.RoleAI,
+		messages.RoleHuman, messages.RoleAI,
+	}
+	wantContents := []string{"What is 2+2?", "4", "What is 2+3?", "5"}
+	for i := range got {
+		if got[i].Role != wantRoles[i] || got[i].Content != wantContents[i] {
+			t.Fatalf("message %d: got (%s, %q) want (%s, %q)",
+				i, got[i].Role, got[i].Content, wantRoles[i], wantContents[i])
+		}
+	}
+}
+
+func TestFewShotChatMessagePromptTemplateEmptyExamples(t *testing.T) {
+	// Python accepts examples=[] (verified against langchain_core 1.4.9: the
+	// mixin validator only rejects a missing examples/selector pair) and
+	// renders no messages.
+	fewShot, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{},
+		nil,
+		"What is {{.input}}?",
+		"{{.output}}",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("new few-shot chat prompt: %v", err)
+	}
+	got, err := fewShot.FormatMessages(nil)
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("messages: %#v", got)
+	}
+}
+
+func TestFewShotChatMessagePromptTemplateMissingExampleKey(t *testing.T) {
+	// Python raises KeyError for an example missing a key used by the example
+	// prompt ({k: e[k] for k in example_prompt.input_variables},
+	// few_shot.py:398-400). Go reports an error mentioning the missing key.
+	fewShot, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{{"input": "2+2"}},
+		nil,
+		"What is {{.input}}?",
+		"{{.output}}",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("new few-shot chat prompt: %v", err)
+	}
+	_, err = fewShot.FormatMessages(nil)
+	if err == nil {
+		t.Fatal("expected missing example key error")
+	}
+	if got := err.Error(); !strings.Contains(got, "output") {
+		t.Fatalf("expected missing key name in error, got %q", got)
+	}
+}
+
+func TestFewShotChatMessagePromptTemplateConstructorValidation(t *testing.T) {
+	if _, err := NewFewShotChatMessagePromptTemplate(
+		nil, nil, "What is {{.input}}?", "{{.output}}", nil,
+	); err == nil {
+		t.Fatal("expected error for neither examples nor selector")
+	}
+	if _, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{{"input": "a"}}, staticSelector{},
+		"What is {{.input}}?", "{{.output}}", nil,
+	); err == nil {
+		t.Fatal("expected error for both examples and selector")
+	}
+	if _, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{{"input": "a"}}, nil, "{{.input", "{{.output}}", nil,
+	); err == nil {
+		t.Fatal("expected error for invalid human template")
+	}
+	if _, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{{"input": "a"}}, nil, "What is {{.input}}?", "{{.output", nil,
+	); err == nil {
+		t.Fatal("expected error for invalid ai template")
+	}
+}
+
+func TestFewShotChatMessagePromptTemplateSelector(t *testing.T) {
+	// In selector mode the render values are passed to the selector
+	// (_get_examples -> select_examples(kwargs), few_shot.py:71-89) and the
+	// declared input variables are exposed for outer templates.
+	fewShot, err := NewFewShotChatMessagePromptTemplate(
+		nil,
+		echoSelector{},
+		"What is {{.q}}?",
+		"{{.answer}}",
+		[]string{"q"},
+	)
+	if err != nil {
+		t.Fatalf("new few-shot chat prompt: %v", err)
+	}
+	if got := fewShot.InputVariables(); len(got) != 1 || got[0] != "q" {
+		t.Fatalf("input variables: %#v", got)
+	}
+	got, err := fewShot.FormatMessages(map[string]any{"q": "9+9"})
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if len(got) != 2 || got[0].Content != "What is 9+9?" || got[1].Content != "ans" {
+		t.Fatalf("messages: %#v", got)
+	}
+}
+
+func TestFewShotChatMessagePromptTemplateSelectorError(t *testing.T) {
+	fewShot, err := NewFewShotChatMessagePromptTemplate(
+		nil, errorSelector{}, "What is {{.q}}?", "{{.answer}}", nil)
+	if err != nil {
+		t.Fatalf("new few-shot chat prompt: %v", err)
+	}
+	if _, err := fewShot.FormatMessages(nil); err == nil {
+		t.Fatal("expected selector error")
+	}
+}
+
+func TestFewShotChatMessagePromptTemplateInChatPromptTemplate(t *testing.T) {
+	// End-to-end equivalent of the Python docstring example (few_shot.py:289-310):
+	// the few-shot template is embedded as a message part of a chat prompt
+	// template and expands to alternating human/AI message pairs in place.
+	fewShot, err := NewFewShotChatMessagePromptTemplate(
+		[]map[string]any{
+			{"input": "2+2", "output": "4"},
+			{"input": "2+3", "output": "5"},
+		},
+		nil,
+		"What is {{.input}}?",
+		"{{.output}}",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("new few-shot chat prompt: %v", err)
+	}
+	system, err := NewChatMessageTemplate(
+		messages.RoleSystem, "system", "You are a helpful AI Assistant")
+	if err != nil {
+		t.Fatalf("new system template: %v", err)
+	}
+	human, err := NewChatMessageTemplate(messages.RoleHuman, "human", "{{.input}}")
+	if err != nil {
+		t.Fatalf("new human template: %v", err)
+	}
+	prompt := NewChatPromptTemplateFromParts(system, fewShot, human)
+
+	// The few-shot block requires no input variables; only the final question.
+	if got := prompt.InputVariables(); len(got) != 1 || got[0] != "input" {
+		t.Fatalf("input variables: %#v", got)
+	}
+
+	got, err := prompt.FormatPrompt(map[string]any{"input": "What is 4+4?"})
+	if err != nil {
+		t.Fatalf("format prompt: %v", err)
+	}
+	rendered := got.ToMessages()
+	if len(rendered) != 6 {
+		t.Fatalf("messages: %#v", rendered)
+	}
+	wantRoles := []messages.Role{
+		messages.RoleSystem,
+		messages.RoleHuman, messages.RoleAI,
+		messages.RoleHuman, messages.RoleAI,
+		messages.RoleHuman,
+	}
+	wantContents := []string{
+		"You are a helpful AI Assistant",
+		"What is 2+2?", "4",
+		"What is 2+3?", "5",
+		"What is 4+4?",
+	}
+	for i := range rendered {
+		if rendered[i].Role != wantRoles[i] || rendered[i].Content != wantContents[i] {
+			t.Fatalf("message %d: got (%s, %q) want (%s, %q)",
+				i, rendered[i].Role, rendered[i].Content, wantRoles[i], wantContents[i])
+		}
+	}
+}
+
+type echoSelector struct{}
+
+func (echoSelector) SelectExamples(inputs map[string]any) ([]map[string]any, error) {
+	return []map[string]any{{"q": inputs["q"], "answer": "ans"}}, nil
 }

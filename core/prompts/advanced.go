@@ -3,6 +3,8 @@ package prompts
 import (
 	"fmt"
 	"reflect"
+
+	"github.com/projanvil/langchain-golang/core/messages"
 )
 
 // ExampleSelector selects examples for a few-shot prompt.
@@ -175,6 +177,103 @@ func (p FewShotPromptWithTemplates) Format(values map[string]any) (string, error
 		return template, nil
 	}
 	return renderInlineTemplate("few-shot-with-templates", template, remaining)
+}
+
+// FewShotChatMessagePromptTemplate renders few-shot examples as alternating
+// human/AI message pairs. It mirrors langchain_core's
+// FewShotChatMessagePromptTemplate (few_shot.py:262): the canonical Python
+// example prompt is a ChatPromptTemplate of ("human", ...) and ("ai", ...)
+// messages; here each example is rendered by a human-side and an AI-side
+// PromptTemplate instead. It satisfies ChatPromptPart, so it can be embedded
+// directly in NewChatPromptTemplateFromParts like any other message part.
+type FewShotChatMessagePromptTemplate struct {
+	Examples        []map[string]any
+	ExampleSelector ExampleSelector
+	// HumanPrompt renders the human message of each example pair.
+	HumanPrompt PromptTemplate
+	// AIPrompt renders the AI message of each example pair.
+	AIPrompt PromptTemplate
+	// inputVariables are the variables passed to ExampleSelector in selector
+	// mode (Python input_variables, few_shot.py:361-365). With fixed examples
+	// it stays empty: rendering requires no input values.
+	inputVariables []string
+}
+
+// NewFewShotChatMessagePromptTemplate creates a chat few-shot prompt template.
+// Exactly one of examples or selector must be provided (few_shot.py:44-69):
+// examples may be an empty non-nil slice (renders no messages, matching
+// Python where examples=[] is accepted), while nil means "not provided".
+// humanTemplate and aiTemplate use Go text/template syntax, e.g.
+// "What is {{.input}}?" / "{{.output}}". inputVariables is only meaningful in
+// selector mode, where the render values are forwarded to the selector.
+func NewFewShotChatMessagePromptTemplate(
+	examples []map[string]any,
+	selector ExampleSelector,
+	humanTemplate string,
+	aiTemplate string,
+	inputVariables []string,
+) (FewShotChatMessagePromptTemplate, error) {
+	if examples != nil && selector != nil && len(examples) > 0 {
+		return FewShotChatMessagePromptTemplate{}, fmt.Errorf("only one of examples and example selector should be provided")
+	}
+	if examples == nil && selector == nil {
+		return FewShotChatMessagePromptTemplate{}, fmt.Errorf("one of examples and example selector should be provided")
+	}
+	humanPrompt, err := NewPromptTemplate("few-shot-example-human", humanTemplate)
+	if err != nil {
+		return FewShotChatMessagePromptTemplate{}, err
+	}
+	aiPrompt, err := NewPromptTemplate("few-shot-example-ai", aiTemplate)
+	if err != nil {
+		return FewShotChatMessagePromptTemplate{}, err
+	}
+	return FewShotChatMessagePromptTemplate{
+		Examples:        cloneExamples(examples),
+		ExampleSelector: selector,
+		HumanPrompt:     humanPrompt,
+		AIPrompt:        aiPrompt,
+		inputVariables:  append([]string(nil), inputVariables...),
+	}, nil
+}
+
+// FormatMessages renders each example as one human message followed by one AI
+// message, flattened in order. This aligns with Python _format_messages
+// (few_shot.py:393-412): examples come from the fixed list or from the
+// example selector (which receives the render values, few_shot.py:71-89), and
+// each example is formatted by the example prompt templates. An example
+// missing a key required by the templates is an error — Python raises
+// KeyError there ({k: e[k] for k in example_prompt.input_variables},
+// few_shot.py:398-400). Empty examples render an empty message list.
+func (t FewShotChatMessagePromptTemplate) FormatMessages(values map[string]any) ([]messages.Message, error) {
+	examples := t.Examples
+	if t.ExampleSelector != nil {
+		selected, err := t.ExampleSelector.SelectExamples(values)
+		if err != nil {
+			return nil, err
+		}
+		examples = selected
+	}
+	out := []messages.Message{}
+	for _, example := range examples {
+		humanText, err := t.HumanPrompt.Format(example)
+		if err != nil {
+			return nil, fmt.Errorf("format few-shot example human message: %w", err)
+		}
+		aiText, err := t.AIPrompt.Format(example)
+		if err != nil {
+			return nil, fmt.Errorf("format few-shot example ai message: %w", err)
+		}
+		out = append(out, messages.Human(humanText), messages.AI(aiText))
+	}
+	return out, nil
+}
+
+// InputVariables returns the variables required by this template: the
+// declared variables forwarded to the example selector in selector mode, and
+// none with fixed examples (Python input_variables defaults to [],
+// few_shot.py:361-365).
+func (t FewShotChatMessagePromptTemplate) InputVariables() []string {
+	return append([]string(nil), t.inputVariables...)
 }
 
 // DictPromptTemplate recursively formats string leaves in a dictionary.

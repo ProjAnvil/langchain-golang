@@ -76,6 +76,18 @@ func (p PromptTemplate) InputVariables() []string {
 }
 
 // Partial returns a copy of the prompt with additional partial variables.
+//
+// Python semantics (verified against langchain_core 1.4.9, libs/core
+// langchain_core/prompts/base.py:289-303):
+//   - partialed variables are removed from the required input set
+//     (base.py:296-298 `set(self.input_variables).difference(kwargs)`),
+//   - new partial values are merged over existing partials
+//     (base.py:301 `{**self.partial_variables, **kwargs}`),
+//   - unknown keys are NOT rejected: base.py performs no validation that
+//     partial keys appear in the template, and rendering still succeeds
+//     (verified at runtime: `prompt.partial(unknown='x')` stores the key and
+//     leaves input variables unchanged). Python raises KeyError only for
+//     variables still missing at render time (see Format).
 func (p PromptTemplate) Partial(values map[string]any) (PromptTemplate, error) {
 	partials := cloneMapAny(p.partials)
 	if partials == nil {
@@ -106,7 +118,16 @@ func (p PromptTemplate) Validate(expected []string) error {
 }
 
 func (p PromptTemplate) mergePartialAndUserVariables(values map[string]any) map[string]any {
-	merged := cloneMapAny(p.partials)
+	return mergePartialAndUserValues(p.partials, values)
+}
+
+// mergePartialAndUserValues merges partial variables (evaluating callable
+// ones) with call-time values. Call-time values override partial values,
+// matching Python base.py:305-312 `_merge_partial_and_user_variables`:
+// `{**partial_kwargs, **kwargs}` with callables resolved first
+// (base.py:307 `v if not callable(v) else v()`).
+func mergePartialAndUserValues(partials map[string]any, values map[string]any) map[string]any {
+	merged := cloneMapAny(partials)
 	if merged == nil {
 		merged = map[string]any{}
 	}
@@ -401,6 +422,7 @@ func (p MessagesPlaceholder) FormatMessages(values map[string]any) ([]messages.M
 type ChatPromptTemplate struct {
 	Messages []ChatMessageTemplate
 	Parts    []ChatPromptPart
+	partials map[string]any
 }
 
 // NewChatPromptTemplate creates a chat prompt template.
@@ -421,8 +443,87 @@ func NewChatPromptTemplateFromParts(parts ...ChatPromptPart) ChatPromptTemplate 
 	return ChatPromptTemplate{Parts: append([]ChatPromptPart(nil), parts...)}
 }
 
+// Partial returns a copy of the chat prompt template with some input
+// variables already filled in.
+//
+// Semantics verified against langchain_core 1.4.9 (chat.py:1230-1261 and
+// base.py:289-312):
+//   - partialed variables are removed from the required input set
+//     (base.py:296-298), so InputVariables no longer lists them;
+//   - new partial values are merged over existing partials, so a later
+//     Partial overrides an earlier partial value for the same key
+//     (base.py:301);
+//   - at render time call values override partial values
+//     (base.py:305-312 `{**partial_kwargs, **kwargs}`), and callable partials
+//     are evaluated then (base.py:307);
+//   - unknown keys are NOT rejected (chat.py:1230-1261 performs no such
+//     validation; verified at runtime that partial(zzz='x') succeeds). A
+//     variable still missing at render time raises KeyError in Python and an
+//     error here.
+func (p ChatPromptTemplate) Partial(values map[string]any) ChatPromptTemplate {
+	partials := cloneMapAny(p.partials)
+	if partials == nil {
+		partials = map[string]any{}
+	}
+	for key, value := range values {
+		partials[key] = value
+	}
+	out := p
+	out.partials = partials
+	return out
+}
+
+// InputVariables returns the variables required by the message templates
+// after applying partial variables, mirroring Python chat.py:1036-1103
+// (validate_input_variables): the union over all message templates minus
+// partial variables. Required placeholders contribute their variable name;
+// optional placeholders are excluded because they default to an empty message
+// list (chat.py:1073-1078).
+func (p ChatPromptTemplate) InputVariables() []string {
+	seen := map[string]bool{}
+	collect := func(variables []string) {
+		for _, variable := range variables {
+			seen[variable] = true
+		}
+	}
+	if len(p.Parts) == 0 {
+		for _, messageTemplate := range p.Messages {
+			collect(messageTemplate.Prompt.InputVariables())
+		}
+	} else {
+		for _, part := range p.Parts {
+			switch typed := part.(type) {
+			case ChatMessageTemplate:
+				collect(typed.Prompt.InputVariables())
+			case MessagesPlaceholder:
+				if !typed.Optional {
+					seen[typed.VariableName] = true
+				}
+			case RichChatMessageTemplate:
+				for _, contentPart := range typed.Parts {
+					collect(contentPart.InputVariables())
+				}
+			default:
+				if provider, ok := part.(interface{ InputVariables() []string }); ok {
+					collect(provider.InputVariables())
+				}
+			}
+		}
+	}
+	for key := range p.partials {
+		delete(seen, key)
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // FormatMessages renders all messages in order.
 func (p ChatPromptTemplate) FormatMessages(values map[string]any) ([]messages.Message, error) {
+	values = mergePartialAndUserValues(p.partials, values)
 	if len(p.Parts) == 0 {
 		out := make([]messages.Message, len(p.Messages))
 		for i, messageTemplate := range p.Messages {

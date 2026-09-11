@@ -615,3 +615,179 @@ func TestChatPromptTemplatePartsError(t *testing.T) {
 		t.Fatal("expected format prompt error")
 	}
 }
+
+func TestChatPromptTemplatePartialPrefill(t *testing.T) {
+	// Mirrors Python test_chat.py:814 test_chat_message_partial.
+	system, err := NewChatMessageTemplate(
+		messages.RoleSystem, "system", "You are an AI assistant named {{.name}}.")
+	if err != nil {
+		t.Fatalf("new system template: %v", err)
+	}
+	human, err := NewChatMessageTemplate(messages.RoleHuman, "human", "{{.input}}")
+	if err != nil {
+		t.Fatalf("new human template: %v", err)
+	}
+	prompt := NewChatPromptTemplate(system, human)
+
+	// Rendering the original without `name` fails. Python raises KeyError here
+	// (test_chat.py:824); Go reports an error from the template engine.
+	if _, err := prompt.FormatMessages(map[string]any{"input": "hello"}); err == nil {
+		t.Fatal("expected missing variable error without partial")
+	}
+
+	partial := prompt.Partial(map[string]any{"name": "R2D2"})
+	got, err := partial.FormatMessages(map[string]any{"input": "hello"})
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("messages: %#v", got)
+	}
+	if got[0].Role != messages.RoleSystem || got[0].Content != "You are an AI assistant named R2D2." {
+		t.Fatalf("system message: %+v", got[0])
+	}
+	if got[1].Role != messages.RoleHuman || got[1].Content != "hello" {
+		t.Fatalf("human message: %+v", got[1])
+	}
+
+	// The original template is unaffected (Partial returns a copy).
+	if _, err := prompt.FormatMessages(map[string]any{"input": "hello"}); err == nil {
+		t.Fatal("expected original template to still require name")
+	}
+}
+
+func TestChatPromptTemplatePartialCallValuesOverridePartials(t *testing.T) {
+	// Python base.py:305-312 _merge_partial_and_user_variables returns
+	// {**partial_kwargs, **kwargs}, so values passed at render time override
+	// partial values (verified against langchain_core 1.4.9).
+	system, err := NewChatMessageTemplate(
+		messages.RoleSystem, "system", "You are {{.name}}.")
+	if err != nil {
+		t.Fatalf("new system template: %v", err)
+	}
+	prompt := NewChatPromptTemplate(system)
+	partial := prompt.Partial(map[string]any{"name": "R2D2"})
+
+	got, err := partial.FormatMessages(map[string]any{"name": "C3PO"})
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if got[0].Content != "You are C3PO." {
+		t.Fatalf("call value should override partial: %q", got[0].Content)
+	}
+}
+
+func TestChatPromptTemplatePartialMergesAndRemovesInputVariables(t *testing.T) {
+	// Python base.py:296-301: partialed variables are removed from the
+	// required input set and later partial values override earlier ones.
+	system, err := NewChatMessageTemplate(
+		messages.RoleSystem, "system", "You are {{.name}} and {{.style}}.")
+	if err != nil {
+		t.Fatalf("new system template: %v", err)
+	}
+	prompt := NewChatPromptTemplate(system)
+	if got := prompt.InputVariables(); len(got) != 2 || got[0] != "name" || got[1] != "style" {
+		t.Fatalf("input variables before partial: %#v", got)
+	}
+
+	partial := prompt.Partial(map[string]any{"name": "R2D2"}).Partial(map[string]any{"name": "HAL"})
+	if got := partial.InputVariables(); len(got) != 1 || got[0] != "style" {
+		t.Fatalf("input variables after partial: %#v", got)
+	}
+	got, err := partial.FormatMessages(map[string]any{"style": "concise"})
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if got[0].Content != "You are HAL and concise." {
+		t.Fatalf("later partial should win: %q", got[0].Content)
+	}
+}
+
+func TestChatPromptTemplatePartialCallable(t *testing.T) {
+	// Python partials may be callables evaluated at render time
+	// (base.py:307: v if not callable(v) else v()).
+	human, err := NewChatMessageTemplate(messages.RoleHuman, "human", "Now {{.timestamp}}")
+	if err != nil {
+		t.Fatalf("new human template: %v", err)
+	}
+	prompt := NewChatPromptTemplate(human).Partial(map[string]any{
+		"timestamp": func() any { return "t1" },
+	})
+	got, err := prompt.FormatMessages(nil)
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if got[0].Content != "Now t1" {
+		t.Fatalf("callable partial: %q", got[0].Content)
+	}
+}
+
+func TestChatPromptTemplatePartialUnknownVariableAccepted(t *testing.T) {
+	// Verified against langchain_core 1.4.9: partial accepts keys that are not
+	// template variables (base.py:289-303 performs no such validation). The
+	// unknown key is stored but unused, and rendering still works. Python only
+	// raises KeyError for variables missing at render time.
+	system, err := NewChatMessageTemplate(messages.RoleSystem, "system", "Be {{.style}}.")
+	if err != nil {
+		t.Fatalf("new system template: %v", err)
+	}
+	prompt := NewChatPromptTemplate(system).Partial(map[string]any{"unknown": "x"})
+	if got := prompt.InputVariables(); len(got) != 1 || got[0] != "style" {
+		t.Fatalf("input variables: %#v", got)
+	}
+	got, err := prompt.FormatMessages(map[string]any{"style": "concise"})
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if got[0].Content != "Be concise." {
+		t.Fatalf("message: %q", got[0].Content)
+	}
+}
+
+func TestChatPromptTemplateInputVariables(t *testing.T) {
+	// Mirrors Python chat.py validate_input_variables (chat.py:1036-1103):
+	// input variables are the union over all message templates minus partial
+	// variables; required placeholders contribute their variable name while
+	// optional placeholders are excluded (they default to an empty list).
+	system, err := NewChatMessageTemplate(messages.RoleSystem, "system", "Be {{.style}}.")
+	if err != nil {
+		t.Fatalf("new system template: %v", err)
+	}
+	human, err := NewChatMessageTemplate(messages.RoleHuman, "human", "{{.question}}")
+	if err != nil {
+		t.Fatalf("new human template: %v", err)
+	}
+	prompt := NewChatPromptTemplateFromParts(
+		system,
+		NewMessagesPlaceholder("history", false, 0),
+		NewMessagesPlaceholder("chatter", true, 0),
+		human,
+	)
+	got := prompt.InputVariables()
+	if len(got) != 3 || got[0] != "history" || got[1] != "question" || got[2] != "style" {
+		t.Fatalf("input variables: %#v", got)
+	}
+
+	partial := prompt.Partial(map[string]any{"style": "concise"})
+	got = partial.InputVariables()
+	if len(got) != 2 || got[0] != "history" || got[1] != "question" {
+		t.Fatalf("input variables after partial: %#v", got)
+	}
+}
+
+func TestChatPromptTemplateMessagesOnlyPartial(t *testing.T) {
+	// Partials apply on the Messages-only construction path too.
+	message, err := NewChatMessageTemplate(messages.RoleHuman, "human", "Hi {{.name}}")
+	if err != nil {
+		t.Fatalf("new chat message template: %v", err)
+	}
+	prompt := ChatPromptTemplate{Messages: []ChatMessageTemplate{message}}
+	partial := prompt.Partial(map[string]any{"name": "Ada"})
+	got, err := partial.FormatMessages(nil)
+	if err != nil {
+		t.Fatalf("format messages: %v", err)
+	}
+	if len(got) != 1 || got[0].Content != "Hi Ada" {
+		t.Fatalf("messages: %#v", got)
+	}
+}
