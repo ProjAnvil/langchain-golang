@@ -25,7 +25,10 @@ func (m ChatModel) createResponseStream(
 	input []messages.Message,
 	cfg runnables.Config,
 ) (*responseStream, error) {
-	requestPayload := m.buildRequest(input)
+	requestPayload, err := m.buildRequest(input)
+	if err != nil {
+		return nil, err
+	}
 	requestPayload.Stream = true
 
 	body, err := json.Marshal(requestPayload)
@@ -399,8 +402,23 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
+		// Surface response.completed's usage as a final usage-only chunk
+		// (Python's _stream_responses yields the same tail chunk). Streams
+		// without usage data (usage omitted or all-zero) yield nothing extra.
+		var usageChunk *messages.Message
+		if output.UsageMetadata != (messages.UsageMetadata{}) {
+			chunk := messages.AI("")
+			chunk.UsageMetadata = output.UsageMetadata
+			if err := emitStream(ctx, s.cfg, chunk); err != nil {
+				return messages.Message{}, false, err
+			}
+			usageChunk = &chunk
+		}
 		if err := emit(ctx, s.cfg, callbacks.EventChatModelEnd, nil, output, nil); err != nil {
 			return messages.Message{}, false, err
+		}
+		if usageChunk != nil {
+			return *usageChunk, true, nil
 		}
 		return messages.Message{}, false, nil
 	case "error", "response.failed":

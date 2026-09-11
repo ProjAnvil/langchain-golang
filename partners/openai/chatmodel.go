@@ -190,10 +190,12 @@ func (m ChatModel) WithChatCompletions() ChatModel {
 	return next
 }
 
-// WithReasoningEffort returns a copy of the model that sends reasoning_effort
-// (low|medium|high) on Chat Completions requests, steering how hard reasoning
-// models (OpenAI o-series / gpt-5 family) think before answering. Non-reasoning
-// models and gateways that don't know the field ignore it.
+// WithReasoningEffort returns a copy of the model that requests a reasoning
+// effort (low|medium|high), steering how hard reasoning models (OpenAI o-series
+// / gpt-5 family) think before answering. Chat Completions requests carry it
+// as the reasoning_effort scalar; Responses requests carry it as
+// reasoning: {"effort": ...} (base.py). Non-reasoning models and gateways that
+// don't know the field ignore it.
 func (m ChatModel) WithReasoningEffort(effort string) ChatModel {
 	next := m
 	next.reasoningEffort = effort
@@ -259,7 +261,12 @@ func (m ChatModel) InvokeStructured(
 	return m.WithStructuredOutput(name, sch, true).Invoke(ctx, input)
 }
 
-// Capabilities returns the adapter capability declaration.
+// Capabilities returns the adapter capability declaration. Every flag is
+// exercised by both API paths (Responses and Chat Completions) in Invoke and
+// Stream alike: image/url/audio inputs serialize through the shared request
+// builders, usage metadata is extracted on invoke and on the final stream
+// chunks (stream_options.include_usage / response.completed), and streaming
+// is fully implemented for both APIs.
 func (m ChatModel) Capabilities() language.ChatModelCapabilities {
 	return language.ChatModelCapabilities{
 		ToolCalling:      true,
@@ -268,7 +275,9 @@ func (m ChatModel) Capabilities() language.ChatModelCapabilities {
 		JSONMode:         true,
 		ImageInputs:      true,
 		ImageURLs:        true,
+		AudioInputs:      true,
 		UsageMetadata:    true,
+		Streaming:        true,
 	}
 }
 
@@ -286,7 +295,11 @@ func (m ChatModel) createResponse(
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.config.Timeout)
 	defer cancel()
-	resp, err := postJSON[responsePayload](ctx, m.config, "/responses", m.buildRequest(input))
+	request, err := m.buildRequest(input)
+	if err != nil {
+		return responsePayload{}, err
+	}
+	resp, err := postJSON[responsePayload](ctx, m.config, "/responses", request)
 	if err != nil {
 		return responsePayload{}, err
 	}
@@ -301,7 +314,7 @@ func (m ChatModel) createResponse(
 	return resp, nil
 }
 
-func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
+func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error) {
 	payload := requestPayload{
 		Model: m.config.Model,
 		Input: make([]inputItem, 0, len(input)),
@@ -312,6 +325,9 @@ func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
 	}
 	if m.config.MaxTokens != nil {
 		payload.MaxOutputTokens = m.config.MaxTokens
+	}
+	if m.reasoningEffort != "" {
+		payload.Reasoning = &reasoningConfig{Effort: m.reasoningEffort}
 	}
 	if m.structuredOutput != nil {
 		payload.Text = &textConfig{
@@ -337,6 +353,20 @@ func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
 				instructions = append(instructions, message.Content)
 			}
 		case messages.RoleHuman:
+			// Structured content blocks (text/image/audio) become Responses
+			// input content parts; plain text stays a bare string so payloads
+			// do not grow a parts array for text-only conversations.
+			if len(message.ContentBlocks) > 0 {
+				parts, err := responsesContentParts(message.ContentBlocks)
+				if err != nil {
+					return requestPayload{}, err
+				}
+				payload.Input = append(payload.Input, inputItem{
+					Role:    "user",
+					Content: parts,
+				})
+				continue
+			}
 			payload.Input = append(payload.Input, inputItem{
 				Role:    "user",
 				Content: message.Content,
@@ -407,24 +437,35 @@ func (m ChatModel) buildRequest(input []messages.Message) requestPayload {
 	if len(payload.Tools) == 0 {
 		payload.Tools = nil
 	}
-	return payload
+	return payload, nil
 }
 
 type requestPayload struct {
-	Model           string      `json:"model"`
-	Input           []inputItem `json:"input"`
-	Instructions    string      `json:"instructions,omitempty"`
-	Temperature     *float64    `json:"temperature,omitempty"`
-	MaxOutputTokens *int        `json:"max_output_tokens,omitempty"`
-	Tools           []toolSpec  `json:"tools,omitempty"`
-	ToolChoice      any         `json:"tool_choice,omitempty"`
-	Text            *textConfig `json:"text,omitempty"`
-	Stream          bool        `json:"stream,omitempty"`
+	Model           string           `json:"model"`
+	Input           []inputItem      `json:"input"`
+	Instructions    string           `json:"instructions,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	MaxOutputTokens *int             `json:"max_output_tokens,omitempty"`
+	Tools           []toolSpec       `json:"tools,omitempty"`
+	ToolChoice      any              `json:"tool_choice,omitempty"`
+	Text            *textConfig      `json:"text,omitempty"`
+	Stream          bool             `json:"stream,omitempty"`
+	Reasoning       *reasoningConfig `json:"reasoning,omitempty"`
+}
+
+// reasoningConfig carries the Responses API reasoning controls. Effort maps
+// from WithReasoningEffort (base.py emits {"reasoning": {"effort": ...}} on
+// the Responses path, unlike the Chat Completions reasoning_effort scalar).
+type reasoningConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type inputItem struct {
+	// Content is a bare string for plain messages or a []any of structured
+	// input content parts (input_text/input_image/input_audio) for
+	// multimodal human messages.
 	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Content any    `json:"content,omitempty"`
 	Type    string `json:"type,omitempty"`
 	ID      string `json:"id,omitempty"`
 	CallID  string `json:"call_id,omitempty"`
@@ -561,23 +602,31 @@ func (r responsePayload) toMessage() messages.Message {
 		"model":          r.Model,
 		"model_provider": "openai",
 	}
-	message.UsageMetadata = messages.UsageMetadata{
-		InputTokens:  r.Usage.InputTokens,
-		OutputTokens: r.Usage.OutputTokens,
-		TotalTokens:  r.Usage.TotalTokens,
+	message.UsageMetadata = r.Usage.toUsageMetadata()
+	return message
+}
+
+// toUsageMetadata converts a Responses-shaped usage payload (also produced by
+// normalizing Chat Completions usage) into the core UsageMetadata, including
+// cached-input and reasoning-output details when the payload carries them.
+func (u usagePayload) toUsageMetadata() messages.UsageMetadata {
+	md := messages.UsageMetadata{
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		TotalTokens:  u.TotalTokens,
 	}
-	if details := r.Usage.InputTokensDetails; details != nil {
-		message.UsageMetadata.InputTokenDetails = &messages.InputTokenDetails{
+	if details := u.InputTokensDetails; details != nil {
+		md.InputTokenDetails = &messages.InputTokenDetails{
 			CacheReadInputTokens:     details.CachedTokens,
 			CacheCreationInputTokens: details.CacheCreationTokens,
 		}
 	}
-	if details := r.Usage.OutputTokensDetails; details != nil && details.ReasoningTokens > 0 {
-		message.UsageMetadata.OutputTokenDetails = &messages.OutputTokenDetails{
+	if details := u.OutputTokensDetails; details != nil && details.ReasoningTokens > 0 {
+		md.OutputTokenDetails = &messages.OutputTokenDetails{
 			ReasoningOutputTokens: details.ReasoningTokens,
 		}
 	}
-	return message
+	return md
 }
 
 func emit(

@@ -562,19 +562,24 @@ func TestChatModelStreamEventNameFallbackAndCompletedOutput(t *testing.T) {
 	if !ok || chunk.Content != "hi" {
 		t.Fatalf("delta chunk: ok=%v chunk=%+v", ok, chunk)
 	}
-	_, ok, err = stream.Next(context.Background())
+	// response.completed carries usage, so a final usage-only chunk must be
+	// yielded (Python's _stream_responses tail chunk) before the stream ends.
+	usageChunk, ok, err := stream.Next(context.Background())
 	if err != nil {
 		t.Fatalf("next completed: %v", err)
 	}
-	if ok {
-		t.Fatal("completed event should not return a stream chunk")
+	if !ok || usageChunk.Content != "" || usageChunk.UsageMetadata.TotalTokens != 2 {
+		t.Fatalf("usage chunk: ok=%v chunk=%+v", ok, usageChunk)
+	}
+	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+		t.Fatalf("expected stream end after usage chunk, ok=%v err=%v", ok, err)
 	}
 
 	events := filterEvents(recorder.Events(), callbacks.EventChatModelStart, callbacks.EventChatModelStream, callbacks.EventChatModelEnd)
-	if len(events) != 3 {
-		t.Fatalf("events: got %d want 3", len(events))
+	if len(events) != 4 {
+		t.Fatalf("events: got %d want 4", len(events))
 	}
-	end := events[2]
+	end := events[3]
 	if end.Kind != callbacks.EventChatModelEnd {
 		t.Fatalf("end event: %+v", end)
 	}

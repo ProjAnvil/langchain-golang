@@ -107,7 +107,11 @@ func (m AzureChatModel) WithStreamChunkTimeout(d time.Duration) AzureChatModel {
 }
 
 func (m AzureChatModel) Invoke(ctx context.Context, input []messages.Message, opts ...runnables.Option) (messages.Message, error) {
-	resp, err := azurePost[chatCompletionsResponse](m.az, ctx, m.chat.config, "/chat/completions", m.chat.buildChatCompletionsRequest(input))
+	request, err := m.chat.buildChatCompletionsRequest(input)
+	if err != nil {
+		return messages.Message{}, err
+	}
+	resp, err := azurePost[chatCompletionsResponse](m.az, ctx, m.chat.config, "/chat/completions", request)
 	if err != nil {
 		return messages.Message{}, err
 	}
@@ -146,8 +150,13 @@ func (m AzureChatModel) LLMType() string { return "azure-openai-chat" }
 // createStream mirrors ChatModel.createChatCompletionsStream but targets the
 // Azure endpoint with the Azure auth headers.
 func (m AzureChatModel) createStream(ctx context.Context, input []messages.Message, cfg runnables.Config) (*chatCompletionsStream, error) {
-	requestPayload := m.chat.buildChatCompletionsRequest(input)
+	requestPayload, err := m.chat.buildChatCompletionsRequest(input)
+	if err != nil {
+		return nil, err
+	}
 	requestPayload.Stream = true
+	// Same streaming-usage opt-in as ChatModel.createChatCompletionsStream.
+	requestPayload.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	body, err := json.Marshal(requestPayload)
 	if err != nil {
 		return nil, err

@@ -51,9 +51,13 @@ func (m CodexChatModel) Invoke(ctx context.Context, input []messages.Message, op
 
 	cfg := m.chat.config
 	cfg.BaseURL = m.baseURL
+	request, err := m.chat.buildChatCompletionsRequest(input)
+	if err != nil {
+		return messages.Message{}, err
+	}
 	resp, err := httpclient.PostJSON[chatCompletionsResponse](
 		ctx, providerName, cfg, "",
-		m.chat.buildChatCompletionsRequest(input),
+		request,
 		func(req *http.Request) {
 			req.Header.Set("Content-Type", "application/json")
 			if accessToken != "" {

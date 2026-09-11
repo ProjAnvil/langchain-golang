@@ -27,8 +27,15 @@ func (m ChatModel) createChatCompletionsStream(
 	input []messages.Message,
 	cfg runnables.Config,
 ) (*chatCompletionsStream, error) {
-	requestPayload := m.buildChatCompletionsRequest(input)
+	requestPayload, err := m.buildChatCompletionsRequest(input)
+	if err != nil {
+		return nil, err
+	}
 	requestPayload.Stream = true
+	// Opt into streaming usage accounting (Python's stream_usage default):
+	// the API then appends a final choices-less chunk carrying usage, which
+	// next() turns into a usage-only message chunk.
+	requestPayload.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 
 	body, err := json.Marshal(requestPayload)
 	if err != nil {
@@ -152,6 +159,17 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 			return messages.Message{}, false, fmt.Errorf("decode openai chat completions stream event: %w", err)
 		}
 		if len(event.Choices) == 0 {
+			// The final usage-only chunk (sent because we request
+			// stream_options.include_usage) yields an empty-content chunk
+			// carrying UsageMetadata, mirroring Python's _stream.
+			if usage := event.Usage; usage != nil && !usage.isZero() {
+				chunk := messages.AI("")
+				chunk.UsageMetadata = usage.toUsagePayload().toUsageMetadata()
+				if err := emitStream(ctx, s.cfg, chunk); err != nil {
+					return messages.Message{}, false, err
+				}
+				return chunk, true, nil
+			}
 			continue
 		}
 		delta := event.Choices[0].Delta
@@ -225,6 +243,9 @@ func (s *chatCompletionsStream) finalToolCallChunk() (messages.Message, bool) {
 
 type chatCompletionsStreamEvent struct {
 	Choices []chatCompletionsStreamChoice `json:"choices"`
+	// Usage is set on the final choices-less chunk when the request opted in
+	// via stream_options.include_usage.
+	Usage *chatUsage `json:"usage"`
 }
 
 type chatCompletionsStreamChoice struct {
