@@ -37,7 +37,10 @@
 //     the next superstep. Checkpoints are retained after a run completes, so
 //     the state inspection APIs (GetState/GetStateHistory/UpdateState, see
 //     snapshot.go) and time travel (Options.CheckpointID) work on any
-//     recorded position.
+//     recorded position. The write-flush cadence (sync/async/exit) is chosen
+//     at Compile time via WithDurability and can be overridden per run
+//     (Options.WithRunDurability). Subgraph tasks checkpoint under their own
+//     <parentNS>/<node>:<taskID> namespace (see StateGraph.AddSubgraph).
 //   - Concurrent execution only happens *within* a superstep (multiple nodes
 //     active at once via Send or multi-destination edges); node functions
 //     must treat the state map they receive as read-only and communicate
@@ -463,21 +466,31 @@ func WithDefaultRetryPolicy(p *RetryPolicy) CompileOption {
 
 // Durability selects when the executor flushes checkpoint writes, mirroring
 // Python's langgraph.types.Durability (types.py:87).
+//
+// Python resolves durability at RUN time (invoke/stream take a durability
+// argument defaulting to "async"); this port resolves it at COMPILE time via
+// WithDurability, defaulting to sync (the pre-existing Go behavior), with an
+// equivalent per-run override available via Options.Durability /
+// Options.WithRunDurability. A per-run value propagates into subgraph runs,
+// mirroring Python's CONFIG_KEY_DURABILITY propagation (main.py:2862-2864).
 type Durability string
 
 const (
 	// DurabilitySync persists changes synchronously before the next step
-	// starts (the default).
+	// starts (the Go default).
 	DurabilitySync Durability = "sync"
 	// DurabilityAsync persists changes while the next step executes
-	// (background goroutine, flushed before return).
+	// (background goroutine, flushed before return). This is Python's
+	// runtime default.
 	DurabilityAsync Durability = "async"
 	// DurabilityExit persists changes only when the graph exits
 	// (deferred flush at end of invoke).
 	DurabilityExit Durability = "exit"
 )
 
-// WithDurability sets the checkpoint write-flush mode (see Durability).
+// WithDurability sets the checkpoint write-flush mode (see Durability). The
+// compiled value is the default for every run; a single run overrides it via
+// Options.WithRunDurability.
 func WithDurability(d Durability) CompileOption {
 	return func(o *compileOptions) { o.durability = d }
 }
@@ -773,11 +786,68 @@ type Options struct {
 	// global executor).
 	MaxConcurrency int
 
+	// Durability overrides the compiled WithDurability mode for this single
+	// run, mirroring Python's invoke/stream durability argument (Python
+	// resolves durability at run time, defaulting to "async"; Go keeps the
+	// compile-time value as the default — sync unless WithDurability says
+	// otherwise — so leaving this empty changes nothing). The override
+	// propagates into subgraph runs, mirroring Python's
+	// CONFIG_KEY_DURABILITY propagation (main.py:2862-2864). See
+	// Options.WithRunDurability.
+	Durability Durability
+
 	// checkpointNS namespaces the run's checkpoints within the thread. It is
 	// set only internally, by the StateGraph.AddSubgraph node wrapper, to run
-	// a child graph under <parentNS>/<name> (see joinCheckpointNS); callers
-	// invoking a graph directly always use the root namespace.
+	// a child graph under <parentNS>/<name>:<taskID> (see
+	// taskCheckpointNS); callers invoking a graph directly always use the
+	// root namespace.
 	checkpointNS string
+
+	// pinNS names the namespace the pinned checkpoint (CheckpointID) is
+	// loaded FROM when it differs from checkpointNS. Set only internally by
+	// the AddSubgraph wrapper for legacy-namespace resume compatibility: a
+	// pre-per-task-namespacing checkpoint records Metadata.Parents under the
+	// node-only namespace, so the pinned child checkpoint must be read from
+	// that namespace while the run itself writes into its per-task
+	// namespace. Empty means load from checkpointNS.
+	pinNS string
+}
+
+// WithRunDurability returns a copy of o with the per-run durability override
+// set (see Options.Durability). It mirrors Python's invoke/stream durability
+// argument, overriding the compiled WithDurability value for this one run and
+// propagating into subgraph runs:
+//
+//	opts := graph.Options{ThreadID: "t"}.WithRunDurability(graph.DurabilityExit)
+//	cg.InvokeWithOptions(ctx, input, opts)
+//
+// The zero Options keeps the compiled default; the Go default remains sync
+// (unlike Python, whose runtime default is "async").
+func (o Options) WithRunDurability(d Durability) Options {
+	o.Durability = d
+	return o
+}
+
+// effectiveDurability resolves the durability mode for one run: a per-run
+// Options.Durability override wins over the compiled value. The empty string
+// is the "use the compiled value" sentinel.
+func (g *CompiledGraph) effectiveDurability(run Durability) Durability {
+	if run != "" {
+		return run
+	}
+	return g.durability
+}
+
+// validateDurability rejects unknown per-run durability values: an invalid
+// mode would silently disable checkpoint persistence (every sink branch
+// no-ops), so it must fail loudly instead.
+func validateDurability(d Durability) error {
+	switch d {
+	case "", DurabilitySync, DurabilityAsync, DurabilityExit:
+		return nil
+	default:
+		return fmt.Errorf("graph: unknown durability %q (want %q, %q, or %q)", d, DurabilitySync, DurabilityAsync, DurabilityExit)
+	}
 }
 
 // Result is returned by Invoke, mirroring the value/interrupt split of
@@ -799,6 +869,26 @@ type task struct {
 	node string
 	arg  map[string]any // nil means "use the shared graph state"
 }
+
+// plannedID returns the task's deterministic planned identity: the resumed
+// planned ID when the task came from a checkpoint's Next, else the TaskID
+// recomputed against the planning checkpoint (the run loop's current
+// checkpoint position) and the superstep the task runs in — the same formula
+// saveCheckpoint stamps into Next and the commit path uses to key pending
+// writes, so all three agree on one ID per task.
+func (t task) plannedID(planning checkpoint.Config, step int) string {
+	if t.id != "" {
+		return t.id
+	}
+	return TaskID(planning.CheckpointID, step, t.node, t.arg)
+}
+
+// plannedTaskIDKey is the context key under which the run loop publishes the
+// dispatched task's planned ID (task.plannedID), so the AddSubgraph node
+// wrapper can namespace the child's checkpoints per task
+// (<parentNS>/<node>:<taskID>, mirroring Python's task_checkpoint_ns,
+// pregel/_algo.py:624).
+type plannedTaskIDKey struct{}
 
 // Invoke runs the graph from its entry point with input as the initial
 // state, mirroring Python's `graph.invoke(input)`.
@@ -880,6 +970,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		runCtx = ContextWithEventSink(ctx, sink)
 	}
 
+	// Per-run durability override (Python's invoke/stream durability
+	// argument): an unknown value must fail loudly rather than silently
+	// disabling persistence.
+	if err := validateDurability(opts.Durability); err != nil {
+		return Result{}, err
+	}
+
 	checkpointing := g.checkpointer != nil && opts.ThreadID != ""
 	// parentSC links a subgraph run back to the checkpointing parent that
 	// dispatched it (published via the context by the parent's run): this
@@ -904,7 +1001,14 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	var tup *checkpoint.Tuple
 	if checkpointing {
 		var err error
-		tup, err = g.checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: opts.CheckpointID})
+		// The pinned checkpoint is loaded from pinNS when set (legacy
+		// subgraph-namespace resume compatibility, see Options.pinNS);
+		// everything this run WRITES goes to opts.checkpointNS.
+		loadNS := opts.checkpointNS
+		if opts.pinNS != "" {
+			loadNS = opts.pinNS
+		}
+		tup, err = g.checkpointer.GetTuple(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: loadNS, CheckpointID: opts.CheckpointID})
 		if err != nil {
 			return Result{}, fmt.Errorf("graph: loading checkpoint for thread %q: %w", opts.ThreadID, err)
 		}
@@ -973,12 +1077,15 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	})
 
 	// cpSink dispatches checkpoint/per-task writes according to the
-	// configured Durability mode (sync/async/exit). In sync mode it is a thin
+	// effective Durability mode (sync/async/exit). In sync mode it is a thin
 	// wrapper around the saver. In async mode it uses a background goroutine.
-	// In exit mode it accumulates writes and flushes at exit.
+	// In exit mode it accumulates writes and flushes at exit. The mode is
+	// the per-run override when Options.Durability is set (Python's
+	// invoke/stream durability argument), else the compiled WithDurability
+	// value.
 	var cpSink *checkpointSink
 	if checkpointing {
-		cpSink = newCheckpointSink(g.checkpointer, g.durability, runCtx, tup)
+		cpSink = newCheckpointSink(g.checkpointer, g.effectiveDurability(opts.Durability), runCtx, tup)
 		defer func() {
 			cpSink.setFlushContext(ctx, opts, rs, *currentCfg, checkpoint.Metadata{Source: "loop", Step: rs.step})
 			// Surface flush errors via the named return. Only assign when the
@@ -1269,7 +1376,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			if sink != nil {
 				sink.EmitRawEvent(RawEvent{Kind: RawNodeStart, Node: t.node})
 			}
-			update, cmd, interrupted, consumed, err := g.runTask(em.nodeContext(runCtx, t.node, rs.step+1), t, state, resumeValues[t.id])
+			// Publish the task's planned ID on the task context (per-task
+			// subgraph checkpoint namespacing; see plannedTaskIDKey).
+			taskCtx := context.WithValue(em.nodeContext(runCtx, t.node, rs.step+1),
+				plannedTaskIDKey{}, t.plannedID(*currentCfg, rs.step+1))
+			update, cmd, interrupted, consumed, err := g.runTask(taskCtx, t, state, resumeValues[t.id])
 			if sink != nil {
 				// Always emit node_end so start/end pairs are balanced per
 				// invocation, even on the error/interrupt paths. The pair

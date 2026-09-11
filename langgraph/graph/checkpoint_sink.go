@@ -15,6 +15,10 @@ import (
 // that Python spreads across PregelLoop._put_checkpoint / put_writes /
 // _suppress_interrupt (_loop.py).
 //
+// The mode passed to newCheckpointSink is the EFFECTIVE mode for the run: the
+// per-run Options.Durability override when set (Python's invoke/stream
+// durability argument), else the compiled WithDurability value.
+//
 // Sync mode: direct saver calls (no goroutine).
 // Async mode: a single sequential worker goroutine processes requests in FIFO
 // order from a buffered channel. Per-request panic recovery ensures the worker

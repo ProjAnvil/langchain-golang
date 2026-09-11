@@ -3,6 +3,8 @@ package graph
 import (
 	"context"
 	"errors"
+	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -224,8 +226,9 @@ func TestSubgraphChildCommandReachesTopGraph(t *testing.T) {
 
 // TestSubgraphCheckpointsNamespaced verifies that when the parent graph has a
 // checkpointer and ThreadID, child (and grandchild) runs checkpoint into the
-// same thread under CheckpointNS = <parentNS>/<name> ("sub", "sub/grand"
-// here), while the parent's own checkpoints stay in the root namespace.
+// same thread under per-task namespaces rooted at <node>:<taskID> ("sub:<tid>"
+// and "sub:<tid>/grand:<tid>" here; see taskCheckpointNS), while the parent's
+// own checkpoints stay in the root namespace.
 func TestSubgraphCheckpointsNamespaced(t *testing.T) {
 	ctx := context.Background()
 
@@ -258,7 +261,29 @@ func TestSubgraphCheckpointsNamespaced(t *testing.T) {
 		t.Fatalf("grand_ran = %v, want true", res.Values["grand_ran"])
 	}
 
-	for _, ns := range []string{"", "sub", "sub/grand"} {
+	childNS := rootChildNamespaces(t, saver, "t1")
+	if len(childNS) != 1 || !strings.HasPrefix(childNS[0], "sub:") {
+		t.Fatalf("child namespaces = %v, want exactly one sub:<taskID> namespace", childNS)
+	}
+	// The grandchild namespace nests under the child's: discover it from the
+	// child's own Parents record.
+	childTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: childNS[0]}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(ns=%q) error = %v", childNS[0], err)
+	}
+	grandNS := ""
+	for _, tup := range childTups {
+		for ns := range tup.Metadata.Parents {
+			if ns != "" {
+				grandNS = ns
+			}
+		}
+	}
+	if !strings.HasPrefix(grandNS, childNS[0]+"/grand:") {
+		t.Fatalf("grandchild namespace %q, want <childNS>/grand:<taskID>", grandNS)
+	}
+
+	for _, ns := range []string{"", childNS[0], grandNS} {
 		tups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: ns}, checkpoint.ListOptions{})
 		if err != nil {
 			t.Fatalf("List(ns=%q) error = %v", ns, err)
@@ -356,12 +381,15 @@ func TestTopLevelParentCommandDescriptiveError(t *testing.T) {
 }
 
 // TestSubgraphParentsPinTimeTravel verifies the Metadata.Parents wiring
-// between a checkpointing parent and its subgraph: child checkpoints name the
-// parent's position when the child ran (Parents[""]), parent checkpoints saved
-// after the subgraph ran name the child's position (Parents["sub"]), and
-// time-traveling the parent to such a checkpoint (Options.CheckpointID with
-// fresh input) re-enters the child pinned to that recorded child checkpoint
-// instead of the namespace's latest.
+// between a checkpointing parent and its subgraph under per-task namespacing:
+// child checkpoints name the parent's position when the child ran
+// (Parents[""]), parent checkpoints saved after the subgraph ran name the
+// child's per-task namespace and position, and time-traveling the parent to
+// such a checkpoint (Options.CheckpointID with fresh input) re-enters the
+// child in a FRESH per-task namespace (the new task's ID differs from the
+// recorded one — Python parity: fresh-input re-runs mint new task IDs, so the
+// recorded pin does not apply), with the child state flowing through the
+// parent checkpoint it resumes from.
 func TestSubgraphParentsPinTimeTravel(t *testing.T) {
 	ctx := context.Background()
 
@@ -394,15 +422,21 @@ func TestSubgraphParentsPinTimeTravel(t *testing.T) {
 	}
 
 	// Turn 1: a full run. Parent checkpoints (newest first): after post,
-	// after sub, after pre, input; child checkpoints: loop, input.
+	// after sub, after pre, input; child checkpoints under its per-task ns:
+	// loop, input.
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"value": 1}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("turn 1 Invoke() error = %v", err)
 	}
 	parentT1 := list("")
-	childT1 := list("sub")
 	if len(parentT1) != 4 {
 		t.Fatalf("parent checkpoints after turn 1 = %d, want 4", len(parentT1))
 	}
+	childNSs := rootChildNamespaces(t, saver, "t1")
+	if len(childNSs) != 1 || !strings.HasPrefix(childNSs[0], "sub:") {
+		t.Fatalf("child namespaces after turn 1 = %v, want one sub:<taskID>", childNSs)
+	}
+	childNS1 := childNSs[0]
+	childT1 := list(childNS1)
 	if len(childT1) != 2 {
 		t.Fatalf("child checkpoints after turn 1 = %d, want 2", len(childT1))
 	}
@@ -418,19 +452,20 @@ func TestSubgraphParentsPinTimeTravel(t *testing.T) {
 		}
 	}
 	// Parent checkpoints saved after the subgraph ran name the child's
-	// position; the earlier ones have no Parents.
+	// position (keyed by the per-task namespace); the earlier ones have no
+	// Parents.
 	childPosT1 := childT1[0].Config.CheckpointID
 	for i, want := range []string{childPosT1, childPosT1, "", ""} {
-		got := parentT1[i].Metadata.Parents["sub"]
+		got := parentT1[i].Metadata.Parents[childNS1]
 		if got != want {
-			t.Fatalf("parent checkpoint %q (step %d) Parents[\"sub\"] = %q, want %q",
-				parentT1[i].Config.CheckpointID, parentT1[i].Metadata.Step, got, want)
+			t.Fatalf("parent checkpoint %q (step %d) Parents[%q] = %q, want %q",
+				parentT1[i].Config.CheckpointID, parentT1[i].Metadata.Step, childNS1, got, want)
 		}
 	}
 
-	// Turn 2: a new turn forks the child off its turn-1 position, advancing
-	// child_n to 2; the child namespace's latest is now past the position
-	// recorded at the end of turn 1.
+	// Turn 2: a new turn runs the subgraph task under a NEW per-task
+	// namespace (fresh task ID), starting fresh from the parent state; the
+	// child's own state flows in through the parent (child_n 1 -> 2).
 	res, err := cg.InvokeWithOptions(ctx, map[string]any{"value": 2}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("turn 2 Invoke() error = %v", err)
@@ -438,46 +473,50 @@ func TestSubgraphParentsPinTimeTravel(t *testing.T) {
 	if res.Values["child_n"] != 2 {
 		t.Fatalf("turn 2 child_n = %v, want 2", res.Values["child_n"])
 	}
-	childT2 := list("sub")
-	if len(childT2) != 4 {
-		t.Fatalf("child checkpoints after turn 2 = %d, want 4", len(childT2))
-	}
-	latestChild := childT2[0].Config.CheckpointID
-	if latestChild == childPosT1 {
-		t.Fatal("child latest checkpoint did not advance in turn 2")
+	childNSs = rootChildNamespaces(t, saver, "t1")
+	if len(childNSs) != 2 {
+		t.Fatalf("child namespaces after turn 2 = %v, want 2 (one per turn's subgraph task)", childNSs)
 	}
 
 	// Time travel: pin the parent to its end-of-turn-1 checkpoint (whose
-	// Metadata.Parents names the child's turn-1 position) with fresh input,
-	// re-entering the subgraph. The child must resume from the recorded
-	// checkpoint, NOT its namespace's latest: child_n replays 1 -> 2 and the
-	// new child checkpoints fork off the recorded position.
+	// Metadata.Parents names the turn-1 child position) with fresh input. The
+	// re-entered subgraph task mints a NEW task ID, so the recorded pin does
+	// not apply (Python parity); the child runs in a fresh namespace starting
+	// from the parent state recorded at the pinned checkpoint (child_n=1,
+	// advanced to 2).
 	endOfTurn1 := parentT1[0].Config.CheckpointID
 	res, err = cg.InvokeWithOptions(ctx, map[string]any{"value": 3}, Options{ThreadID: "t1", CheckpointID: endOfTurn1})
 	if err != nil {
 		t.Fatalf("time-travel Invoke() error = %v", err)
 	}
 	if res.Values["child_n"] != 2 {
-		t.Fatalf("time-travel child_n = %v, want 2 (re-entered child resumed from the recorded checkpoint, not latest)", res.Values["child_n"])
+		t.Fatalf("time-travel child_n = %v, want 2 (child state restored via the pinned parent checkpoint)", res.Values["child_n"])
 	}
-	childTT := list("sub")
-	if len(childTT) != 6 {
-		t.Fatalf("child checkpoints after time travel = %d, want 6", len(childTT))
+	childNSs = rootChildNamespaces(t, saver, "t1")
+	if len(childNSs) != 3 {
+		t.Fatalf("child namespaces after time travel = %v, want 3 (a fresh namespace per re-entry)", childNSs)
 	}
-	forkBase := childTT[1].ParentConfig // the forked turn's input checkpoint
-	if forkBase == nil || forkBase.CheckpointID != childPosT1 {
-		t.Fatalf("re-entered child forked off %v, want recorded checkpoint %q (not latest %q)",
-			forkBase, childPosT1, latestChild)
+	// The fresh namespace's input checkpoint has NO parent within the child
+	// namespace (fresh start), unlike the legacy shared-namespace fork.
+	freshTups := list(childNSs[len(childNSs)-1])
+	if len(freshTups) != 2 {
+		t.Fatalf("fresh child namespace holds %d checkpoints, want 2", len(freshTups))
+	}
+	if in := freshTups[len(freshTups)-1]; in.Metadata.Source != "input" || in.ParentConfig != nil {
+		t.Fatalf("fresh namespace input checkpoint = %+v, want a parentless fresh input", in)
 	}
 }
 
-// TestSubgraphPinOncePerRun pins the documented pin-once-per-run behavior (see
-// StateGraph.AddSubgraph): when a parent run starts pinned to a checkpoint
-// whose Metadata.Parents names the subgraph's namespace, EVERY execution of
-// the subgraph node within that run re-pins to the same recorded child
-// checkpoint — the second execution forks from the pin, not from the first
-// execution's in-run result.
-func TestSubgraphPinOncePerRun(t *testing.T) {
+// TestSubgraphRepeatedExecutionDistinctNamespaces locks in the per-task
+// namespacing for a subgraph node executed MULTIPLE times within one run
+// (the loop case; see StateGraph.AddSubgraph): every execution is a distinct
+// task with its own namespace and its own fresh input+loop history, so the
+// executions never fork off one another's checkpoint history. The child's
+// state still flows between executions through the PARENT state (child_n
+// advances), because the child's final values merge back as the node's
+// update. This replaces the old shared-namespace behavior where the second
+// execution forked a new turn off the first's child checkpoint.
+func TestSubgraphRepeatedExecutionDistinctNamespaces(t *testing.T) {
 	ctx := context.Background()
 
 	var childRuns int32
@@ -520,40 +559,48 @@ func TestSubgraphPinOncePerRun(t *testing.T) {
 		return tups
 	}
 
-	// Turn 1 (unpinned): sub executes twice; the second execution forks off
-	// the first's in-run result (the namespace's latest), so child_n advances
-	// 1 -> 2.
+	// Turn 1: sub executes twice; child_n advances 1 -> 2 through the parent
+	// state between the two executions.
 	res, err := cg.InvokeWithOptions(ctx, map[string]any{"value": 1}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("turn 1 Invoke() error = %v", err)
 	}
 	if res.Values["child_n"] != 2 {
-		t.Fatalf("turn 1 child_n = %v, want 2 (second execution forked off the first's result)", res.Values["child_n"])
+		t.Fatalf("turn 1 child_n = %v, want 2", res.Values["child_n"])
 	}
-	parentT1 := list("")
-	childT1 := list("sub")
-	if len(childT1) != 4 {
-		t.Fatalf("child checkpoints after turn 1 = %d, want 4 (2 executions x input+loop)", len(childT1))
+	// Two distinct per-task namespaces, each with its own fresh 2-checkpoint
+	// history (input + loop).
+	childNSs := rootChildNamespaces(t, saver, "t1")
+	if len(childNSs) != 2 {
+		t.Fatalf("child namespaces after turn 1 = %v, want 2 (one per execution)", childNSs)
 	}
-	// Without a pin, the second execution's input checkpoint forks off the
-	// first execution's loop checkpoint (newest-first: [loop1, input0, loop0, input-1]).
-	if childT1[1].Metadata.Source != "input" || childT1[1].ParentConfig == nil ||
-		childT1[1].ParentConfig.CheckpointID != childT1[2].Config.CheckpointID {
-		t.Fatalf("unpinned second execution forked off %+v, want the first execution's loop checkpoint %q",
-			childT1[1].ParentConfig, childT1[2].Config.CheckpointID)
+	for _, ns := range childNSs {
+		if !strings.HasPrefix(ns, "sub:") {
+			t.Fatalf("child namespace %q does not carry the sub:<taskID> per-task format", ns)
+		}
+		tups := list(ns)
+		if len(tups) != 2 {
+			t.Fatalf("ns %q holds %d checkpoints, want 2 (a fresh input + loop history)", ns, len(tups))
+		}
+		// A fresh history: the input checkpoint has no parent (it does not
+		// fork off the other execution's result).
+		if in := tups[len(tups)-1]; in.Metadata.Source != "input" || in.ParentConfig != nil {
+			t.Fatalf("ns %q input checkpoint = %+v, want a parentless fresh input", ns, in)
+		}
 	}
-	endOfTurn1 := parentT1[0]
-	recorded := endOfTurn1.Metadata.Parents["sub"]
-	if recorded == "" || recorded != childT1[0].Config.CheckpointID {
-		t.Fatalf("end-of-turn-1 Parents[\"sub\"] = %q, want the child's turn-1 position %q",
-			recorded, childT1[0].Config.CheckpointID)
+	// The end-of-run parent checkpoint names both executions' positions.
+	endOfTurn1 := list("")[0]
+	for _, ns := range childNSs {
+		if endOfTurn1.Metadata.Parents[ns] == "" {
+			t.Fatalf("end-of-turn-1 Parents does not name child namespace %q", ns)
+		}
 	}
 
-	// Turn 2: pin the parent to its end-of-turn-1 checkpoint and reset the
-	// loop counter via the input, so sub executes twice again. BOTH executions
-	// re-pin to the recorded child checkpoint: each forks its input checkpoint
-	// off `recorded` (with the recorded step, S6), the second NOT off the
-	// first execution's in-run result.
+	// Turn 2 (pinned to end-of-turn-1, loop reset): both executions again run
+	// under fresh per-task namespaces — the recorded turn-1 positions name
+	// turn-1 task IDs, which this turn's tasks do not reuse, so no pin
+	// applies (Python parity; the legacy-format pin is covered by
+	// TestSubgraphResumeLegacyNamespacePin).
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"visits": 0},
 		Options{ThreadID: "t1", CheckpointID: endOfTurn1.Config.CheckpointID}); err != nil {
 		t.Fatalf("turn 2 Invoke() error = %v", err)
@@ -561,23 +608,9 @@ func TestSubgraphPinOncePerRun(t *testing.T) {
 	if childRuns != 4 {
 		t.Fatalf("child entry ran %d times total, want 4 (two executions per run)", childRuns)
 	}
-	childT2 := list("sub")
-	if len(childT2) != 8 {
-		t.Fatalf("child checkpoints after turn 2 = %d, want 8", len(childT2))
-	}
-	forks := 0
-	for _, tup := range childT2 {
-		if tup.Metadata.Source == "input" && tup.ParentConfig != nil &&
-			tup.ParentConfig.CheckpointID == recorded {
-			forks++
-			if tup.Metadata.Step != childT1[0].Metadata.Step {
-				t.Fatalf("pinned execution's input checkpoint Step = %d, want %d (recorded checkpoint's step, S6)",
-					tup.Metadata.Step, childT1[0].Metadata.Step)
-			}
-		}
-	}
-	if forks != 2 {
-		t.Fatalf("%d child input checkpoints fork off the recorded checkpoint, want 2 (pin holds for the whole run)", forks)
+	childNSs = rootChildNamespaces(t, saver, "t1")
+	if len(childNSs) != 4 {
+		t.Fatalf("child namespaces after turn 2 = %v, want 4 (a fresh namespace per execution)", childNSs)
 	}
 }
 
@@ -631,6 +664,364 @@ func TestSubgraphChildRunErrorWraps(t *testing.T) {
 	_, err = cg.Invoke(context.Background(), map[string]any{})
 	if !errors.Is(err, want) || !strings.Contains(err.Error(), `subgraph "sub"`) {
 		t.Fatalf("Invoke() error = %v, want it to wrap %v naming subgraph %q", err, want, "sub")
+	}
+}
+
+// perTaskNSPattern matches one checkpoint-namespace segment of the per-task
+// subgraph format "<node>:<16-hex task id>" (see taskCheckpointNS).
+var perTaskNSPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*:[0-9a-f]{16}$`)
+
+// rootChildNamespaces returns the child checkpoint namespaces recorded in the
+// Metadata.Parents of the thread's ROOT-namespace checkpoints (union across
+// the whole history, so namespaces from earlier turns/re-entries are
+// included), skipping the empty parent-namespace entry.
+func rootChildNamespaces(t *testing.T, saver *checkpoint.MemorySaver, threadID string) []string {
+	t.Helper()
+	tups, err := saver.List(context.Background(), checkpoint.Config{ThreadID: threadID}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(root) error = %v", err)
+	}
+	if len(tups) == 0 {
+		t.Fatal("no root checkpoints")
+	}
+	union := map[string]bool{}
+	for _, tup := range tups {
+		for ns := range tup.Metadata.Parents {
+			if ns != "" {
+				union[ns] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(union))
+	for ns := range union {
+		out = append(out, ns)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestSubgraphCheckpointsPerTaskNamespace verifies the Python-parity namespace
+// format: a subgraph task checkpoints under <parentNS>/<node>:<taskID> (one
+// namespace per subgraph TASK, not per node), and a grandchild under
+// <childNS>/<grandnode>:<taskID>. The root namespace stays clean.
+func TestSubgraphCheckpointsPerTaskNamespace(t *testing.T) {
+	ctx := context.Background()
+
+	grand := compileChild(t, "grand_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"grand_ran": true}, nil
+	})
+	child := NewStateGraph()
+	child.AddSubgraph("grand", grand)
+	child.AddEdge(types.START, "grand")
+	child.AddEdge("grand", types.END)
+	childCG, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	saver := checkpoint.NewMemorySaver()
+	top := NewStateGraph()
+	top.AddSubgraph("sub", childCG)
+	top.AddEdge(types.START, "sub")
+	top.AddEdge("sub", types.END)
+	topCG, err := top.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("top Compile() error = %v", err)
+	}
+	res, err := topCG.InvokeWithOptions(ctx, map[string]any{"value": 1}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if res.Values["grand_ran"] != true {
+		t.Fatalf("grand_ran = %v, want true", res.Values["grand_ran"])
+	}
+
+	// The child namespace is "sub:<taskID>" and holds its own input + loop
+	// checkpoints.
+	childNSs := rootChildNamespaces(t, saver, "t1")
+	if len(childNSs) != 1 {
+		t.Fatalf("root Parents recorded %d child namespaces (%v), want exactly 1", len(childNSs), childNSs)
+	}
+	childNS := childNSs[0]
+	seg, ok := strings.CutPrefix(childNS, "sub:")
+	if !ok || !perTaskNSPattern.MatchString(childNS) {
+		t.Fatalf("child namespace %q does not match per-task format sub:<taskID>", childNS)
+	}
+	if len(seg) != 16 {
+		t.Fatalf("task ID suffix %q is %d chars, want 16 hex", seg, len(seg))
+	}
+	childTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: childNS}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(ns=%q) error = %v", childNS, err)
+	}
+	if len(childTups) != 2 {
+		t.Fatalf("List(ns=%q) returned %d checkpoints, want 2 (input + loop)", childNS, len(childTups))
+	}
+
+	// The grandchild namespace nests under the child's per-task namespace:
+	// "<childNS>/grand:<taskID>".
+	grandNSs := make([]string, 0, 1)
+	for ns := range childTups[0].Metadata.Parents {
+		if ns != "" {
+			grandNSs = append(grandNSs, ns)
+		}
+	}
+	if len(grandNSs) != 1 {
+		t.Fatalf("child Parents recorded %d grandchild namespaces (%v), want 1", len(grandNSs), grandNSs)
+	}
+	grandNS := grandNSs[0]
+	if !strings.HasPrefix(grandNS, childNS+"/grand:") || !perTaskNSPattern.MatchString(strings.TrimPrefix(grandNS, childNS+"/")) {
+		t.Fatalf("grandchild namespace %q does not match <childNS>/grand:<taskID>", grandNS)
+	}
+	grandTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: grandNS}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(ns=%q) error = %v", grandNS, err)
+	}
+	if len(grandTups) != 2 {
+		t.Fatalf("List(ns=%q) returned %d checkpoints, want 2 (input + loop)", grandNS, len(grandTups))
+	}
+
+	// The old node-only namespace holds nothing.
+	if tups, _ := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: "sub"}, checkpoint.ListOptions{}); len(tups) != 0 {
+		t.Fatalf("legacy node-only ns \"sub\" holds %d checkpoints, want 0", len(tups))
+	}
+	// The root namespace holds only parent checkpoints.
+	rootTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(root) error = %v", err)
+	}
+	for _, tup := range rootTups {
+		if tup.Config.CheckpointNS != "" {
+			t.Fatalf("checkpoint %q stored under ns %q, want root", tup.Checkpoint.ID, tup.Config.CheckpointNS)
+		}
+	}
+}
+
+// TestSubgraphParallelSendDistinctNamespaces reproduces the namespace-collision
+// bug of node-only namespacing: two Sends fan into the SAME subgraph node in
+// one superstep, which must produce two independent per-task namespaces (Python
+// gives every subgraph task its own ns). Under node-only namespacing both
+// tasks share one ns, interleaving their checkpoint histories.
+func TestSubgraphParallelSendDistinctNamespaces(t *testing.T) {
+	ctx := context.Background()
+
+	// collectReducer appends each update to a []any so two Send tasks can
+	// both write the same key in one superstep. The first write seeds a
+	// BinaryOperator channel as the raw scalar (no op applied), so the
+	// reducer must tolerate a non-slice existing value.
+	collect := func(existing, update any) (any, error) {
+		base, _ := existing.([]any)
+		if base == nil && existing != nil {
+			base = []any{existing}
+		}
+		return append(base, update), nil
+	}
+
+	// The child records the Send argument it received in its own state.
+	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
+		item, _ := state["item"].(string)
+		return map[string]any{"items": item}, nil
+	})
+
+	saver := checkpoint.NewMemorySaver()
+	top := NewStateGraph()
+	// Both "item" (the Send args echoed back in each child's final values)
+	// and "items" (each child's output) receive one write per task in the
+	// fan-in superstep, so both need collecting reducers.
+	top.AddReducer("item", collect)
+	top.AddReducer("items", collect)
+	top.AddSubgraph("fan", child)
+	top.SetConditionalEntryPoint(func(_ runtime.Runtime, _ map[string]any) ([]any, error) {
+		return []any{
+			&types.Send{Node: "fan", Arg: map[string]any{"item": "a"}},
+			&types.Send{Node: "fan", Arg: map[string]any{"item": "b"}},
+		}, nil
+	})
+	top.AddEdge("fan", types.END)
+	cg, err := top.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	items, _ := res.Values["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("items = %v, want both Send args merged", res.Values["items"])
+	}
+	got := map[string]bool{}
+	for _, it := range items {
+		s, _ := it.(string)
+		got[s] = true
+	}
+	if !got["a"] || !got["b"] {
+		t.Fatalf("items = %v, want a and b", items)
+	}
+
+	// Two distinct per-task namespaces, each with its own complete history
+	// (input + loop checkpoint). The parent's final checkpoint names both.
+	childNSs := rootChildNamespaces(t, saver, "t1")
+	if len(childNSs) != 2 {
+		t.Fatalf("root Parents recorded %d child namespaces (%v), want 2 (one per Send task)", len(childNSs), childNSs)
+	}
+	seen := map[string]bool{}
+	perNSItem := map[string]string{}
+	for _, ns := range childNSs {
+		if !strings.HasPrefix(ns, "fan:") || !perTaskNSPattern.MatchString(ns) {
+			t.Fatalf("child namespace %q does not carry the fan:<taskID> per-task format", ns)
+		}
+		if seen[ns] {
+			t.Fatalf("duplicate child namespace %q", ns)
+		}
+		seen[ns] = true
+		tups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: ns}, checkpoint.ListOptions{})
+		if err != nil {
+			t.Fatalf("List(ns=%q) error = %v", ns, err)
+		}
+		if len(tups) != 2 {
+			t.Fatalf("ns %q holds %d checkpoints, want 2 (its own input + loop history)", ns, len(tups))
+		}
+		// Every checkpoint in this namespace carries the SAME item value (the
+		// Send arg this task ran with), proving the two runs did not share
+		// channel state through one namespace.
+		for _, tup := range tups {
+			item, _ := tup.Checkpoint.ChannelValues["item"].(string)
+			if item == "" {
+				t.Fatalf("ns %q checkpoint %q missing the item channel value", ns, tup.Checkpoint.ID)
+			}
+			if prev := perNSItem[ns]; prev != "" && prev != item {
+				t.Fatalf("ns %q mixes item values %q and %q (shared channel state)", ns, prev, item)
+			}
+			perNSItem[ns] = item
+		}
+	}
+	// The two namespaces ran with the two different Send args.
+	gotArgs := map[string]bool{}
+	for _, item := range perNSItem {
+		gotArgs[item] = true
+	}
+	if !gotArgs["a"] || !gotArgs["b"] || len(gotArgs) != 2 {
+		t.Fatalf("per-namespace item values = %v, want both a and b across the two namespaces", perNSItem)
+	}
+	// The node-only namespace must not exist as a shared bucket.
+	if tups, _ := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: "fan"}, checkpoint.ListOptions{}); len(tups) != 0 {
+		t.Fatalf("legacy node-only ns \"fan\" holds %d checkpoints, want 0 (no shared namespace)", len(tups))
+	}
+}
+
+// TestSubgraphResumeLegacyNamespacePin verifies read-side compatibility with
+// checkpoints written before per-task namespacing: Metadata.Parents keys of
+// the node-only form ("<parentNS>/<name>") still pin the re-entered subgraph
+// to the recorded child position (loaded from the legacy namespace), while
+// the resumed run WRITES its new checkpoints under the new per-task
+// namespace. Legacy data is not migrated.
+func TestSubgraphResumeLegacyNamespacePin(t *testing.T) {
+	ctx := context.Background()
+
+	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
+		n, _ := state["child_n"].(int)
+		return map[string]any{"child_n": n + 1}, nil
+	})
+	saver := checkpoint.NewMemorySaver()
+	top := NewStateGraph()
+	top.AddSubgraph("sub", child)
+	top.AddEdge(types.START, "sub")
+	top.AddEdge("sub", types.END)
+	cg, err := top.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	// Hand-craft a legacy thread exactly as pre-per-task code wrote it: the
+	// child history lives in the node-only namespace "sub", and the parent's
+	// end checkpoint records Parents["sub"] = the child's final position.
+	// The zero-prefixed IDs sort below every NewID value (13-digit UnixMilli
+	// prefix), so the memory saver's ID-ordered List still ranks the NEW
+	// run's checkpoints newest.
+	legacyChildInput := checkpoint.Checkpoint{
+		V:               1,
+		ID:              "0000000000000-000000-0000000000000001",
+		ChannelValues:   map[string]any{"child_n": 1},
+		ChannelVersions: map[string]int64{"child_n": 1},
+	}
+	if _, err := saver.Put(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: "sub"}, legacyChildInput, checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	legacyChildLoop := checkpoint.Checkpoint{
+		V:               1,
+		ID:              "0000000000000-000000-0000000000000002",
+		ChannelValues:   map[string]any{"child_n": 2},
+		ChannelVersions: map[string]int64{"child_n": 2},
+	}
+	if _, err := saver.Put(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: "sub", CheckpointID: "0000000000000-000000-0000000000000001"}, legacyChildLoop, checkpoint.Metadata{Source: "loop", Step: 0}, nil); err != nil {
+		t.Fatal(err)
+	}
+	legacyParent := checkpoint.Checkpoint{
+		V:               1,
+		ID:              "0000000000000-000000-0000000000000003",
+		ChannelValues:   map[string]any{"child_n": 2},
+		ChannelVersions: map[string]int64{"child_n": 2},
+	}
+	if _, err := saver.Put(ctx, checkpoint.Config{ThreadID: "t1"}, legacyParent,
+		checkpoint.Metadata{Source: "loop", Step: 1, Parents: map[string]string{"sub": "0000000000000-000000-0000000000000002"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-enter the parent pinned to its legacy end checkpoint with fresh
+	// input. The subgraph task gets a NEW per-task namespace, but the legacy
+	// Parents key must still pin the child to the recorded legacy position
+	// (child state child_n=2), so the child advances 2 -> 3.
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{"child_n": 2},
+		Options{ThreadID: "t1", CheckpointID: "0000000000000-000000-0000000000000003"})
+	if err != nil {
+		t.Fatalf("time-travel Invoke() error = %v", err)
+	}
+	if got, _ := res.Values["child_n"].(int); got != 3 {
+		t.Fatalf("child_n = %v, want 3 (resumed from the pinned legacy child position 2)", res.Values["child_n"])
+	}
+
+	// The new child history lands in a per-task namespace, forked off the
+	// pinned legacy checkpoint...
+	childNSs := rootChildNamespaces(t, saver, "t1")
+	var newNS string
+	for _, ns := range childNSs {
+		if strings.HasPrefix(ns, "sub:") {
+			newNS = ns
+		}
+	}
+	if newNS == "" {
+		t.Fatalf("no per-task child namespace recorded after resume (Parents = %v)", childNSs)
+	}
+	newTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: newNS}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(ns=%q) error = %v", newNS, err)
+	}
+	if len(newTups) != 2 {
+		t.Fatalf("new ns %q holds %d checkpoints, want 2 (input + loop)", newNS, len(newTups))
+	}
+	forked := false
+	for _, tup := range newTups {
+		if tup.Metadata.Source == "input" && tup.ParentConfig != nil && tup.ParentConfig.CheckpointID == "0000000000000-000000-0000000000000002" {
+			forked = true
+		}
+	}
+	if !forked {
+		t.Fatalf("new-ns input checkpoint did not fork off the pinned legacy checkpoint legacy-c-loop")
+	}
+	// ...and the new run's final child state advanced from the legacy position.
+	if got, _ := newTups[0].Checkpoint.ChannelValues["child_n"].(int); got != 3 {
+		t.Fatalf("new ns latest child_n = %v, want 3", newTups[0].Checkpoint.ChannelValues["child_n"])
+	}
+
+	// The legacy namespace is untouched (no migration, no new writes).
+	legacyTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: "sub"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(legacy ns) error = %v", err)
+	}
+	if len(legacyTups) != 2 {
+		t.Fatalf("legacy ns holds %d checkpoints after resume, want 2 (untouched)", len(legacyTups))
 	}
 }
 

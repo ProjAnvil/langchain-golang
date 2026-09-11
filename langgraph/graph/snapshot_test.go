@@ -497,7 +497,9 @@ func TestStateAPIsRequireCheckpointer(t *testing.T) {
 // TestUpdateStateSubgraphNamespace verifies that UpdateState against a
 // subgraph-namespace checkpoint saves the update checkpoint into that same
 // namespace (not the root namespace) and carries Metadata.Parents forward
-// from the checkpoint it builds on.
+// from the checkpoint it builds on. The subgraph namespace is the per-task
+// form <node>:<taskID> (taskCheckpointNS), discovered here from the parent
+// checkpoints' Metadata.Parents records.
 func TestUpdateStateSubgraphNamespace(t *testing.T) {
 	ctx := context.Background()
 	saver := checkpoint.NewMemorySaver()
@@ -517,7 +519,24 @@ func TestUpdateStateSubgraphNamespace(t *testing.T) {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 
-	childCfg := checkpoint.Config{ThreadID: "t1", CheckpointNS: "sub"}
+	// Discover the child's per-task namespace from the parent records.
+	rootTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(root) error = %v", err)
+	}
+	childNS := ""
+	for _, tup := range rootTups {
+		for ns := range tup.Metadata.Parents {
+			if strings.HasPrefix(ns, "sub:") {
+				childNS = ns
+			}
+		}
+	}
+	if childNS == "" {
+		t.Fatal("no sub:<taskID> child namespace recorded in root Parents")
+	}
+
+	childCfg := checkpoint.Config{ThreadID: "t1", CheckpointNS: childNS}
 	childTup, err := saver.GetTuple(ctx, childCfg)
 	if err != nil || childTup == nil {
 		t.Fatalf("expected a child-namespace checkpoint, got tup=%+v err=%v", childTup, err)
@@ -534,17 +553,17 @@ func TestUpdateStateSubgraphNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateState() error = %v", err)
 	}
-	if newCfg.CheckpointNS != "sub" {
+	if newCfg.CheckpointNS != childNS {
 		t.Fatalf("UpdateState() returned Config with namespace %q, want %q (update must land in the subgraph namespace)",
-			newCfg.CheckpointNS, "sub")
+			newCfg.CheckpointNS, childNS)
 	}
 
 	snap, err := cg.GetState(ctx, newCfg)
 	if err != nil {
 		t.Fatalf("GetState() of update checkpoint error = %v", err)
 	}
-	if snap.Config.CheckpointNS != "sub" {
-		t.Fatalf("update checkpoint stored under namespace %q, want %q", snap.Config.CheckpointNS, "sub")
+	if snap.Config.CheckpointNS != childNS {
+		t.Fatalf("update checkpoint stored under namespace %q, want %q", snap.Config.CheckpointNS, childNS)
 	}
 	if snap.Metadata.Source != "update" {
 		t.Fatalf("update checkpoint Metadata.Source = %q, want update", snap.Metadata.Source)
