@@ -22,6 +22,21 @@ type chatCompletionsRequest struct {
 	Temperature    *float64       `json:"temperature,omitempty"`
 	MaxTokens      *int           `json:"max_tokens,omitempty"`
 	Stream         bool           `json:"stream,omitempty"`
+	// Sampling knobs mirroring Python BaseChatOpenAI's optional fields,
+	// forwarded by _default_params' exclude_if_none map
+	// (chat_models/base.py:1340-1350): presence_penalty (:753),
+	// frequency_penalty (:756), seed (:759), logprobs (:762),
+	// top_logprobs (:765), logit_bias (:772), n (:778), top_p (:781),
+	// stop (:963).
+	TopP             *float64    `json:"top_p,omitempty"`
+	Stop             []string    `json:"stop,omitempty"`
+	Seed             *int        `json:"seed,omitempty"`
+	PresencePenalty  *float64    `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64    `json:"frequency_penalty,omitempty"`
+	LogitBias        map[int]int `json:"logit_bias,omitempty"`
+	N                *int        `json:"n,omitempty"`
+	Logprobs         *bool       `json:"logprobs,omitempty"`
+	TopLogprobs      *int        `json:"top_logprobs,omitempty"`
 	// StreamOptions opts into streaming usage accounting
 	// ({"include_usage": true}); the API then appends a final choices-less
 	// chunk carrying the usage object.
@@ -175,6 +190,15 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) (chatCo
 	if m.config.MaxTokens != nil {
 		payload.MaxTokens = m.config.MaxTokens
 	}
+	payload.TopP = m.topP
+	payload.Stop = m.stop
+	payload.Seed = m.seed
+	payload.PresencePenalty = m.presencePenalty
+	payload.FrequencyPenalty = m.frequencyPenalty
+	payload.LogitBias = m.logitBias
+	payload.N = m.n
+	payload.Logprobs = m.logprobs
+	payload.TopLogprobs = m.topLogprobs
 	if m.reasoningEffort != "" {
 		payload.ReasoningEffort = m.reasoningEffort
 	}

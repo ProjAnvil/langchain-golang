@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/projanvil/langchain-golang/core/embeddings"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
@@ -35,46 +34,39 @@ func NewAzureEmbeddingsWithADToken(endpoint, deployment, apiVersion, adToken str
 	return AzureEmbeddings{embed: NewEmbeddings(opts...), az: az}
 }
 
-// EmbedDocuments embeds all documents, batching inputs into chunks of
-// chunkSize texts per Azure API request (mirrors Embeddings.EmbedDocuments).
+// EmbedDocuments embeds all documents through the same context-length-safe
+// pipeline as Embeddings.EmbedDocuments (Python's AzureOpenAIEmbeddings
+// inherits embed_documents from OpenAIEmbeddings, so over-budget texts are
+// tokenized, chunked, and merged here too); only the Azure endpoint and
+// auth headers differ.
 func (e AzureEmbeddings) EmbedDocuments(ctx context.Context, texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
-	chunkSize := e.embed.chunkSize()
-	vectors := make([][]float64, 0, len(texts))
-	for start := 0; start < len(texts); start += chunkSize {
-		end := start + chunkSize
-		if end > len(texts) {
-			end = len(texts)
-		}
-		batch := texts[start:end]
-		payload := embeddingRequestPayload{Model: e.embed.config.Model, Input: batch}
-		if dimensions, ok := e.embed.config.Extra[embeddingDimensionsKey].(int); ok && dimensions > 0 {
-			payload.Dimensions = &dimensions
-		}
-		if format, ok := e.embed.config.Extra[embeddingEncodingFormatKey].(string); ok && format != "" {
-			payload.EncodingFormat = format
-		}
-
-		response, err := azurePost[embeddingResponsePayload](e.az, ctx, e.embed.config, "/embeddings", payload)
-		if err != nil {
-			return nil, err
-		}
-		sort.SliceStable(response.Data, func(i int, j int) bool {
-			return response.Data[i].Index < response.Data[j].Index
-		})
-		if len(response.Data) != len(batch) {
-			return nil, fmt.Errorf("embedding count mismatch: got %d want %d", len(response.Data), len(batch))
-		}
-		for _, item := range response.Data {
-			if item.Index < 0 || item.Index >= len(batch) {
-				return nil, fmt.Errorf("embedding index out of range: %d", item.Index)
+	post := func(ctx context.Context, payload any) (embeddingResponsePayload, error) {
+		switch typed := payload.(type) {
+		case embeddingRequestPayload:
+			if dimensions, ok := e.embed.config.Extra[embeddingDimensionsKey].(int); ok && dimensions > 0 {
+				typed.Dimensions = &dimensions
+				payload = typed
 			}
-			vectors = append(vectors, append([]float64(nil), item.Embedding...))
+			if format, ok := e.embed.config.Extra[embeddingEncodingFormatKey].(string); ok && format != "" {
+				typed.EncodingFormat = format
+				payload = typed
+			}
+		case embeddingTokenRequestPayload:
+			if dimensions, ok := e.embed.config.Extra[embeddingDimensionsKey].(int); ok && dimensions > 0 {
+				typed.Dimensions = &dimensions
+				payload = typed
+			}
+			if format, ok := e.embed.config.Extra[embeddingEncodingFormatKey].(string); ok && format != "" {
+				typed.EncodingFormat = format
+				payload = typed
+			}
 		}
+		return azurePost[embeddingResponsePayload](e.az, ctx, e.embed.config, "/embeddings", payload)
 	}
-	return vectors, nil
+	return e.embed.lenSafeEmbedDocuments(ctx, texts, post)
 }
 
 // EmbedQuery embeds a single query.

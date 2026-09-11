@@ -33,6 +33,19 @@ type ChatModel struct {
 	toolChoice         *ToolChoice
 	responseFormat     map[string]any
 	streamChunkTimeout time.Duration
+	// Sampling knobs mirroring Python BaseChatOpenAI's optional fields
+	// (chat_models/base.py:753-781, 963). All are sent on the Chat
+	// Completions API; only top_p also applies to the Responses API
+	// (stop is dropped there, chat_models/base.py:4284-4286).
+	topP             *float64
+	stop             []string
+	seed             *int
+	presencePenalty  *float64
+	frequencyPenalty *float64
+	logitBias        map[int]int
+	n                *int
+	logprobs         *bool
+	topLogprobs      *int
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -211,6 +224,94 @@ func (m ChatModel) WithToolChoice(choice ToolChoice) ChatModel {
 	return next
 }
 
+// WithTopP returns a copy of the model that samples from the top-p
+// probability mass, mirroring Python ChatOpenAI(top_p=...)
+// (chat_models/base.py:781). Sent on both the Responses and Chat Completions
+// APIs (chat_models/base.py:1343).
+func (m ChatModel) WithTopP(topP float64) ChatModel {
+	next := m
+	next.topP = &topP
+	return next
+}
+
+// WithStop returns a copy of the model with default stop sequences, mirroring
+// Python ChatOpenAI(stop=...) (chat_models/base.py:963). Sent on the Chat
+// Completions API only: Python drops stop from Responses payloads because the
+// Responses API has no stop parameter (chat_models/base.py:4284-4286).
+func (m ChatModel) WithStop(stop ...string) ChatModel {
+	next := m
+	next.stop = append([]string(nil), stop...)
+	return next
+}
+
+// WithSeed returns a copy of the model with a generation seed, mirroring
+// Python ChatOpenAI(seed=...) (chat_models/base.py:759). Chat Completions
+// only.
+func (m ChatModel) WithSeed(seed int) ChatModel {
+	next := m
+	next.seed = &seed
+	return next
+}
+
+// WithPresencePenalty returns a copy of the model that penalizes repeated
+// tokens, mirroring Python ChatOpenAI(presence_penalty=...)
+// (chat_models/base.py:753). Chat Completions only.
+func (m ChatModel) WithPresencePenalty(penalty float64) ChatModel {
+	next := m
+	next.presencePenalty = &penalty
+	return next
+}
+
+// WithFrequencyPenalty returns a copy of the model that penalizes repeated
+// tokens according to frequency, mirroring Python
+// ChatOpenAI(frequency_penalty=...) (chat_models/base.py:756). Chat
+// Completions only.
+func (m ChatModel) WithFrequencyPenalty(penalty float64) ChatModel {
+	next := m
+	next.frequencyPenalty = &penalty
+	return next
+}
+
+// WithLogitBias returns a copy of the model that biases the likelihood of
+// specific token IDs, mirroring Python ChatOpenAI(logit_bias=...)
+// (chat_models/base.py:772). Chat Completions only. JSON keys are the token
+// IDs as strings, per the OpenAI API shape.
+func (m ChatModel) WithLogitBias(bias map[int]int) ChatModel {
+	next := m
+	next.logitBias = bias
+	return next
+}
+
+// WithN returns a copy of the model that requests N chat completions per
+// prompt, mirroring Python ChatOpenAI(n=...) (chat_models/base.py:778). Chat
+// Completions only. Like the rest of this adapter, only the first choice is
+// surfaced.
+func (m ChatModel) WithN(n int) ChatModel {
+	next := m
+	next.n = &n
+	return next
+}
+
+// WithLogprobs returns a copy of the model that requests log probabilities,
+// mirroring Python ChatOpenAI(logprobs=...) (chat_models/base.py:762). Chat
+// Completions only. The returned logprobs live in the raw response, which
+// this adapter does not yet surface on the message.
+func (m ChatModel) WithLogprobs(enabled bool) ChatModel {
+	next := m
+	next.logprobs = &enabled
+	return next
+}
+
+// WithTopLogprobs returns a copy of the model that requests the K most likely
+// tokens per position, mirroring Python ChatOpenAI(top_logprobs=...)
+// (chat_models/base.py:765); logprobs must be enabled for it to take effect.
+// Chat Completions only.
+func (m ChatModel) WithTopLogprobs(k int) ChatModel {
+	next := m
+	next.topLogprobs = &k
+	return next
+}
+
 // WithStreamChunkTimeout returns a copy of the model with a per-chunk
 // wall-clock timeout on streaming, mirroring Python
 // ChatOpenAI(stream_chunk_timeout=...). 0 disables; negative values are
@@ -325,6 +426,13 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	}
 	if m.config.MaxTokens != nil {
 		payload.MaxOutputTokens = m.config.MaxTokens
+	}
+	// top_p is forwarded to the Responses API (chat_models/base.py:1343).
+	// stop and the other Chat Completions sampling knobs are deliberately
+	// absent: Python drops stop before the Responses call (base.py:4284-4286)
+	// and never sets the CC-only knobs on this path.
+	if m.topP != nil {
+		payload.TopP = m.topP
 	}
 	if m.reasoningEffort != "" {
 		payload.Reasoning = &reasoningConfig{Effort: m.reasoningEffort}
@@ -446,6 +554,7 @@ type requestPayload struct {
 	Instructions    string           `json:"instructions,omitempty"`
 	Temperature     *float64         `json:"temperature,omitempty"`
 	MaxOutputTokens *int             `json:"max_output_tokens,omitempty"`
+	TopP            *float64         `json:"top_p,omitempty"`
 	Tools           []toolSpec       `json:"tools,omitempty"`
 	ToolChoice      any              `json:"tool_choice,omitempty"`
 	Text            *textConfig      `json:"text,omitempty"`
