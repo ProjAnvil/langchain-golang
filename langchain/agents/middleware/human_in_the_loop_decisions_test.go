@@ -105,15 +105,21 @@ func TestHumanInTheLoopMiddlewareDefaultDescription(t *testing.T) {
 	}
 }
 
-func TestHumanInTheLoopMiddlewareDecideRequired(t *testing.T) {
+func TestHumanInTheLoopMiddlewareNilDecideIsInterruptMode(t *testing.T) {
+	// A nil Decide no longer errors inline: it selects interrupt mode, where
+	// AfterModel is a no-op and the dedicated HITL graph node (AfterModelNode)
+	// owns the pause/resume review (see human_in_the_loop_interrupt_test.go).
 	middleware := NewHumanInTheLoopMiddleware(map[string]InterruptConfig{
 		"search": {AllowedDecisions: []DecisionType{DecisionApprove}},
 	}, nil)
-	_, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	if !middleware.HitlInterruptEnabled() {
+		t.Fatal("nil Decide must enable interrupt mode")
+	}
+	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "1", Name: "search"}),
 	}})
-	if err == nil || !strings.Contains(err.Error(), "decision function is required") {
-		t.Fatalf("expected missing decide error, got %v", err)
+	if err != nil || update != nil {
+		t.Fatalf("expected nil update in interrupt mode, got %#v %v", update, err)
 	}
 }
 

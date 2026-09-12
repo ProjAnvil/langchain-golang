@@ -123,12 +123,16 @@ import (
 // Node names used by the compiled graph, mirroring Python's "model"/"tools"
 // node names in `create_agent`. BeforeAgentNodeName/AfterAgentNodeName are
 // only added to the graph when at least one middleware implements the
-// corresponding hook (see WithAgentMiddleware).
+// corresponding hook (see WithAgentMiddleware). HITLNodeName is added when an
+// interrupt-mode HumanInTheLoopMiddleware is configured (see
+// middleware.NewInterruptHumanInTheLoopMiddleware): the review runs there,
+// after the model node's update commits, so pausing never replays the model.
 const (
 	ModelNodeName       = "model"
 	ToolsNodeName       = "tools"
 	BeforeAgentNodeName = "before_agent"
 	AfterAgentNodeName  = "after_agent"
+	HITLNodeName        = "hitl"
 )
 
 // BeforeModelHook lets middleware inspect/modify state before the model is
@@ -154,6 +158,21 @@ type BeforeModelCommandHook interface {
 // context.Context for the same reason as BeforeModelHook.
 type AfterModelHook interface {
 	AfterModel(ctx context.Context, state map[string]any) (map[string]any, error)
+}
+
+// AfterModelNodeHook is the dedicated-node form of AfterModelHook, mirroring
+// Python's per-middleware after_model graph nodes (factory.py:1569): instead
+// of running inline inside the model node (where an Interrupt would pause
+// BEFORE the model node's update commits, replaying the model call on
+// resume), it runs as the dedicated "hitl" node wired after the model node,
+// so a pause/resume only ever re-runs this hook. CreateAgent wires the node
+// for middleware that ALSO implements middleware.HitlInterrupter with
+// HitlInterruptEnabled() true (an interrupt-mode
+// HumanInTheLoopMiddleware); at most one such middleware is allowed per
+// agent. ctx is the node's runtime (langgraph Runtime implements
+// context.Context), so the hook can call graphpkg.Interrupt to pause.
+type AfterModelNodeHook interface {
+	AfterModelNode(ctx context.Context, state map[string]any) (map[string]any, error)
 }
 
 // WrapModelCallHook lets middleware intercept the model call itself,
@@ -730,6 +749,16 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		finalNode = AfterAgentNodeName
 	}
 
+	// Interrupt-mode HITL middleware get a dedicated "hitl" graph node (see
+	// AfterModelNodeHook). The count check runs unconditionally: a second
+	// interrupt-mode HITL is rejected at build time even before tool wiring
+	// decides whether the node is actually added (without tools there is
+	// nothing reviewable, and the middleware stays inert).
+	if err := validateSingleInterruptHITL(options.Middleware); err != nil {
+		return nil, err
+	}
+	hitlNodePresent := len(options.Middleware) > 0 && hasInterruptHITL(options.Middleware) && len(toolList) > 0
+
 	logger := debugLogger(options.Debug)
 
 	g := graphpkg.NewStateGraph()
@@ -779,7 +808,7 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		}
 		return model
 	}
-	g.AddNode(ModelNodeName, buildModelNode(resolveModel, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, normalizeInitialResponseFormat(options.ResponseFormat), finalNode, options.Cache, options.Name))
+	g.AddNode(ModelNodeName, buildModelNode(resolveModel, modelTools, systemPromptResolver(options), logger, options.Middleware, structuredBindings, toolStrategy, providerStrategy, normalizeInitialResponseFormat(options.ResponseFormat), finalNode, options.Cache, options.Name, hitlNodePresent))
 
 	entryNode := ModelNodeName
 	if hasHook[BeforeAgentHook](options.Middleware) {
@@ -804,7 +833,26 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 		// call targeted a return-direct tool, mirroring Python's
 		// `_make_tools_to_model_edge` (factory.py:1623-1649, 1921-1947).
 		g.AddConditionalEdges(ToolsNodeName, buildRouteAfterTools(toolsByNameFromList(toolList), finalNode))
-		g.AddConditionalEdges(ModelNodeName, buildRouteAfterModel(structuredBindings, finalNode))
+		if hitlNodePresent {
+			// model -> hitl -> (tools | model | end): with an interrupt-mode
+			// HITL middleware, the model's "tools" destinations are remapped
+			// through the dedicated hitl node (mirroring Python's per-
+			// middleware after_model nodes, factory.py:1569/:1738-1748), so the
+			// review pauses AFTER the model node's update commits and a resume
+			// re-runs only the hitl node. The hitl node itself carries the
+			// ORIGINAL routing, judging the post-decision state: revised calls
+			// continue to tools, fully-answered ones (reject/respond) loop back
+			// to the model.
+			hitlNode, err := buildHITLNode(options.Middleware, logger, finalNode)
+			if err != nil {
+				return nil, err
+			}
+			g.AddNode(HITLNodeName, hitlNode)
+			g.AddConditionalEdges(ModelNodeName, routeAfterModelWithHITL(buildRouteAfterModel(structuredBindings, finalNode), HITLNodeName))
+			g.AddConditionalEdges(HITLNodeName, buildRouteAfterModel(structuredBindings, finalNode))
+		} else {
+			g.AddConditionalEdges(ModelNodeName, buildRouteAfterModel(structuredBindings, finalNode))
+		}
 	} else if len(structuredBindings) > 0 {
 		// No client-side tools but structured-output tools are bound: loop the
 		// model back to itself until a structured response lands, mirroring
@@ -966,6 +1014,66 @@ func (a *Agent) InvokeWithStateAndVars(ctx context.Context, msgs []messages.Mess
 			slog.Int("output_messages", len(outMsgs)))
 	}
 	return result.Values, nil
+}
+
+// InvokeWithStateOptions runs the agent like InvokeWithState but with full
+// graph Options (ThreadID/CheckpointID/Resume/Graph/RecursionLimit...), and
+// surfaces pauses instead of erroring on them: a run interrupted by an
+// in-node Interrupt (e.g. an interrupt-mode HumanInTheLoopMiddleware's hitl
+// node) returns the paused state together with the pending interrupts and a
+// nil error. Resume the run with Agent.Resume (or Agent.Graph.InvokeWithOptions
+// directly for full control), passing the answer as Options.Resume — for a
+// HITL pause, a middleware.HITLResponse (or its map wire form, see
+// middleware.DecodeHITLResponse).
+//
+// Like InvokeWithState, this is a non-streaming entry point: it never emits
+// streaming events even under a streaming ancestor. Use a ThreadID together
+// with WithAgentCheckpointer for interrupts to be resumable at all.
+func (a *Agent) InvokeWithStateOptions(ctx context.Context, msgs []messages.Message, opts graphpkg.Options) (map[string]any, []types.Interrupt, error) {
+	runCtx := a.withRunTags(ctx)
+	runCtx = context.WithValue(runCtx, suppressStreamSinkCtxKey{}, true)
+	if a.debug {
+		slog.Info("agents: invoke start",
+			slog.String("agent_name", a.Name),
+			slog.Int("input_messages", len(msgs)))
+	}
+	result, err := a.Graph.InvokeWithOptions(runCtx, map[string]any{"messages": msgs}, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(result.Interrupts) > 0 {
+		return result.Values, result.Interrupts, nil
+	}
+	if a.debug {
+		outMsgs, _ := result.Values["messages"].([]messages.Message)
+		slog.Info("agents: invoke done",
+			slog.String("agent_name", a.Name),
+			slog.Int("output_messages", len(outMsgs)))
+	}
+	return result.Values, nil, nil
+}
+
+// Resume continues a previously interrupted run from its thread's latest
+// checkpoint: it is the resume half of InvokeWithStateOptions, invoking the
+// graph with a nil input (fresh input would start a new turn instead) and
+// the caller's Options. opts.Resume supplies the answer(s) to the pending
+// interrupt(s): a scalar (e.g. a middleware.HITLResponse) feeds a single
+// pending interrupt, a map addresses several by interrupt NS or ID, and a
+// nil Resume re-pauses in-node interrupts (boundary interrupts —
+// WithAgentInterruptBefore/After — resume with nil by design). A run that
+// pauses again returns its state plus the new pending interrupts and a nil
+// error. opts must carry the ThreadID the paused run used.
+func (a *Agent) Resume(ctx context.Context, opts graphpkg.Options) (map[string]any, []types.Interrupt, error) {
+	runCtx := a.withRunTags(ctx)
+	runCtx = context.WithValue(runCtx, suppressStreamSinkCtxKey{}, true)
+	result, err := a.Graph.InvokeWithOptions(runCtx, nil, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(result.Interrupts) > 0 {
+		return result.Values, result.Interrupts, nil
+	}
+	return result.Values, nil, nil
 }
 
 // withRunTags returns ctx annotated with this Agent's run-name tag, so
@@ -1385,6 +1493,133 @@ func buildAfterAgentNode(mws []any, logger *slog.Logger) graphpkg.NodeFunc {
 	}
 }
 
+// hasInterruptHITL reports whether any middleware in mws is an interrupt-mode
+// HITL: it implements both AfterModelNodeHook and middleware.HitlInterrupter
+// with HitlInterruptEnabled() true (a Decide-mode HumanInTheLoopMiddleware
+// runs inline via AfterModel and is excluded).
+func hasInterruptHITL(mws []any) bool {
+	for _, mw := range mws {
+		interrupter, ok := mw.(middleware.HitlInterrupter)
+		if !ok || !interrupter.HitlInterruptEnabled() {
+			continue
+		}
+		if _, ok := mw.(AfterModelNodeHook); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSingleInterruptHITL rejects a second interrupt-mode HITL
+// middleware: both would share the single fixed-name hitl node, and their
+// Interrupt calls would interleave into one resume queue, so the second one
+// is a build-time error (mirroring the fixed-node-name constraint rather
+// than a Python limit — Python derives one node per middleware instance).
+func validateSingleInterruptHITL(mws []any) error {
+	count := 0
+	for _, mw := range mws {
+		interrupter, ok := mw.(middleware.HitlInterrupter)
+		if !ok || !interrupter.HitlInterruptEnabled() {
+			continue
+		}
+		if _, ok := mw.(AfterModelNodeHook); ok {
+			count++
+		}
+	}
+	if count > 1 {
+		return fmt.Errorf("agents: at most one interrupt-mode human-in-the-loop middleware is supported (the dedicated %q node is shared); found %d", HITLNodeName, count)
+	}
+	return nil
+}
+
+// buildHITLNode returns the dedicated "hitl" graph node running every
+// interrupt-mode HITL middleware's AfterModelNodeHook (see the interface's
+// doc comment for why the review lives in its own node). Multiple such
+// middleware are rejected (see validateSingleInterruptHITL). Hook updates
+// merge like buildAfterAgentNode's: "messages" concatenates (add_messages
+// semantics — the revised AIMessage replaces the committed one by ID via
+// MessagesReducer), other keys last-write-wins, and update["jump_to"] routes
+// through resolveJumpTarget ("tools"/"end" bypass the node's default routing;
+// note "tools" skips the HITL review by construction, mirroring Python's
+// jump_to which addresses the tools node directly). logger, when non-nil,
+// emits a debug log at node entry.
+func buildHITLNode(mws []any, logger *slog.Logger, finalNode string) (graphpkg.NodeFunc, error) {
+	if err := validateSingleInterruptHITL(mws); err != nil {
+		return nil, err
+	}
+	return func(rt runtime.Runtime, rawState map[string]any) (any, error) {
+		if logger != nil {
+			logger.Info("agents: hitl node entry")
+		}
+		state := cloneMapState(rawState)
+		update := map[string]any{}
+		for _, mw := range mws {
+			interrupter, ok := mw.(middleware.HitlInterrupter)
+			if !ok || !interrupter.HitlInterruptEnabled() {
+				continue
+			}
+			hook, ok := mw.(AfterModelNodeHook)
+			if !ok {
+				continue
+			}
+			// rt IS the node's context (langgraph Runtime implements
+			// context.Context), so graphpkg.Interrupt inside the hook reaches
+			// the task's interrupt state.
+			hookUpdate, err := hook.AfterModelNode(rt, state)
+			if err != nil {
+				return nil, err
+			}
+			if hookUpdate == nil {
+				continue
+			}
+			if extra, ok := hookUpdate["messages"].([]messages.Message); ok {
+				delete(hookUpdate, "messages")
+				base, _ := update["messages"].([]messages.Message)
+				merged := make([]messages.Message, 0, len(base)+len(extra))
+				merged = append(merged, base...)
+				merged = append(merged, extra...)
+				update["messages"] = merged
+				if stateMsgs, ok := state["messages"].([]messages.Message); ok {
+					state["messages"] = append(append([]messages.Message(nil), stateMsgs...), extra...)
+				}
+			}
+			for k, v := range hookUpdate {
+				state[k] = v
+				update[k] = v
+			}
+		}
+		if len(update) == 0 {
+			return nil, nil
+		}
+		if jumpTo, ok := popJumpTo(update); ok {
+			return &types.Command{Update: update, Goto: graphpkg.To(resolveJumpTarget(jumpTo, finalNode))}, nil
+		}
+		return update, nil
+	}, nil
+}
+
+// routeAfterModelWithHITL wraps a model-exit ConditionalEdge so every
+// "tools" destination is remapped to the hitl node: the review runs between
+// the model node and the tools node (Python's after_model node ordering,
+// factory.py:1738-1748). Everything else passes through unchanged.
+func routeAfterModelWithHITL(inner graphpkg.ConditionalEdge, hitlNode string) graphpkg.ConditionalEdge {
+	return func(rt runtime.Runtime, state map[string]any) ([]any, error) {
+		dests, err := inner(rt, state)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]any, len(dests))
+		for i, d := range dests {
+			if name, ok := d.(string); ok && name == ToolsNodeName {
+				out[i] = hitlNode
+				continue
+			}
+			out[i] = d
+		}
+		return out, nil
+	}
+}
+
 // middlewareName returns a middleware's identity for the duplicate check,
 // mirroring Python's AgentMiddleware.name (types.py:410-417): an explicit
 // Name() when the middleware implements MiddlewareNamer, else the Go type
@@ -1450,6 +1685,12 @@ func validateMiddlewareNames(mws []any) error {
 //
 // logger, when non-nil, emits verbose debug logs (see WithAgentDebug) for node
 // entry, the model call, and structured-output detection.
+//
+// hitlNodePresent wires the AI-message ID minting: when the graph carries the
+// dedicated hitl node, every ID-less AI message this node produces gets a
+// deterministic ID (see mintAIMessageIDs), because the HITL decision revises
+// the committed AIMessage in place and MessagesReducer replaces messages by
+// ID — an ID-less revision would append a duplicate instead.
 func buildModelNode(
 	resolveModel func(rt runtime.Runtime, state map[string]any) language.ChatModel,
 	toolList []coretools.Tool,
@@ -1463,6 +1704,7 @@ func buildModelNode(
 	finalNode string,
 	cache caches.Cache,
 	agentName string,
+	hitlNodePresent bool,
 ) graphpkg.NodeFunc {
 	toolsAny := toolsToAny(toolList)
 
@@ -1735,6 +1977,10 @@ func buildModelNode(
 			}
 		}
 		newMessages := append([]messages.Message(nil), resp.Result...)
+		if hitlNodePresent {
+			promptString, _ := cacheKey(req)
+			mintAIMessageIDs(newMessages, promptString)
+		}
 		if logger != nil {
 			logger.Info("agents: model response",
 				slog.Int("new_messages", len(newMessages)))
@@ -1828,6 +2074,53 @@ func buildModelNode(
 		}
 		return update, nil
 	}
+}
+
+// mintAIMessageIDs assigns a deterministic ID to every ID-less AI message in
+// msgs, derived from the model call's prompt string and the message content
+// (sha256(promptString+content)[:8] hex). It runs only when the graph wires
+// the dedicated hitl node: the revised AIMessage a HITL decision returns
+// must replace the committed one through MessagesReducer's ID match, which
+// requires the committed message to carry an ID (models and messages.AI
+// leave ID empty). Uniqueness is per-thread by construction — the prompt
+// string includes the whole committed history, which strictly grows between
+// turns — and the model node is never replayed on a HITL resume, so a
+// re-execution cannot collide.
+func mintAIMessageIDs(msgs []messages.Message, promptString string) {
+	for i := range msgs {
+		if msgs[i].Role != messages.RoleAI || msgs[i].ID != "" {
+			continue
+		}
+		sum := sha256.Sum256([]byte(promptString + msgs[i].Content))
+		msgs[i].ID = hex.EncodeToString(sum[:])[:8]
+	}
+}
+
+// unansweredToolCalls returns the last AI message's tool calls minus those
+// already answered by a ToolMessage after it, mirroring the pending filter of
+// Python's `_make_model_to_tools_edge` (factory.py:1870-1875): Python routes
+// only pending calls into the tools node (one Send per call), so a call a
+// HITL reject/respond decision already answered artificially is never
+// re-executed even when a sibling call is still pending. Without the filter,
+// a mixed approve/reject batch would run the rejected tool a second time and
+// duplicate its ToolMessage.
+func unansweredToolCalls(msgs []messages.Message) []messages.ToolCall {
+	lastAI, toolMsgs := fetchLastAIAndToolMessages(msgs)
+	if lastAI == nil {
+		return nil
+	}
+	answered := make(map[string]bool, len(toolMsgs))
+	for _, m := range toolMsgs {
+		answered[m.ToolCallID] = true
+	}
+	pending := make([]messages.ToolCall, 0, len(lastAI.ToolCalls))
+	for _, call := range lastAI.ToolCalls {
+		if answered[call.ID] {
+			continue
+		}
+		pending = append(pending, call)
+	}
+	return pending
 }
 
 // applyModelNodeCommands applies the update-only Commands returned by
@@ -2982,7 +3275,7 @@ func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s s
 			}
 			logger.Info("agents: tools node entry", slog.Int("pending_tool_calls", pending))
 		}
-		outcomes, err := toolNode.InvokeToolCallsFull(rt, agenttools.PendingToolCalls(msgs), state)
+		outcomes, err := toolNode.InvokeToolCallsFull(rt, unansweredToolCalls(msgs), state)
 		if err != nil {
 			return nil, err
 		}
