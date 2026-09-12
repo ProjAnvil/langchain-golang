@@ -762,14 +762,24 @@ type Options struct {
 	// Resume values are matched to pending interrupts by two rules,
 	// mirroring Python:
 	//
-	//   - A map[string]any Resume addresses interrupts by ID. An interrupt
-	//     whose ID is absent from the map is NOT fed a value: its Interrupt
-	//     call re-pauses the run with the same interrupt, so partially
-	//     addressed resumes pause again with the unmatched interrupts.
+	//   - A map[string]any Resume addresses interrupts by NS first and by ID
+	//     second (see types.Interrupt.NS; interrupts persisted before NS
+	//     stamping match by ID only). An interrupt whose NS and ID are both
+	//     absent from the map is NOT fed a value: its Interrupt() call
+	//     re-pauses the run with the same interrupt, so partially addressed
+	//     resumes pause again with the unmatched interrupts.
 	//   - Any non-map (scalar) Resume value is fed to a single pending
 	//     interrupt. When the checkpoint has more than one pending
 	//     interrupt, a scalar Resume is an error — resume with an
-	//     interrupt-ID map instead.
+	//     interrupt-NS/ID map instead (or narrow the matching with Graph
+	//     below, which allows a scalar whenever exactly one pending
+	//     interrupt lies within the named namespace).
+	//
+	// Interrupts raised inside a subgraph pause the parent run carrying
+	// their full nested NS; a Resume for them is forwarded verbatim into the
+	// child run (see StateGraph.AddSubgraph), so a scalar works for a single
+	// pending subgraph interrupt at any nesting depth and a map keyed by NS
+	// dispatches per interrupting task.
 	Resume any
 
 	// Graph optionally namespaces a Resume, mirroring the graph selector of

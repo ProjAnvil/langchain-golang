@@ -44,7 +44,16 @@
 //  6. Tasks inside a StateGraph node: the Go shape is invoking an
 //     Entrypoint inside the node (e.g. add.Invoke(rt, ...) within the
 //     NodeFunc). Python's bare @task-in-node relies on Pregel config
-//     injection and has no Go equivalent.
+//     injection and has no Go equivalent. A closer analogue of Python's
+//     add_node(name, entrypoint_func) — composing the entrypoint's internal
+//     compiled graph via graph.AddSubgraph — is exercised internally (the
+//     internal graph is not exported yet): the entrypoint node bootstraps
+//     its own run dispatcher in that shape, and its interrupt/resume/task-
+//     replay cycle works under the default sync durability. The bootstrap
+//     persists task results at node exit, before async/exit-mode checkpoint
+//     flushes, so fn task replay over that composition is not guaranteed
+//     under WithDurability(async|exit) — the Entrypoint.Invoke path is
+//     unaffected (it persists after the run returned, post-flush).
 //
 //  7. Stream is fixed to updates mode, and individual task calls produce
 //     no chunks: tasks execute inside the node and are not graph tasks

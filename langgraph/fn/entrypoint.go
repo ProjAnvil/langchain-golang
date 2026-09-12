@@ -201,7 +201,9 @@ func compileEntrypoint[I, O, S any](opts EntrypointOpts, nodeFn graph.NodeFunc) 
 		AddChannel(channelStart, channels.NewEphemeral(true)).
 		AddChannel(channelEnd, channels.NewLastValue()).
 		AddChannel(channelPrevious, channels.NewLastValue()).
-		AddNodeWithPolicies(entrypointNode, nodeFn, graph.NodePolicies{Cache: opts.CachePolicy, Timeout: opts.Timeout}).
+		AddNodeWithPolicies(entrypointNode, func(rt runtime.Runtime, state map[string]any) (any, error) {
+			return runWithBootstrapDispatcher(opts, nodeFn, rt, state)
+		}, graph.NodePolicies{Cache: opts.CachePolicy, Timeout: opts.Timeout}).
 		SetEntryPoint(entrypointNode).
 		AddEdge(entrypointNode, types.END)
 	var copts []graph.CompileOption
@@ -287,6 +289,146 @@ func (e *Entrypoint[I, O, S]) persistResults(ctx context.Context, opts graph.Opt
 	if tup == nil {
 		return nil // the run committed no checkpoint (e.g. it failed pre-loop)
 	}
+	return putResults(ctx, saver, tup, results)
+}
+
+// runWithBootstrapDispatcher adapts the entrypoint node to runs that did not
+// start through Entrypoint.Invoke/Stream — today the internal graph composed
+// as a StateGraph subgraph node (graph.AddSubgraph over the entrypoint's
+// compiled graph, mirroring Python's add_node(name, entrypoint_func); the
+// composition is package-internal until the compiled graph is exposed). The
+// subgraph wrapper dispatches the child graph directly, so no fn-layer
+// prepare ever installed a run dispatcher: Task.Call would panic. When the
+// context already carries one (Entrypoint.Invoke/Stream, or an enclosing
+// entrypoint invoked from a node — the divergence-6 shape), this is a no-op
+// and the established F4 lifecycle is untouched.
+func runWithBootstrapDispatcher(opts EntrypointOpts, nodeFn graph.NodeFunc, rt runtime.Runtime, state map[string]any) (res any, err error) {
+	if dispatcherFromContext(rt) != nil {
+		return nodeFn(rt, state)
+	}
+	d := newDispatcher(opts.Cache)
+	if opts.Retry != nil {
+		r := opts.Retry.Resolved()
+		d.defaultRetry = &r
+	}
+	// The dispatcher context derives from rt (a context.Context), so the
+	// node's interrupt state and ExecutionInfo survive the override and
+	// Task.Call / graph.Interrupt both keep working through rt2.
+	dctx, cancel := context.WithCancel(contextWithDispatcher(rt, d))
+	defer func() {
+		// Same pinned teardown order as Entrypoint.Invoke (cancel -> seal ->
+		// persist). An interrupt panic unwinds through here: results recorded
+		// before the pause persist best-effort (an error must not mask the
+		// panic), then the panic continues to propagate to the graph
+		// executor's recover.
+		cancel()
+		d.seal()
+		perr := persistRunResults(rt, opts.Checkpointer, d)
+		if p := recover(); p != nil {
+			panic(p)
+		}
+		if perr != nil && err == nil {
+			err = perr
+		}
+	}()
+	loadRunReplay(rt, opts.Checkpointer, d)
+	rt2 := rt.Override(runtime.WithRuntimeCtx(dctx))
+	return nodeFn(rt2, state)
+}
+
+// loadRunReplay seeds d's replay table from the checkpoint position the
+// surrounding graph run holds at node dispatch (rt.ExecutionInfo): a resumed
+// subgraph run is pinned to its pause checkpoint, whose own pending writes
+// carry the node-level interrupt writes but NOT the fn results — the
+// interrupted node persisted those against the position it started from
+// (persistRunResults below), which is the pause checkpoint's parent — so the
+// lookup falls back one ParentConfig level. The fresh-run gates of
+// dispatcher.loadReplay are intentionally bypassed (loadReplayTuple): the
+// child's checkpoint namespace is per-task and a fresh task starts in an
+// empty namespace, so any fn writes reachable from the start position always
+// belong to this logical run's pause/resume chain.
+func loadRunReplay(rt runtime.Runtime, saver checkpoint.Saver, d *dispatcher) {
+	ei := rt.ExecutionInfo
+	if saver == nil || ei == nil || ei.ThreadID == "" {
+		return
+	}
+	tup := fetchTuple(rt, saver, checkpoint.Config{ThreadID: ei.ThreadID, CheckpointNS: ei.CheckpointNS, CheckpointID: ei.CheckpointID})
+	if tup == nil {
+		return
+	}
+	if !tupleHasFnWrites(tup) && tup.ParentConfig != nil {
+		tup = fetchTuple(rt, saver, *tup.ParentConfig)
+	}
+	if tup != nil && tupleHasFnWrites(tup) {
+		d.loadReplayTuple(tup)
+	}
+}
+
+// persistRunResults appends d's recorded task results to the LATEST
+// checkpoint of the run's namespace. At node exit — normal return or
+// interrupt unwind — that is the position the run started from: the
+// single-node child graph saves no checkpoint between dispatch and node
+// completion, and the pause checkpoint (saved by the executor only AFTER the
+// node unwinds) forks from exactly that position. Stamping the results there
+// keeps the F4 invariant (IDs recompute from the tuple they are read
+// against) and pairs with loadRunReplay's one-level parent walk: the next
+// resume pins to the pause checkpoint and finds these writes on its parent.
+//
+// Durability note: this persists through the saver directly, so it requires
+// the run's checkpoints to be durable at node-exit time — the default sync
+// mode. Under DurabilityAsync/Exit the child's input checkpoint may not be
+// flushed yet when the defer runs, the (best-effort) persist is dropped, and
+// task replay degrades to re-execution. The Entrypoint.Invoke path is
+// unaffected (it persists after the run returned, post-flush).
+func persistRunResults(rt runtime.Runtime, saver checkpoint.Saver, d *dispatcher) error {
+	ei := rt.ExecutionInfo
+	if saver == nil || ei == nil || ei.ThreadID == "" {
+		return nil
+	}
+	results := d.snapshotResults()
+	if len(results) == 0 {
+		return nil
+	}
+	tup, err := saver.GetTuple(rt, checkpoint.Config{ThreadID: ei.ThreadID, CheckpointNS: ei.CheckpointNS})
+	if err != nil {
+		return err
+	}
+	if tup == nil {
+		return nil // the run committed no checkpoint (uncheckpointed composition)
+	}
+	return putResults(rt, saver, tup, results)
+}
+
+// fetchTuple is GetTuple with errors swallowed (a failed lookup means "no
+// replay", not a failed run — the graph run owns error surfacing here).
+func fetchTuple(ctx context.Context, saver checkpoint.Saver, cfg checkpoint.Config) *checkpoint.Tuple {
+	tup, err := saver.GetTuple(ctx, cfg)
+	if err != nil {
+		return nil
+	}
+	return tup
+}
+
+// tupleHasFnWrites reports whether tup's pending writes carry any persisted
+// task results.
+func tupleHasFnWrites(tup *checkpoint.Tuple) bool {
+	if tup == nil {
+		return false
+	}
+	for _, w := range tup.PendingWrites {
+		if w.Channel == checkpoint.ReservedReturn || w.Channel == checkpoint.ReservedError {
+			return true
+		}
+	}
+	return false
+}
+
+// putResults stamps each recorded result's deterministic task ID against tup
+// (FnTaskID of tup's own ID/ns/step — the F4 rule) and persists it as one
+// PutWrites batch: the result write (__return__/__error__) plus, when the
+// execution consumed resume values via Interrupt, the ReservedFnConsumed
+// count a later replay must re-skip.
+func putResults(ctx context.Context, saver checkpoint.Saver, tup *checkpoint.Tuple, results []taskResult) error {
 	for _, r := range results {
 		id := graph.FnTaskID(tup.Checkpoint.ID, tup.Config.CheckpointNS, tup.Metadata.Step, r.name, r.parentPath, r.callIdx)
 		w := checkpoint.Write{Channel: checkpoint.ReservedReturn, Value: r.value}

@@ -158,7 +158,18 @@ func (d *dispatcher) loadReplay(tup *checkpoint.Tuple, opts graph.Options) {
 	if !hit {
 		return
 	}
+	d.loadReplayTuple(tup)
+}
 
+// loadReplayTuple loads the replay tables from tup WITHOUT the fresh-run
+// gates, for callers that have already established the tuple belongs to the
+// logical run being continued — the subgraph-composition bootstrap (see
+// entrypoint.go's runWithBootstrapDispatcher), where the child's per-task
+// checkpoint namespace holds no foreign history so any reachable fn writes
+// are this run's own. The gates in loadReplay exist to keep a fresh
+// Entrypoint.Invoke from replaying a previous turn's results; they do not
+// apply to that composition.
+func (d *dispatcher) loadReplayTuple(tup *checkpoint.Tuple) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.replay = make(map[string]checkpoint.Write)
