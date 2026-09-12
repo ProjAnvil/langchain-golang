@@ -6,40 +6,41 @@ package runnables
 type StreamEventData struct {
 	// Input is the input passed to the Runnable at start, or nil when not yet
 	// known (e.g., when the Runnable itself streams its input).
-	Input any
+	Input any `json:"input,omitempty"`
 	// Output is available at the END of the Runnable's execution.
-	Output any
+	Output any `json:"output,omitempty"`
 	// Chunk is a streaming chunk from the output. Chunks support addition:
 	// summing all chunks equals the final Output.
-	Chunk any
+	Chunk any `json:"chunk,omitempty"`
 	// Error is non-nil when the Runnable raised an exception (on_*_error
 	// events only).
-	Error error
+	Error error `json:"error,omitempty"`
 	// ToolCallID links a tool-execution error event to the originating call.
-	ToolCallID string
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // StreamEvent is the Go equivalent of Python's StandardStreamEvent TypedDict
 // from langchain_core.runnables.schema. Every streaming event produced by
-// astream_events (or its Go equivalent) conforms to this shape.
+// astream_events (or its Go equivalent, runnables.StreamEvents) conforms to
+// this shape.
 //
 // Event names follow the pattern: on_[runnable_type]_(start|stream|end).
 // Runnable types include: llm, chat_model, prompt, tool, chain.
 type StreamEvent struct {
 	// Event is the event name, e.g. "on_chat_model_start".
-	Event string
+	Event string `json:"event"`
 	// RunID is a unique identifier for this runnable invocation.
-	RunID string
+	RunID string `json:"run_id"`
 	// Name is the name of the Runnable that generated the event.
-	Name string
+	Name string `json:"name"`
 	// Tags are inherited from parent Runnables and passed via config.
-	Tags []string
+	Tags []string `json:"tags,omitempty"`
 	// Metadata is inherited from parent Runnables and passed via config.
-	Metadata map[string]any
+	Metadata map[string]any `json:"metadata,omitempty"`
 	// ParentIDs is the ordered list of ancestor run IDs, root-first.
-	ParentIDs []string
+	ParentIDs []string `json:"parent_ids"`
 	// Data is the event-specific payload.
-	Data StreamEventData
+	Data StreamEventData `json:"data"`
 }
 
 // CustomStreamEvent is the Go equivalent of Python's CustomStreamEvent
