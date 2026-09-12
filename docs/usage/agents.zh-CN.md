@@ -106,7 +106,7 @@ agent, _ := agents.CreateAgent(model, tools,
 | `NewModelCallLimitMiddleware` | 限制每次运行 / 每个线程的模型调用数 |
 | `NewToolCallLimitMiddleware` | 限制对特定工具的调用数 |
 | `NewToolRetryMiddleware` | 重试失败的工具调用 |
-| `NewHumanInTheLoopMiddleware` | 暂停等待人工批准 |
+| `NewInterruptHumanInTheLoopMiddleware` / `NewHumanInTheLoopMiddleware` | 暂停等待人工批准（基于 interrupt / 同步 `Decide` 回调） |
 | `NewPIIMiddleware` / `NewPIIStreamTransformer` | PII 脱敏（批量与流式） |
 | `NewContextEditingMiddleware` | 改写模型调用的上下文 |
 | `NewFilesystemFileSearchMiddleware` | 基于 ripgrep 的文件搜索工具 |
@@ -123,7 +123,7 @@ BeforeAgent → BeforeModel → WrapModelCall → WrapToolCall → AfterModel �
 ```
 
 每个钩子都收到一个 `context.Context`，因此任何一个都可以调用
-`graphpkg.Interrupt` 暂停运行、等待外部输入（见下文 *Interrupt / resume*）。
+`graphpkg.Interrupt` 暂停运行、等待外部输入（见下文 *Human-in-the-loop*）。
 钩子还可以通过把 `update["jump_to"]` 设为 `"model"`、`"tools"` 或 `"end"`
 来短路路由：对 `before_agent` 而言，该跳转决定运行是否进入 model↔tools
 循环（`"model"`/`"tools"`），还是直接经 `after_agent` 走向结束（`"end"`）；
@@ -185,11 +185,146 @@ Middleware 可以在 `wrap_model_call` 内部经 `request.Override(...)` 调整
 `AutoStrategy` 会在每次调用时针对当前模型重新解析，因此 `DynamicModel` 换模
 后会重新检查。
 
-## Interrupt / resume（human-in-the-loop）
+## Human-in-the-loop（interrupt 模式）
 
-用 `WithAgentInterruptBefore` / `WithAgentInterruptAfter` 在具名节点处暂停
-运行，然后用相同的 `ThreadID` 经 `Agent.Graph.InvokeWithOptions` 恢复。
-这需要一个 checkpointer。
+`middleware.NewInterruptHumanInTheLoopMiddleware` 会在模型产出已登记审查的
+工具调用时暂停运行 —— 对齐 Python 基于 interrupt 的
+`HumanInTheLoopMiddleware`。该暂停是真正的 langgraph interrupt：运行停下，
+待处理的调用以 `Result.Interrupts` 浮现，随后的 resume 把人的应答带回。
+
+两个前置条件决定暂停是否可恢复：checkpointer（`WithAgentCheckpointer`）
+与每次运行的 `graphpkg.Options.ThreadID`。缺了它们 interrupt 仍会触发，但
+没有可恢复的线程。
+
+```go
+agent, _ := agents.CreateAgent(model, tools,
+	agents.WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(
+		map[string]middleware.InterruptConfig{
+			"transfer_funds": {
+				AllowedDecisions: []middleware.DecisionType{
+					middleware.DecisionApprove, middleware.DecisionEdit,
+					middleware.DecisionReject, middleware.DecisionRespond,
+				},
+				// 可选：When、Description / DescriptionFunc、ArgsSchema
+				// 进一步筛选哪些调用被审查、审查者看到什么。
+			},
+		},
+	)),
+	agents.WithAgentCheckpointer(checkpoint.NewMemorySaver()),
+)
+
+// 首次运行：模型请求被审查的工具后暂停。暂停在这里不是错误 ——
+// 返回已提交的状态加上 interrupts。
+values, interrupts, err := agent.InvokeWithStateOptions(ctx, msgs,
+	graphpkg.Options{ThreadID: "thread-1"})
+
+request, _ := middleware.HITLRequestFromInterrupt(interrupts[0])
+// request.ActionRequests —— 待处理的调用（name / args / description）
+// request.ReviewConfigs —— 各工具的审查策略（允许的决策、schema）
+
+// 应答暂停并在同一线程上继续：
+values, _, err = agent.Resume(ctx, graphpkg.Options{
+	ThreadID: "thread-1",
+	Resume: middleware.HITLResponse{Decisions: []middleware.Decision{{
+		Type: middleware.DecisionApprove,
+	}}},
+})
+```
+
+审查运行在专属的 `"hitl"` 图节点中，布线在模型节点与 tools 节点之间
+（Python 把每个 `after_model` middleware 作为独立节点，同理）：暂停发生时
+模型的 AI 消息**已提交**，因此 resume 只重跑审查节点 —— 被暂停的那次调用
+绝不会重新调用模型，决策作用于已提交、稳定的 AIMessage。修订后的消息按
+消息 ID 原位替换已提交的那条（无 ID 的 AI 消息会为此铸出一个确定性 ID），
+因此 reject/respond 不会留下重复副本。一个 agent 至多支持一个 interrupt
+模式的 HITL middleware（`"hitl"` 节点是共享的）；它可以与 Decide 模式的
+HITL（见下）组合，后者内联运行。
+
+`HITLResponse` 按顺序为每个被审查的工具调用携带一个 `Decision`。要求决策
+数与被审查调用数严格相等，且每个 `Type` 必须在该工具的
+`AllowedDecisions` 内 —— 否则 resume 报错。四个分支：
+
+- **approve** —— 原样执行该调用。
+- **edit** —— 经 `Decision.EditedAction`（`*middleware.ToolCall`）替换
+  name/args；调用 ID 保留，对话缝合不破坏。
+- **reject** —— 不执行；`Decision.Message` 成为应答该调用的错误
+  `ToolMessage`，模型能看到并作出反应。
+- **respond** —— 不执行；`Decision.Message` 代表人直接作为工具的成功应答。
+
+不带值地 resume（`Options.Resume` 留 nil）会重跑审查节点并以相同 ID 再次
+抛出同一 interrupt —— 即再暂停，适合轮询式 UI。resume 值也可以是其 JSON
+wire 形态（`map[string]any{"decisions": [...]}`，键为 `"type"` /
+`"edited_action"` / `"message"`）—— 即 checkpoint 经 JSON saver 往返或非
+Go 生产者留下的形态；`middleware.DecodeHITLResponse` 两种都接受。
+
+当有多个 interrupt 待处理时，`Options.Resume` 是按 interrupt NS（优先）或
+ID（其次）寻址的 `map[string]any`。NS 也是嵌套保持可寻址的关键：
+
+```go
+// supervisor 把 worker agent 作为子图嵌入。worker 自身不带
+// checkpointer：它共享父运行的那个。
+worker, _ := agents.CreateAgent(workerModel, workerTools,
+	agents.WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(...)))
+
+parent := graphpkg.NewStateGraph()
+parent.AddSubgraph("worker", worker.Graph)
+parent.AddEdge(types.START, "worker")
+parent.AddEdge("worker", types.END)
+supervisor, _ := parent.Compile(graphpkg.WithCheckpointer(checkpoint.NewMemorySaver()))
+
+res, _ := supervisor.InvokeWithOptions(ctx,
+	map[string]any{"messages": msgs},
+	graphpkg.Options{ThreadID: "sup-1"})
+// worker 的审查会暂停父运行；res.Interrupts[0].NS 带嵌套前缀
+// "worker:<task>/hitl:<task>"。
+
+supervisor.InvokeWithOptions(ctx, nil, graphpkg.Options{
+	ThreadID: "sup-1",
+	Resume: map[string]any{res.Interrupts[0].NS: middleware.HITLResponse{
+		Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}},
+	}},
+})
+```
+
+`Options.Graph` 把一次 resume 圈定到某个命名空间：设为子图任务的命名空间
+（interrupt NS 去掉末尾 `/hitl:<task>` 段），标量 `Resume` 就只喂给该子运行；
+`Graph` 未命中任何待处理 interrupt 的 NS 时会给出描述性错误。
+
+### HITL 的限制与边界
+
+- **结构化输出不被审查。** `ToolStrategy` 下，结构化输出工具调用在模型
+  节点内就结束运行 —— 先于审查顺序 —— 因此不会为 HITL 暂停（Python
+  顺序相同）。
+- **流式把暂停表现为错误。** `StreamEvents`（以及普通的
+  `Invoke`/`InvokeWithState`）把被中断的运行视为终止性错误。这类线程用
+  `InvokeWithStateOptions`/`Resume`（非流式）恢复；感知暂停的流式属于
+  后续工作。
+- **`jump_to: "tools"` 绕过审查。** 钩子直接跳到 tools 节点时是按名直达
+  的；插入审查的重映射只作用于模型节点的常规路由（对齐 Python 的
+  `jump_to`）。
+- **工具内嵌套 agent 无法暂停父运行。** 工具函数体里调用另一个 agent 的
+  `InvokeWithState` 是一次独立的嵌套运行，其 interrupt 不会上浮。需要可
+  暂停的 supervisor/worker 组合时，用 `StateGraph.AddSubgraph` 嵌入
+  worker 并让父运行带 checkpointer，如上例。
+
+### 同步 Decide 模式（兼容）
+
+`middleware.NewHumanInTheLoopMiddleware(interruptOn, decide)` 是较早的 Go
+形态：它不暂停，而是在模型节点内（`AfterModel`）内联调用 `decide` 回调，
+传入同一个 `HITLRequest`，并以完全一致的四分支逻辑应用返回的
+`[]Decision`。它不需要 checkpointer，但人必须在调用内部应答 —— 没有可
+恢复的暂停。两种模式在每个 middleware 实例上互斥（`Decide` 为 nil 即选定
+interrupt 模式），并可作为独立 middleware 共存于一个 agent；内联的
+`AfterModel` 钩子恒先于专属 hitl 节点运行。
+
+## Interrupt 边界与 checkpoint 历史
+
+与 HITL 正交地，用 `WithAgentInterruptBefore` / `WithAgentInterruptAfter`
+在具名节点处暂停运行，然后用相同的 `ThreadID` 经 `Agent.Resume`（或
+`Agent.Graph.InvokeWithOptions`）恢复。这需要一个 checkpointer。边界
+interrupt 以 nil 的 `Options.Resume` 恢复；它们与 hitl 节点可组合 ——
+`WithAgentInterruptBefore(agents.ToolsNodeName)` 的边界在 HITL 决策被批准
+之后、tools 分发之前触发（`agents.HITLNodeName` 同样可如此寻址）。
 
 ```go
 agent, _ := agents.CreateAgent(model, tools,

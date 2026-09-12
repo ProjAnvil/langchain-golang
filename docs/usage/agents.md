@@ -111,7 +111,7 @@ Fifteen middleware modules ship in-tree:
 | `NewModelCallLimitMiddleware` | Cap model calls per run / per thread |
 | `NewToolCallLimitMiddleware` | Cap calls to a specific tool |
 | `NewToolRetryMiddleware` | Retry failed tool calls |
-| `NewHumanInTheLoopMiddleware` | Pause for human approval |
+| `NewInterruptHumanInTheLoopMiddleware` / `NewHumanInTheLoopMiddleware` | Pause for human approval (interrupt-based / synchronous `Decide` callback) |
 | `NewPIIMiddleware` / `NewPIIStreamTransformer` | Redact PII (batch and streaming) |
 | `NewContextEditingMiddleware` | Mutate the model-call context |
 | `NewFilesystemFileSearchMiddleware` | Ripgrep-backed file search tool |
@@ -128,8 +128,9 @@ BeforeAgent → BeforeModel → WrapModelCall → WrapToolCall → AfterModel �
 ```
 
 Every hook receives a `context.Context`, so any of them can call
-`graphpkg.Interrupt` to pause the run for external input (see *Interrupt /
-resume* below). A hook can also short-circuit routing by setting
+`graphpkg.Interrupt` to pause the run for external input (see
+*Human-in-the-loop* below — `NewInterruptHumanInTheLoopMiddleware` is the
+packaged example). A hook can also short-circuit routing by setting
 `update["jump_to"]` to `"model"`, `"tools"`, or `"end"`: for `before_agent`
 the jump decides whether the run enters the model↔tools loop at all
 (`"model"`/`"tools"`) or exits straight through `after_agent` to the end
@@ -194,11 +195,161 @@ per model call (each time the overriding middleware runs), streaming included;
 an `AutoStrategy` re-resolves against the model of the current call, so a
 `DynamicModel` swap re-checks it.
 
-## Interrupt / resume (human-in-the-loop)
+## Human-in-the-loop (interrupt mode)
 
-Pause the run at named nodes with `WithAgentInterruptBefore` /
-`WithAgentInterruptAfter`, then resume via `Agent.Graph.InvokeWithOptions` with
-the same `ThreadID`. This requires a checkpointer.
+`middleware.NewInterruptHumanInTheLoopMiddleware` pauses the run whenever the
+model produces a tool call whose name is registered for review — mirroring
+Python's interrupt-based `HumanInTheLoopMiddleware`. The pause is a real
+langgraph interrupt: the run stops with the pending call(s) surfaced as
+`Result.Interrupts`, and a later resume carries the human's answer back in.
+
+Two preconditions make the pause resumable at all: a checkpointer
+(`WithAgentCheckpointer`) and a per-run `graphpkg.Options.ThreadID`. Without
+them the interrupt still fires but there is no thread to resume from.
+
+```go
+agent, _ := agents.CreateAgent(model, tools,
+	agents.WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(
+		map[string]middleware.InterruptConfig{
+			"transfer_funds": {
+				AllowedDecisions: []middleware.DecisionType{
+					middleware.DecisionApprove, middleware.DecisionEdit,
+					middleware.DecisionReject, middleware.DecisionRespond,
+				},
+				// Optional: When, Description / DescriptionFunc, ArgsSchema
+				// refine which calls are reviewed and what the reviewer sees.
+			},
+		},
+	)),
+	agents.WithAgentCheckpointer(checkpoint.NewMemorySaver()),
+)
+
+// First run: pauses after the model asks for a reviewed tool. A paused run
+// is NOT an error here — it returns the committed state plus the interrupts.
+values, interrupts, err := agent.InvokeWithStateOptions(ctx, msgs,
+	graphpkg.Options{ThreadID: "thread-1"})
+
+request, _ := middleware.HITLRequestFromInterrupt(interrupts[0])
+// request.ActionRequests — the pending calls (name / args / description)
+// request.ReviewConfigs — per-tool review policy (allowed decisions, schema)
+
+// Answer the pause and continue the same thread:
+values, _, err = agent.Resume(ctx, graphpkg.Options{
+	ThreadID: "thread-1",
+	Resume: middleware.HITLResponse{Decisions: []middleware.Decision{{
+		Type: middleware.DecisionApprove,
+	}}},
+})
+```
+
+The review runs in a dedicated `"hitl"` graph node wired between the model
+node and the tools node (Python runs every `after_model` middleware as its
+own node for the same reason): the model's AI message is already committed
+when the pause happens, so a resume re-runs only the review node — the model
+is never re-invoked for the paused call, and the decisions act on the
+committed, stable AIMessage. The revised message replaces the committed one
+in place by message ID (an ID-less AI message gets a deterministic ID minted
+for this), so a reject/respond never leaves a duplicate copy behind. One
+agent supports at most one interrupt-mode HITL middleware (the `"hitl"` node
+is shared); it composes with a Decide-mode HITL (below), which runs inline.
+
+`HITLResponse` carries one `Decision` per reviewed tool call, in order.
+Exactly one decision per reviewed call is required, and each `Type` must be
+in that tool's `AllowedDecisions` — otherwise the resume errors. The four
+branches:
+
+- **approve** — execute the call as-is.
+- **edit** — replace name/args via `Decision.EditedAction` (`*middleware.ToolCall`);
+  the call's ID is kept, so the conversation stays stitched.
+- **reject** — do not execute; `Decision.Message` becomes an error
+  `ToolMessage` answering the call, which the model sees and can react to.
+- **respond** — do not execute; `Decision.Message` becomes the tool's success
+  answer on behalf of the human.
+
+Resuming without a value (`Options.Resume` left nil) re-runs the review node
+and re-raises the same interrupt with the same ID — a re-pause, useful for
+polling UIs. The resume value may also arrive in its JSON wire form
+(`map[string]any{"decisions": [...]}` with `"type"` / `"edited_action"` /
+`"message"` keys) — what a checkpoint round-trip through a JSON saver or a
+non-Go producer leaves behind; `middleware.DecodeHITLResponse` accepts both.
+
+When several interrupts are pending, `Options.Resume` becomes a
+`map[string]any` keyed by interrupt NS (first) or ID (second). The NS is also
+how nesting stays addressable:
+
+```go
+// A supervisor embedding a worker agent as a subgraph. The worker carries
+// no checkpointer of its own: it shares the parent run's.
+worker, _ := agents.CreateAgent(workerModel, workerTools,
+	agents.WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(...)))
+
+parent := graphpkg.NewStateGraph()
+parent.AddSubgraph("worker", worker.Graph)
+parent.AddEdge(types.START, "worker")
+parent.AddEdge("worker", types.END)
+supervisor, _ := parent.Compile(graphpkg.WithCheckpointer(checkpoint.NewMemorySaver()))
+
+res, _ := supervisor.InvokeWithOptions(ctx,
+	map[string]any{"messages": msgs},
+	graphpkg.Options{ThreadID: "sup-1"})
+// The worker's review pauses the PARENT; res.Interrupts[0].NS carries the
+// nested prefix "worker:<task>/hitl:<task>".
+
+supervisor.InvokeWithOptions(ctx, nil, graphpkg.Options{
+	ThreadID: "sup-1",
+	Resume: map[string]any{res.Interrupts[0].NS: middleware.HITLResponse{
+		Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}},
+	}},
+})
+```
+
+`Options.Graph` scopes a resume to a namespace: set it to the subgraph task's
+namespace (the interrupt NS minus its trailing `/hitl:<task>` segment) and a
+scalar `Resume` feeds only that child; a `Graph` matching no pending
+interrupt's NS is a descriptive error.
+
+### HITL limits and boundaries
+
+- **Structured output is never reviewed.** Under `ToolStrategy`, a
+  structured-output tool call ends the run inside the model node — before the
+  review ordering — so it cannot pause for HITL (Python has the same
+  ordering).
+- **Streaming surfaces a pause as an error.** `StreamEvents` (and the plain
+  `Invoke`/`InvokeWithState`) treat an interrupted run as a terminal error.
+  Resume such threads with `InvokeWithStateOptions`/`Resume` (non-streaming);
+  pause-aware streaming is future work.
+- **`jump_to: "tools"` bypasses the review.** A hook that jumps straight to
+  the tools node addresses it directly; the remapping that inserts the review
+  only applies to the model node's normal routing (mirroring Python's
+  `jump_to`).
+- **A nested agent inside a tool cannot pause the parent.** A tool body that
+  calls another agent's `InvokeWithState` runs an independent nested run;
+  its interrupts do not bubble up. For a pausable supervisor/worker
+  composition, embed the worker with `StateGraph.AddSubgraph` and run the
+  parent with a checkpointer, as above.
+
+### Synchronous Decide mode (compatibility)
+
+`middleware.NewHumanInTheLoopMiddleware(interruptOn, decide)` is the older Go
+form: instead of pausing, it calls the `decide` callback inline in the model
+node (`AfterModel`) with the same `HITLRequest`, and applies the returned
+`[]Decision` through the identical four-branch logic. It needs no
+checkpointer, but the human must answer inside the call — there is no pause
+to resume. The two modes are mutually exclusive per middleware instance (a
+nil `Decide` is what selects interrupt mode) and may coexist as separate
+middleware on one agent; the inline `AfterModel` hooks always run before the
+dedicated hitl node.
+
+## Interrupt boundaries and checkpoint history
+
+Orthogonal to HITL, pause the run at named nodes with
+`WithAgentInterruptBefore` / `WithAgentInterruptAfter`, then resume via
+`Agent.Resume` (or `Agent.Graph.InvokeWithOptions`) with the same `ThreadID`.
+This requires a checkpointer. Boundary interrupts resume with a nil
+`Options.Resume`; they compose with the hitl node — a
+`WithAgentInterruptBefore(agents.ToolsNodeName)` boundary fires after an
+approved HITL decision, before the tools dispatch (and `agents.HITLNodeName`
+is addressable the same way).
 
 ```go
 agent, _ := agents.CreateAgent(model, tools,
