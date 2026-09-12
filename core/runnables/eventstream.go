@@ -32,6 +32,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/streamevents"
+	"github.com/projanvil/langchain-golang/core/tracers"
 )
 
 // StreamEventOptions filters the events yielded by StreamEvents, the Go
@@ -130,18 +131,31 @@ func StreamEvents[I, O any](
 		events := make(chan callbacks.Event, 64)
 		collector := &eventCollector{ctx: runCtx, ch: events, closed: &atomic.Bool{}}
 
-		manager := callbacks.NewManager(collector)
-		if !cfg.Callbacks.Empty() {
-			// Caller handlers stay in the fan-out (ahead of the collector) so
-			// existing callback consumers observe the same events as before.
-			// A Manager is itself a Handler, so nesting preserves its tag /
-			// metadata / parent inheritance.
-			manager = callbacks.NewManager(cfg.Callbacks, collector)
+		handlers := []callbacks.Handler{collector}
+		// Env-gated LangSmith auto-attach (t18 PR3, design section 4): when
+		// the environment enables tracing, a LangChainTracer joins the
+		// fan-out ahead of the collector so it observes events synchronously
+		// rather than through the drain-gated channel. The tracer batches
+		// and POSTs on its own goroutine; Close at iterator end (after the
+		// producer joins) flushes the remainder. Caveat: a caller who also
+		// attaches their own LangSmith tracer while the env flag is set gets
+		// both tracers — the duplicate creates conflict server-side and
+		// surface only through the tracer's OnError; leave the env unset
+		// when managing tracers manually.
+		if tracers.EnabledFromEnv() {
+			if langSmith := tracers.NewLangChainTracer(); langSmith != nil {
+				handlers = append([]callbacks.Handler{langSmith}, handlers...)
+				defer langSmith.Close()
+			}
 		}
-		// TODO(t18 PR3): when tracers.EnabledFromEnv() and the caller has not
-		// attached a LangSmith tracer, append one to this manager (before the
-		// collector) so tracing works without a drain-gated channel hop. The
-		// tracers package is intentionally unreferenced until PR3 lands.
+		if !cfg.Callbacks.Empty() {
+			// Caller handlers stay first in the fan-out (ahead of the auto
+			// tracer and collector) so existing callback consumers observe
+			// the same events as before. A Manager is itself a Handler, so
+			// nesting preserves its tag / metadata / parent inheritance.
+			handlers = append([]callbacks.Handler{cfg.Callbacks}, handlers...)
+		}
+		manager := callbacks.NewManager(handlers...)
 
 		done := make(chan struct{})
 		var runErr error
