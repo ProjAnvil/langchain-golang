@@ -119,14 +119,25 @@ func NewPick[I any, O any](r Runnable[I, map[string]any], keys ...string) (Pick[
 	}, nil
 }
 
-// Invoke projects the wrapped runnable's output onto the picked keys.
+// Invoke projects the wrapped runnable's output onto the picked keys. With
+// callbacks active Pick is its own chain run; the wrapped runnable runs as a
+// child (name "pick") and carries the projected output on Pick's chain_end.
 func (r Pick[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
-	output, err := r.Runnable.Invoke(ctx, input, childOptions("pick", opts...)...)
+	ctx, run := startChainRun(ctx, opts, "pick", input)
+	output, err := r.Runnable.Invoke(ctx, input, run.child("pick", opts...)...)
 	if err != nil {
 		var zero O
+		run.fail(ctx, err)
 		return zero, err
 	}
-	return r.project(output)
+	picked, err := r.project(output)
+	if err != nil {
+		var zero O
+		run.fail(ctx, err)
+		return zero, err
+	}
+	run.end(ctx, picked)
+	return picked, nil
 }
 
 // Batch projects every wrapped runnable output onto the picked keys.
@@ -238,9 +249,19 @@ func NewEach[I any, O any](r Runnable[I, O]) (Each[I, O], error) {
 
 // Invoke applies the wrapped runnable to every element via its Batch, so a
 // runnable with native batch support benefits from it and MaxConcurrency
-// bounds the fan-out.
+// bounds the fan-out. With callbacks active Each is one chain run around the
+// whole fan-out and every element is a distinct child run (Func-based
+// runnables mint per-element IDs in their Batch; interleaved child events
+// pair by RunID, not by global nesting order).
 func (e Each[I, O]) Invoke(ctx context.Context, inputs []I, opts ...Option) ([]O, error) {
-	return e.Runnable.Batch(ctx, inputs, childOptions("each", opts...)...)
+	ctx, run := startChainRun(ctx, opts, "each", inputs)
+	outputs, err := e.Runnable.Batch(ctx, inputs, run.child("each", opts...)...)
+	if err != nil {
+		run.fail(ctx, err)
+		return nil, err
+	}
+	run.end(ctx, outputs)
+	return outputs, nil
 }
 
 // Batch maps over each slice input (Python: RunnableEach.batch over a list of

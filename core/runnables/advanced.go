@@ -39,8 +39,13 @@ func NewRetry[I any, O any](runnable Runnable[I, O], maxAttempts int) (Retry[I, 
 	}, nil
 }
 
-// Invoke invokes the wrapped runnable with retry.
+// Invoke invokes the wrapped runnable with retry. With callbacks active Retry
+// is one chain run and every attempt is a child run named "retry:attempt:N";
+// when all attempts are exhausted the Retry run itself closes with
+// chain_error.
 func (r Retry[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
+	ctx, run := startChainRun(ctx, opts, "retry", input)
+	attempt := 0
 	var output O
 	err := retry.Do(ctx, retry.Policy{
 		MaxAttempts:       r.MaxAttempts,
@@ -49,10 +54,20 @@ func (r Retry[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, er
 		MaxDelay:          r.MaxDelay,
 		ShouldRetry:       r.ShouldRetry,
 	}, func() error {
+		attempt++
+		attemptOpts := opts
+		if run != nil {
+			attemptOpts = run.child(fmt.Sprintf("retry:attempt:%d", attempt), opts...)
+		}
 		var err error
-		output, err = r.Runnable.Invoke(ctx, input, opts...)
+		output, err = r.Runnable.Invoke(ctx, input, attemptOpts...)
 		return err
 	})
+	if err != nil {
+		run.fail(ctx, err)
+	} else {
+		run.end(ctx, output)
+	}
 	return output, err
 }
 
@@ -67,8 +82,13 @@ func (r Retry[I, O]) Batch(ctx context.Context, inputs []I, opts ...Option) ([]O
 }
 
 // Stream retries stream construction. Errors emitted after a stream is returned
-// belong to the stream consumer and are not replayed.
+// belong to the stream consumer and are not replayed. With callbacks active
+// each construction attempt is a child run and the surviving stream is wrapped
+// in the Retry run (chain_stream per chunk, chain_end/chain_error on drain;
+// exhausted construction closes the Retry run with chain_error).
 func (r Retry[I, O]) Stream(ctx context.Context, input I, opts ...Option) (Stream[O], error) {
+	ctx, run := startChainRun(ctx, opts, "retry", input)
+	attempt := 0
 	var stream Stream[O]
 	err := retry.Do(ctx, retry.Policy{
 		MaxAttempts:       r.MaxAttempts,
@@ -77,11 +97,20 @@ func (r Retry[I, O]) Stream(ctx context.Context, input I, opts ...Option) (Strea
 		MaxDelay:          r.MaxDelay,
 		ShouldRetry:       r.ShouldRetry,
 	}, func() error {
+		attempt++
+		attemptOpts := opts
+		if run != nil {
+			attemptOpts = run.child(fmt.Sprintf("retry:attempt:%d", attempt), opts...)
+		}
 		var err error
-		stream, err = r.Runnable.Stream(ctx, input, opts...)
+		stream, err = r.Runnable.Stream(ctx, input, attemptOpts...)
 		return err
 	})
-	return stream, err
+	if err != nil {
+		run.fail(ctx, err)
+		return stream, err
+	}
+	return wrapChainStream(stream, run), nil
 }
 
 // InputSchema returns the wrapped runnable input schema.
@@ -113,14 +142,27 @@ func NewRouter[I any, O any](runnables map[string]Runnable[I, O]) Router[I, O] {
 	return Router[I, O]{Runnables: copied}
 }
 
-// Invoke routes to the selected runnable.
+// Invoke routes to the selected runnable. With callbacks active Router is its
+// own chain run (start carries the full RouterInput as the input snapshot)
+// and the selected runnable runs as a child named "route:KEY"; an unknown key
+// closes the Router run with chain_error.
 func (r Router[I, O]) Invoke(ctx context.Context, input RouterInput[I], opts ...Option) (O, error) {
+	ctx, run := startChainRun(ctx, opts, "router", input)
 	runnable, ok := r.Runnables[input.Key]
 	if !ok {
 		var zero O
-		return zero, fmt.Errorf("no runnable associated with key %q", input.Key)
+		err := fmt.Errorf("no runnable associated with key %q", input.Key)
+		run.fail(ctx, err)
+		return zero, err
 	}
-	return runnable.Invoke(ctx, input.Input, childOptions("route:"+input.Key, opts...)...)
+	output, err := runnable.Invoke(ctx, input.Input, run.child("route:"+input.Key, opts...)...)
+	if err != nil {
+		var zero O
+		run.fail(ctx, err)
+		return zero, err
+	}
+	run.end(ctx, output)
+	return output, nil
 }
 
 // Batch routes each input independently while preserving order.
@@ -133,13 +175,23 @@ func (r Router[I, O]) Batch(ctx context.Context, inputs []RouterInput[I], opts .
 	return outputs, errors.Join(errs...)
 }
 
-// Stream routes stream construction to the selected runnable.
+// Stream routes stream construction to the selected runnable, wrapping the
+// selected stream in the Router's chain run (chain_stream per chunk,
+// chain_end/chain_error on drain) when callbacks are active.
 func (r Router[I, O]) Stream(ctx context.Context, input RouterInput[I], opts ...Option) (Stream[O], error) {
+	ctx, run := startChainRun(ctx, opts, "router", input)
 	runnable, ok := r.Runnables[input.Key]
 	if !ok {
-		return nil, fmt.Errorf("no runnable associated with key %q", input.Key)
+		err := fmt.Errorf("no runnable associated with key %q", input.Key)
+		run.fail(ctx, err)
+		return nil, err
 	}
-	return runnable.Stream(ctx, input.Input, childOptions("route:"+input.Key, opts...)...)
+	stream, err := runnable.Stream(ctx, input.Input, run.child("route:"+input.Key, opts...)...)
+	if err != nil {
+		run.fail(ctx, err)
+		return nil, err
+	}
+	return wrapChainStream(stream, run), nil
 }
 
 // InputSchema returns a generic router input schema.

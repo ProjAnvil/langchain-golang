@@ -34,6 +34,21 @@ const (
 	EventRetrieverError    EventKind = "retriever_error"
 )
 
+// Chain lifecycle events mark the start, per-chunk streaming, completion, and
+// failure of Runnable-level runs. The core/runnables combinators (Func, Pipe /
+// SeqN, Each, Router, Branch, Pick, WithFallbacks, Retry, Assign, Passthrough)
+// emit these for their own runs when the caller's Config carries a non-empty
+// callback manager; each child invocation gets a freshly minted run ID so
+// events pair into a run tree via RunID/ParentID. Bind is a transparent
+// pass-through and emits nothing. Consumers can reconstruct nesting by
+// resolving each event's ParentID against earlier EventChainStart RunIDs.
+const (
+	EventChainStart  EventKind = "chain_start"
+	EventChainStream EventKind = "chain_stream"
+	EventChainEnd    EventKind = "chain_end"
+	EventChainError  EventKind = "chain_error"
+)
+
 // Event is the normalized tracing payload emitted by runnables, models, tools,
 // retrievers, and vector stores.
 type Event struct {

@@ -19,14 +19,18 @@ func NewPassthrough[T any](inputSchema schema.Schema) Passthrough[T] {
 	return Passthrough[T]{schema: inputSchema}
 }
 
-// Invoke returns input unchanged.
+// Invoke returns input unchanged, wrapped in a chain run (start/end, or
+// chain_error when the OnInvoke hook fails) when callbacks are configured.
 func (r Passthrough[T]) Invoke(ctx context.Context, input T, opts ...Option) (T, error) {
+	ctx, run := startChainRun(ctx, opts, "passthrough", input)
 	if r.OnInvoke != nil {
 		if err := r.OnInvoke(ctx, input, opts...); err != nil {
 			var zero T
+			run.fail(ctx, err)
 			return zero, err
 		}
 	}
+	run.end(ctx, input)
 	return input, nil
 }
 
@@ -79,16 +83,22 @@ func NewAssign(steps map[string]Runnable[map[string]any, any]) Assign {
 	return Assign{Steps: copied}
 }
 
-// Invoke returns input merged with all computed fields.
+// Invoke returns input merged with all computed fields. With callbacks
+// active Assign is one chain run and every mapper step runs as a child named
+// "assign:key:K". Map iteration order is Go-random, so with several keys the
+// child runs interleave nondeterministically.
 func (r Assign) Invoke(ctx context.Context, input map[string]any, opts ...Option) (map[string]any, error) {
+	ctx, run := startChainRun(ctx, opts, "assign", input)
 	out := cloneMap(input)
 	for key, step := range r.Steps {
-		value, err := step.Invoke(ctx, cloneMap(out), childOptions("assign:key:"+key, opts...)...)
+		value, err := step.Invoke(ctx, cloneMap(out), run.child("assign:key:"+key, opts...)...)
 		if err != nil {
+			run.fail(ctx, err)
 			return nil, err
 		}
 		out[key] = value
 	}
+	run.end(ctx, out)
 	return out, nil
 }
 
@@ -153,19 +163,37 @@ func NewBranch[I any, O any](cases []BranchCase[I, O], def Runnable[I, O]) (Bran
 	}, nil
 }
 
-// Invoke selects and invokes a branch.
+// Invoke selects and invokes a branch. With callbacks active Branch is its
+// own chain run; each evaluated condition and the selected branch runnable
+// run as children named "condition:N" / "branch:N" (or "branch:default").
 func (r Branch[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
+	ctx, run := startChainRun(ctx, opts, "branch", input)
 	for i, item := range r.Cases {
-		ok, err := item.Condition.Invoke(ctx, input, childOptions(fmt.Sprintf("condition:%d", i+1), opts...)...)
+		ok, err := item.Condition.Invoke(ctx, input, run.child(fmt.Sprintf("condition:%d", i+1), opts...)...)
 		if err != nil {
 			var zero O
+			run.fail(ctx, err)
 			return zero, err
 		}
 		if ok {
-			return item.Runnable.Invoke(ctx, input, childOptions(fmt.Sprintf("branch:%d", i+1), opts...)...)
+			output, err := item.Runnable.Invoke(ctx, input, run.child(fmt.Sprintf("branch:%d", i+1), opts...)...)
+			if err != nil {
+				var zero O
+				run.fail(ctx, err)
+				return zero, err
+			}
+			run.end(ctx, output)
+			return output, nil
 		}
 	}
-	return r.Default.Invoke(ctx, input, childOptions("branch:default", opts...)...)
+	output, err := r.Default.Invoke(ctx, input, run.child("branch:default", opts...)...)
+	if err != nil {
+		var zero O
+		run.fail(ctx, err)
+		return zero, err
+	}
+	run.end(ctx, output)
+	return output, nil
 }
 
 // Batch invokes the branch for all inputs.
@@ -178,18 +206,32 @@ func (r Branch[I, O]) Batch(ctx context.Context, inputs []I, opts ...Option) ([]
 	return outputs, errors.Join(errs...)
 }
 
-// Stream streams the selected runnable.
+// Stream streams the selected runnable, with the same chain-run shape as
+// Invoke (Branch's own run wraps the selected stream: chain_stream per chunk,
+// chain_end/chain_error on drain).
 func (r Branch[I, O]) Stream(ctx context.Context, input I, opts ...Option) (Stream[O], error) {
+	ctx, run := startChainRun(ctx, opts, "branch", input)
 	for i, item := range r.Cases {
-		ok, err := item.Condition.Invoke(ctx, input, childOptions(fmt.Sprintf("condition:%d", i+1), opts...)...)
+		ok, err := item.Condition.Invoke(ctx, input, run.child(fmt.Sprintf("condition:%d", i+1), opts...)...)
 		if err != nil {
+			run.fail(ctx, err)
 			return nil, err
 		}
 		if ok {
-			return item.Runnable.Stream(ctx, input, childOptions(fmt.Sprintf("branch:%d", i+1), opts...)...)
+			stream, err := item.Runnable.Stream(ctx, input, run.child(fmt.Sprintf("branch:%d", i+1), opts...)...)
+			if err != nil {
+				run.fail(ctx, err)
+				return nil, err
+			}
+			return wrapChainStream(stream, run), nil
 		}
 	}
-	return r.Default.Stream(ctx, input, childOptions("branch:default", opts...)...)
+	stream, err := r.Default.Stream(ctx, input, run.child("branch:default", opts...)...)
+	if err != nil {
+		run.fail(ctx, err)
+		return nil, err
+	}
+	return wrapChainStream(stream, run), nil
 }
 
 // InputSchema returns the default runnable input schema.
@@ -239,17 +281,23 @@ func NewWithFallbacks[I any, O any](runnable Runnable[I, O], fallbacks ...Runnab
 
 // Invoke tries the primary runnable and fallbacks in order. Only errors
 // matched by ExceptionsToHandle move on to the next fallback; unmatched
-// errors propagate immediately.
+// errors propagate immediately. With callbacks active WithFallbacks is one
+// chain run and every attempt is a child run named "fallback:primary" /
+// "fallback:N"; a failed attempt closes its child run with chain_error
+// (emitted by the attempt's own instrumentation) before the next one starts.
 func (r WithFallbacks[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
+	ctx, run := startChainRun(ctx, opts, "with_fallbacks", input)
 	var firstErr error
 	runnables := append([]Runnable[I, O]{r.Runnable}, r.Fallbacks...)
 	for i, runnable := range runnables {
-		output, err := runnable.Invoke(ctx, input, childOptions(fallbackChildName(i), opts...)...)
+		output, err := runnable.Invoke(ctx, input, run.child(fallbackChildName(i), opts...)...)
 		if err == nil {
+			run.end(ctx, output)
 			return output, nil
 		}
 		if !r.handles(err) {
 			var zero O
+			run.fail(ctx, err)
 			return zero, err
 		}
 		if firstErr == nil {
@@ -257,6 +305,7 @@ func (r WithFallbacks[I, O]) Invoke(ctx context.Context, input I, opts ...Option
 		}
 	}
 	var zero O
+	run.fail(ctx, firstErr)
 	return zero, firstErr
 }
 
@@ -284,22 +333,27 @@ func (r WithFallbacks[I, O]) Batch(ctx context.Context, inputs []I, opts ...Opti
 }
 
 // Stream tries each runnable's stream in order, gated by ExceptionsToHandle
-// exactly like Invoke.
+// exactly like Invoke. With callbacks active the surviving stream is wrapped
+// in the WithFallbacks run (chain_stream per chunk; chain_error if the
+// consumer's pull fails — mid-stream errors never trigger another fallback).
 func (r WithFallbacks[I, O]) Stream(ctx context.Context, input I, opts ...Option) (Stream[O], error) {
+	ctx, run := startChainRun(ctx, opts, "with_fallbacks", input)
 	var firstErr error
 	runnables := append([]Runnable[I, O]{r.Runnable}, r.Fallbacks...)
 	for i, runnable := range runnables {
-		stream, err := runnable.Stream(ctx, input, childOptions(fallbackChildName(i), opts...)...)
+		stream, err := runnable.Stream(ctx, input, run.child(fallbackChildName(i), opts...)...)
 		if err == nil {
-			return stream, nil
+			return wrapChainStream(stream, run), nil
 		}
 		if !r.handles(err) {
+			run.fail(ctx, err)
 			return nil, err
 		}
 		if firstErr == nil {
 			firstErr = err
 		}
 	}
+	run.fail(ctx, firstErr)
 	return nil, firstErr
 }
 

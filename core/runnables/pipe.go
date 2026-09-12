@@ -135,12 +135,17 @@ type SeqN[I, O any] struct {
 }
 
 // Invoke runs every step in order, threading each output into the next step.
+// With callbacks active the sequence is one chain run (chain_start before the
+// first step, chain_end with the final output after the last) and every step
+// invocation carries a minted child run ID under the name "seq:step:N".
 func (s SeqN[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
+	ctx, run := startChainRun(ctx, opts, "sequence", input)
 	var v any = input
 	for i, step := range s.steps {
-		next, err := step.Invoke(ctx, v, childOptions(fmt.Sprintf("seq:step:%d", i+1), opts...)...)
+		next, err := step.Invoke(ctx, v, run.child(fmt.Sprintf("seq:step:%d", i+1), opts...)...)
 		if err != nil {
 			var z O
+			run.fail(ctx, err)
 			return z, err
 		}
 		v = next
@@ -148,8 +153,11 @@ func (s SeqN[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, err
 	out, ok := v.(O)
 	if !ok {
 		var z O
-		return z, fmt.Errorf("runnables: sequence output %T not assignable to output type", v)
+		err := fmt.Errorf("runnables: sequence output %T not assignable to output type", v)
+		run.fail(ctx, err)
+		return z, err
 	}
+	run.end(ctx, out)
 	return out, nil
 }
 
@@ -181,24 +189,29 @@ func (s SeqN[I, O]) Batch(ctx context.Context, inputs []I, opts ...Option) ([]O,
 // Stream streams the sequence by piping each chunk of one stage into the next
 // stage's Stream and flattening the results in order, mirroring Python
 // RunnableSequence streaming. The final Stream[any] is narrowed to Stream[O]
-// at the tail.
+// at the tail. With callbacks active the sequence's own run emits chain_start
+// at construction, one chain_stream per yielded chunk, and chain_end (output
+// nil) or chain_error when the stream is drained; steps carry minted child
+// run IDs exactly as in Invoke.
 func (s SeqN[I, O]) Stream(ctx context.Context, input I, opts ...Option) (Stream[O], error) {
 	if len(s.steps) == 0 {
 		return nil, fmt.Errorf("runnables.SeqN: empty sequence")
 	}
-	cur, err := s.steps[0].Stream(ctx, any(input), childOptions("seq:step:1", opts...)...)
+	ctx, run := startChainRun(ctx, opts, "sequence", input)
+	cur, err := s.steps[0].Stream(ctx, any(input), run.child("seq:step:1", opts...)...)
 	if err != nil {
+		run.fail(ctx, err)
 		return nil, err
 	}
 	for i := 1; i < len(s.steps); i++ {
-		stepIdx := i      // captured by makeNext below
+		stepIdx := i // captured by makeNext below
 		step := s.steps[i]
 		makeNext := func(ctx context.Context, v any) (Stream[any], error) {
-			return step.Stream(ctx, v, childOptions(fmt.Sprintf("seq:step:%d", stepIdx+1), opts...)...)
+			return step.Stream(ctx, v, run.child(fmt.Sprintf("seq:step:%d", stepIdx+1), opts...)...)
 		}
 		cur = &seqNStream{first: cur, makeNext: makeNext}
 	}
-	return &seqNTailStream[O]{inner: cur}, nil
+	return wrapChainStream(&seqNTailStream[O]{inner: cur}, run), nil
 }
 
 // InputSchema returns the first step's input schema.

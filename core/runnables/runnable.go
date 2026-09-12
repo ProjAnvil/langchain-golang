@@ -123,11 +123,19 @@ func configOption(cfg Config) Option {
 	}
 }
 
+// childOptions derives the config for one child invocation: the incoming
+// RunID (the parent run's) shifts to ParentID, the child gets the given name,
+// and — when callbacks are active — a freshly minted RunID (NewRunID) so the
+// child's own events pair into the run tree. Without callbacks nothing is
+// minted and the config is exactly the pre-instrumentation derivation.
 func childOptions(name string, opts ...Option) []Option {
 	cfg := NewConfig(opts...).Clone()
 	if cfg.RunID != "" {
 		cfg.ParentID = cfg.RunID
 		cfg.RunID = ""
+	}
+	if !cfg.Callbacks.Empty() && cfg.RunID == "" {
+		cfg.RunID = NewRunID()
 	}
 	cfg.Name = name
 	return []Option{configOption(cfg)}
@@ -179,19 +187,47 @@ func NewFunc[I any, O any](
 	}
 }
 
-// Invoke executes the runnable for one input.
+// Invoke executes the runnable for one input, emitting chain_start /
+// chain_end (or chain_error) when callbacks are configured. The event name is
+// Config.Name or "func"; a RunID set by the caller or a parent combinator
+// (via childOptions) becomes the run's own ID.
 func (r Func[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
-	return r.fn(ctx, input, opts...)
+	ctx, run := startChainRun(ctx, opts, "func", input)
+	output, err := r.fn(ctx, input, opts...)
+	if err != nil {
+		run.fail(ctx, err)
+		return output, err
+	}
+	run.end(ctx, output)
+	return output, nil
 }
 
 // Batch executes the runnable for all inputs concurrently while preserving
 // output order, bounded by the config's MaxConcurrency (Python parity:
 // RunnableConfig.max_concurrency; default DefaultParallelism). See
-// ParallelMap.
+// ParallelMap. With callbacks active each parallel element is a distinct run:
+// the per-element option mints a fresh RunID (parented to the incoming
+// ParentID, or to the incoming RunID when no parent was derived yet) so
+// concurrently interleaved start/end events pair per element. There is no
+// batch-level run of its own.
 func (r Func[I, O]) Batch(ctx context.Context, inputs []I, opts ...Option) ([]O, error) {
 	cfg := NewConfig(opts...)
+	if cfg.Callbacks.Empty() {
+		return ParallelMap(ctx, cfg, inputs, func(ctx context.Context, input I) (O, error) {
+			return r.Invoke(ctx, input, opts...)
+		})
+	}
+	base := cfg.Clone()
+	if base.RunID != "" {
+		if base.ParentID == "" {
+			base.ParentID = base.RunID
+		}
+		base.RunID = ""
+	}
 	return ParallelMap(ctx, cfg, inputs, func(ctx context.Context, input I) (O, error) {
-		return r.Invoke(ctx, input, opts...)
+		// Fresh options per element: the shared base is read-only here and a
+		// shared append would race across worker goroutines.
+		return r.Invoke(ctx, input, configOption(base), func(c *Config) { c.RunID = NewRunID() })
 	})
 }
 
