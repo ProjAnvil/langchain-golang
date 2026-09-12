@@ -539,6 +539,12 @@ func (u *usagePayload) merge(next usagePayload) {
 	}
 }
 
+// isZero reports whether the payload carries no token counts at all; some
+// gateways emit empty usage objects on message_delta.
+func (u usagePayload) isZero() bool {
+	return u == usagePayload{}
+}
+
 // toUsageMetadata mirrors Python's _create_usage_metadata
 // (langchain_anthropic/chat_models.py:2356): Anthropic's input_tokens excludes
 // cached tokens, so cache_read and cache_creation counts are added back to get

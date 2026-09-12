@@ -10,6 +10,7 @@ const (
 	topPKey          = "anthropic_top_p"
 	topKKey          = "anthropic_top_k"
 	stopSequencesKey = "anthropic_stop_sequences"
+	streamUsageKey   = "anthropic_stream_usage"
 )
 
 // WithBetaHeaders sets the anthropic-beta request header to enable beta
@@ -39,4 +40,15 @@ func WithTopK(topK int) modelconfig.Option {
 // non-streaming requests.
 func WithStopSequences(sequences []string) modelconfig.Option {
 	return modelconfig.WithExtra(stopSequencesKey, append([]string(nil), sequences...))
+}
+
+// WithStreamUsage controls whether the streaming path yields a terminal
+// usage-only chunk when the API reports final usage on message_delta.
+// Mirrors Python ChatAnthropic's stream_usage constructor field
+// (langchain_anthropic/chat_models.py:996, default true): with it on,
+// consumers aggregating over the yielded chunks see usage_metadata like
+// Python's _stream (chat_models.py:1702-1725); turning it off restores the
+// callback-only surface.
+func WithStreamUsage(enabled bool) modelconfig.Option {
+	return modelconfig.WithExtra(streamUsageKey, enabled)
 }

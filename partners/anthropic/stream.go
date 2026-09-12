@@ -62,12 +62,21 @@ func (m ChatModel) createMessageStream(
 		return nil, httpclient.ResponseError(providerName, "/messages", resp)
 	}
 
+	// stream_usage defaults to true (Python ChatAnthropic's constructor
+	// default, chat_models.py:996); WithStreamUsage(false) suppresses the
+	// terminal usage-only chunk.
+	streamUsage := true
+	if v, ok := m.config.Extra[streamUsageKey].(bool); ok {
+		streamUsage = v
+	}
+
 	return &messageStream{
 		ctx:            ctx,
 		cancel:         cancel,
 		body:           resp.Body,
 		scanner:        providerutil.NewSSEScanner(resp.Body),
 		cfg:            cfg,
+		streamUsage:    streamUsage,
 		textBlocks:     make(map[int]*streamTextBlock),
 		toolBlocks:     make(map[int]*streamToolBlock),
 		thinkingBlocks: make(map[int]*streamThinkingBlock),
@@ -80,6 +89,7 @@ type messageStream struct {
 	body            io.Closer
 	scanner         *bufio.Scanner
 	cfg             runnables.Config
+	streamUsage     bool
 	done            bool
 	eventName       string
 	data            []string
@@ -210,6 +220,28 @@ func (s *messageStream) consumeEvent(ctx context.Context) (messages.Message, boo
 			}
 			s.output.ResponseMetadata["stop_reason"] = event.Delta.StopReason
 		}
+		// Python's _stream yields this event as a terminal empty-content
+		// chunk carrying usage_metadata and the stop info
+		// (chat_models.py:1702-1725), so chunk-aggregating consumers see the
+		// token counts; Go previously surfaced usage only through the
+		// EventChatModelEnd callback. Stream usage defaults on
+		// (WithStreamUsage(false) to suppress), and a fully-zero usage never
+		// yields a chunk (some gateways send empty usage objects).
+		if s.streamUsage && !s.usage.isZero() {
+			chunk := messages.AI("")
+			chunk.UsageMetadata = s.output.UsageMetadata
+			chunk.ResponseMetadata = map[string]any{}
+			if event.Delta.StopReason != "" {
+				chunk.ResponseMetadata["stop_reason"] = event.Delta.StopReason
+			}
+			if event.Delta.StopSequence != "" {
+				chunk.ResponseMetadata["stop_sequence"] = event.Delta.StopSequence
+			}
+			if err := emitStream(ctx, s.cfg, chunk); err != nil {
+				return messages.Message{}, false, err
+			}
+			return chunk, true, nil
+		}
 		return messages.Message{}, false, nil
 	case "message_stop":
 		s.done = true
@@ -249,12 +281,13 @@ type streamEvent struct {
 }
 
 type streamDelta struct {
-	Type        string `json:"type"`
-	Text        string `json:"text"`
-	PartialJSON string `json:"partial_json"`
-	Thinking    string `json:"thinking"`
-	Signature   string `json:"signature"`
-	StopReason  string `json:"stop_reason"`
+	Type         string `json:"type"`
+	Text         string `json:"text"`
+	PartialJSON  string `json:"partial_json"`
+	Thinking     string `json:"thinking"`
+	Signature    string `json:"signature"`
+	StopReason   string `json:"stop_reason"`
+	StopSequence string `json:"stop_sequence"`
 }
 
 type streamError struct {

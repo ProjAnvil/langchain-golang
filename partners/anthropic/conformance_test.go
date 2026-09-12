@@ -204,7 +204,10 @@ func TestStandardChatModelSuites(t *testing.T) {
 			ImageInputs:      true,
 			ImageURLs:        true,
 			UsageMetadata:    true,
-			Streaming:        true,
+			// message_delta yields a terminal usage-only chunk
+			// (mirroring Python _stream, chat_models.py:1702-1725).
+			UsageMetadataStreaming: true,
+			Streaming:              true,
 		},
 		standardtests.StructuredOutputSuiteHooks{},
 	)

@@ -95,8 +95,10 @@ func TestStreamToolUseBlock(t *testing.T) {
 	stream, recorder := streamWithRecorder(t, server)
 	chunks := drainStream(t, stream)
 
-	// tool_use start, both input_json deltas, and stop each surface a chunk.
-	if len(chunks) != 4 {
+	// tool_use start, both input_json deltas, and stop each surface a chunk;
+	// message_delta then appends the terminal usage-only chunk (Python parity,
+	// see TestStreamYieldsUsageChunk).
+	if len(chunks) != 5 {
 		t.Fatalf("chunks: %+v", chunks)
 	}
 	startBlock := messages.BlockToMap(chunks[0].ContentBlocks[0])
@@ -105,6 +107,9 @@ func TestStreamToolUseBlock(t *testing.T) {
 	}
 	if len(chunks[3].ToolCalls) != 1 || chunks[3].ToolCalls[0].Args["q"] != "weather" {
 		t.Fatalf("stop chunk tool call: %+v", chunks[3].ToolCalls)
+	}
+	if chunks[4].UsageMetadata.OutputTokens != 7 || chunks[4].ResponseMetadata["stop_reason"] != "tool_use" {
+		t.Fatalf("usage chunk: %+v %+v", chunks[4].UsageMetadata, chunks[4].ResponseMetadata)
 	}
 
 	output := finalOutput(t, recorder)
@@ -293,7 +298,10 @@ func TestStreamUnknownEventsIgnored(t *testing.T) {
 
 	stream, recorder := streamWithRecorder(t, server)
 	chunks := drainStream(t, stream)
-	if len(chunks) != 1 || chunks[0].Content != "ok" {
+	// message_start carries input usage, so the message_delta yields a
+	// terminal usage-only chunk ahead of the text delta (Python parity, see
+	// TestStreamYieldsUsageChunk); unknown events contribute nothing.
+	if len(chunks) != 2 || chunks[0].UsageMetadata.InputTokens == 0 || chunks[1].Content != "ok" {
 		t.Fatalf("chunks: %+v", chunks)
 	}
 	if output := finalOutput(t, recorder); output.Content != "ok" {
