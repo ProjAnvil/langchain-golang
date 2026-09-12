@@ -7,6 +7,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
+	"github.com/projanvil/langchain-golang/core/structuredoutput"
 )
 
 // Mirrors libs/partners/openai/tests/unit_tests/chat_models/test_base.py
@@ -142,6 +143,42 @@ func TestStructuredOutputChatCompletionsRequest(t *testing.T) {
 		t.Fatalf("json_schema = %v, want {name:joke strict:true}", nested)
 	}
 	schemaObj, ok := nested["schema"].(map[string]any)
+	if !ok || schemaObj["type"] != "object" {
+		t.Fatalf("json_schema.schema = %v, want {type:object}", nested["schema"])
+	}
+}
+
+// TestStructuredOutputChatCompletionsOmitsEmptyName pins the omitempty
+// behavior of the Chat Completions json_schema name: when the structuredOutput
+// binding carries an empty Name, the "name" key must be absent from the wire
+// payload (an explicit "name":"" is rejected by the API), while schema and
+// strict keep their shapes.
+func TestStructuredOutputChatCompletionsOmitsEmptyName(t *testing.T) {
+	model := ChatModel{
+		structuredOutput: &structuredoutput.JSONSchema{
+			Schema: map[string]any{"type": "object"},
+			Strict: true,
+		},
+	}
+	request, err := model.buildChatCompletionsRequest([]messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("buildChatCompletionsRequest: %v", err)
+	}
+	format := request.ResponseFormat
+	if format["type"] != "json_schema" {
+		t.Fatalf("response_format = %v, want {type:json_schema}", format)
+	}
+	nested, ok := format["json_schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("json_schema missing: %v", format)
+	}
+	if name, present := nested["name"]; present {
+		t.Fatalf("empty name must be omitted from the wire payload, got name=%#v", name)
+	}
+	if nested["strict"] != true {
+		t.Fatalf("strict = %v, want true", nested["strict"])
+	}
+	schemaObj, ok := nested["schema"].(schema.Schema)
 	if !ok || schemaObj["type"] != "object" {
 		t.Fatalf("json_schema.schema = %v, want {type:object}", nested["schema"])
 	}

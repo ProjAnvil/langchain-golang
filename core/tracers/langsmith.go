@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -199,6 +198,10 @@ type LangChainTracer struct {
 	flushNow chan chan struct{}
 	done     chan struct{}
 	closing  atomic.Bool
+	// dropped counts queue-overflow drops since the last aggregated report
+	// (see reportDropped); an atomic, not mutex-guarded, because enqueue runs
+	// on business goroutines.
+	dropped atomic.Int64
 
 	// mu guards runMap/orderMap and the runs inside them (outputs/error/end
 	// fills and stream counting race with concurrent Each-style emitters).
@@ -313,6 +316,13 @@ func runTypeFor(kind callbacks.EventKind) RunType {
 	}
 }
 
+// handleStart builds the Run for a start-kind event. Inputs is eagerly
+// serialized to its wire bytes (eagerTraceJSON): the queued snapshot must own
+// immutable data, because the caller may mutate its input map as soon as the
+// traced call returns while the flusher might not serialize for up to
+// FlushEvery — sharing the reference is a data race. The snapshot is taken
+// inside the critical section so a concurrent handleEnd for the same run
+// cannot mutate the Run struct mid-copy.
 func (t *LangChainTracer) handleStart(event callbacks.Event) {
 	run := &Run{
 		ID:          event.RunID,
@@ -321,34 +331,60 @@ func (t *LangChainTracer) handleStart(event callbacks.Event) {
 		ParentRunID: event.ParentID,
 		Tags:        event.Tags,
 		Metadata:    event.Metadata,
-		Inputs:      event.Input,
+		Inputs:      t.eagerTraceJSON(event.Input),
 		StartTime:   event.Timestamp.UTC(),
 	}
 	t.mu.Lock()
 	t.startTrace(run)
-	t.mu.Unlock()
 	snapshot := *run
+	t.mu.Unlock()
 	t.enqueue(runOperation{run: &snapshot})
 }
 
+// handleEnd fills outputs/error/end time on the live run and queues the patch
+// snapshot. Outputs is eagerly serialized for the same ownership reason as
+// handleStart's Inputs, and the snapshot copy happens under the lock so the
+// run's fields cannot change mid-copy.
 func (t *LangChainTracer) handleEnd(event callbacks.Event) {
+	outputs := t.eagerTraceJSON(event.Output)
 	t.mu.Lock()
 	run, ok := t.runMap[event.RunID]
+	var snapshot *Run
 	if ok {
-		if event.Output != nil {
-			run.Outputs = event.Output
+		if outputs != nil {
+			run.Outputs = outputs
 		}
 		run.Error = event.Error
 		endTime := event.Timestamp.UTC()
 		run.EndTime = &endTime
 		delete(t.runMap, event.RunID)
+		copied := *run
+		snapshot = &copied
 	}
 	t.mu.Unlock()
-	if !ok {
+	if snapshot == nil {
 		return // end for an unknown or already-ended run: nothing to update
 	}
-	snapshot := *run
-	t.enqueue(runOperation{patch: true, run: &snapshot})
+	t.enqueue(runOperation{patch: true, run: snapshot})
+}
+
+// eagerTraceJSON pre-serializes value into its exact wire form so the Run (and
+// the snapshots queued for the flusher) owns immutable bytes instead of the
+// caller's live maps. json.RawMessage embeds byte-identically during batch
+// encoding — encoding/json treats it as literal JSON — so the /runs/batch
+// payload is unchanged. A value that cannot be serialized at all (func,
+// channel, cycle in a metadata-rich payload) is dropped with an OnError note:
+// the alternative — keeping the reference — is a data race by construction.
+func (t *LangChainTracer) eagerTraceJSON(value any) any {
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.reportError(fmt.Errorf("langsmith: snapshot inputs/outputs not serializable; field dropped: %w", err))
+		return nil
+	}
+	return json.RawMessage(raw)
 }
 
 func (t *LangChainTracer) handleStream(event callbacks.Event) {
@@ -360,9 +396,13 @@ func (t *LangChainTracer) handleStream(event callbacks.Event) {
 }
 
 // enqueue offers one operation to the flusher without ever blocking the
-// business call: a full (or closing) queue drops the op with an OnError note.
-// The recover guards the tiny race where Close closes the channel between
-// the closing check and the send.
+// business call: a full (or closing) queue drops the op, counting it in
+// t.dropped — the aggregated overflow is reported by the flusher's periodic
+// reportDropped, not per op, so an overload episode surfaces as one bounded
+// OnError wave instead of one callback per dropped operation (a per-op
+// observer firing hundreds of times would itself become the outage). The
+// recover guards the tiny race where Close closes the channel between the
+// closing check and the send.
 func (t *LangChainTracer) enqueue(op runOperation) {
 	if t.closing.Load() {
 		return
@@ -371,7 +411,18 @@ func (t *LangChainTracer) enqueue(op runOperation) {
 	select {
 	case t.queue <- op:
 	default:
-		t.reportError(errors.New("langsmith: tracing queue full; dropped a run operation"))
+		t.dropped.Add(1)
+	}
+}
+
+// reportDropped folds the overflow drops observed since the previous report
+// into a single OnError notification and resets the counter. Called by the
+// flusher after each shipping point (batch fill, ticker, Flush barrier, final
+// drain), so the number of notifications for one overload episode is bounded
+// by the number of shipping points, not by the number of dropped operations.
+func (t *LangChainTracer) reportDropped() {
+	if n := t.dropped.Swap(0); n > 0 {
+		t.reportError(fmt.Errorf("langsmith: tracing queue full; dropped %d run operations", n))
 	}
 }
 
@@ -439,17 +490,21 @@ func (t *LangChainTracer) flushLoop() {
 		case op, ok := <-t.queue:
 			if !ok {
 				t.ship(batch)
+				t.reportDropped()
 				return
 			}
 			batch = append(batch, op)
 			if len(batch) >= t.opts.BatchSize {
 				batch = t.ship(batch)
+				t.reportDropped()
 			}
 		case <-ticker.C:
 			batch = t.ship(batch)
+			t.reportDropped()
 		case ack := <-t.flushNow:
 			batch = t.drainQueue(batch)
 			batch = t.ship(batch)
+			t.reportDropped()
 			close(ack)
 		}
 	}

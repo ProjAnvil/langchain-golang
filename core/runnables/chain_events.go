@@ -101,6 +101,32 @@ func (c *chainRun) child(name string, opts ...Option) []Option {
 	return childOptions(name, merged...)
 }
 
+// fnChildOptions derives the options Func hands to its wrapped function.
+// Python's Runnable._call_with_config pops the incoming run_id (it belongs to
+// the Func's own run) and replaces the function's callbacks with
+// run_manager.get_child(), so runnables the function invokes — most importantly
+// a chat model called as model.Invoke(ctx, in, opts...) — start their OWN runs
+// as children of the Func run and never reuse its ID. The Go analog: the
+// function's config parents to the Func run and carries a freshly minted RunID
+// when callbacks are active (Go models read RunID from the config instead of
+// having a child callback manager mint it). Name, Tags, Metadata, Configurable,
+// and MaxConcurrency pass through unchanged — like Python's patch_config,
+// run_name propagates only when the caller set one. With a nil run (callbacks
+// disabled) nothing is minted; only the consumed RunID shifts to ParentID.
+func fnChildOptions(run *chainRun, opts []Option) []Option {
+	cfg := NewConfig(opts...).Clone()
+	if run != nil {
+		cfg.ParentID = run.runID
+	} else if cfg.RunID != "" {
+		cfg.ParentID = cfg.RunID
+	}
+	cfg.RunID = ""
+	if !cfg.Callbacks.Empty() {
+		cfg.RunID = NewRunID()
+	}
+	return []Option{configOption(cfg)}
+}
+
 // end emits chain_end with the run's output. No-op on a nil run.
 func (c *chainRun) end(ctx context.Context, output any) {
 	if c == nil {
@@ -173,6 +199,13 @@ func (s *chainStream[O]) Next(ctx context.Context) (O, bool, error) {
 	}
 }
 
+// Close abandons the stream early: it suppresses any further events for this
+// run, including the chain_end a fully-drained stream would emit. This is a
+// documented divergence carried over from Python (an unread async generator
+// never reaches on_chain_end): tracer-side, an early-Closed run stays open —
+// the LangSmith tracer posts its create but never a patch, and its entry
+// lingers in the tracer's local run map for the process lifetime (Python's
+// RunTree is likewise never ended; only the local map retention is Go-specific).
 func (s *chainStream[O]) Close() error {
 	s.done = true
 	return s.inner.Close()

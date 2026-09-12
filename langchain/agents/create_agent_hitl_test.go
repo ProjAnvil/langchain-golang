@@ -133,6 +133,75 @@ func TestCreateAgentHITLPauseShape(t *testing.T) {
 	}
 }
 
+// TestCreateAgentHitlMintedIDsUniqueForIdenticalModelCalls pins the monotonic
+// factor of mintAIMessageIDs: two model-node executions whose local prompt is
+// byte-identical and whose model output content is byte-identical (two fresh
+// threads, same input — also what keep-last-K history trimming produces
+// in-thread once the trimmed window repeats) must still mint DISTINCT
+// AI-message IDs. With the pre-monotonic sha256(prompt+content) hash the two
+// IDs collided and MessagesReducer's ID match silently REPLACED the earlier
+// message instead of appending.
+func TestCreateAgentHitlMintedIDsUniqueForIdenticalModelCalls(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{
+		messages.AI("same answer"),
+		messages.AI("same answer"),
+	}}
+	saver := checkpoint.NewMemorySaver()
+	agent, err := CreateAgent(model, []coretools.Tool{newHitlTestTool(t, new(int))},
+		WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(map[string]middleware.InterruptConfig{
+			"echo": {AllowedDecisions: []middleware.DecisionType{middleware.DecisionApprove}},
+		})),
+		WithAgentCheckpointer(saver),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	first, _, err := agent.InvokeWithStateOptions(context.Background(),
+		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("first invoke: %v", err)
+	}
+	second, _, err := agent.InvokeWithStateOptions(context.Background(),
+		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t2"})
+	if err != nil {
+		t.Fatalf("second invoke: %v", err)
+	}
+	firstMsgs, _ := first["messages"].([]messages.Message)
+	secondMsgs, _ := second["messages"].([]messages.Message)
+	if len(firstMsgs) != 2 || len(secondMsgs) != 2 {
+		t.Fatalf("message counts: first=%d second=%d", len(firstMsgs), len(secondMsgs))
+	}
+	firstID, secondID := firstMsgs[1].ID, secondMsgs[1].ID
+	if firstID == "" || secondID == "" {
+		t.Fatalf("hitl-wired agent must mint AI ids: first=%q second=%q", firstID, secondID)
+	}
+	if firstID == secondID {
+		t.Fatalf("identical (prompt, content) model calls minted the same id %q; "+
+			"a monotonic factor must keep distinct model-node outputs distinct", firstID)
+	}
+}
+
+// TestMintAIMessageIDsMonotonicFactor is the unit-level pin: the mint must
+// never produce the same ID for two distinct messages, whether across calls
+// with identical (prompt, content) or within one response whose messages
+// repeat content.
+func TestMintAIMessageIDsMonotonicFactor(t *testing.T) {
+	first := []messages.Message{messages.AI("dup")}
+	second := []messages.Message{messages.AI("dup")}
+	mintAIMessageIDs(first, "same prompt")
+	mintAIMessageIDs(second, "same prompt")
+	if first[0].ID == "" || first[0].ID == second[0].ID {
+		t.Fatalf("ids must differ across identical calls: %q vs %q", first[0].ID, second[0].ID)
+	}
+	twin := []messages.Message{messages.AI("twin"), messages.AI("twin")}
+	mintAIMessageIDs(twin, "p")
+	if twin[0].ID == "" || twin[0].ID == twin[1].ID {
+		t.Fatalf("ids must differ within one response: %q vs %q", twin[0].ID, twin[1].ID)
+	}
+}
+
+
 // TestCreateAgentHITLDecisionBranches (design §6.5): approve, edit, reject,
 // and respond each applied to the committed AI message on resume.
 func TestCreateAgentHITLDecisionBranches(t *testing.T) {

@@ -190,10 +190,15 @@ func NewFunc[I any, O any](
 // Invoke executes the runnable for one input, emitting chain_start /
 // chain_end (or chain_error) when callbacks are configured. The event name is
 // Config.Name or "func"; a RunID set by the caller or a parent combinator
-// (via childOptions) becomes the run's own ID.
+// (via childOptions) becomes the run's own ID. The wrapped fn receives a
+// DERIVED child config, not the caller's opts: its ParentID points at the
+// Func run and its RunID is freshly minted when callbacks are active (see
+// fnChildOptions — Python RunnableLambda semantics). A model invoked inside
+// fn as model.Invoke(ctx, in, opts...) therefore starts its own run as a
+// child of the Func run instead of reusing its RunID.
 func (r Func[I, O]) Invoke(ctx context.Context, input I, opts ...Option) (O, error) {
 	ctx, run := startChainRun(ctx, opts, "func", input)
-	output, err := r.fn(ctx, input, opts...)
+	output, err := r.fn(ctx, input, fnChildOptions(run, opts)...)
 	if err != nil {
 		run.fail(ctx, err)
 		return output, err

@@ -90,7 +90,9 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/projanvil/langchain-golang/core/caches"
 	"github.com/projanvil/langchain-golang/core/language"
@@ -1688,7 +1690,7 @@ func validateMiddlewareNames(mws []any) error {
 //
 // hitlNodePresent wires the AI-message ID minting: when the graph carries the
 // dedicated hitl node, every ID-less AI message this node produces gets a
-// deterministic ID (see mintAIMessageIDs), because the HITL decision revises
+// collision-free ID (see mintAIMessageIDs), because the HITL decision revises
 // the committed AIMessage in place and MessagesReducer replaces messages by
 // ID — an ID-less revision would append a duplicate instead.
 func buildModelNode(
@@ -2076,22 +2078,45 @@ func buildModelNode(
 	}
 }
 
-// mintAIMessageIDs assigns a deterministic ID to every ID-less AI message in
-// msgs, derived from the model call's prompt string and the message content
-// (sha256(promptString+content)[:8] hex). It runs only when the graph wires
-// the dedicated hitl node: the revised AIMessage a HITL decision returns
-// must replace the committed one through MessagesReducer's ID match, which
-// requires the committed message to carry an ID (models and messages.AI
-// leave ID empty). Uniqueness is per-thread by construction — the prompt
-// string includes the whole committed history, which strictly grows between
-// turns — and the model node is never replayed on a HITL resume, so a
-// re-execution cannot collide.
+// aiMessageIDSeq is the monotonic factor folded into every ID minted by
+// mintAIMessageIDs (one bump per minting call). The graph step is not
+// observable inside a graph NodeFunc (its signature is
+// func(runtime, state) — no step counter), so the factor is process-level.
+// That is safe for the one consumer of these IDs — HITL revision replacing a
+// committed AIMessage by ID: the model node is never replayed (the hitl node
+// gates execution between the model and the tools, so a resume re-runs only
+// the hitl node), a single process therefore mints strictly increasing
+// factors, and a resumed process never re-mints IDs for already-committed
+// messages.
+var aiMessageIDSeq atomic.Uint64
+
+// mintAIMessageIDs assigns an ID to every ID-less AI message in msgs, derived
+// from the model call's prompt string, the message content, the message index
+// within the response, and a per-call monotonic counter
+// (sha256(promptString\x1fcontent\x1fseq\x1findex)[:8] hex). It runs only when
+// the graph wires the dedicated hitl node: the revised AIMessage a HITL
+// decision returns must replace the committed one through MessagesReducer's
+// ID match, which requires the committed message to carry an ID (models and
+// messages.AI leave ID empty). The prompt string alone does NOT guarantee
+// uniqueness: with keep-last-K history trimming two turns' local prompts can
+// be byte-identical, and a deterministic or cached model can then return
+// identical content — the hash would collide and MessagesReducer would
+// silently REPLACE the earlier committed message instead of appending. The
+// monotonic counter (and the per-message index, which keeps two
+// identical-content messages in one response distinct) rules that out.
 func mintAIMessageIDs(msgs []messages.Message, promptString string) {
+	seq := aiMessageIDSeq.Add(1)
 	for i := range msgs {
 		if msgs[i].Role != messages.RoleAI || msgs[i].ID != "" {
 			continue
 		}
-		sum := sha256.Sum256([]byte(promptString + msgs[i].Content))
+		preimage := strings.Join([]string{
+			promptString,
+			msgs[i].Content,
+			strconv.FormatUint(seq, 10),
+			strconv.Itoa(i),
+		}, "\x1f")
+		sum := sha256.Sum256([]byte(preimage))
 		msgs[i].ID = hex.EncodeToString(sum[:])[:8]
 	}
 }

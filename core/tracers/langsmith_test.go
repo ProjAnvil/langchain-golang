@@ -8,6 +8,7 @@ package tracers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -489,4 +490,93 @@ func lsID(i int) string {
 	digits := "0123456789abcdef"
 	tail := strings.Repeat(string(digits[i%16]), 12)
 	return "00000000-0000-0000-0000-" + tail
+}
+
+// TestLangSmithSnapshotOwnsCallerPayloads pins the eager-capture contract: a
+// queued run snapshot must not hold references into the caller's input/output
+// maps. The business caller legitimately reuses and mutates those maps as soon
+// as Invoke returns, while the background flusher may not serialize for up to
+// FlushEvery — sharing the reference is a data race (fatal under -race) and,
+// sequenced, silently corrupts the trace with post-call values. Run under
+// -race the pre-fix code reports the concurrent read/write; either way this
+// test asserts the posted payloads carry the start-time / end-time values.
+func TestLangSmithSnapshotOwnsCallerPayloads(t *testing.T) {
+	server := newLSServer("ok")
+	defer server.Close()
+	tracer := lsTracer(t, server.URL(), nil)
+	ctx := context.Background()
+	runID := "12345678-0000-0000-0000-00000000000a"
+
+	input := map[string]any{"q": "original"}
+	_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "chain", runID, "", lsTS(30),
+		func(e *callbacks.Event) { e.Input = input }))
+	// Caller-side reuse immediately after the traced call returned.
+	input["q"] = "mutated"
+	input["late"] = true
+
+	output := map[string]any{"a": "at-end"}
+	_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainEnd, "chain", runID, "", lsTS(31),
+		func(e *callbacks.Event) { e.Output = output }))
+	output["a"] = "mutated"
+	output["late"] = true
+
+	if err := tracer.Flush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	_ = tracer.Close()
+
+	body := server.lastBody(t)
+	posts := lsRuns(t, body, "post")
+	inputs, ok := posts[0]["inputs"].(map[string]any)
+	if !ok {
+		t.Fatalf("post inputs: %#v", posts[0]["inputs"])
+	}
+	if inputs["q"] != "original" {
+		t.Fatalf("inputs captured %v, want the start-time value %q", inputs["q"], "original")
+	}
+	if _, ok := inputs["late"]; ok {
+		t.Fatal("inputs captured a mutation made after the traced call returned")
+	}
+	patches := lsRuns(t, body, "patch")
+	outputs, ok := patches[0]["outputs"].(map[string]any)
+	if !ok {
+		t.Fatalf("patch outputs: %#v", patches[0]["outputs"])
+	}
+	if outputs["a"] != "at-end" || outputs["late"] != nil {
+		t.Fatalf("outputs captured %v, want the end-time value", outputs)
+	}
+}
+
+// TestLangSmithQueueOverflowAggregatesOnError pins the bounded-error contract
+// of queue overflow: one overload episode must surface as a small number of
+// aggregated OnError notifications (a per-op callback fired hundreds of times
+// from an overloaded OnError observer would itself become the outage).
+func TestLangSmithQueueOverflowAggregatesOnError(t *testing.T) {
+	// A gated server pins the flusher inside its first POST so the 100-op
+	// queue cannot drain while the test floods it.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	var onErrorCount atomic.Int64
+	tracer := lsTracer(t, srv.URL, func(error) { onErrorCount.Add(1) })
+	ctx := context.Background()
+
+	const flood = 600 // >> queue capacity (100) + one in-flight batch (64)
+	for i := 0; i < flood; i++ {
+		_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "chain",
+			lsID(i%64)+fmt.Sprintf("-%04d", i), "", lsTS(30)))
+	}
+	close(release)
+	if err := tracer.Flush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	_ = tracer.Close()
+	if n := onErrorCount.Load(); n < 1 {
+		t.Fatal("queue overflow never reached OnError")
+	} else if n > 2 {
+		t.Fatalf("OnError fired %d times for one overload episode, want a bounded 1-2", n)
+	}
 }

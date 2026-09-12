@@ -210,13 +210,16 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) (chatCo
 	// over a raw responseFormat dict. On the wire the json_schema config takes
 	// the CC-native nested form
 	// {"type":"json_schema","json_schema":{name,schema,strict}}; strict is
-	// omitted when false, mirroring the Responses path's responseFormat
-	// serialization (json:"strict,omitempty"). json_mode / raw dicts
-	// ({"type":"json_object"}, ...) pass through verbatim.
+	// omitted when false and name is omitted when empty (an explicit "name":""
+	// is rejected by the API), mirroring the Responses path's omitempty
+	// serialization. json_mode / raw dicts ({"type":"json_object"}, ...) pass
+	// through verbatim.
 	if m.structuredOutput != nil {
 		jsonSchema := map[string]any{
-			"name":   m.structuredOutput.Name,
 			"schema": m.structuredOutput.Schema,
+		}
+		if m.structuredOutput.Name != "" {
+			jsonSchema["name"] = m.structuredOutput.Name
 		}
 		if m.structuredOutput.Strict {
 			jsonSchema["strict"] = true

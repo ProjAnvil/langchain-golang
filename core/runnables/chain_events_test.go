@@ -241,6 +241,111 @@ func TestFuncBatchMintsPerElementRuns(t *testing.T) {
 	}
 }
 
+// chainNestedModel is the universal in-library pattern of a chat model invoked
+// inside a Func body — model.Invoke(ctx, input, opts...) — reading its run
+// identity straight off the received config, exactly like the partner adapters'
+// emit helpers (partners/openai/chatmodel.go et al.).
+type chainNestedModel struct{}
+
+func (chainNestedModel) Invoke(ctx context.Context, input string, opts ...Option) (string, error) {
+	cfg := NewConfig(opts...)
+	if cfg.Callbacks.Empty() {
+		return input + "-model", nil
+	}
+	start := callbacks.Event{
+		Kind:     callbacks.EventChatModelStart,
+		Name:     cfg.Name,
+		RunID:    cfg.RunID,
+		ParentID: cfg.ParentID,
+		Tags:     cfg.Tags,
+		Metadata: cfg.Metadata,
+		Input:    input,
+	}
+	if err := cfg.Callbacks.Emit(ctx, start); err != nil {
+		return "", err
+	}
+	end := start
+	end.Kind = callbacks.EventChatModelEnd
+	end.Output = input + "-model"
+	if err := cfg.Callbacks.Emit(ctx, end); err != nil {
+		return "", err
+	}
+	return input + "-model", nil
+}
+
+// TestFuncInvokeForwardsChildConfigToFn pins the Python RunnableLambda
+// semantics for what a Func body receives: a CHILD config, not the caller's
+// opts. Python's Runnable._call_with_config pops run_id (it belongs to the
+// Func's own run) and swaps the function's callbacks for
+// run_manager.get_child(), so a model invoked inside the lambda starts its own
+// run as a child of the lambda run. Forwarding the raw opts instead would make
+// chat_model_start share the Func run's RunID — duplicate run IDs in one
+// LangSmith batch and broken parent_ids in StreamEvents.
+func TestFuncInvokeForwardsChildConfigToFn(t *testing.T) {
+	recorder, withCallbacks := chainRecorder()
+	fn := NewFunc(
+		func(ctx context.Context, input string, opts ...Option) (string, error) {
+			return chainNestedModel{}.Invoke(ctx, input, opts...)
+		},
+		schema.String(""), schema.String(""),
+	)
+	output, err := fn.Invoke(context.Background(), "go", withCallbacks)
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if output != "go-model" {
+		t.Fatalf("output %q", output)
+	}
+	events := recorder.Events()
+	chainAssertSequence(t, events,
+		"chain_start:func",
+		"chat_model_start:", "chat_model_end:",
+		"chain_end:func",
+	)
+	funcStart := events[0]
+	modelStart, modelEnd := events[1], events[2]
+	if funcStart.RunID == "" {
+		t.Fatal("func run id must be minted")
+	}
+	if modelStart.RunID == "" || modelStart.RunID == funcStart.RunID {
+		t.Fatalf("model run id %q must be its own, not the func run's %q",
+			modelStart.RunID, funcStart.RunID)
+	}
+	if modelStart.ParentID != funcStart.RunID {
+		t.Fatalf("model run parent %q, want the func run %q",
+			modelStart.ParentID, funcStart.RunID)
+	}
+	if modelEnd.RunID != modelStart.RunID {
+		t.Fatalf("model end run id %q, want %q (pairing)", modelEnd.RunID, modelStart.RunID)
+	}
+}
+
+// TestFuncInvokeFnConfigWithoutCallbacks pins the no-callbacks derivation: the
+// Func run consumes the incoming RunID (Python's config.pop("run_id")), so the
+// function sees it shifted to ParentID and no fresh mint.
+func TestFuncInvokeFnConfigWithoutCallbacks(t *testing.T) {
+	var seen Config
+	fn := NewFunc(
+		func(_ context.Context, _ string, opts ...Option) (string, error) {
+			seen = NewConfig(opts...)
+			return "ok", nil
+		},
+		schema.String(""), schema.String(""),
+	)
+	if _, err := fn.Invoke(context.Background(), "x", WithRunID("root"), WithTags("t"), WithMetadata("k", "v")); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if seen.RunID != "" {
+		t.Fatalf("fn saw RunID %q; the Func run must have consumed it", seen.RunID)
+	}
+	if seen.ParentID != "root" {
+		t.Fatalf("fn ParentID %q, want the consumed run id root", seen.ParentID)
+	}
+	if seen.Tags[0] != "t" || seen.Metadata["k"] != "v" {
+		t.Fatalf("tags/metadata must pass through unchanged: %#v", seen)
+	}
+}
+
 func TestPipeChainEventsInvoke(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
 	double := NewFunc(
@@ -727,15 +832,24 @@ func TestChildRunIDMatchesChildEvents(t *testing.T) {
 		t.Fatalf("invoke: %v", err)
 	}
 	events := recorder.Events()
-	// The run ID childOptions minted into the step's config must be exactly
-	// the ID the step's own chain events carry.
+	// The run ID childOptions minted into the step's config is consumed by the
+	// step Func as its own run ID; the fn body then receives a DERIVED config
+	// (fnChildOptions) whose ParentID is exactly that ID and whose RunID is a
+	// fresh mint.
 	start := chainFind(t, events, callbacks.EventChainStart, "seq:step:1")
 	end := chainFind(t, events, callbacks.EventChainEnd, "seq:step:1")
 	if childConfig.RunID == "" {
-		t.Fatal("child config run id must be minted when callbacks are active")
+		t.Fatal("fn config run id must be minted when callbacks are active")
 	}
-	if start.RunID != childConfig.RunID || end.RunID != childConfig.RunID {
-		t.Fatalf("child events carry %q/%q, config had %q",
-			start.RunID, end.RunID, childConfig.RunID)
+	if start.RunID != end.RunID {
+		t.Fatalf("step events carry %q/%q", start.RunID, end.RunID)
+	}
+	if childConfig.ParentID != start.RunID {
+		t.Fatalf("fn config parent %q, want the step run id %q",
+			childConfig.ParentID, start.RunID)
+	}
+	if childConfig.RunID == start.RunID {
+		t.Fatalf("fn config run id %q must be a fresh mint, not the step run's",
+			childConfig.RunID)
 	}
 }
