@@ -283,9 +283,7 @@ func snapshotTask(pt checkpoint.PlannedTask, writes []checkpoint.Write) Snapshot
 			st.Path = w.TaskPath
 		}
 		if w.Channel == checkpoint.ReservedInterrupt {
-			if intr, ok := w.Value.(types.Interrupt); ok {
-				st.Interrupts = append(st.Interrupts, intr)
-			}
+			st.Interrupts = append(st.Interrupts, interruptsFromWrite(w.Value)...)
 		}
 	}
 	return st

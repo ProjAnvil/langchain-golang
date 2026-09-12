@@ -35,6 +35,28 @@ func (e *ParentCommandError) Error() string {
 	return "graph: node returned a Command targeting the parent graph"
 }
 
+// subgraphInterruptSignal is the internal control-flow signal carrying a
+// paused child run's interrupts up to the parent executor: the node wrapper
+// installed by StateGraph.AddSubgraph panics with it when the child run
+// returns a pause Result, and runNode's deferred recover converts it into the
+// task's interrupts outcome — the exact counterpart of a GraphInterrupt
+// panic, so the parent's existing pause machinery (pause checkpoint with
+// Metadata.Parents naming the child's position, ReservedInterrupt copies
+// keyed by the subgraph task's planned ID, emitPause, paused Result) applies
+// unchanged. This mirrors Python, where a nested Pregel run does not suppress
+// GraphInterrupt — the exception bubbles to the parent task runner, which
+// commits it as that task's pending writes (`_loop.py:1336`,
+// `_runner.py:583-592`). Each wrapper level strips exactly one level of
+// nesting: the interrupts travel verbatim (same ID and full-nested NS), so
+// recursion through deeper subgraphs aggregates correctly.
+type subgraphInterruptSignal struct {
+	interrupts []types.Interrupt
+}
+
+func (e *subgraphInterruptSignal) Error() string {
+	return fmt.Sprintf("graph: subgraph interrupted (%d pending)", len(e.interrupts))
+}
+
 // subgraphCheckpoint carries a running graph's checkpoint identity down to
 // subgraph nodes via the context: the run's checkpointer, thread, and the
 // running graph's OWN checkpoint namespace, so a subgraph run can checkpoint
@@ -167,9 +189,14 @@ func taskCheckpointNS(parentNS, name, taskID string) string {
 // one (Python parity: a fresh-input re-run mints new task IDs and starts a
 // fresh child namespace).
 //
-// A child that interrupts (in-node Interrupt or interrupt boundaries) is out
-// of scope: the wrapper surfaces a descriptive error rather than silently
-// treating the paused child as complete.
+// A child that interrupts (in-node Interrupt or interrupt boundaries)
+// pauses the PARENT run: the wrapper records the child's pause position
+// (Metadata.Parents) and propagates the child's interrupts — verbatim, each
+// carrying its full nested task NS — up as the subgraph node's interrupt
+// outcome (see subgraphInterruptSignal). The parent returns them in
+// Result.Interrupts, and a later Options.Resume (scalar when a single
+// interrupt is pending, or a map keyed by interrupt NS/ID) is forwarded into
+// the child so it continues from its own pause checkpoint.
 func (g *StateGraph) AddSubgraph(name string, child *CompiledGraph) *StateGraph {
 	if child == nil {
 		g.setErr(fmt.Errorf("graph: subgraph %q must not be nil", name))
@@ -190,13 +217,19 @@ func (g *StateGraph) AddSubgraph(name string, child *CompiledGraph) *StateGraph 
 
 // invokeSubgraph runs child as the subgraph node name with state as input and
 // translates the outcome into a node result: final values become the update,
-// a *ParentCommandError becomes the cleared command, and anything else is an
+// a *ParentCommandError becomes the cleared command, a paused child run
+// panics with *subgraphInterruptSignal (see above), and anything else is an
 // error.
 func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, state map[string]any) (any, error) {
 	runner := child
 	var opts Options
 	var sc subgraphCheckpoint
 	checkpointing := false
+	// childNS is this subgraph TASK's checkpoint namespace, computed when the
+	// parent run is checkpointing (see below) and also consulted by the
+	// resume-forwarding logic: a parent Options.Graph addressing a namespace
+	// outside childNS must not have its payload forwarded into this child.
+	var childNS string
 	if v, ok := ctx.Value(subgraphCheckpointKey{}).(subgraphCheckpoint); ok {
 		sc = v
 		checkpointing = true
@@ -209,7 +242,7 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 		cp.checkpointer = sc.saver
 		runner = &cp
 		taskID, _ := ctx.Value(plannedTaskIDKey{}).(string)
-		childNS := taskCheckpointNS(sc.ns, name, taskID)
+		childNS = taskCheckpointNS(sc.ns, name, taskID)
 		legacyNS := joinCheckpointNS(sc.ns, name)
 		opts = Options{ThreadID: sc.threadID, checkpointNS: childNS}
 		// Time-travel pin: when the parent run started from a checkpoint whose
@@ -242,6 +275,35 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 		// WithDurability value applies when the parent run was not
 		// overridden.
 		opts.Durability = m.opts.Durability
+		// Resume forwarding (T15): a RESUMING parent dispatches this subgraph
+		// task with a (possibly empty) resume queue of its own, but the
+		// wrapper never consumes it — the values belong to the child's
+		// interrupts (parent copies and child pending share ID/NS). Forward
+		// the payload verbatim (scalar or map, no parent-level pre-matching:
+		// the child's own planResume matches per-task by NS/ID, which is what
+		// makes multi-task child interrupts dispatch correctly) and force the
+		// child into the resume branch, where sc.parents pins it to its pause
+		// checkpoint. Equivalent to Python's null-resume delegation chain +
+		// RESUME_MAP propagation; recursion through deeper subgraphs works the
+		// same way level by level.
+		//
+		// One guard on the payload: when Options.Graph names a namespace
+		// DISJOINT from this child's own (the resume is addressed to a
+		// sibling root-level interrupt or another subgraph's task),
+		// forwarding it would either mis-feed the child's pending scalar or
+		// trip the child's strict graphNS validation. Overlap in either
+		// direction — Graph naming an ancestor (or exactly) the child's
+		// namespace, or a specific interrupt nested inside it — forwards;
+		// disjoint namespaces withhold the payload, and forceResume alone
+		// makes the pinned child re-pause with its interrupt intact (the
+		// "partially answered resume" shape).
+		if m.resuming {
+			if m.opts.Graph == "" || nsCovers(m.opts.Graph, childNS) || nsCovers(childNS, m.opts.Graph) {
+				opts.Resume = m.opts.Resume
+				opts.Graph = m.opts.Graph
+			}
+			opts.forceResume = true
+		}
 	}
 
 	// Streaming: propagate the emission layer to the child run. The child's
@@ -268,18 +330,48 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 		return nil, fmt.Errorf("graph: subgraph %q: %w", name, err)
 	}
 	if len(res.Interrupts) > 0 {
-		return nil, fmt.Errorf("graph: subgraph %q interrupted (%v); resuming interrupted subgraphs is not supported", name, res.Interrupts)
+		// The child paused. Record its position first (its pause checkpoint —
+		// the child run's deferred flush completed before it returned, under
+		// every Durability mode, so the latest tuple in the child namespace is
+		// the pause) so the parent's pause checkpoint names it in
+		// Metadata.Parents and a resume can pin the child back to it. Then
+		// propagate the interrupts as the subgraph node's interrupt outcome:
+		// runNode's recover turns the signal into the task's interrupts, and
+		// the parent's existing pause machinery persists ReservedInterrupt
+		// copies keyed by this task's planned ID (see subgraphInterruptSignal).
+		if checkpointing {
+			if err := recordChildPosition(ctx, sc, opts, name); err != nil {
+				return nil, err
+			}
+		}
+		panic(&subgraphInterruptSignal{interrupts: res.Interrupts})
 	}
-	if checkpointing && sc.children != nil {
+	if checkpointing {
 		// Record the child's final position so the parent's subsequent
 		// checkpoints name this namespace in Metadata.Parents.
-		tup, terr := sc.saver.GetTuple(ctx, checkpoint.Config{ThreadID: sc.threadID, CheckpointNS: opts.checkpointNS})
-		if terr != nil {
-			return nil, fmt.Errorf("graph: subgraph %q: loading child checkpoint: %w", name, terr)
-		}
-		if tup != nil {
-			sc.children.set(opts.checkpointNS, tup.Config.CheckpointID)
+		if err := recordChildPosition(ctx, sc, opts, name); err != nil {
+			return nil, err
 		}
 	}
 	return res.Values, nil
+}
+
+// recordChildPosition records the child namespace's latest checkpoint ID as
+// the child's position in the parent run's childCheckpoints, so the parent's
+// next checkpoint names it in Metadata.Parents (the link a later resume or
+// time-travel re-entry pins the child to). Called by invokeSubgraph both
+// after a completed child run (position = the child's final checkpoint) and
+// after a paused one (position = the child's pause checkpoint).
+func recordChildPosition(ctx context.Context, sc subgraphCheckpoint, opts Options, name string) error {
+	if sc.children == nil {
+		return nil
+	}
+	tup, err := sc.saver.GetTuple(ctx, checkpoint.Config{ThreadID: sc.threadID, CheckpointNS: opts.checkpointNS})
+	if err != nil {
+		return fmt.Errorf("graph: subgraph %q: loading child checkpoint: %w", name, err)
+	}
+	if tup != nil {
+		sc.children.set(opts.checkpointNS, tup.Config.CheckpointID)
+	}
+	return nil
 }

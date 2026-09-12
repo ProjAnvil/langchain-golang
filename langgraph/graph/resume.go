@@ -42,11 +42,30 @@ func interruptsFromWrites(writes []checkpoint.Write) []types.Interrupt {
 		if w.Channel != checkpoint.ReservedInterrupt {
 			continue
 		}
-		if intr, ok := w.Value.(types.Interrupt); ok {
-			out = append(out, intr)
-		}
+		out = append(out, interruptsFromWrite(w.Value)...)
 	}
 	return out
+}
+
+// interruptsFromWrite unpacks one ReservedInterrupt write's value, which two
+// writers shape differently:
+//   - a single types.Interrupt — every root-level task surfaces at most one
+//     interrupt per pause, and boundary interrupts (interrupt_before/after)
+//     write one;
+//   - a whole []types.Interrupt — a subgraph task propagating its paused
+//     child's SEVERAL pending interrupts packs them into one write (see
+//     interruptAndResumeWrites), mirroring Python's single
+//     `(INTERRUPT, interrupts_tuple)` pending write (_runner.py:583-592):
+//     savers give __interrupt__ ONE reserved slot per task (Python's
+//     WRITES_IDX_MAP -3), so per-interrupt writes would collapse to the last.
+func interruptsFromWrite(v any) []types.Interrupt {
+	switch x := v.(type) {
+	case types.Interrupt:
+		return []types.Interrupt{x}
+	case []types.Interrupt:
+		return x
+	}
+	return nil
 }
 
 // interruptWrites builds the ReservedInterrupt pending writes recording each
@@ -80,9 +99,19 @@ func interruptAndResumeWrites(interrupts []types.Interrupt, consumed []any) []ch
 	if len(interrupts) == 0 {
 		return nil
 	}
-	writes := make([]checkpoint.Write, 0, len(interrupts)+1)
-	for _, intr := range interrupts {
-		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: intr})
+	writes := make([]checkpoint.Write, 0, 2)
+	if len(interrupts) == 1 {
+		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: interrupts[0]})
+	} else {
+		// Several interrupts under one task (a subgraph task whose child
+		// paused with multiple pending) travel as ONE write carrying the
+		// whole list — Python's (INTERRUPT, interrupts_tuple) shape. Savers
+		// give __interrupt__ a single reserved slot per task (Python's
+		// WRITES_IDX_MAP -3; MemorySaver replaces in place), so one write per
+		// interrupt would collapse to the last. Readers unpack either shape
+		// (interruptsFromWrite); single-interrupt writes keep the exact
+		// pre-T15 form.
+		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: interrupts})
 	}
 	if len(consumed) > 0 {
 		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedResume, Value: []any(consumed)})
@@ -221,11 +250,35 @@ func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any, graphNS st
 // checkpoint is an error, mirroring Python's requirement that multiple
 // pending interrupts be resumed with an interrupt-ID map.
 //
-// graphNS optionally restricts/validates resume matching to pending
-// interrupts whose NS it hits (strict NS addressing); current entry points
-// pass "" (see resumeFromTuple).
+// graphNS (Options.Graph) restricts/validates resume matching to the pending
+// interrupts whose NS lies within it (see nsCovers): the pending set is
+// filtered BEFORE the scalar-count rule, so a scalar resume is allowed when
+// exactly one pending interrupt hits even if others remain unmatched (they
+// re-fire and the run re-pauses). A graphNS hitting nothing is a descriptive
+// error listing the available NS values.
 func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, error) {
 	pending := interruptsFromWrites(tup.PendingWrites)
+	if graphNS != "" {
+		var hits []types.Interrupt
+		var avail []string
+		for _, p := range pending {
+			if p.NS != "" {
+				avail = append(avail, p.NS)
+			}
+			if nsCovers(graphNS, p.NS) {
+				hits = append(hits, p)
+			}
+		}
+		if len(hits) == 0 {
+			if len(avail) == 0 {
+				return resumePlan{}, fmt.Errorf(
+					"graph: Options.Graph %q matches no pending interrupt (none of the %d pending interrupts carry an addressable NS)", graphNS, len(pending))
+			}
+			return resumePlan{}, fmt.Errorf(
+				"graph: Options.Graph %q matches no pending interrupt (available NS: %s)", graphNS, strings.Join(avail, ", "))
+		}
+		pending = hits
+	}
 	if resume != nil {
 		if _, isMap := resume.(map[string]any); !isMap && len(pending) > 1 {
 			return resumePlan{}, fmt.Errorf(
@@ -252,9 +305,7 @@ func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, 
 		for _, w := range byTask[pt.ID] {
 			switch w.Channel {
 			case checkpoint.ReservedInterrupt:
-				if intr, ok := w.Value.(types.Interrupt); ok {
-					interrupts = append(interrupts, intr)
-				}
+				interrupts = append(interrupts, interruptsFromWrite(w.Value)...)
 			case checkpoint.ReservedResume:
 				// One write carries the WHOLE consumed prefix as a []any
 				// (Python parity: types.py:905-925). A non-slice value is
@@ -307,8 +358,11 @@ func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, 
 // cycles are carried by prefix, so a map entry naming an already-answered
 // interrupt is ignored.
 //
-// graphNS is reserved for strict NS-addressed resume routing (it restricts
-// matching to NS-hit interrupts); current entry points pass "".
+// graphNS (Options.Graph, forwarded verbatim into subgraph runs) filters the
+// task's pending interrupts to those lying within the named namespace before
+// matching: a scalar then feeds only the addressed task's queue (never a
+// sibling's), and a task whose interrupts all fall outside the namespace
+// keeps its prefix alone — its interrupts re-fire and the run re-pauses.
 //
 // Boundary interrupts (interrupt_before/interrupt_after) never reach this
 // function: their pending writes are stamped with the node name, not a
@@ -318,6 +372,18 @@ func resumeValuesFor(pending []types.Interrupt, prefix []any, resume any, graphN
 	queue := append([]any{}, prefix...)
 	if len(pending) == 0 || resume == nil {
 		return queue
+	}
+	if graphNS != "" {
+		filtered := make([]types.Interrupt, 0, len(pending))
+		for _, p := range pending {
+			if nsCovers(graphNS, p.NS) {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) == 0 {
+			return queue
+		}
+		pending = filtered
 	}
 	if byKey, ok := resume.(map[string]any); ok {
 		for _, p := range pending {
@@ -353,6 +419,21 @@ func resumeSkipNode(pending []types.Interrupt, ownNS string) string {
 		}
 	}
 	return ""
+}
+
+// nsCovers reports whether an interrupt stamped with checkpoint namespace
+// interruptNS lies within the graph namespace ns: either exactly ns or
+// nested under it (ns + "/"). It is the addressability test behind
+// Options.Graph — a resume addressed to ns may feed any interrupt raised by
+// the graph run that checkpointed under ns (including tasks of its nested
+// subgraphs), but nothing above or beside it. A legacy interrupt persisted
+// before NS stamping (NS == "") is covered only by the root namespace "",
+// where every interrupt is addressable by construction.
+func nsCovers(ns, interruptNS string) bool {
+	if interruptNS == "" {
+		return ns == ""
+	}
+	return interruptNS == ns || strings.HasPrefix(interruptNS, ns+"/")
 }
 
 // interruptOwnedBy reports whether an interrupt stamped with checkpoint

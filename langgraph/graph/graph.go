@@ -772,6 +772,33 @@ type Options struct {
 	//     interrupt-ID map instead.
 	Resume any
 
+	// Graph optionally namespaces a Resume, mirroring the graph selector of
+	// Python's Command(resume=..., graph=ns): when non-empty, the resume's
+	// matching is restricted (and validated) to the pending interrupts whose
+	// NS lies within the named checkpoint namespace — the namespace itself
+	// (e.g. a subgraph task's "<node>:<taskID>") or anything nested under it
+	// (e.g. an interrupt raised inside that subgraph, whose NS is
+	// "<node>:<taskID>/<inner>:<taskID>"). A scalar Resume is then allowed
+	// whenever exactly one pending interrupt hits, bypassing the usual
+	// "multiple pending interrupts require a map" error. A non-empty Graph
+	// matching no pending interrupt is a descriptive error listing the
+	// available NS values.
+	//
+	// Requires Resume (Graph without Resume is an error), and
+	// types.ParentGraph is rejected (a resume cannot climb out of the graph
+	// it targets — Python errors the same way, _io.py:57-58). Graph is
+	// propagated into subgraph runs together with Resume (see
+	// StateGraph.AddSubgraph), so addressing a nested interrupt by any
+	// ancestor namespace of its NS works at any depth.
+	Graph string
+
+	// forceResume marks Options built by the AddSubgraph wrapper for a child
+	// run dispatched by a RESUMING parent: the child must enter the run loop's
+	// resume branch (continuing from its own pinned pause checkpoint) instead
+	// of treating the parent state as fresh input, mirroring Python's
+	// CONFIG_KEY_RESUMING propagation (_loop.py:1037-1076). Internal only.
+	forceResume bool
+
 	// RecursionLimit overrides the compiled recursion limit for this single
 	// invocation: > 0 takes precedence over the compile-time
 	// WithRecursionLimit value; 0 (or negative) means use the compiled
@@ -1071,9 +1098,23 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// The cfg pointer is shared with the run loop, which advances it between
 	// supersteps; ExecutionInfo reads it at buildRuntime time, so it tracks
 	// the latest save.
+	//
+	// resuming mirrors the mode-selection switch below (the two resume
+	// branches): a resuming run's subgraph tasks forward the resume payload
+	// into their child runs (invokeSubgraph). A forceResume whose namespace
+	// holds no checkpoint degrades to a fresh-input run, which is NOT
+	// resuming.
+	resuming := false
+	switch {
+	case opts.Resume != nil || (opts.forceResume && tup != nil):
+		resuming = true
+	case opts.Resume == nil && !opts.forceResume && tup != nil && len(input) == 0:
+		resuming = true
+	}
 	runCtx = context.WithValue(runCtx, executionMetaKey{}, executionMeta{
-		cfg:  currentCfg,
-		opts: opts,
+		cfg:      currentCfg,
+		opts:     opts,
+		resuming: resuming,
 	})
 
 	// cpSink dispatches checkpoint/per-task writes according to the
@@ -1139,9 +1180,29 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// (no value to feed back). Fresh (non-empty) input with an existing
 	// checkpoint starts a NEW turn instead (D2): the input applies on top of
 	// the latest state and execution restarts from the entry point.
+	//
+	// opts.forceResume (set by the AddSubgraph wrapper when the parent run is
+	// resuming) routes the child through the resume branch as well; when the
+	// child's namespace holds no checkpoint yet — a subgraph task dispatched
+	// for the first time by a resuming parent — it degrades to the fresh-input
+	// branches below instead of erroring, so the child simply runs.
+	//
+	// Options.Graph names the checkpoint namespace a Resume is addressed to
+	// (see its doc comment): validate it up front — without a Resume it is a
+	// caller error, and types.ParentGraph cannot be resumed into (Python
+	// rejects the same, _io.py:57-58).
+	if opts.Graph != "" {
+		if opts.Resume == nil {
+			return Result{}, fmt.Errorf("graph: Options.Graph requires Options.Resume")
+		}
+		if opts.Graph == types.ParentGraph {
+			return Result{}, fmt.Errorf("graph: Options.Graph must not be %q (a resume applies within the graph it targets; to resume the parent of a subgraph, resume the parent thread)", types.ParentGraph)
+		}
+	}
 	var replayWrites []taskWrites
+	forceDegraded := opts.forceResume && tup == nil
 	switch {
-	case opts.Resume != nil:
+	case (opts.Resume != nil || opts.forceResume) && !forceDegraded:
 		if g.checkpointer == nil {
 			return Result{}, fmt.Errorf("graph: Options.Resume requires a checkpointer (see WithCheckpointer)")
 		}
@@ -1151,7 +1212,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, opts.Resume, "")
+		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, opts.Resume, opts.Graph)
 		if err != nil {
 			return Result{}, err
 		}
@@ -1266,8 +1327,14 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				NS:    taskCheckpointNS(opts.checkpointNS, pausedBefore, ""),
 			}
 			if checkpointing {
+				next := plannedTasks(active)
+				// Pre-stamp the would-be dispatch identities (see
+				// stampDispatchIDs): a later resume re-dispatches these
+				// tasks with the checkpoint's IDs, keeping the identities
+				// a non-paused run would have computed.
+				stampDispatchIDs(next, active, *currentCfg, rs.step+1)
 				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step},
-					plannedTasks(active)); err != nil {
+					next); err != nil {
 					return Result{}, err
 				}
 				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedBefore); err != nil {
@@ -1476,6 +1543,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// pending writes are keyed by the task's planned ID (D5).
 			if checkpointing {
 				next := plannedTasks(active)
+				// Stamp the dispatch identities BEFORE saving: the pause's
+				// Next must name the IDs the (possibly re-dispatched) tasks
+				// of this superstep actually ran under, so the next resume
+				// re-attaches those same IDs (see stampDispatchIDs).
+				stampDispatchIDs(next, active, *currentCfg, rs.step+1)
 				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next); err != nil {
 					return Result{}, err
 				}
@@ -1608,6 +1680,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// empty and resume is a no-op completion.
 		if pausedAfter := g.findInterruptAfter(active); pausedAfter != "" {
 			planned := plannedTasks(nextTasks)
+			// Pre-stamp the successors' dispatch identities against the
+			// just-committed position (see stampDispatchIDs): the next
+			// dispatch — with or without an intervening resume — runs
+			// under the same IDs.
+			stampDispatchIDs(planned, nextTasks, *currentCfg, rs.step+1)
 			interrupt := types.Interrupt{
 				Value: fmt.Sprintf("interrupt_after: %s", pausedAfter),
 				ID:    interruptAfterID + pausedAfter,
@@ -1667,6 +1744,29 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// D1: checkpoints survive completion — the final loop checkpoint (with an
 	// empty Next) stays in the thread's history.
 	return Result{Values: rs.snapshot()}, nil
+}
+
+// stampDispatchIDs pre-stamps each planned task with the identity its task
+// dispatched under (or, for not-yet-dispatched tasks, the identity the
+// upcoming dispatch will compute): task.plannedID against the run's CURRENT
+// checkpoint position and the superstep the tasks run in. A pause checkpoint
+// that carries these IDs keeps the original dispatch, its pending-writes
+// keys, and every post-resume re-dispatch (planResume re-attaches pt.ID)
+// on ONE task identity. That single identity is what lets a subgraph task
+// recompute the child namespace (taskCheckpointNS) its pause checkpoint's
+// Metadata.Parents pin names — across any number of pause/resume cycles —
+// and it keeps an interrupt's NS stable while a pause cycle re-fires it.
+// END destinations are skipped, mirroring plannedTasks, so next and the
+// non-END tasks of tasks stay index-aligned.
+func stampDispatchIDs(next []checkpoint.PlannedTask, tasks []task, planning checkpoint.Config, step int) {
+	j := 0
+	for _, t := range tasks {
+		if t.node == types.END {
+			continue
+		}
+		next[j].ID = t.plannedID(planning, step)
+		j++
+	}
 }
 
 // plannedTasks converts resolved next-step tasks into their checkpoint
@@ -1761,8 +1861,16 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 		ChannelVersions: maps.Clone(rs.versions),
 		VersionsSeen:    cloneSeen(rs.seen),
 	}
+	// Planned-task IDs: a pre-stamped ID (the pause paths in run stamp the
+	// IDs the superstep's tasks actually dispatched under — see
+	// stampDispatchIDs) is kept verbatim; an empty one (commit checkpoints'
+	// undispatched successors, UpdateState destinations) is stamped against
+	// the NEW checkpoint, which is the checkpoint the next superstep's
+	// dispatch recomputes planned IDs against (see task.plannedID).
 	for i := range next {
-		next[i].ID = TaskID(cp.ID, md.Step+1, next[i].Node, next[i].Arg)
+		if next[i].ID == "" {
+			next[i].ID = TaskID(cp.ID, md.Step+1, next[i].Node, next[i].Arg)
+		}
 	}
 	cp.Next = next
 	put := cpSink.putCheckpoint
@@ -1982,6 +2090,18 @@ func (g *CompiledGraph) runNode(ctx context.Context, t task, state map[string]an
 				err = nil
 				return
 			}
+			if sig, ok := r.(*subgraphInterruptSignal); ok {
+				// A paused child run propagated its interrupts (see
+				// invokeSubgraph): they become this task's interrupts verbatim.
+				// consumed stays nil — the wrapper never consumes the
+				// parent-level resume queue, so no ReservedResume prefix is
+				// persisted for the subgraph task (the child namespace holds
+				// the real prefix).
+				interrupts = sig.interrupts
+				result = nil
+				err = nil
+				return
+			}
 			panic(r)
 		}
 	}()
@@ -2132,6 +2252,12 @@ type executionMeta struct {
 	cfg     *checkpoint.Config
 	opts    Options
 	attempt int // 1-indexed node attempt, set per runNode invocation
+	// resuming reports whether the run entered via one of the run loop's
+	// resume branches (explicit Options.Resume, a wrapper-forwarded
+	// forceResume, or nil input over an existing checkpoint). The AddSubgraph
+	// wrapper reads it to forward the resume payload into child runs
+	// (invokeSubgraph), mirroring Python's CONFIG_KEY_RESUMING propagation.
+	resuming bool
 }
 
 // executionInfoFromContext assembles an ExecutionInfo from the run's published

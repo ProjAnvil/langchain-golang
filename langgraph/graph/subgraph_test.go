@@ -614,29 +614,676 @@ func TestSubgraphRepeatedExecutionDistinctNamespaces(t *testing.T) {
 	}
 }
 
-// TestSubgraphInterruptDescriptiveError verifies that a child graph that
-// interrupts surfaces a descriptive error from the subgraph node instead of
-// silently treating the paused child as complete (resuming interrupted
-// subgraphs is unsupported).
-func TestSubgraphInterruptDescriptiveError(t *testing.T) {
-	child := compileChild(t, "child_step", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
-		Interrupt(ctx, "pause-inside-child")
+// TestSubgraphInterruptPausesParent verifies the pause half of subgraph
+// interrupt propagation (T15): a child graph that interrupts no longer errors
+// the parent run — the wrapper propagates the child's interrupts upward, so
+// the PARENT pauses with them, each interrupt carrying the interrupting task's
+// full nested NS ("<sub>:<taskID>/<ask-node>:<taskID>"). The parent's pause
+// checkpoint must (a) name the child's pause position in Metadata.Parents and
+// (b) persist a ReservedInterrupt copy of the child's interrupts keyed by the
+// subgraph task's planned ID (verbatim: same Value/ID/NS, and no
+// ReservedResume prefix — the wrapper never consumes the parent-level queue).
+// A completed sibling of the same superstep persists its writes as usual, the
+// shape resume replays.
+func TestSubgraphInterruptPausesParent(t *testing.T) {
+	ctx := context.Background()
+
+	var askRuns, preRuns, sibRuns int32
+	var resumedWith any
+	child := NewStateGraph()
+	child.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		atomic.AddInt32(&askRuns, 1)
+		v := Interrupt(rt, "pause-inside-child")
+		resumedWith = v
+		return map[string]any{"answer": v}, nil
+	})
+	child.AddEdge(types.START, "ask")
+	child.AddEdge("ask", types.END)
+	childCG, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	saver := checkpoint.NewMemorySaver()
+	top := NewStateGraph()
+	top.AddNode("pre", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		atomic.AddInt32(&preRuns, 1)
 		return nil, nil
 	})
-	g := NewStateGraph()
-	g.AddSubgraph("sub", child)
-	g.AddEdge(types.START, "sub")
-	g.AddEdge("sub", types.END)
-	cg, err := g.Compile()
+	top.AddSubgraph("sub", childCG)
+	top.AddNode("sib", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		atomic.AddInt32(&sibRuns, 1)
+		return map[string]any{"sib": true}, nil
+	})
+	top.AddEdge(types.START, "pre")
+	top.AddEdge("pre", "sub")
+	top.AddEdge("pre", "sib")
+	top.AddEdge("sub", types.END)
+	top.AddEdge("sib", types.END)
+	cg, err := top.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("top Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{"value": 1}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result (subgraph interrupts propagate to the parent)", err)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("Interrupts = %+v, want exactly one propagated child interrupt", res.Interrupts)
+	}
+	intr := res.Interrupts[0]
+	if intr.Value != "pause-inside-child" {
+		t.Fatalf("interrupt Value = %v, want %q", intr.Value, "pause-inside-child")
+	}
+	if intr.ID != "ask-1" {
+		t.Fatalf("interrupt ID = %q, want %q (verbatim child identity)", intr.ID, "ask-1")
+	}
+	// NS is the interrupting task's full nested namespace:
+	// "<sub>:<subTaskID>/ask:<askTaskID>".
+	childNS, askSeg, ok := strings.Cut(intr.NS, "/")
+	if !ok || !strings.HasPrefix(childNS, "sub:") || !perTaskNSPattern.MatchString(childNS) {
+		t.Fatalf("interrupt NS = %q, want <sub>:<taskID> child namespace prefix", intr.NS)
+	}
+	if want := "ask:"; !strings.HasPrefix(askSeg, want) || !perTaskNSPattern.MatchString(askSeg) {
+		t.Fatalf("interrupt NS = %q, want the ask task segment <ask>:<taskID>", intr.NS)
+	}
+	if askRuns != 1 || preRuns != 1 || sibRuns != 1 {
+		t.Fatalf("runs at pause: ask=%d pre=%d sib=%d, want 1 each", askRuns, preRuns, sibRuns)
+	}
+
+	// The child namespace holds its own pause checkpoint (loop source), and the
+	// parent's pause checkpoint names it in Metadata.Parents.
+	childTups, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1", CheckpointNS: childNS}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List(child ns) error = %v", err)
+	}
+	if len(childTups) == 0 {
+		t.Fatalf("child namespace %q holds no checkpoints", childNS)
+	}
+	childPause := childTups[0]
+	if childPause.Metadata.Source != "loop" {
+		t.Fatalf("child ns latest checkpoint source = %q, want the child's pause checkpoint (loop)", childPause.Metadata.Source)
+	}
+	pauseTup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t1"})
+	if err != nil || pauseTup == nil {
+		t.Fatalf("GetTuple(root latest) = (%v, %v), want the parent pause checkpoint", pauseTup, err)
+	}
+	if got := pauseTup.Metadata.Parents[childNS]; got != childPause.Config.CheckpointID {
+		t.Fatalf("parent pause Parents[%q] = %q, want the child pause checkpoint %q", childNS, got, childPause.Config.CheckpointID)
+	}
+
+	// Pending writes: the subgraph task carries a verbatim ReservedInterrupt
+	// copy (no ReservedResume — the wrapper consumes nothing at the parent
+	// level), and the completed sibling persists its state write under its own
+	// planned ID (the replay shape).
+	var subTaskID, sibTaskID string
+	for _, pt := range pauseTup.Checkpoint.Next {
+		switch pt.Node {
+		case "sub":
+			subTaskID = pt.ID
+		case "sib":
+			sibTaskID = pt.ID
+		}
+	}
+	if subTaskID == "" || sibTaskID == "" {
+		t.Fatalf("pause checkpoint Next = %+v, want both sub and sib planned", pauseTup.Checkpoint.Next)
+	}
+	sawCopy, sawSib := false, false
+	for _, w := range pauseTup.PendingWrites {
+		switch w.TaskID {
+		case subTaskID:
+			if w.Channel == checkpoint.ReservedResume {
+				t.Fatalf("subgraph task persisted a ReservedResume write (%+v); the wrapper consumes nothing at the parent level", w)
+			}
+			if w.Channel != checkpoint.ReservedInterrupt {
+				t.Fatalf("subgraph task persisted a %q channel write, want ReservedInterrupt only", w.Channel)
+			}
+			cp, ok := w.Value.(types.Interrupt)
+			if !ok || cp != intr {
+				t.Fatalf("subgraph task interrupt copy = %+v, want the verbatim interrupt %+v", w.Value, intr)
+			}
+			sawCopy = true
+		case sibTaskID:
+			if w.Channel != "sib" || w.Value != true {
+				t.Fatalf("completed sibling persisted (%q, %v), want the sib channel write", w.Channel, w.Value)
+			}
+			sawSib = true
+		}
+	}
+	if !sawCopy {
+		t.Fatalf("pause checkpoint has no ReservedInterrupt copy for the subgraph task: %+v", pauseTup.PendingWrites)
+	}
+	if !sawSib {
+		t.Fatalf("pause checkpoint has no completed-sibling write for sib: %+v", pauseTup.PendingWrites)
+	}
+
+	// Resume half (§6.1): a scalar Resume is forwarded into the child, which
+	// pins to its pause checkpoint (via the parent pause checkpoint's
+	// Metadata.Parents) and continues. The completed sibling replays its
+	// persisted write instead of re-running; only the interrupted child node
+	// re-executes; the parent merges the child's final values and completes.
+	res2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: "42"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v, want completion", err)
+	}
+	if len(res2.Interrupts) != 0 {
+		t.Fatalf("resume Interrupts = %+v, want none", res2.Interrupts)
+	}
+	if resumedWith != "42" {
+		t.Fatalf("child Interrupt() returned %v, want the forwarded resume value %q", resumedWith, "42")
+	}
+	if got := res2.Values["answer"]; got != "42" {
+		t.Fatalf("resumed Values[answer] = %v, want 42 (child values merged into the parent)", got)
+	}
+	if got := res2.Values["sib"]; got != true {
+		t.Fatalf("resumed Values[sib] = %v, want true (replayed sibling write)", got)
+	}
+	if askRuns != 2 {
+		t.Fatalf("ask runs after resume = %d, want 2 (re-executed once to consume the resume value)", askRuns)
+	}
+	if preRuns != 1 || sibRuns != 1 {
+		t.Fatalf("runs after resume: pre=%d sib=%d, want 1 each (completed work replays, never re-runs)", preRuns, sibRuns)
+	}
+}
+
+// interruptingSubgraphFixture builds the §6.3/§6.4 shape: one subgraph node
+// fanned into by two Sends, whose child interrupts per task, so a pause
+// aggregates two interrupts with distinct per-task child namespaces. The
+// child echoes the resume value back keyed by the Send's "who" arg, so the
+// test can observe which interrupt each resume value reached.
+func interruptingSubgraphFixture(t *testing.T) (*CompiledGraph, func(res any) (Result, error)) {
+	t.Helper()
+	child := NewStateGraph()
+	child.AddNode("ask", func(rt runtime.Runtime, state map[string]any) (any, error) {
+		who, _ := state["who"].(string)
+		v := Interrupt(rt, "q-for-"+who)
+		return map[string]any{"answered_" + who: v}, nil
+	})
+	child.AddEdge(types.START, "ask")
+	child.AddEdge("ask", types.END)
+	childCG, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	top := NewStateGraph()
+	top.AddSubgraph("sub", childCG)
+	top.SetConditionalEntryPoint(func(runtime.Runtime, map[string]any) ([]any, error) {
+		return []any{
+			&types.Send{Node: "sub", Arg: map[string]any{"who": "a"}},
+			&types.Send{Node: "sub", Arg: map[string]any{"who": "b"}},
+		}, nil
+	})
+	top.AddEdge("sub", types.END)
+	cg, err := top.Compile(WithCheckpointer(checkpoint.NewMemorySaver()))
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), nil)
-	if err == nil {
-		t.Fatal("Invoke() error = nil, want a descriptive error for an interrupted subgraph")
+	return cg, func(resume any) (Result, error) {
+		return cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: resume})
 	}
-	if !strings.Contains(err.Error(), `subgraph "sub"`) || !strings.Contains(err.Error(), "interrupt") {
-		t.Fatalf("error = %v, want it to name the subgraph and the interrupt", err)
+}
+
+// answeredSet collects the fixture's echoed resume values into a set keyed by
+// who, tolerating the unordered mapping of interrupt NS to Send arg.
+func answeredSet(t *testing.T, res Result) map[string]any {
+	t.Helper()
+	out := map[string]any{}
+	for _, who := range []string{"a", "b"} {
+		v, ok := res.Values["answered_"+who]
+		if !ok {
+			t.Fatalf("Values = %v, want answered_%s (both interrupts answered)", res.Values, who)
+		}
+		out[who] = v
+	}
+	return out
+}
+
+// TestSubgraphNestedInterruptResumeScalar (§6.2): an interrupt raised two
+// subgraph levels down carries the full nested NS
+// "<sub>:<t1>/<mid>:<t2>/<ask>:<t3>", and ONE scalar resume penetrates both
+// levels — each wrapper forwards the payload one level down until it reaches
+// the interrupting task, with no map needed at any level.
+func TestSubgraphNestedInterruptResumeScalar(t *testing.T) {
+	ctx := context.Background()
+
+	ask := NewStateGraph()
+	ask.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		v := Interrupt(rt, "deep-question")
+		return map[string]any{"deep_answer": v}, nil
+	})
+	ask.AddEdge(types.START, "ask")
+	ask.AddEdge("ask", types.END)
+	askCG, err := ask.Compile()
+	if err != nil {
+		t.Fatalf("grandchild Compile() error = %v", err)
+	}
+
+	mid := NewStateGraph()
+	mid.AddSubgraph("inner", askCG)
+	mid.AddEdge(types.START, "inner")
+	mid.AddEdge("inner", types.END)
+	midCG, err := mid.Compile()
+	if err != nil {
+		t.Fatalf("middle Compile() error = %v", err)
+	}
+
+	top := NewStateGraph()
+	top.AddSubgraph("sub", midCG)
+	top.AddEdge(types.START, "sub")
+	top.AddEdge("sub", types.END)
+	cg, err := top.Compile(WithCheckpointer(checkpoint.NewMemorySaver()))
+	if err != nil {
+		t.Fatalf("top Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("Interrupts = %+v, want the single grandchild interrupt", res.Interrupts)
+	}
+	intr := res.Interrupts[0]
+	segs := strings.Split(intr.NS, "/")
+	if len(segs) != 3 {
+		t.Fatalf("interrupt NS = %q, want three nested task segments", intr.NS)
+	}
+	for i, prefix := range []string{"sub:", "inner:", "ask:"} {
+		if !strings.HasPrefix(segs[i], prefix) || !perTaskNSPattern.MatchString(segs[i]) {
+			t.Fatalf("interrupt NS segment %d = %q, want <%s><taskID>", i, segs[i], prefix)
+		}
+	}
+
+	res2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: "deep-answer"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v, want completion through both levels", err)
+	}
+	if len(res2.Interrupts) != 0 {
+		t.Fatalf("resume Interrupts = %+v, want none", res2.Interrupts)
+	}
+	if got := res2.Values["deep_answer"]; got != "deep-answer" {
+		t.Fatalf("Values[deep_answer] = %v, want the grandchild's merged answer", got)
+	}
+}
+
+// TestSubgraphParallelInterruptsMapResume (§6.3): two Sends fan into one
+// subgraph node and both child tasks interrupt: the parent pauses with both
+// interrupts aggregated; a scalar resume is rejected (>1 pending); a map
+// keyed by NS restores both; answering only one re-pauses with exactly the
+// other remaining.
+func TestSubgraphParallelInterruptsMapResume(t *testing.T) {
+	cg, resume := interruptingSubgraphFixture(t)
+	ctx := context.Background()
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res.Interrupts) != 2 {
+		t.Fatalf("Interrupts = %+v, want both child tasks' interrupts aggregated", res.Interrupts)
+	}
+	nsA, nsB := res.Interrupts[0].NS, res.Interrupts[1].NS
+	if nsA == nsB {
+		t.Fatalf("interrupt NSes %q and %q must be distinct (per-task child namespaces)", nsA, nsB)
+	}
+
+	if _, err := resume("x"); err == nil || !strings.Contains(err.Error(), "requires a map") {
+		t.Fatalf("scalar resume error = %v, want the >1-pending map requirement", err)
+	}
+
+	// Partial answer: only the first interrupt's NS is addressed; the second
+	// child re-pauses, so the parent pauses again with exactly that one.
+	res2, err := resume(map[string]any{nsA: "va"})
+	if err != nil {
+		t.Fatalf("partial map resume error = %v, want a re-pause", err)
+	}
+	if len(res2.Interrupts) != 1 || res2.Interrupts[0].NS != nsB {
+		t.Fatalf("re-pause Interrupts = %+v, want exactly the unanswered %q", res2.Interrupts, nsB)
+	}
+
+	res3, err := resume(map[string]any{nsB: "vb"})
+	if err != nil {
+		t.Fatalf("final resume error = %v, want completion", err)
+	}
+	if len(res3.Interrupts) != 0 {
+		t.Fatalf("final Interrupts = %+v, want none", res3.Interrupts)
+	}
+	got := answeredSet(t, res3)
+	if !(got["a"] == "va" && got["b"] == "vb" || got["a"] == "vb" && got["b"] == "va") {
+		t.Fatalf("answered values = %v, want the two resume values dispatched to their own tasks", got)
+	}
+}
+
+// TestSubgraphResumeGraphAddressing (§6.4): Options.Graph strictly addresses a
+// resume. Without Resume it errors; types.ParentGraph errors; an NS matching
+// no pending interrupt errors listing the available NSes; a map carrying
+// unknown keys re-pauses silently; and a scalar paired with a hitting Graph
+// is allowed even with two interrupts pending (the scalar relaxation),
+// leaving the unaddressed one paused.
+func TestSubgraphResumeGraphAddressing(t *testing.T) {
+	cg, resume := interruptingSubgraphFixture(t)
+	ctx := context.Background()
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res.Interrupts) != 2 {
+		t.Fatalf("Interrupts = %+v, want two pending", res.Interrupts)
+	}
+	nsA, nsB := res.Interrupts[0].NS, res.Interrupts[1].NS
+
+	if _, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Graph: nsA}); err == nil || !strings.Contains(err.Error(), "requires Options.Resume") {
+		t.Fatalf("Graph without Resume error = %v, want the requirement error", err)
+	}
+	if _, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: "x", Graph: types.ParentGraph}); err == nil || !strings.Contains(err.Error(), types.ParentGraph) {
+		t.Fatalf("Graph=ParentGraph error = %v, want the ParentGraph rejection", err)
+	}
+	_, err = cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: "x", Graph: "nope"})
+	if err == nil || !strings.Contains(err.Error(), "nope") || !strings.Contains(err.Error(), nsA) || !strings.Contains(err.Error(), nsB) {
+		t.Fatalf("Graph=nope error = %v, want it to name the bogus namespace and list %q and %q", err, nsA, nsB)
+	}
+
+	// A map whose keys match nothing is not an error: both interrupts re-fire.
+	resMap, err := resume(map[string]any{"bogus": "v"})
+	if err != nil {
+		t.Fatalf("unknown-key map resume error = %v, want a silent re-pause", err)
+	}
+	if len(resMap.Interrupts) != 2 {
+		t.Fatalf("unknown-key map re-pause Interrupts = %+v, want both re-fired", resMap.Interrupts)
+	}
+
+	// Scalar relaxation: Graph nsA + scalar answers exactly the hit
+	// interrupt despite the second one pending.
+	resScalar, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: "va", Graph: nsA})
+	if err != nil {
+		t.Fatalf("Graph-addressed scalar resume error = %v, want the relaxation to allow it", err)
+	}
+	if len(resScalar.Interrupts) != 1 || resScalar.Interrupts[0].NS != nsB {
+		t.Fatalf("relaxed scalar re-pause Interrupts = %+v, want exactly the unaddressed %q", resScalar.Interrupts, nsB)
+	}
+
+	res3, err := resume(map[string]any{nsB: "vb"})
+	if err != nil {
+		t.Fatalf("final resume error = %v, want completion", err)
+	}
+	got := answeredSet(t, res3)
+	if !(got["a"] == "va" && got["b"] == "vb" || got["a"] == "vb" && got["b"] == "va") {
+		t.Fatalf("answered values = %v, want each value at its own task", got)
+	}
+}
+
+// TestSubgraphChildMultiInterruptMapDispatch (§6.5): a Send fan-out INSIDE
+// the child interrupts twice in one superstep. The parent's pause carries
+// both copies under the single subgraph task's planned ID, and a map resume
+// forwarded verbatim lets the CHILD's planResume dispatch each value to its
+// own inner task by NS.
+func TestSubgraphChildMultiInterruptMapDispatch(t *testing.T) {
+	ctx := context.Background()
+
+	child := NewStateGraph()
+	child.AddNode("ask", func(rt runtime.Runtime, state map[string]any) (any, error) {
+		who, _ := state["who"].(string)
+		v := Interrupt(rt, "q-for-"+who)
+		return map[string]any{"answered_" + who: v}, nil
+	})
+	child.SetConditionalEntryPoint(func(runtime.Runtime, map[string]any) ([]any, error) {
+		return []any{
+			&types.Send{Node: "ask", Arg: map[string]any{"who": "a"}},
+			&types.Send{Node: "ask", Arg: map[string]any{"who": "b"}},
+		}, nil
+	})
+	child.AddEdge("ask", types.END)
+	childCG, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	saver := checkpoint.NewMemorySaver()
+	top := NewStateGraph()
+	top.AddSubgraph("sub", childCG)
+	top.AddEdge(types.START, "sub")
+	top.AddEdge("sub", types.END)
+	cg, err := top.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("top Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res.Interrupts) != 2 {
+		t.Fatalf("Interrupts = %+v, want both inner tasks' interrupts propagated", res.Interrupts)
+	}
+	nsA, nsB := res.Interrupts[0].NS, res.Interrupts[1].NS
+	if nsA == nsB {
+		t.Fatalf("interrupt NSes %q and %q must be distinct (per-task segments inside one child)", nsA, nsB)
+	}
+	// Both NSes nest under the single subgraph task's namespace.
+	for _, ns := range []string{nsA, nsB} {
+		childNS, askSeg, ok := strings.Cut(ns, "/")
+		if !ok || !strings.HasPrefix(childNS, "sub:") || !perTaskNSPattern.MatchString(childNS) {
+			t.Fatalf("interrupt NS = %q, want the shared <sub>:<taskID> child namespace prefix", ns)
+		}
+		if !strings.HasPrefix(askSeg, "ask:") || !perTaskNSPattern.MatchString(askSeg) {
+			t.Fatalf("interrupt NS = %q, want a distinct <ask>:<taskID> segment per inner task", ns)
+		}
+	}
+	// The parent's pause checkpoint carries BOTH copies under the one
+	// subgraph task's planned ID.
+	pauseTup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t1"})
+	if err != nil || pauseTup == nil {
+		t.Fatalf("GetTuple(root latest) = (%v, %v), want the parent pause checkpoint", pauseTup, err)
+	}
+	var subTaskID string
+	for _, pt := range pauseTup.Checkpoint.Next {
+		if pt.Node == "sub" {
+			subTaskID = pt.ID
+		}
+	}
+	copies := 0
+	for _, w := range pauseTup.PendingWrites {
+		if w.TaskID == subTaskID && w.Channel == checkpoint.ReservedInterrupt {
+			// Both copies travel as ONE packed write (the saver keeps a
+			// single reserved __interrupt__ slot per task, Python's
+			// WRITES_IDX_MAP -3).
+			copies += len(interruptsFromWrite(w.Value))
+		}
+	}
+	if copies != 2 {
+		t.Fatalf("subgraph task carries %d interrupt copies, want 2 (one per inner task)", copies)
+	}
+
+	res2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: map[string]any{nsA: "va", nsB: "vb"}})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v, want completion", err)
+	}
+	if len(res2.Interrupts) != 0 {
+		t.Fatalf("resume Interrupts = %+v, want none", res2.Interrupts)
+	}
+	got := answeredSet(t, res2)
+	if !(got["a"] == "va" && got["b"] == "vb" || got["a"] == "vb" && got["b"] == "va") {
+		t.Fatalf("answered values = %v, want the map dispatched per inner task by NS", got)
+	}
+}
+
+// TestSubgraphBoundaryInterruptBeforePropagates (§6.6, before half): a
+// child's internal interrupt_before boundary pauses the child, the wrapper
+// propagates the boundary interrupt to the parent, and a nil-input resume
+// lets the child run its gated node (the child's OWN skip applies) while the
+// parent's same-named interrupt_before registration is NOT skipped by the
+// foreign boundary interrupt (interruptOwnedBy): the parent pauses at its
+// own gate on the following superstep, and a second resume finishes.
+func TestSubgraphBoundaryInterruptBeforePropagates(t *testing.T) {
+	ctx := context.Background()
+
+	child := NewStateGraph()
+	child.AddNode("gate", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"child_gate": true}, nil
+	})
+	child.AddEdge(types.START, "gate")
+	child.AddEdge("gate", types.END)
+	childCG, err := child.Compile(WithInterruptBefore("gate"))
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	top := NewStateGraph()
+	top.AddSubgraph("sub", childCG)
+	top.AddNode("gate", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"parent_gate": true}, nil
+	})
+	top.AddEdge(types.START, "sub")
+	top.AddEdge("sub", "gate")
+	top.AddEdge("gate", types.END)
+	cg, err := top.Compile(WithCheckpointer(checkpoint.NewMemorySaver()), WithInterruptBefore("gate"))
+	if err != nil {
+		t.Fatalf("top Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res.Interrupts) != 1 {
+		t.Fatalf("Interrupts = %+v, want the propagated child boundary interrupt", res.Interrupts)
+	}
+	intr := res.Interrupts[0]
+	if intr.ID != interruptBeforeID+"gate" {
+		t.Fatalf("interrupt ID = %q, want the child's boundary identity", intr.ID)
+	}
+	if ns := intr.NS; !strings.HasSuffix(ns, "/gate") || strings.Count(ns, "/") != 1 {
+		t.Fatalf("interrupt NS = %q, want the child's node-level namespace <sub>:<taskID>/gate", ns)
+	}
+
+	// First resume: the child skips ITS gate check (the boundary interrupt is
+	// owned by the child's namespace) and completes; the parent's gate
+	// registration is NOT skipped (the interrupt is foreign to the root), so
+	// the parent pauses at its own gate.
+	res2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res2.Interrupts) != 1 {
+		t.Fatalf("resume Interrupts = %+v, want the parent's own gate boundary interrupt", res2.Interrupts)
+	}
+	if res2.Interrupts[0].ID != interruptBeforeID+"gate" || res2.Interrupts[0].NS != "gate" {
+		t.Fatalf("resume Interrupts = %+v, want the parent-level boundary interrupt (NS \"gate\")", res2.Interrupts)
+	}
+	if res2.Values["child_gate"] != true {
+		t.Fatalf("resumed Values[child_gate] = %v, want true (child completed on its resume)", res2.Values["child_gate"])
+	}
+
+	// Second resume: now the parent's skip applies and the graph finishes.
+	res3, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("second resume error = %v, want completion", err)
+	}
+	if len(res3.Interrupts) != 0 {
+		t.Fatalf("second resume Interrupts = %+v, want none", res3.Interrupts)
+	}
+	if res3.Values["parent_gate"] != true || res3.Values["child_gate"] != true {
+		t.Fatalf("final Values = %v, want both gates run", res3.Values)
+	}
+}
+
+// TestSubgraphParentInterruptBeforeSubgraphNodeResume covers the
+// forceResume degrade path (§3.3): the parent pauses via interrupt_before on
+// the subgraph node itself, so on resume the sub task re-dispatches under a
+// resuming parent while its child namespace holds NO checkpoint yet (the
+// child never ran). The forwarded forceResume must degrade to a fresh-input
+// child run instead of erroring "no checkpoint found".
+func TestSubgraphParentInterruptBeforeSubgraphNodeResume(t *testing.T) {
+	ctx := context.Background()
+
+	child := NewStateGraph()
+	child.AddNode("work", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"worked": true}, nil
+	})
+	child.AddEdge(types.START, "work")
+	child.AddEdge("work", types.END)
+	childCG, err := child.Compile()
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	top := NewStateGraph()
+	top.AddSubgraph("sub", childCG)
+	top.AddEdge(types.START, "sub")
+	top.AddEdge("sub", types.END)
+	cg, err := top.Compile(WithCheckpointer(checkpoint.NewMemorySaver()), WithInterruptBefore("sub"))
+	if err != nil {
+		t.Fatalf("top Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res.Interrupts) != 1 || res.Interrupts[0].ID != interruptBeforeID+"sub" {
+		t.Fatalf("Interrupts = %+v, want the parent's interrupt_before pause on the subgraph node", res.Interrupts)
+	}
+
+	res2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("resume error = %v, want the forceResume to degrade into a fresh child run", err)
+	}
+	if len(res2.Interrupts) != 0 {
+		t.Fatalf("resume Interrupts = %+v, want none", res2.Interrupts)
+	}
+	if res2.Values["worked"] != true {
+		t.Fatalf("resumed Values = %v, want the child to have run", res2.Values)
+	}
+}
+
+// TestSubgraphBoundaryInterruptAfterResumes (§6.6, after half): a child's
+// interrupt_after boundary pauses through the wrapper; the nil-input resume
+// finds nothing left to run inside the child (its gated node already
+// committed into the pause checkpoint), so the child completes and the parent
+// finishes with the child's values merged.
+func TestSubgraphBoundaryInterruptAfterResumes(t *testing.T) {
+	ctx := context.Background()
+
+	child := NewStateGraph()
+	child.AddNode("gate", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"child_gate": true}, nil
+	})
+	child.AddEdge(types.START, "gate")
+	child.AddEdge("gate", types.END)
+	childCG, err := child.Compile(WithInterruptAfter("gate"))
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	top := NewStateGraph()
+	top.AddSubgraph("sub", childCG)
+	top.AddEdge(types.START, "sub")
+	top.AddEdge("sub", types.END)
+	cg, err := top.Compile(WithCheckpointer(checkpoint.NewMemorySaver()))
+	if err != nil {
+		t.Fatalf("top Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want a paused Result", err)
+	}
+	if len(res.Interrupts) != 1 || res.Interrupts[0].ID != interruptAfterID+"gate" {
+		t.Fatalf("Interrupts = %+v, want the propagated child interrupt_after boundary", res.Interrupts)
+	}
+
+	res2, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("resume error = %v, want completion", err)
+	}
+	if len(res2.Interrupts) != 0 {
+		t.Fatalf("resume Interrupts = %+v, want none", res2.Interrupts)
+	}
+	if res2.Values["child_gate"] != true {
+		t.Fatalf("resumed Values = %v, want the child's committed gate value", res2.Values)
 	}
 }
 
