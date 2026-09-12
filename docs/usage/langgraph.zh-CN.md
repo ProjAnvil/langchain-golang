@@ -10,8 +10,8 @@ saver 位于嵌套模块 `checkpoint/sqlite` 与 `checkpoint/postgres`）、
 `agents.CreateAgent` 构建于其上；本指南覆盖 M1–M7 全量内容：`Stream`
 API、checkpoint 序列化、SQLite 与 Postgres checkpoint saver、节点级
 retry/cache 策略、`prebuilt.ToolNode`、多父节点 join 边（`AddJoinEdge`）、
-函数式 API（`NewEntrypoint` / `NewTask`），以及 M5 saver 接口的 breaking
-变更。
+interrupt 与 resume（含子图中断）及 durability 模式、函数式 API
+（`NewEntrypoint` / `NewTask`），以及 M5 saver 接口的 breaking 变更。
 
 ## Stream API（`CompiledGraph.Stream`）
 
@@ -406,6 +406,85 @@ make test-postgres
 > delta channel 历史快速路径。更小的分歧 —— 元数据字符串中的 null 字节
 > 直接报错而非静默剔除、`Put` 保留 Python 会静默丢弃的无版本复合 channel
 > 值 —— 记录在包 godoc 中。
+
+## Interrupt、resume 与 durability
+
+### 暂停：`graph.Interrupt` 与边界中断
+
+节点用 `graph.Interrupt(ctx, value)` 在运行中暂停自身（即 Python 的
+`langgraph.types.interrupt`）；`Compile(WithInterruptBefore("tools"))` /
+`WithInterruptAfter("tools")` 在命名节点前后暂停（即 Python 的
+`interrupt_before=` / `interrupt_after=`）。两种方式都干净地停下，
+`InvokeWithOptions` 返回暂停的 `Result` —— `Interrupts` 非空，`Values`
+为暂停时刻的状态。线程上的 `GetState` 展示同样的待处理 interrupt
+（`StateSnapshot.Interrupts`）。
+
+恢复方式是带 `Options{ThreadID: ..., Resume: ...}` 再次调用。resume 值
+会成为被暂停的 `Interrupt` 调用的返回值（节点从头重新执行，并按调用顺序
+消费排队的 resume 值）；边界暂停用 nil `Resume` 恢复 —— 即 Python 的
+`invoke(None, config)` —— 因为不存在需要回填值的节点内调用。
+
+### Resume 寻址：NS、ID 与 `Options.Graph`
+
+`types.Interrupt` 同时携带 `ID`（节点作用域，如 `ask-1`）与 `NS` ——
+发起中断的任务的完整 checkpoint 命名空间 —— resume 匹配优先查 NS：
+
+- 标量 `Resume` 喂给唯一的待处理 interrupt；待处理 interrupt 多于一个时
+  标量是错误 —— 改用 map。
+- `map[string]any` 形式的 `Resume` 先按 `NS`、再按 `ID` 寻址各 interrupt
+  （`NS` 字段出现之前持久化的 interrupt 反序列化出空 NS，仅按 ID 匹配）。
+  两个键都未命中的 interrupt 不会被喂值：其 `Interrupt` 调用再次触发，
+  运行带着剩余部分再次暂停 —— 部分寻址的 resume 会再次暂停。
+- `Options.Graph` 把匹配收窄到一个命名空间（即 Python 的
+  `Command(resume=..., graph=ns)`）：可以是该 NS 本身或嵌套其下的任何
+  interrupt。此时只要命中恰好一个待处理 interrupt，标量也可用；命中零个
+  待处理 interrupt 的 `Graph` 是列出可用 NS 值的描述性错误；有 `Graph`
+  而无 `Resume` 是错误；`types.ParentGraph` 被拒绝。`Graph` 与 `Resume`
+  一起传播进子图运行，因此用目标 NS 的任意祖先命名空间寻址嵌套
+  interrupt 在任意深度都有效。
+
+### 子图中断暂停父运行
+
+经 `AddSubgraph` 注册的子图若发生中断 —— 节点内 `Interrupt` 或它自己的
+编译期边界 —— 不再使父运行报错。节点包装器把子图的暂停位置记录进父图的
+暂停 checkpoint（`Metadata.Parents`），并把子图的 interrupt 原样上抛 ——
+每个都携带其完整嵌套 NS
+（`<parentNS>/<node>:<taskID>/<inner>:<taskID>`）—— 作为子图节点的
+interrupt 结果。父图像任何普通暂停一样在 `Result.Interrupts` 中返回它们；
+随后的 `Options.Resume` 被转发进子图运行，后者钉在其自身的暂停
+checkpoint 上并从那里继续。
+
+- 单个待处理子图 interrupt 在任意嵌套深度下都可用标量 `Resume`；按 NS
+  为键的 map 按发起中断的任务分发（例如子图内的 `Send` 扇出按任务各中断
+  一次：每个 interrupt 在共享的子命名空间下有各自的 NS）。
+- 每个子图任务在各自的 `<parentNS>/<node>:<taskID>` 命名空间下
+  checkpoint，因此进入同一子图节点的 `Send` 扇出 —— 以及循环节点的每次
+  重新执行 —— 都获得独立命名空间；并发或重复的调用绝不共享（也绝不
+  分叉）同一段 checkpoint 历史。
+- 跨进程 resume 可用：恢复只依赖已持久化的线程状态，绝不依赖内存中的
+  运行状态。在同一个 saver 上重新 `Compile` —— 或换一个进程（配 SQLite
+  或 Postgres saver）—— 仅凭 `Options{ThreadID, Resume}` 即可恢复。
+
+### Durability：编译期默认值与按运行覆盖
+
+`Compile(WithDurability(d))` 选择执行器何时刷新 checkpoint 写入，对齐
+Python 的 `langgraph.types.Durability`：`DurabilitySync`（下一个超步开始
+前同步持久化每个超步 —— Go 默认）、`DurabilityAsync`（后台写入器，返回前
+刷新；Python 的运行期默认）与 `DurabilityExit`（运行结束时延迟刷新）。
+Python 在运行期解析 durability；Go 在编译期解析 —— 这是已文档化的分歧 ——
+并提供等价的按运行覆盖。
+
+单次运行可用 `Options.WithRunDurability` 覆盖编译期模式，对齐 Python
+invoke/stream 的 `durability` 参数；覆盖会传播进子图运行：
+
+```go
+opts := graph.Options{ThreadID: "t"}.WithRunDurability(graph.DurabilityExit)
+cg.InvokeWithOptions(ctx, input, opts)
+```
+
+暂停 checkpoint —— interrupt、interrupt_before/after 边界 —— 在所有
+durability 模式下都同步刷新（async/exit 运行走专门的暂停路径而非延迟
+刷新），因此暂停的运行始终可持久化、可恢复。
 
 ## 函数式 API（`langgraph/fn`）
 

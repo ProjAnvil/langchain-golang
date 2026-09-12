@@ -10,9 +10,10 @@ modules), `langgraph/types`, `langgraph/prebuilt`, and `langgraph/fn` (the
 functional API). `agents.CreateAgent` is built on it; this guide covers the
 full M1–M7 surface: the `Stream` API, checkpoint serialization, the SQLite
 and Postgres checkpoint savers, per-node retry/cache policies,
-`prebuilt.ToolNode`, multi-parent join edges (`AddJoinEdge`), the functional
-API (`NewEntrypoint` / `NewTask`), and the M5 saver-interface breaking
-changes.
+`prebuilt.ToolNode`, multi-parent join edges (`AddJoinEdge`), interrupt and
+resume (including interrupted subgraphs) with durability modes, the
+functional API (`NewEntrypoint` / `NewTask`), and the M5 saver-interface
+breaking changes.
 
 ## Stream API (`CompiledGraph.Stream`)
 
@@ -441,6 +442,97 @@ make test-postgres
 > Smaller divergences — null bytes in metadata strings fail loudly instead
 > of being stripped, and `Put` preserves versionless composite channel
 > values that Python silently drops — are documented in the package godoc.
+
+## Interrupts, resume, and durability
+
+### Pausing: `graph.Interrupt` and boundaries
+
+A node pauses itself mid-run with `graph.Interrupt(ctx, value)` (Python's
+`langgraph.types.interrupt`); `Compile(WithInterruptBefore("tools"))` /
+`WithInterruptAfter("tools")` pause before / after named nodes (Python's
+`interrupt_before=` / `interrupt_after=`). Either way the run stops cleanly
+and `InvokeWithOptions` returns a paused `Result` — `Interrupts` non-empty,
+`Values` the state at the pause. `GetState` on the thread shows the same
+pending interrupts (`StateSnapshot.Interrupts`).
+
+Resume by invoking again with `Options{ThreadID: ..., Resume: ...}`. The
+resume value becomes the return value of the paused `Interrupt` call (the
+node re-executes from its start and consumes queued resume values in call
+order); a boundary pause resumes with a nil `Resume` — Python's
+`invoke(None, config)` — because there is no in-node call to feed a value
+back to.
+
+### Resume addressing: NS, ID, and `Options.Graph`
+
+`types.Interrupt` carries both an `ID` (node-scoped, e.g. `ask-1`) and an
+`NS` — the full checkpoint namespace of the interrupting task — and resume
+matching consults the NS first:
+
+- A scalar `Resume` feeds the single pending interrupt; with more than one
+  pending interrupt it is an error — resume with a map instead.
+- A `map[string]any` `Resume` addresses each interrupt by `NS` first and by
+  `ID` second (interrupts persisted before `NS` existed deserialize with an
+  empty NS and match by ID only). An interrupt neither key addresses is NOT
+  fed a value: its `Interrupt` call re-fires and the run pauses again with
+  the remainder — partially addressed resumes pause again.
+- `Options.Graph` narrows matching to one namespace (Python's
+  `Command(resume=..., graph=ns)`): the NS itself or anything nested under
+  it. A scalar is then allowed whenever exactly one pending interrupt lies
+  within it; a `Graph` matching no pending interrupt is a descriptive error
+  listing the available NS values; `Graph` without `Resume` is an error, and
+  `types.ParentGraph` is rejected. `Graph` and `Resume` propagate into
+  subgraph runs together, so addressing a nested interrupt by any ancestor
+  namespace of its NS works at any depth.
+
+### Interrupted subgraphs pause the parent
+
+A subgraph registered with `AddSubgraph` that interrupts — an in-node
+`Interrupt` or its own compile-time boundaries — no longer errors the
+parent run. The node wrapper records the child's pause position in the
+parent's pause checkpoint (`Metadata.Parents`) and propagates the child's
+interrupts verbatim — each carrying its full nested NS
+(`<parentNS>/<node>:<taskID>/<inner>:<taskID>`) — up as the subgraph node's
+interrupt outcome. The parent returns them in `Result.Interrupts` like any
+other pause, and the next `Options.Resume` is forwarded into the child run,
+which pins to its own pause checkpoint and continues from there.
+
+- A scalar `Resume` works for a single pending subgraph interrupt at any
+  nesting depth; a map keyed by NS dispatches per interrupting task (e.g. a
+  `Send` fan-out inside the child that interrupts once per task: each
+  interrupt has its own NS under the shared child namespace).
+- Every subgraph TASK checkpoints under its own
+  `<parentNS>/<node>:<taskID>` namespace, so `Send` fan-outs into the same
+  subgraph node — and each re-execution of a looped subgraph node — get
+  independent namespaces; concurrent or repeated invocations never share
+  (and never fork) one checkpoint history.
+- Cross-process resume works: resuming depends only on the persisted thread
+  state, never on in-memory run state. A fresh `Compile` over the same saver
+  — or another process, with the SQLite or Postgres saver — resumes with
+  nothing but `Options{ThreadID, Resume}`.
+
+### Durability: compile-time default, per-run override
+
+`Compile(WithDurability(d))` selects when the executor flushes checkpoint
+writes, mirroring Python's `langgraph.types.Durability`:
+`DurabilitySync` (persist each superstep before the next starts — the Go
+default), `DurabilityAsync` (a background writer flushed before return;
+Python's runtime default), and `DurabilityExit` (deferred flush at run end).
+Python resolves durability at run time; Go resolves it at compile time — a
+documented divergence — with an equivalent per-run override.
+
+A single run overrides the compiled mode with
+`Options.WithRunDurability`, mirroring Python's invoke/stream `durability`
+argument; the override propagates into subgraph runs:
+
+```go
+opts := graph.Options{ThreadID: "t"}.WithRunDurability(graph.DurabilityExit)
+cg.InvokeWithOptions(ctx, input, opts)
+```
+
+Pause checkpoints — an interrupt, an interrupt_before/after boundary — flush
+synchronously under every durability mode (async/exit runs use a dedicated
+pause path instead of the deferred flush), so a paused run is always durable
+and resumable.
 
 ## Functional API (`langgraph/fn`)
 

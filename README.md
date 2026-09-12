@@ -68,9 +68,10 @@ A Pregel-style state graph executor mirroring Python's LangGraph 1.2.x:
 | **OpenAI** | ✅ | ✅ | — | ✅ (`init()`) |
 | **Anthropic** | ✅ | — | — | ✅ (`init()`) |
 | **Ollama** | ✅ | ✅ | — | ✅ (`init()`) |
+| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | ✅ (`init()`, via `partners/openaicompat`) |
 | **Chroma** | — | — | ✅ | — |
 
-All three chat-model providers self-register via `init()`, so `WithAgentModel("openai:gpt-4o")` resolves end-to-end. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`).
+All ten chat-model provider names self-register via `init()` (`partners/openai`, `partners/anthropic`, `partners/ollama`, plus the seven OpenAI-compatible names in `partners/openaicompat`), so `WithAgentModel("openai:gpt-4o")` and `WithAgentModel("groq:openai/gpt-oss-20b")` resolve end-to-end once the package is blank-imported. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, ...).
 
 ---
 
@@ -244,7 +245,7 @@ langchain-golang/
 │   ├── chatmodels/            # provider registry (Resolve / RegisterProvider)
 │   ├── tools/                 # ToolNode (concurrent dispatch)
 │   └── messages/              # langchain-level message helpers
-├── partners/                  # openai, anthropic, ollama, chroma
+├── partners/                  # openai, anthropic, ollama, openaicompat (7 providers), chroma
 ├── textsplitters/             # langchain_text_splitters port
 ├── standardtests/             # conformance suites
 ├── modelprofiles/             # model-profiles registry + CLI

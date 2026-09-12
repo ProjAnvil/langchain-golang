@@ -186,8 +186,9 @@ Mirroring the project's scoped-port stance, these LCEL-adjacent features are
 **not** implemented:
 
 - **The `|` operator itself** — Go has no operator overloading; use `Pipe*`.
-- **`astream_log` / `astream_events` over a chain** — streaming over a
-  composed chain uses `Runnable.Stream` (pull-based); agent-level event
+- **`astream_log`** — deprecated upstream and not ported. `astream_events`
+  **is** available: `runnables.StreamEvents` streams v2-shaped lifecycle
+  events (with filtering) over any composed chain; agent-level event
   streaming goes through `Agent.StreamEvents` (see [streaming](streaming.md)).
 - **Pydantic-backed schema validation** — schemas are `schema.Schema`
   (`map[string]any`); they document shape but do not validate at runtime.

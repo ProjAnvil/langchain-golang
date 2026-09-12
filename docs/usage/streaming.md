@@ -4,8 +4,10 @@
 
 `Agent.StreamEvents` returns a pull-based stream of `StreamEvent` values that
 let you observe the run as it happens: per-token model deltas, tool dispatch
-lifecycle, and node boundaries. It is the Go equivalent of Python's
-`astream_events`.
+lifecycle, and node boundaries. It is the agent-level counterpart of Python's
+`astream_events`; the Runnable-level v2 event stream over any
+`core/runnables` Runnable is [`runnables.StreamEvents`](#runnable-level-events-runnablestreamevents),
+described below, and LangSmith tracing hooks into the same callback layer.
 
 ## Event types
 
@@ -68,6 +70,108 @@ the raw content-block protocol event (e.g. reasoning deltas), read `ev.Delta`.
 
 When the graph fans out (multiple tasks active in one superstep), their events
 interleave on the stream — disambiguate via the `Node` field.
+
+## Runnable-level events (`runnables.StreamEvents`)
+
+`core/runnables.StreamEvents` is the Go counterpart of Python's
+`astream_events(v2)` over **any** `Runnable` — chains built with `Pipe` /
+`Parallel` / `Retry`, `NewFunc` lambdas, chat models — not just agents. It
+wraps one `Runnable.Stream` invocation in a callback-collecting manager and
+projects the flat callback stream onto the v2 `runnables.StreamEvent` shape:
+
+```go
+import (
+	"context"
+	"strings"
+
+	"github.com/projanvil/langchain-golang/core/runnables"
+	"github.com/projanvil/langchain-golang/core/schema"
+)
+
+double := runnables.NewFunc(
+	func(_ context.Context, in string, _ ...runnables.Option) (string, error) {
+		return in + in, nil
+	}, schema.String(""), schema.String(""))
+upper := runnables.NewFunc(
+	func(_ context.Context, in string, _ ...runnables.Option) (string, error) {
+		return strings.ToUpper(in), nil
+	}, schema.String(""), schema.String(""))
+chain := runnables.Pipe(double, upper)
+
+for ev, err := range runnables.StreamEvents(ctx, chain, "go",
+	runnables.StreamEventOptions{}) {
+	if err != nil {
+		return err // run failure is yielded as the final pair
+	}
+	fmt.Println(ev.Event, ev.Name, ev.RunID, ev.ParentIDs)
+}
+```
+
+- **Event shape** — `Event` (`on_chain_start` / `on_chain_stream` /
+  `on_chain_end` / `on_chain_error`, `on_chat_model_*`, `on_llm_*`,
+  `on_tool_*`, `on_retriever_*`), `RunID`, `Name`, `Tags`, `Metadata`,
+  root-first `ParentIDs`, and a `Data` payload (`Input` on start, `Chunk` on
+  stream, `Output` on end, `Error` on error). The root run's `ParentIDs` is
+  nil; a step inside a `Pipe` reports the chain's run ID as its only parent.
+- **Filtering** — `StreamEventOptions` mirrors Python's `include_*` /
+  `exclude_*` filters: `IncludeNames` / `ExcludeNames`,
+  `IncludeTypes` / `ExcludeTypes` (run types `chain` / `chat_model` / `llm`
+  / `tool` / `retriever`), and `IncludeTags` / `ExcludeTags`. Each include
+  list that is set must admit the event (include-OR); each exclude list must
+  not match. Filtering happens at the projection output only, so a
+  filtered-out run never breaks the `parent_ids` of its surviving
+  descendants.
+- **Chat-model aggregation** — one aggregator per model run assembles
+  `on_chat_model_end`'s output from the streamed chunks and prefers the v3
+  content-block protocol over legacy message chunks when a provider emits
+  both: only content-block deltas surface as `on_chat_model_stream` (the
+  chunk payload is the protocol event itself — a documented divergence from
+  v2's `AIMessageChunk`); message-start/finish and block boundaries fold
+  into the surrounding start/end events.
+- **Lifecycle** — the iterator is single-use; a run failure is yielded as
+  the final `(zero, err)` pair after all events. Breaking out of the
+  `range` cancels the run and joins the producer goroutine, so nothing
+  leaks. Concurrent child runs interleave freely — pair their events by
+  `RunID`, not by global nesting order.
+
+`Agent.StreamEvents` (the seven domain event kinds above) and
+`runnables.StreamEvents` (the Runnable-tree v2 events) are two projections
+of different layers — pick one surface per run; they do not interlock.
+
+## LangSmith tracing
+
+`core/tracers` ships a LangSmith tracer (`tracers.NewLangChainTracer`) that
+rebuilds a run tree from the same callback stream and ships it to the
+LangSmith batch API on a background goroutine — batches of up to 64
+operations, a 500ms flush cadence, one retry, then `OnError`. Tracing never
+fails the business call: handler errors are swallowed and POST failures are
+reported, not propagated.
+
+Enable it with the environment (optional vars follow the Python client's
+`LANGSMITH_`-before-`LANGCHAIN_` precedence):
+
+```bash
+export LANGSMITH_TRACING_V2=true  # or LANGCHAIN_TRACING_V2 / LANGSMITH_TRACING / LANGCHAIN_TRACING
+export LANGSMITH_API_KEY=ls__...  # or LANGCHAIN_API_KEY — required
+export LANGSMITH_PROJECT=my-app   # optional; LANGSMITH_ENDPOINT overrides the API base
+```
+
+Tracing is **off by default** — nothing is sent unless a tracing flag AND an
+API key are both set. Construct the tracer explicitly (it returns nil when
+the environment does not enable it, and every method is nil-safe, so use it
+unconditionally) and own its lifetime:
+
+```go
+tracer := tracers.NewLangChainTracer()
+defer tracer.Close() // flushes the remainder; idempotent
+```
+
+`runnables.StreamEvents` auto-attaches this tracer when the environment
+enables tracing, so a streamed run is traced without wiring anything into
+the options. Leave the env unset when you attach your own tracer — the
+duplicate would conflict server-side. `NewLangChainTracerWithOptions`
+constructs one with explicit `LangSmithOptions` (endpoint, project, batch
+size, flush cadence, `OnError`).
 
 ## Streaming vs non-streaming
 

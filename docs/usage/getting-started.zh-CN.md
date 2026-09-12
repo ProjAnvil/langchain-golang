@@ -131,6 +131,33 @@ func stringAgent() {
 > 包，`WithAgentModel("anthropic:...")` 与 `WithAgentModel("ollama:...")`
 > 与 `"openai:..."` 一样端到端可用。
 
+### 更多 OpenAI 兼容 provider
+
+`partners/openaicompat` 另行注册七家 chat provider —— `groq`、
+`mistralai`、`deepseek`、`xai`、`openrouter`、`fireworks`、`perplexity`
+—— 它们是构建在 `partners/openai` Chat Completions API 之上的轻量工厂，
+各自带 SDK 默认 base URL、默认模型与环境变量凭据。一次 blank import 即为
+`"provider:model"` 形式激活全部七个名字：
+
+```go
+import _ "github.com/projanvil/langchain-golang/partners/openaicompat"
+
+agent, _ := agents.CreateAgent(nil, nil,
+	agents.WithAgentModel("deepseek:deepseek-chat"),
+	agents.WithAgentSystemPrompt("You are a helpful assistant."),
+)
+```
+
+| Provider | API key 环境变量 | Base URL 覆盖 | 默认模型 |
+|----------|-------------|-------------------|---------------|
+| `groq` | `GROQ_API_KEY` | `GROQ_API_BASE` | `openai/gpt-oss-20b` |
+| `mistralai` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `mistral-small` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_API_BASE` | `deepseek-chat` |
+| `xai` | `XAI_API_KEY` | `XAI_API_BASE` | `grok-4` |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_API_BASE` | `openrouter/auto` |
+| `fireworks` | `FIREWORKS_API_KEY` | `FIREWORKS_API_BASE` | `accounts/fireworks/models/llama-v3p1-8b-instruct` |
+| `perplexity` | `PPLX_API_KEY` | — | `sonar` |
+
 ## 接下来看什么
 
 - [组合 runnable（LCEL）](composition.md) —— 用 `Pipe` / `Pipe3-6` 串联

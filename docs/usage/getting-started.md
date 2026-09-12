@@ -133,6 +133,33 @@ Each partner reads its credentials from the environment:
 > `WithAgentModel("anthropic:...")` and `WithAgentModel("ollama:...")` resolve
 > end-to-end the same way as `"openai:..."` once the package is imported.
 
+### More OpenAI-compatible providers
+
+`partners/openaicompat` registers seven additional chat providers — `groq`,
+`mistralai`, `deepseek`, `xai`, `openrouter`, `fireworks`, `perplexity` — as
+thin factories over `partners/openai` on the Chat Completions API, each with
+its SDK-default base URL, default model, and env-derived credentials. One
+blank import activates all seven names for the `"provider:model"` form:
+
+```go
+import _ "github.com/projanvil/langchain-golang/partners/openaicompat"
+
+agent, _ := agents.CreateAgent(nil, nil,
+	agents.WithAgentModel("deepseek:deepseek-chat"),
+	agents.WithAgentSystemPrompt("You are a helpful assistant."),
+)
+```
+
+| Provider | API key env | Base URL override | Default model |
+|----------|-------------|-------------------|---------------|
+| `groq` | `GROQ_API_KEY` | `GROQ_API_BASE` | `openai/gpt-oss-20b` |
+| `mistralai` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `mistral-small` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_API_BASE` | `deepseek-chat` |
+| `xai` | `XAI_API_KEY` | `XAI_API_BASE` | `grok-4` |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_API_BASE` | `openrouter/auto` |
+| `fireworks` | `FIREWORKS_API_KEY` | `FIREWORKS_API_BASE` | `accounts/fireworks/models/llama-v3p1-8b-instruct` |
+| `perplexity` | `PPLX_API_KEY` | — | `sonar` |
+
 ## Where to go next
 
 - [Composing runnables (LCEL)](composition.md) — chain prompts, models, and

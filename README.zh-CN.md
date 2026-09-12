@@ -68,9 +68,10 @@ Python `create_agent` 的 Go 等价物，构建在 `langgraph/` 运行时之上�
 | **OpenAI** | ✅ | ✅ | — | ✅ (`init()`) |
 | **Anthropic** | ✅ | — | — | ✅ (`init()`) |
 | **Ollama** | ✅ | ✅ | — | ✅ (`init()`) |
+| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | ✅（`init()`，经 `partners/openaicompat`） |
 | **Chroma** | — | — | ✅ | — |
 
-三个聊天模型 provider 均通过 `init()` 自注册，因此 `WithAgentModel("openai:gpt-4o")` 可端到端解析。通过环境变量配置（`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`OLLAMA_HOST`）。
+全部十个聊天模型 provider 名字都经 `init()` 自注册（`partners/openai`、`partners/anthropic`、`partners/ollama`，加上 `partners/openaicompat` 里的七个 OpenAI 兼容名字），因此 blank import 后 `WithAgentModel("openai:gpt-4o")` 与 `WithAgentModel("groq:openai/gpt-oss-20b")` 均可端到端解析。通过环境变量配置（`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`OLLAMA_HOST`、`GROQ_API_KEY`、`DEEPSEEK_API_KEY` 等）。
 
 ---
 
@@ -244,7 +245,7 @@ langchain-golang/
 │   ├── chatmodels/            # provider 注册表（Resolve / RegisterProvider）
 │   ├── tools/                 # ToolNode（并发分发）
 │   └── messages/              # langchain 层消息辅助函数
-├── partners/                  # openai, anthropic, ollama, chroma
+├── partners/                  # openai, anthropic, ollama, openaicompat（7 家 provider）, chroma
 ├── textsplitters/             # langchain_text_splitters 移植
 ├── standardtests/             # 一致性测试套件
 ├── modelprofiles/             # 模型配置注册表 + CLI

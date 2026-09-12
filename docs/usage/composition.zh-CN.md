@@ -182,8 +182,9 @@ resilient, _ := runnables.NewWithFallbacks(primary, fallbackSummarizer)
 遵循本项目的有界移植立场，以下 LCEL 周边特性**不**实现：
 
 - **`|` 运算符本身** —— Go 没有运算符重载；用 `Pipe*`。
-- **链上的 `astream_log` / `astream_events`** —— 组合链上的流式使用
-  `Runnable.Stream`（拉取式）；agent 级的事件流走 `Agent.StreamEvents`
+- **`astream_log`** —— 上游已弃用，不移植。`astream_events` **已可用**：
+  `runnables.StreamEvents` 可对任意组合链流式产出 v2 形状的生命周期事件
+  （支持过滤）；agent 级事件流走 `Agent.StreamEvents`
   （见 [streaming](streaming.md)）。
 - **Pydantic 支撑的 schema 校验** —— schema 是 `schema.Schema`
   （`map[string]any`）；它们描述形状，但不在运行时校验。
