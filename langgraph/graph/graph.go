@@ -1229,12 +1229,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, opts.Resume, opts.Graph)
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(rs, tup, opts.Resume, opts.Graph)
 		if err != nil {
 			return Result{}, err
 		}
 	case tup != nil && len(input) == 0:
-		tasks, resumeValues, resumingNode, replayWrites, err = resumeFromTuple(rs, tup, nil, "")
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(rs, tup, nil, "")
 		if err != nil {
 			return Result{}, err
 		}

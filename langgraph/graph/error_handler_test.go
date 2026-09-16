@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -236,5 +237,168 @@ func TestErrorHandlerTimeoutTriggersHandler(t *testing.T) {
 	}
 	if res.Values["recovered"] != true {
 		t.Fatalf("Values[\"recovered\"] = %v, want true", res.Values["recovered"])
+	}
+}
+
+// --- Resume / crash-recovery coverage (Task 2) ---
+
+// TestErrorHandlerResumeRerunsHandlerNotNode simulates a crash mid-handler
+// (the handler itself fails on its first call) and proves the same-thread
+// resume re-runs the HANDLER with the persisted error message — the node
+// function never executes a second time.
+func TestErrorHandlerResumeRerunsHandlerNotNode(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	var nodeRuns, handlerCalls atomic.Int32
+	firstMsg := "boom: persistent failure"
+	compile := func() *CompiledGraph {
+		g := NewStateGraph()
+		g.AddNodeWithPolicies("node", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+			nodeRuns.Add(1)
+			return nil, errors.New(firstMsg)
+		}, NodePolicies{ErrorHandler: &ErrorHandlerPolicy{
+			Handler: func(_ map[string]any, nerr *NodeError) (any, error) {
+				n := handlerCalls.Add(1)
+				if n == 1 {
+					// Simulated crash mid-handler.
+					return nil, errors.New("handler crashed before recovering")
+				}
+				if nerr.Attempt != 0 {
+					t.Errorf("resumed NodeError.Attempt = %d, want 0 (persisted write carries the message only)", nerr.Attempt)
+				}
+				if nerr.Err.Error() != firstMsg {
+					t.Errorf("resumed NodeError.Err = %q, want the persisted message %q", nerr.Err.Error(), firstMsg)
+				}
+				return map[string]any{"recovered": nerr.Err.Error()}, nil
+			},
+		}})
+		g.AddEdge(types.START, "node")
+		g.AddEdge("node", types.END)
+		cg, err := g.Compile(WithCheckpointer(saver))
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+		return cg
+	}
+
+	cg := compile()
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"seed": 1}, Options{ThreadID: "t"}); err == nil {
+		t.Fatal("first Invoke() error = nil, want the handler-crash error")
+	}
+	if n := nodeRuns.Load(); n != 1 {
+		t.Fatalf("node runs after first Invoke = %d, want 1", n)
+	}
+
+	res, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("second Invoke() error = %v, want the re-run handler to recover", err)
+	}
+	if n := nodeRuns.Load(); n != 1 {
+		t.Fatalf("node runs after resume = %d, want 1 (resume must re-run the handler, NOT the node)", n)
+	}
+	if n := handlerCalls.Load(); n != 2 {
+		t.Fatalf("handler calls = %d, want 2 (original + re-run)", n)
+	}
+	if res.Values["recovered"] != firstMsg {
+		t.Fatalf("Values[\"recovered\"] = %v, want %q", res.Values["recovered"], firstMsg)
+	}
+}
+
+// TestErrorHandlerCompletedWritesWinOverErrorWrite: when a recovered task's
+// superstep pauses on ANOTHER task's interrupt, the checkpoint holds both the
+// persisted ERROR write and the handler's completed writes for the task —
+// resume must replay the completed writes, not re-run the handler.
+func TestErrorHandlerCompletedWritesWinOverErrorWrite(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	var aRuns, handlerCalls atomic.Int32
+	g := NewStateGraph()
+	g.AddNodeWithPolicies("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		aRuns.Add(1)
+		return nil, errFlaky
+	}, NodePolicies{ErrorHandler: &ErrorHandlerPolicy{
+		Handler: func(_ map[string]any, _ *NodeError) (any, error) {
+			handlerCalls.Add(1)
+			return map[string]any{"a_ok": true}, nil
+		},
+	}})
+	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
+		Interrupt(ctx, "need approval")
+		return map[string]any{"b_done": true}, nil
+	})
+	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
+	g.AddEdge(types.START, "start")
+	g.AddEdge("start", "a")
+	g.AddEdge("start", "b")
+	g.AddEdge("a", types.END)
+	g.AddEdge("b", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	first, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(first.Interrupts) != 1 || first.Interrupts[0].Value != "need approval" {
+		t.Fatalf("first Invoke() Interrupts = %+v, want b's interrupt", first.Interrupts)
+	}
+
+	res, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t", Resume: "approved"})
+	if err != nil {
+		t.Fatalf("resume Invoke() error = %v", err)
+	}
+	if n := aRuns.Load(); n != 1 {
+		t.Fatalf("node a runs = %d, want 1", n)
+	}
+	if n := handlerCalls.Load(); n != 1 {
+		t.Fatalf("handler calls = %d, want 1 (completed writes must win over the ERROR write on resume)", n)
+	}
+	if res.Values["a_ok"] != true {
+		t.Fatalf("Values[\"a_ok\"] = %v, want true (handler writes replayed)", res.Values["a_ok"])
+	}
+	if res.Values["b_done"] != true {
+		t.Fatalf("Values[\"b_done\"] = %v, want true", res.Values["b_done"])
+	}
+}
+
+// TestResumeErrorWriteWithoutHandlerFails: a persisted ERROR write can only
+// come from a graph that had a handler; resuming the SAME thread with a build
+// that removed the handler surfaces the stored failure instead of silently
+// re-running the node.
+func TestResumeErrorWriteWithoutHandlerFails(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	persistedMsg := "boom: handler was removed later"
+	build := func(withHandler bool) *CompiledGraph {
+		g := NewStateGraph()
+		policies := NodePolicies{}
+		if withHandler {
+			policies.ErrorHandler = &ErrorHandlerPolicy{
+				Handler: func(_ map[string]any, _ *NodeError) (any, error) {
+					return nil, errors.New("handler crashed before recovering")
+				},
+			}
+		}
+		g.AddNodeWithPolicies("node", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+			return nil, errors.New(persistedMsg)
+		}, policies)
+		g.AddEdge(types.START, "node")
+		g.AddEdge("node", types.END)
+		cg, err := g.Compile(WithCheckpointer(saver))
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+		return cg
+	}
+
+	if _, err := build(true).InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); err == nil {
+		t.Fatal("first Invoke() error = nil, want the handler-crash error to leave a persisted ERROR write")
+	}
+
+	_, err := build(false).InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t"})
+	if err == nil {
+		t.Fatal("resume Invoke() error = nil, want the persisted error to surface")
+	}
+	if !strings.Contains(err.Error(), persistedMsg) {
+		t.Fatalf("resume Invoke() error = %v, want it to contain the persisted message %q", err, persistedMsg)
 	}
 }

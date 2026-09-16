@@ -224,14 +224,14 @@ type resumePlan struct {
 // interrupts whose NS it hits (strict NS addressing). All current entry
 // points pass "" (match by interrupt ID, or by interrupt NS for map resumes
 // — see resumeValuesFor).
-func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any, graphNS string) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
+func (g *CompiledGraph) resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any, graphNS string) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
 	// Seed deltaCounters from the loaded checkpoint so resume continues the
 	// per-channel cadence (S3). Cloned so rs.deltaCounters is independent of
 	// the (shared) loaded metadata map.
 	rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
-	plan, err := planResume(tup, resume, graphNS)
+	plan, err := g.planResume(tup, resume, graphNS)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -251,7 +251,16 @@ func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any, graphNS st
 //     followed by the values matched from THIS resume call;
 //   - tasks with completed-work writes (state keys and/or ReservedTasks) are
 //     NOT re-run: their state writes replay via applyWrites and their sends
-//     rejoin the resumed superstep's task queue;
+//     rejoin the resumed superstep's task queue — completed writes also win
+//     over a ReservedError write the same task may carry (a handler that
+//     already produced this superstep's outcome);
+//   - tasks whose ONLY write is a ReservedError write failed and had their
+//     error handler scheduled (Python langgraph 1.2.0 error_handler): when
+//     this build still configures a handler for the node, the resumed task
+//     re-runs the HANDLER with the persisted message (crash recovery — the
+//     node itself never re-executes); when the handler was removed, the
+//     stored failure surfaces as a resume error instead of silently
+//     re-running the node;
 //   - tasks without pending writes never ran (e.g. an interrupt_before
 //     pause) and dispatch normally.
 //
@@ -265,7 +274,7 @@ func resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any, graphNS st
 // exactly one pending interrupt hits even if others remain unmatched (they
 // re-fire and the run re-pauses). A graphNS hitting nothing is a descriptive
 // error listing the available NS values.
-func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, error) {
+func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, error) {
 	pending := interruptsFromWrites(tup.PendingWrites)
 	if graphNS != "" {
 		var hits []types.Interrupt
@@ -311,6 +320,7 @@ func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, 
 		var resumePrefix []any
 		var sends []types.Send
 		update := map[string]any{}
+		var taskErrMsg string
 		for _, w := range byTask[pt.ID] {
 			switch w.Channel {
 			case checkpoint.ReservedInterrupt:
@@ -327,6 +337,14 @@ func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, 
 				if send, ok := w.Value.(types.Send); ok {
 					sends = append(sends, send)
 				}
+			case checkpoint.ReservedError:
+				// A task failure whose handler was scheduled but never
+				// completed (crash recovery). The write carries the message
+				// only; a non-string value is malformed — ignore it, matching
+				// the other reserved channels.
+				if msg, ok := w.Value.(string); ok {
+					taskErrMsg = msg
+				}
 			default:
 				update[w.Channel] = w.Value
 			}
@@ -339,6 +357,19 @@ func planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, 
 			plan.replayWrites = append(plan.replayWrites, taskWrites{node: pt.Node, update: update})
 			for _, s := range sends {
 				replaySends = append(replaySends, task{node: s.Node, arg: s.Arg})
+			}
+		case taskErrMsg != "":
+			if g.errorHandlerPolicy(pt.Node) != nil {
+				// Re-run the handler with the persisted message — the node
+				// itself never re-executes (Python langgraph 1.2.0 crash
+				// recovery semantics for error_handler).
+				plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg,
+					runErrorHandler: true, resumeErrMsg: taskErrMsg})
+			} else {
+				// The write was produced by a graph that had a handler;
+				// this build removed it — surface the stored failure
+				// instead of silently re-running the node.
+				return plan, fmt.Errorf("graph: task %s failed (persisted error): %s", pt.ID, taskErrMsg)
 			}
 		default:
 			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg})
