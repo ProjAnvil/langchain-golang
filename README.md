@@ -3,14 +3,24 @@
 [![CI](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml/badge.svg)](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1382%20passing-brightgreen)]()
-[![Packages](https://img.shields.io/badge/packages-62-blue)]()
+[![Tests](https://img.shields.io/badge/tests-3111%20passing-brightgreen)]()
+[![Packages](https://img.shields.io/badge/packages-65-blue)]()
 
 **Languages:** English | [简体中文](README.zh-CN.md)
 
 A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain) and [LangGraph](https://github.com/langchain-ai/langgraph) — build production-grade LLM agents and applications in pure Go.
 
 > **Not affiliated with or endorsed by LangChain, Inc.** Preview quality; the public API may change before `v1.0.0`.
+
+## What's New
+
+**v0.8.0** — engineering hardening release:
+
+- **CI**: GitHub Actions across the root module and all checkpoint modules (go 1.26/1.27 matrix) with a golangci-lint gate — 86 pre-existing lint findings cleared.
+- **`parallel_tool_calls`**: openai (Responses + Chat Completions) and anthropic (`tool_choice.disable_parallel_tool_use`) now honor `BindToolsOptions.ParallelToolCalls`.
+- **Community files**: [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md), [DIVERGENCES](DIVERGENCES.md), [SECURITY](SECURITY.md).
+
+See the [CHANGELOG](CHANGELOG.md) for the full history.
 
 ---
 
@@ -22,7 +32,7 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 | **Concurrency** | Goroutines (native) | asyncio / threading |
 | **Deployment** | Single binary, no runtime deps | Python interpreter + venv |
 | **Type safety** | Compile-time checked | Runtime (Pydantic) |
-| **Checkpointer backends** | In-memory, SQLite, PostgreSQL | Same + Redis, MongoDB |
+| **Checkpointer backends** | In-memory, SQLite, PostgreSQL, Redis | Same + MongoDB |
 
 ## Features
 
@@ -42,7 +52,7 @@ The Go equivalent of Python's `create_agent`, built on the `langgraph/` runtime:
 A Pregel-style state graph executor mirroring Python's LangGraph 1.2.x:
 
 - **StateGraph builder** with typed channels: `LastValue`, `Topic`, `BinaryOperator`, `Ephemeral`, `Barrier`, **`DeltaChannel`** (sentinel-only checkpoint storage with counter-based snapshot cadence), **`Overwrite`** reducer
-- **Checkpointing**: in-memory, SQLite (`modernc.org/sqlite`, pure Go), PostgreSQL (`pgx/v5`) — all sharing a conformance suite
+- **Checkpointing**: in-memory, SQLite (`modernc.org/sqlite`, pure Go), PostgreSQL (`pgx/v5`), Redis (`go-redis/v9`) — all sharing a conformance suite
 - **Durability modes**: `sync` (default), `async` (background goroutine writer), `exit` (deferred flush) via `checkpointSink`
 - **Stream API**: `values` / `updates` / `debug` / `messages` / `custom` / `delta` modes
 - **Functional API**: `@entrypoint` / `@task` equivalent (`langgraph/fn`)
@@ -51,7 +61,7 @@ A Pregel-style state graph executor mirroring Python's LangGraph 1.2.x:
 
 ### 🧱 Core Abstractions — `core/`
 
-30 packages porting `langchain_core`:
+31 packages porting `langchain_core`:
 
 - **Messages**: unified `Message` struct, typed content blocks (text/image/audio/video/file/reasoning/citation/tool-call), tool calls, trimming, serialization
 - **Runnable composition (LCEL)**: `Pipe` / `Parallel` / `Branch` / `Fallbacks` / `Retry` with JSON/ASCII/Mermaid graph export
@@ -193,9 +203,9 @@ state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
 │                    langgraph/                          │
 │  ┌──────────┐  ┌────────────┐  ┌───────────────────┐  │
 │  │ StateGraph│  │ checkpoint │  │   channels         │  │
-│  │  builder  │→ │  (memory / │  │ LastValue/Topic/  │  │
-│  │  + Pregel │  │  sqlite /  │  │ BinOp/Delta/      │  │
-│  │  executor │  │  postgres) │  │ Overwrite/Barrier │  │
+│  │  builder  │→ │ (mem/sql/  │  │ LastValue/Topic/  │  │
+│  │  + Pregel │  │  pg/redis) │  │ BinOp/Delta/      │  │
+│  │  executor │  │            │  │ Overwrite/Barrier │  │
 │  └──────────┘  └────────────┘  └───────────────────┘  │
 ├──────────────────────────────────────────────────────┤
 │                     core/                             │
@@ -226,12 +236,13 @@ API reference: [pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-go
 
 ```
 langchain-golang/
-├── core/                      # langchain_core port (30 packages)
+├── core/                      # langchain_core port (31 packages)
 ├── langgraph/                 # langgraph port
 │   ├── channels/              # LastValue, Topic, BinOp, Delta, Overwrite, Barrier, Ephemeral
 │   ├── checkpoint/            # Saver interface + MemorySaver
 │   │   ├── sqlite/            # nested module: pure-Go SQLite saver
 │   │   ├── postgres/          # nested module: PostgreSQL saver (pgx/v5)
+│   │   ├── redis/             # nested module: Redis saver (go-redis/v9)
 │   │   ├── savertest/         # shared conformance suite
 │   │   └── serde/             # JSON serializer + type registry
 │   ├── graph/                 # StateGraph builder + Pregel executor + checkpointSink
@@ -293,12 +304,13 @@ This is a **faithful port** — every design decision defaults to "what Python d
 # Full suite with race detector
 go test -race ./...
 
-# Checkpoint backends
+# Checkpoint backends (each is its own nested module)
 make test-sqlite       # pure-Go SQLite saver
+make test-redis        # Redis saver (miniredis, offline)
 make test-postgres     # embedded PostgreSQL saver
 ```
 
-1382 tests across 62 packages, all passing with `-race`.
+3111 tests across 65 packages, all passing with `-race`, enforced by [CI](.github/workflows/ci.yml) (go 1.26/1.27 matrix + golangci-lint).
 
 ---
 

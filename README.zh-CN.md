@@ -1,15 +1,26 @@
 # langchain-golang
 
-[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go)](https://go.dev/)
+[![CI](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml/badge.svg)](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1382%20passing-brightgreen)]()
-[![Packages](https://img.shields.io/badge/packages-62-blue)]()
+[![Tests](https://img.shields.io/badge/tests-3111%20passing-brightgreen)]()
+[![Packages](https://img.shields.io/badge/packages-65-blue)]()
 
 **语言:** [English](README.md) | 简体中文
 
 [LangChain](https://github.com/langchain-ai/langchain) 和 [LangGraph](https://github.com/langchain-ai/langgraph) 的社区 **Go 语言端口** —— 用纯 Go 构建生产级 LLM 智能体和应用。
 
 > **未与 LangChain, Inc. 有关联或受其认可。** 预览质量；公开 API 在 `v1.0.0` 前可能变化。
+
+## 最新动态
+
+**v0.8.0** —— 工程化加固版本：
+
+- **CI**：GitHub Actions 覆盖主模块与全部 checkpoint 嵌套模块（go 1.26/1.27 矩阵）+ golangci-lint 门禁，存量 86 条 lint 告警清零。
+- **`parallel_tool_calls`**：openai（Responses + Chat Completions 双路径）与 anthropic（`tool_choice.disable_parallel_tool_use`）现支持 `BindToolsOptions.ParallelToolCalls`。
+- **社区文件**：[CHANGELOG](CHANGELOG.md)、[CONTRIBUTING](CONTRIBUTING.md)、[DIVERGENCES](DIVERGENCES.md)、[SECURITY](SECURITY.md)。
+
+完整历史见 [CHANGELOG](CHANGELOG.md)。
 
 ---
 
@@ -21,7 +32,7 @@
 | **并发** | Goroutine（原生） | asyncio / 线程 |
 | **部署** | 单一二进制，无运行时依赖 | Python 解释器 + venv |
 | **类型安全** | 编译期检查 | 运行时（Pydantic） |
-| **Checkpoint 后端** | 内存、SQLite、PostgreSQL | 同上 + Redis、MongoDB |
+| **Checkpoint 后端** | 内存、SQLite、PostgreSQL、Redis | 同上 + MongoDB |
 
 ## 功能特性
 
@@ -41,7 +52,7 @@ Python `create_agent` 的 Go 等价物，构建在 `langgraph/` 运行时之上�
 镜像 Python LangGraph 1.2.x 的 Pregel 风格状态图执行器：
 
 - **StateGraph 构建器**，带类型化通道：`LastValue`、`Topic`、`BinaryOperator`、`Ephemeral`、`Barrier`、**`DeltaChannel`**（仅哨兵检查点存储 + 基于计数器的快照节拍）、**`Overwrite`** reducer
-- **检查点**：内存、SQLite（`modernc.org/sqlite`，纯 Go）、PostgreSQL（`pgx/v5`）—— 共享一致性测试套件
+- **检查点**：内存、SQLite（`modernc.org/sqlite`，纯 Go）、PostgreSQL（`pgx/v5`）、Redis（`go-redis/v9`）—— 共享一致性测试套件
 - **持久化模式**：`sync`（默认）、`async`（后台 goroutine 写入器）、`exit`（延迟刷新），通过 `checkpointSink`
 - **流式 API**：`values` / `updates` / `debug` / `messages` / `custom` / `delta` 模式
 - **函数式 API**：`@entrypoint` / `@task` 的等价物（`langgraph/fn`）
@@ -50,7 +61,7 @@ Python `create_agent` 的 Go 等价物，构建在 `langgraph/` 运行时之上�
 
 ### 🧱 核心抽象 — `core/`
 
-30 个包，移植 `langchain_core`：
+31 个包，移植 `langchain_core`：
 
 - **消息**：统一 `Message` 结构体、类型化内容块（文本/图片/音频/视频/文件/推理/引用/工具调用）、工具调用、裁剪、序列化
 - **Runnable 组合（LCEL）**：`Pipe` / `Parallel` / `Branch` / `Fallbacks` / `Retry`，支持 JSON/ASCII/Mermaid 图导出
@@ -81,7 +92,7 @@ Python `create_agent` 的 Go 等价物，构建在 `langgraph/` 运行时之上�
 go get github.com/projanvil/langchain-golang
 ```
 
-需要 **Go 1.23+**。
+需要 **Go 1.26+**（v0.6.1 及更早版本：Go 1.23+）。
 
 检查点后端：
 
@@ -192,9 +203,9 @@ state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
 │                    langgraph/                          │
 │  ┌──────────┐  ┌────────────┐  ┌───────────────────┐  │
 │  │ StateGraph│  │ checkpoint │  │   channels         │  │
-│  │  构建器   │→ │ (内存 /    │  │ LastValue/Topic/  │  │
-│  │ + Pregel  │  │  sqlite /  │  │ BinOp/Delta/      │  │
-│  │  执行器   │  │  postgres) │  │ Overwrite/Barrier │  │
+│  │  构建器   │→ │ (内存/sql/ │  │ LastValue/Topic/  │  │
+│  │ + Pregel  │  │  pg/redis) │  │ BinOp/Delta/      │  │
+│  │  执行器   │  │            │  │ Overwrite/Barrier │  │
 │  └──────────┘  └────────────┘  └───────────────────┘  │
 ├──────────────────────────────────────────────────────┤
 │                     core/                             │
@@ -225,12 +236,13 @@ API 参考：[pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-gola
 
 ```
 langchain-golang/
-├── core/                      # langchain_core 移植（30 个包）
+├── core/                      # langchain_core 移植（31 个包）
 ├── langgraph/                 # langgraph 移植
 │   ├── channels/              # LastValue, Topic, BinOp, Delta, Overwrite, Barrier, Ephemeral
 │   ├── checkpoint/            # Saver 接口 + MemorySaver
 │   │   ├── sqlite/            # 嵌套模块：纯 Go SQLite saver
 │   │   ├── postgres/          # 嵌套模块：PostgreSQL saver (pgx/v5)
+│   │   ├── redis/             # 嵌套模块：Redis saver (go-redis/v9)
 │   │   ├── savertest/         # 共享一致性测试套件
 │   │   └── serde/             # JSON 序列化器 + 类型注册表
 │   ├── graph/                 # StateGraph 构建器 + Pregel 执行器 + checkpointSink
@@ -292,12 +304,13 @@ langchain-golang/
 # 全量测试 + 竞争检测器
 go test -race ./...
 
-# Checkpoint 后端
+# Checkpoint 后端（各为独立嵌套模块）
 make test-sqlite       # 纯 Go SQLite saver
+make test-redis        # Redis saver（miniredis，离线）
 make test-postgres     # 嵌入式 PostgreSQL saver
 ```
 
-62 个包共 1382 个测试，全部通过 `-race` 检测。
+65 个包共 3111 个测试，全部通过 `-race` 检测，由 [CI](.github/workflows/ci.yml)（go 1.26/1.27 矩阵 + golangci-lint）保障。
 
 ---
 
