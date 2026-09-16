@@ -83,11 +83,12 @@ A Pregel-style state graph executor mirroring Python's LangGraph 1.2.x:
 |---------|:---:|:---:|:---:|:---:|
 | **OpenAI** | ✅ | ✅ | — | ✅ (`init()`) |
 | **Anthropic** | ✅ | — | — | ✅ (`init()`) |
+| **Google Gemini** | ✅ | — | — | ✅ (`init()`, via `partners/gemini` + the official genai SDK) |
 | **Ollama** | ✅ | ✅ | — | ✅ (`init()`) |
 | **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | ✅ (`init()`, via `partners/openaicompat`) |
 | **Chroma** | — | — | ✅ | — |
 
-All ten chat-model provider names self-register via `init()` (`partners/openai`, `partners/anthropic`, `partners/ollama`, plus the seven OpenAI-compatible names in `partners/openaicompat`), so `WithAgentModel("openai:gpt-4o")` and `WithAgentModel("groq:openai/gpt-oss-20b")` resolve end-to-end once the package is blank-imported. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, ...).
+All eleven chat-model provider names self-register via `init()` (`partners/openai`, `partners/anthropic`, `partners/gemini`, `partners/ollama`, plus the seven OpenAI-compatible names in `partners/openaicompat`), so `WithAgentModel("openai:gpt-4o")` and `WithAgentModel("groq:openai/gpt-oss-20b")` resolve end-to-end once the package is blank-imported. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `OLLAMA_HOST`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, ...).
 
 ---
 
@@ -262,7 +263,7 @@ langchain-golang/
 │   ├── chatmodels/            # provider registry (Resolve / RegisterProvider)
 │   ├── tools/                 # ToolNode (concurrent dispatch)
 │   └── messages/              # langchain-level message helpers
-├── partners/                  # openai, anthropic, ollama, openaicompat (7 providers), chroma
+├── partners/                  # openai, anthropic, gemini, ollama, openaicompat (7 providers), chroma, mcp
 ├── textsplitters/             # langchain_text_splitters port
 ├── standardtests/             # conformance suites
 ├── modelprofiles/             # model-profiles registry + CLI
