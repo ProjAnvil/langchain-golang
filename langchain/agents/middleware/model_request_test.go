@@ -149,7 +149,7 @@ func TestModelRequestCannotSetBothSystemPromptAndSystemMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected constructor error")
 	}
-	if !strings.Contains(err.Error(), "Cannot specify both") {
+	if !strings.Contains(err.Error(), "cannot specify both") {
 		t.Fatalf("unexpected constructor error: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestModelRequestCannotSetBothSystemPromptAndSystemMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected override error")
 	}
-	if !strings.Contains(err.Error(), "Cannot specify both") {
+	if !strings.Contains(err.Error(), "cannot specify both") {
 		t.Fatalf("unexpected override error: %v", err)
 	}
 }

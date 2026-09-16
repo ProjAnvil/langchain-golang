@@ -475,12 +475,12 @@ func testConcurrentPutGet(t *testing.T, newStore func(t *testing.T) store.Store)
 				key := fmt.Sprintf("k%d", i)
 				val := map[string]any{"g": g, "i": i}
 				if err := s.Put(ctx, ns, key, val, nil); err != nil {
-					errs <- fmt.Errorf("Put g%d/%s: %w", g, key, err)
+					errs <- fmt.Errorf("put g%d/%s: %w", g, key, err)
 					return
 				}
 				// Concurrent Get of the just-written key.
 				if _, err := s.Get(ctx, ns, key); err != nil {
-					errs <- fmt.Errorf("Get g%d/%s: %w", g, key, err)
+					errs <- fmt.Errorf("get g%d/%s: %w", g, key, err)
 					return
 				}
 			}

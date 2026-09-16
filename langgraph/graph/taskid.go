@@ -15,11 +15,11 @@ import (
 // task identity rather than node name.
 func TaskID(cpID string, step int, node string, arg map[string]any) string {
 	h := fnv.New64a()
-	fmt.Fprintf(h, "%s\x00%d\x00%s\x00", cpID, step, node)
+	_, _ = fmt.Fprintf(h, "%s\x00%d\x00%s\x00", cpID, step, node)
 	if data, err := json.Marshal(arg); err == nil {
 		_, _ = h.Write(data)
 	} else {
-		fmt.Fprintf(h, "%#v", arg)
+		_, _ = fmt.Fprintf(h, "%#v", arg)
 	}
 	return fmt.Sprintf("%016x", h.Sum64())
 }
@@ -34,6 +34,6 @@ func TaskID(cpID string, step int, node string, arg map[string]any) string {
 // checkpoint replay keys on call identity rather than task name.
 func FnTaskID(cpID, ns string, step int, name, parentPath string, callIdx int) string {
 	h := fnv.New64a()
-	fmt.Fprintf(h, "%s\x00%s\x00%d\x00%s\x00%s\x00%d\x00", cpID, ns, step, name, parentPath, callIdx)
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%d\x00%s\x00%s\x00%d\x00", cpID, ns, step, name, parentPath, callIdx)
 	return fmt.Sprintf("%016x", h.Sum64())
 }

@@ -15,6 +15,7 @@
 // This file deliberately imports only core/callbacks (never core/runnables):
 // the StreamEvents driver depends on this package for the env auto-attach
 // hook, and that dependency must stay one-directional.
+
 package tracers
 
 import (

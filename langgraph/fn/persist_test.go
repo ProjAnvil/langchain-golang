@@ -234,13 +234,14 @@ func TestPersistChainedPauseRestamp(t *testing.T) {
 
 	ctx := t.Context()
 	_, err = e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
-	ierr, ok := errors.AsType[*InterruptError](err)
+	_, ok := errors.AsType[*InterruptError](err)
 	if !ok {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 
 	_, err = e.Invoke(ctx, "ignored", graph.Options{ThreadID: "1", Resume: "answer1"})
-	if ierr, ok = errors.AsType[*InterruptError](err); !ok {
+	ierr, ok := errors.AsType[*InterruptError](err)
+	if !ok {
 		t.Fatalf("second Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 	if len(ierr.Interrupts) != 1 || ierr.Interrupts[0].Value != "q1" {

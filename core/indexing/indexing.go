@@ -255,7 +255,7 @@ func IndexDocumentIterator(
 	if iter == nil {
 		return IndexingResult{}, fmt.Errorf("document iterator is required")
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 	dest, batchSize, cleanupBatchSize, err := validateIndexingInputs(recordManager, destination, options)
 	if err != nil {
 		return IndexingResult{}, err

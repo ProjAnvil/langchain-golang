@@ -1,3 +1,4 @@
+// Package retry provides the runnable retry wrapper mirroring langchain_core.runnables.retry.
 package retry
 
 import (

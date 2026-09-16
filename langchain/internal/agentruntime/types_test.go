@@ -42,7 +42,7 @@ func TestSentinelConstants(t *testing.T) {
 // type or loses a field.
 func TestTypeAliasesAreIdentical(t *testing.T) {
 	send := Send{Node: "node-a", Arg: map[string]any{"k": "v"}}
-	var langgraphSend types.Send = send
+	var langgraphSend types.Send = send //nolint:staticcheck // ST1023: assigning through the alias is the compile-time proof under test
 	if langgraphSend.Node != "node-a" || langgraphSend.Arg["k"] != "v" {
 		t.Errorf("Send round trip = %+v", langgraphSend)
 	}
@@ -53,13 +53,13 @@ func TestTypeAliasesAreIdentical(t *testing.T) {
 		Resume: "resume-value",
 		Goto:   []any{"node-b", &send},
 	}
-	var langgraphCmd types.Command = cmd
+	var langgraphCmd types.Command = cmd //nolint:staticcheck // ST1023: assigning through the alias is the compile-time proof under test
 	if langgraphCmd.Graph != types.ParentGraph || langgraphCmd.Resume != "resume-value" || len(langgraphCmd.Goto) != 2 {
 		t.Errorf("Command round trip = %+v", langgraphCmd)
 	}
 
 	intr := Interrupt{Value: "what is your name?", ID: "int-1"}
-	var langgraphIntr types.Interrupt = intr
+	var langgraphIntr types.Interrupt = intr //nolint:staticcheck // ST1023: assigning through the alias is the compile-time proof under test
 	if langgraphIntr.Value != "what is your name?" || langgraphIntr.ID != "int-1" {
 		t.Errorf("Interrupt round trip = %+v", langgraphIntr)
 	}
@@ -79,7 +79,7 @@ func TestGraphInterrupt(t *testing.T) {
 	if !ok {
 		t.Fatal("errors.AsType did not match *types.GraphInterrupt")
 	}
-	if shimGI != (*GraphInterrupt)(langgraphGI) {
+	if shimGI != langgraphGI {
 		t.Error("shim and langgraph/types GraphInterrupt matches are not the same value")
 	}
 

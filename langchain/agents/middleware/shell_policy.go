@@ -157,7 +157,7 @@ func (d DockerExecutionPolicy) ResolveBinary() (string, error) {
 	}
 	path, err := execLookPath(binary)
 	if err != nil {
-		return "", fmt.Errorf("Docker execution policy requires the '%s' CLI to be installed and available on PATH", binary)
+		return "", fmt.Errorf("docker execution policy requires the '%s' CLI to be installed and available on PATH", binary)
 	}
 	return path, nil
 }
@@ -247,7 +247,7 @@ func (c CodexSandboxExecutionPolicy) ResolveBinary() (string, error) {
 	}
 	path, err := execLookPath(binary)
 	if err != nil {
-		return "", fmt.Errorf("Codex sandbox policy requires the '%s' CLI to be installed and available on PATH", binary)
+		return "", fmt.Errorf("codex sandbox policy requires the '%s' CLI to be installed and available on PATH", binary)
 	}
 	return path, nil
 }
@@ -270,7 +270,7 @@ func (c CodexSandboxExecutionPolicy) resolvePlatform(goos string) (string, error
 		case "darwin":
 			return "macos", nil
 		default:
-			return "", fmt.Errorf("Codex sandbox policy could not determine a supported platform; set 'platform' explicitly")
+			return "", fmt.Errorf("codex sandbox policy could not determine a supported platform; set 'platform' explicitly")
 		}
 	default:
 		return c.Platform, nil

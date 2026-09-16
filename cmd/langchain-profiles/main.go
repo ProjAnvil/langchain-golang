@@ -24,7 +24,7 @@ func main() {
 
 func run(args []string, stdin *os.File, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "expected a subcommand, e.g. \"refresh\"")
+		_, _ = fmt.Fprintln(stderr, "expected a subcommand, e.g. \"refresh\"")
 		printUsage(stderr)
 		return 1
 	}
@@ -38,7 +38,7 @@ func run(args []string, stdin *os.File, stdout, stderr *os.File) int {
 		printUsage(stdout)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		printUsage(stderr)
 		return 1
 	}
@@ -53,7 +53,7 @@ func runRefresh(args []string, stdin *os.File, stdout, stderr *os.File) int {
 		return 1
 	}
 	if *provider == "" || *dataDir == "" {
-		fmt.Fprintln(stderr, "both --provider and --data-dir are required")
+		_, _ = fmt.Fprintln(stderr, "both --provider and --data-dir are required")
 		fs.Usage()
 		return 1
 	}
@@ -65,13 +65,13 @@ func runRefresh(args []string, stdin *os.File, stdout, stderr *os.File) int {
 		Stdout:   stdout,
 		Stderr:   stderr,
 		Confirm: func() bool {
-			fmt.Fprint(stderr, "Continue? (y/N): ")
+			_, _ = fmt.Fprint(stderr, "Continue? (y/N): ")
 			line, _ := reader.ReadString('\n')
 			return strings.EqualFold(strings.TrimSpace(line), "y")
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return 0
@@ -88,7 +88,7 @@ func runSummarize(args []string, stdin *os.File, stdout, stderr *os.File) int {
 		return 1
 	}
 	if *provider == "" || *dataDir == "" || *before == "" {
-		fmt.Fprintln(stderr, "--provider, --data-dir, and --before are required")
+		_, _ = fmt.Fprintln(stderr, "--provider, --data-dir, and --before are required")
 		fs.Usage()
 		return 1
 	}
@@ -102,16 +102,16 @@ func runSummarize(args []string, stdin *os.File, stdout, stderr *os.File) int {
 		Stderr:   stderr,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return 0
 }
 
 func printUsage(w *os.File) {
-	fmt.Fprintln(w, "langchain-profiles refreshes model profile data from models.dev")
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  langchain-profiles refresh --provider <id> --data-dir <dir>")
-	fmt.Fprintln(w, "  langchain-profiles summarize --provider <id> --data-dir <dir> --before <path> [--after <path>]")
+	_, _ = fmt.Fprintln(w, "langchain-profiles refreshes model profile data from models.dev")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Usage:")
+	_, _ = fmt.Fprintln(w, "  langchain-profiles refresh --provider <id> --data-dir <dir>")
+	_, _ = fmt.Fprintln(w, "  langchain-profiles summarize --provider <id> --data-dir <dir> --before <path> [--after <path>]")
 }

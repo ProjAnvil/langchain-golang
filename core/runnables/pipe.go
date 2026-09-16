@@ -17,6 +17,7 @@
 // so Pipe(Pipe3(a, b, c), Pipe3(d, e, f)) works directly. Pipe is also
 // the zero-error variant of NewSequence: a nil runnable is a programmer error
 // and panics at construction rather than threading an error through the chain.
+
 package runnables
 
 import (

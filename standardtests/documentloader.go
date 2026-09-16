@@ -26,7 +26,7 @@ func RunDocumentLoaderBasics(t *testing.T, factory DocumentLoaderFactory) {
 		if err != nil {
 			t.Fatalf("lazy load: %v", err)
 		}
-		defer iter.Close()
+		defer func() { _ = iter.Close() }()
 		var lazy []documents.Document
 		for {
 			doc, ok, err := iter.Next(context.Background())

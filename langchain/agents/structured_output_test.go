@@ -319,7 +319,7 @@ func TestProviderStrategyBindingParseInvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "Native structured output expected valid JSON for weather_schema") {
+	if !strings.Contains(err.Error(), "native structured output expected valid JSON for weather_schema") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

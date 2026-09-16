@@ -57,7 +57,7 @@ func NewJSONSerializer() checkpoint.Serializer {
 // concrete type. Encoding any other concrete type is an error — there is no
 // silent lossy fallback.
 func (jsonSerializer) DumpsTyped(v any) (string, []byte, error) {
-	canonical := v
+	var canonical any
 	tag := tagJSON
 	if name, payload, ok, err := encodeRegistered(v); err != nil {
 		return "", nil, err

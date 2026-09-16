@@ -479,7 +479,7 @@ func (r Parallel[I]) Stream(ctx context.Context, input I, opts ...Option) (Strea
 	for _, key := range keys {
 		stream, err := r.Steps[key].Stream(ctx, input, childOptions("map:key:"+key, opts...)...)
 		if err != nil {
-			closeParallelStreams(items)
+			_ = closeParallelStreams(items)
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
 		items = append(items, parallelStreamItem{key: key, stream: stream})

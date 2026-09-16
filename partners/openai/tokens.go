@@ -257,7 +257,7 @@ func fetchImageSize(url string) (int, int, bool) {
 			slog.String("url", url), slog.String("error", err.Error()))
 		return 0, 0, false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 0, 0, false
 	}

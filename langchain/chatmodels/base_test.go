@@ -157,7 +157,7 @@ func TestParseModelErrorsWhenProviderCannotBeInferred(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "Unable to infer model provider") {
+	if !strings.Contains(err.Error(), "unable to infer model provider") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, provider := range BuiltinProviderNames() {
@@ -182,7 +182,7 @@ func TestInitChatModelUnknownProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "Unsupported provider='bar'") {
+	if !strings.Contains(err.Error(), "unsupported provider='bar'") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

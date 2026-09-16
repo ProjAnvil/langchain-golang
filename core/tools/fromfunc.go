@@ -129,7 +129,7 @@ func fromFuncSignature(t reflect.Type) (reflect.Type, bool, error) {
 // failure during Invoke.
 func validateArgType(t reflect.Type) error {
 	deref := t
-	for deref.Kind() == reflect.Ptr {
+	for deref.Kind() == reflect.Pointer {
 		deref = deref.Elem()
 	}
 	switch deref.Kind() {
@@ -157,7 +157,7 @@ func reflectSchema(t reflect.Type, depth int) (schema.Schema, error) {
 	if t == nil {
 		return schema.Object(map[string]schema.Schema{}), nil
 	}
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	switch t.Kind() {
@@ -233,7 +233,7 @@ func reflectStructSchema(t reflect.Type, depth int) (schema.Schema, error) {
 		// Required policy: pointer fields and omitempty fields are optional.
 		// Everything else is required, matching Python's default-required
 		// behaviour for non-Optional annotations.
-		if field.Type.Kind() == reflect.Ptr || omitempty {
+		if field.Type.Kind() == reflect.Pointer || omitempty {
 			continue
 		}
 		required = append(required, name)
@@ -302,14 +302,14 @@ func constructArg(input map[string]any, t reflect.Type) (reflect.Value, error) {
 		return reflect.Value{}, fmt.Errorf("marshal args: %w", err)
 	}
 	elemType := t
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		elemType = t.Elem()
 	}
 	ptr := reflect.New(elemType)
 	if err := json.Unmarshal(raw, ptr.Interface()); err != nil {
 		return reflect.Value{}, fmt.Errorf("unmarshal args into %v: %w", t, err)
 	}
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		return ptr, nil
 	}
 	return ptr.Elem(), nil

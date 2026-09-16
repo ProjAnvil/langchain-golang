@@ -56,10 +56,10 @@ func TestParseModelStringErrors(t *testing.T) {
 		want        string
 	}{
 		{"missing provider separator", "just-a-model-name", "Model name must be"},
-		{"empty model string", "", "Invalid model format"},
+		{"empty model string", "", "invalid model format"},
 		{"empty provider", ":model-name", "is not supported"},
-		{"empty model", "openai:", "Model name cannot be empty"},
-		{"invalid provider", "invalid-provider:model-name", "Provider 'invalid_provider' is not supported"},
+		{"empty model", "openai:", "model name cannot be empty"},
+		{"invalid provider", "invalid-provider:model-name", "provider 'invalid_provider' is not supported"},
 	}
 
 	for _, tt := range tests {
@@ -158,10 +158,10 @@ func TestInferModelAndProviderErrors(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"missing provider", "text-embedding-3-small", "", "Must specify either"},
-		{"empty model", "", "", "Model name cannot be empty"},
-		{"empty provider with model", "model", "", "Must specify either"},
-		{"invalid provider", "model", "invalid", "Provider 'invalid' is not supported"},
+		{"missing provider", "text-embedding-3-small", "", "must specify either"},
+		{"empty model", "", "", "model name cannot be empty"},
+		{"empty provider with model", "model", "", "must specify either"},
+		{"invalid provider", "model", "invalid", "provider 'invalid' is not supported"},
 	}
 
 	for _, tt := range tests {

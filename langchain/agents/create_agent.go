@@ -3112,7 +3112,7 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, prep
 	if err != nil {
 		return middleware.ModelResponse{}, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// Compose any WrapModelStreamHook middleware into a single DeltaTransform
 	// applied to each text delta and to the assembled model_end text. Start

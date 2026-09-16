@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -318,7 +319,7 @@ func probeRouter(router ConditionalEdge) (targets []string, ok bool) {
 			targets, ok = nil, false
 		}
 	}()
-	out, err := router(runtime.NewRuntime(nil), map[string]any{})
+	out, err := router(runtime.NewRuntime(context.TODO()), map[string]any{})
 	if err != nil {
 		return nil, false
 	}

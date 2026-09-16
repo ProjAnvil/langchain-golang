@@ -374,7 +374,3 @@ func emit(
 ) error {
 	return providerutil.Emit(ctx, cfg, kind, input, output, err)
 }
-
-func cloneMetadata(metadata map[string]any) map[string]any {
-	return providerutil.CloneMetadata(metadata)
-}

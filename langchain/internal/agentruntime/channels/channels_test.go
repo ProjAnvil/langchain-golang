@@ -24,7 +24,7 @@ func TestReducerAliasesAreIdentical(t *testing.T) {
 	}
 
 	// The Reducer alias must remain a true alias, not a distinct func type.
-	var r Reducer = lcchannels.Reducer(LastValueReducer)
+	var r Reducer = lcchannels.Reducer(LastValueReducer) //nolint:staticcheck // ST1023: the explicit alias type is the compile-time proof under test
 	var _ lcchannels.Reducer = r
 }
 

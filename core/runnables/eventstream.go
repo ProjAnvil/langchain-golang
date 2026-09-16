@@ -19,6 +19,7 @@
 // therefore contributes only whatever leaf events it emits itself (e.g. a
 // chat model's on_chat_model_*); the EventStreamer escape hatch for such
 // leaves is deliberately deferred to P2.
+
 package runnables
 
 import (
@@ -137,7 +138,7 @@ func StreamEvents[I, O any](
 		if tracers.EnabledFromEnv() {
 			if langSmith := tracers.NewLangChainTracer(); langSmith != nil {
 				handlers = append([]callbacks.Handler{langSmith}, handlers...)
-				defer langSmith.Close()
+				defer func() { _ = langSmith.Close() }()
 			}
 		}
 		if !cfg.Callbacks.Empty() {
@@ -167,7 +168,7 @@ func StreamEvents[I, O any](
 				runErr = err
 				return
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			for {
 				if _, ok, err := stream.Next(runCtx); err != nil {
 					runErr = err

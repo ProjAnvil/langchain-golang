@@ -122,7 +122,7 @@ func (m *SQLRecordManager) Update(ctx context.Context, keys []string, groupIDs [
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for i, key := range keys {
 		groupID := ""
 		if len(groupIDs) > 0 {
@@ -154,7 +154,7 @@ func (m *SQLRecordManager) Exists(ctx context.Context, keys []string) ([]bool, e
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	found := map[string]bool{}
 	for rows.Next() {
 		var key string
@@ -210,7 +210,7 @@ func (m *SQLRecordManager) ListKeys(ctx context.Context, groupIDs []string, befo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	keys := []string{}
 	for rows.Next() {
 		var key string

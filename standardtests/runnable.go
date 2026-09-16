@@ -92,7 +92,7 @@ func RunRunnableConfigPropagation[I any, O any](
 		if err != nil {
 			t.Fatalf("stream: %v", err)
 		}
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 		if _, _, err := stream.Next(context.Background()); err != nil {
 			t.Fatalf("next: %v", err)
 		}

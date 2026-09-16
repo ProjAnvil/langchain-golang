@@ -229,7 +229,7 @@ func WithShellPersistentSession() ShellToolOption {
 	}
 }
 
-// WithShellExecutionPolicy sets the execution policy used to launch the shell.
+// WithShellExecutionPolicyRunner sets the execution policy used to launch the shell.
 func WithShellExecutionPolicyRunner(policy ExecutionPolicy) ShellToolOption {
 	return func(m *ShellToolMiddleware) {
 		m.ExecutionPolicy = policy

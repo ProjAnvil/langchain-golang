@@ -377,7 +377,7 @@ func WithRuntimeCtx(ctx context.Context) OverrideOption {
 	}
 }
 
-// WithContext sets Runtime.Context.
+// WithRuntimeContext sets Runtime.Context.
 func WithRuntimeContext(v any) OverrideOption {
 	return func(r *Runtime) { r.Context = v }
 }

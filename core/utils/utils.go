@@ -58,7 +58,7 @@ func CollectIterator[T any](ctx context.Context, iter Iterator[T]) ([]T, error) 
 	if iter == nil {
 		return nil, fmt.Errorf("iterator is required")
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 	out := []T{}
 	for {
 		value, ok, err := iter.Next(ctx)
@@ -85,7 +85,7 @@ func IteratorToChannel[T any](ctx context.Context, iter Iterator[T], buffer int)
 			errs <- fmt.Errorf("iterator is required")
 			return
 		}
-		defer iter.Close()
+		defer func() { _ = iter.Close() }()
 		for {
 			value, ok, err := iter.Next(ctx)
 			if err != nil {

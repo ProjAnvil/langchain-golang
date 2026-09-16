@@ -8,6 +8,7 @@
 // `RunSummarize` read before/after `profiles.json` snapshots directly from
 // disk. No git or Python-AST extraction is needed, so `_verify_ref`,
 // `_git_show`, and `extract_profiles` have no Go equivalent here.
+
 package cli
 
 import (
@@ -105,6 +106,6 @@ func RunSummarize(opts SummarizeOptions) error {
 		return err
 	}
 
-	fmt.Fprintln(stdout, Summarize(opts.Provider, before, after))
+	_, _ = fmt.Fprintln(stdout, Summarize(opts.Provider, before, after))
 	return nil
 }

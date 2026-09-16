@@ -319,7 +319,7 @@ func (c Command) ValidateForWrapModelCall() error {
 
 func NewModelRequest(request ModelRequest) (ModelRequest, error) {
 	if request.SystemPrompt != "" && request.SystemMessage != nil {
-		return ModelRequest{}, fmt.Errorf("Cannot specify both system_prompt and system_message")
+		return ModelRequest{}, fmt.Errorf("cannot specify both system_prompt and system_message")
 	}
 	if request.SystemPrompt != "" {
 		systemMessage := messages.System(request.SystemPrompt)
@@ -430,7 +430,7 @@ func WithSystemPromptNone() ModelRequestOverride {
 	}
 }
 
-// WithToolChoice(choice any) sets the request's tool_choice. The model node
+// WithToolChoice sets the request's tool_choice. The model node
 // applies it at bind time on every model call: an overridden value replaces
 // the structured-output "any" default (a ToolStrategy with declared
 // structured tools still forces "any", mirroring factory.py:1388; a
@@ -440,7 +440,7 @@ func WithToolChoice(choice any) ModelRequestOverride {
 	return func(o *modelRequestOverride) { o.toolChoiceSet = true; o.toolChoice = choice }
 }
 
-// WithResponseFormat(rf any) replaces the request's response_format for the
+// WithResponseFormat replaces the request's response_format for the
 // remainder of the model-call chain. rf may be a ToolStrategy,
 // ProviderStrategy, AutoStrategy, or a raw JSON-schema map (normalized like
 // Python's factory.py:1327-1331). The model node re-derives the effective
@@ -453,7 +453,7 @@ func WithResponseFormat(rf any) ModelRequestOverride {
 	return func(o *modelRequestOverride) { o.responseFormatSet = true; o.responseFormat = rf }
 }
 
-// WithModelSettings(settings map[string]any) replaces the request's
+// WithModelSettings replaces the request's
 // model_settings. The model node merges them over the effective strategy's
 // kwargs on every model call and passes the result to the model's bind
 // (settings win conflicts, mirroring factory.py:1361's
@@ -473,7 +473,7 @@ func (r ModelRequest) Override(opts ...ModelRequestOverride) (ModelRequest, erro
 		opt(&override)
 	}
 	if override.systemPromptSet && override.systemMessageSet {
-		return ModelRequest{}, fmt.Errorf("Cannot specify both system_prompt and system_message")
+		return ModelRequest{}, fmt.Errorf("cannot specify both system_prompt and system_message")
 	}
 
 	next := r

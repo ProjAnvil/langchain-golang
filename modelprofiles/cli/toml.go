@@ -33,7 +33,7 @@ import (
 // tree of nested maps keyed by table path segment.
 func parseTOMLSubset(data []byte) (map[string]any, error) {
 	root := map[string]any{}
-	var current map[string]any = root
+	var current = root
 
 	lines := strings.Split(string(data), "\n")
 	for lineNo, rawLine := range lines {

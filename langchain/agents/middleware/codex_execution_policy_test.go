@@ -66,7 +66,7 @@ func TestCodexResolvePlatformAutoFailure(t *testing.T) {
 func TestCodexResolveBinaryMissing(t *testing.T) {
 	stubLookPath(t, func(name string) (string, error) { return "", fmt.Errorf("not found") })
 	if _, err := (CodexSandboxExecutionPolicy{Binary: "codex"}).ResolveBinary(); err == nil ||
-		!strings.Contains(err.Error(), "Codex sandbox policy requires the 'codex' CLI to be installed") {
+		!strings.Contains(err.Error(), "codex sandbox policy requires the 'codex' CLI to be installed") {
 		t.Fatalf("expected missing-binary error, got %v", err)
 	}
 	stubLookPath(t, func(name string) (string, error) { return "/usr/bin/" + name, nil })

@@ -435,9 +435,7 @@ func expandIncludePatterns(pattern string) []string {
 	}
 	out := []string{}
 	for option := range strings.SplitSeq(inner, ",") {
-		for _, expanded := range expandIncludePatterns(pattern[:start] + option + pattern[end+1:]) {
-			out = append(out, expanded)
-		}
+		out = append(out, expandIncludePatterns(pattern[:start]+option+pattern[end+1:])...)
 	}
 	return out
 }

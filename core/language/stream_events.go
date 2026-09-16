@@ -35,7 +35,7 @@ func StreamEvents(
 		projection.Fail(err)
 		return projection, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	bridge := newChunkProtocolBridge(projection, collector)
 	for {

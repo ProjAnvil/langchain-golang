@@ -49,7 +49,7 @@ func Load(ctx context.Context, loader LazyLoader) ([]documents.Document, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 
 	var docs []documents.Document
 	for {
@@ -206,7 +206,7 @@ func Parse(ctx context.Context, parser BlobParser, blob Blob) ([]documents.Docum
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
+	defer func() { _ = iter.Close() }()
 	var docs []documents.Document
 	for {
 		doc, ok, err := iter.Next(ctx)

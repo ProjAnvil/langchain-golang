@@ -110,27 +110,6 @@ func esFlakyFunc(failFirst int, msg string) runnables.Func[string, string] {
 	)
 }
 
-// esChunkSource is a non-instrumented runnable streaming fixed chunks; chain
-// events observed while streaming it belong to the surrounding combinator.
-type esChunkSource struct{ chunks []string }
-
-func (r esChunkSource) Invoke(_ context.Context, input string, _ ...runnables.Option) (string, error) {
-	return input, nil
-}
-
-func (r esChunkSource) Batch(_ context.Context, inputs []string, _ ...runnables.Option) ([]string, error) {
-	out := make([]string, len(inputs))
-	copy(out, inputs)
-	return out, nil
-}
-
-func (r esChunkSource) Stream(_ context.Context, _ string, _ ...runnables.Option) (runnables.Stream[string], error) {
-	return runnables.NewSliceStream(append([]string(nil), r.chunks...)), nil
-}
-
-func (r esChunkSource) InputSchema() schema.Schema  { return schema.String("") }
-func (r esChunkSource) OutputSchema() schema.Schema { return schema.String("") }
-
 // ---- 7.1 golden sequences -------------------------------------------------
 
 func TestStreamEventsFuncGoldenSequence(t *testing.T) {

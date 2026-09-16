@@ -617,7 +617,7 @@ func TestFromFunc_UnexportedFieldsIgnored(t *testing.T) {
 	// the schema, mirroring encoding/json's behaviour.
 	type mixedVisArgs struct {
 		Shown  string `json:"shown"`
-		hidden string
+		hidden string //nolint:unused // deliberately unread: proves unexported fields never reach the schema
 	}
 	tool, err := FromFunc("vis", "visibility", func(ctx context.Context, a mixedVisArgs) (Result, error) {
 		return Result{Content: a.Shown}, nil

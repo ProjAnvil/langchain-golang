@@ -328,7 +328,7 @@ func TestSubgraphInterruptCacheResumeSkipsCache(t *testing.T) {
 		t.Fatalf("ask runs after pause = %d, want 1", askRuns.Load())
 	}
 	// The interrupted miss stored nothing.
-	gets, sets := cache.snapshot()
+	_, sets := cache.snapshot()
 	if sets["writes/sub"] != 0 {
 		t.Fatalf("cache Set calls for writes/sub = %d after the pause, want 0 (interrupted tasks store nothing)", sets["writes/sub"])
 	}
@@ -352,7 +352,7 @@ func TestSubgraphInterruptCacheResumeSkipsCache(t *testing.T) {
 	// The resumed task never consulted the cache (interrupt tasks skip the
 	// lookup), and its completion stored nothing either (resumed tasks store
 	// nothing — a resume-derived entry would poison later fresh runs).
-	gets, sets = cache.snapshot()
+	gets, sets := cache.snapshot()
 	if gets["writes/sub"] != 1 {
 		t.Fatalf("cache Get calls for writes/sub = %d total, want 1 (fresh run only; the resume skipped the lookup)", gets["writes/sub"])
 	}

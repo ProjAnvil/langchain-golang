@@ -362,7 +362,7 @@ func RunChatModelToolCallingSuite(
 				messages.Human(query),
 			})
 			requireNoErr(t, "stream with tools", err)
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 
 			var chunks int
 			var complete *messages.ToolCall
@@ -634,7 +634,7 @@ func RunChatModelStreamingSuite(
 			messages.Human("Write a two-sentence story about a cat."),
 		})
 		requireNoErr(t, "stream", err)
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		var chunks []messages.Message
 		var text strings.Builder
@@ -667,7 +667,7 @@ func RunChatModelStreamingSuite(
 				messages.Human("Write me 2 haikus. Only include the haikus."),
 			})
 			requireNoErr(t, "stream", err)
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 
 			var sawUsage bool
 			var inputTokenChunks int
@@ -707,7 +707,7 @@ func RunChatModelStreamingSuite(
 			cancel()
 			t.Fatalf("stream: %v", err)
 		}
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 		cancel()
 
 		terminated := make(chan struct{})

@@ -268,7 +268,7 @@ func extractJSONMarkdown(text string) string {
 	}
 	startObj := strings.Index(trimmed, "{")
 	startArr := strings.Index(trimmed, "[")
-	start := -1
+	var start int
 	if startObj >= 0 && startArr >= 0 {
 		start = min(startObj, startArr)
 	} else if startObj >= 0 {

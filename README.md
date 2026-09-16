@@ -1,6 +1,7 @@
 # langchain-golang
 
-[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go)](https://go.dev/)
+[![CI](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml/badge.svg)](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-1382%20passing-brightgreen)]()
 [![Packages](https://img.shields.io/badge/packages-62-blue)]()

@@ -326,7 +326,7 @@ func cloneValue(v any) any {
 	}
 }
 
-// Format helps error messages identify the channel kind.
+// String helps error messages identify the channel kind.
 func (c *DeltaChannel) String() string {
 	return fmt.Sprintf("DeltaChannel(snapshotFrequency=%d)", c.snapshotFrequency)
 }

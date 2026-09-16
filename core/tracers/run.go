@@ -14,6 +14,7 @@
 // A child's dotted order is therefore the parent's dotted order plus "." plus
 // the child's own suffix, and every run in a tree carries the root run's ID as
 // its trace id.
+
 package tracers
 
 import (

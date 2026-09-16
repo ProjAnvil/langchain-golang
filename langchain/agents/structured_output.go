@@ -286,7 +286,7 @@ func (b ProviderStrategyBinding) Parse(response messages.Message) (map[string]an
 	rawText := extractTextContent(response)
 	var data map[string]any
 	if err := json.Unmarshal([]byte(rawText), &data); err != nil {
-		return nil, fmt.Errorf("Native structured output expected valid JSON for %s, but parsing failed: %w", b.Name, err)
+		return nil, fmt.Errorf("native structured output expected valid JSON for %s, but parsing failed: %w", b.Name, err)
 	}
 	return data, nil
 }

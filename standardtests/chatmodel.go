@@ -150,7 +150,7 @@ func RunChatModelBasics(
 			if err != nil {
 				t.Fatalf("stream: %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 
 			chunk, ok, err := stream.Next(context.Background())
 			if err != nil {
@@ -192,7 +192,7 @@ func RunChatModelBasics(
 			if err != nil {
 				t.Fatalf("stream: %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 
 			var last messages.Message
 			for {

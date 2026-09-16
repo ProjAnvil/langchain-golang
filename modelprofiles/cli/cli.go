@@ -92,16 +92,16 @@ func Refresh(opts RefreshOptions) error {
 		return err
 	}
 	if needsConfirmation {
-		fmt.Fprintln(stderr, "WARNING: Writing outside current directory")
-		fmt.Fprintf(stderr, "   Current directory: %s\n", cwd)
-		fmt.Fprintf(stderr, "   Target directory:  %s\n", dataDir)
+		_, _ = fmt.Fprintln(stderr, "WARNING: Writing outside current directory")
+		_, _ = fmt.Fprintf(stderr, "   Current directory: %s\n", cwd)
+		_, _ = fmt.Fprintf(stderr, "   Target directory:  %s\n", dataDir)
 		if opts.Confirm == nil || !opts.Confirm() {
 			return fmt.Errorf("aborted: refusing to write outside %s without confirmation", cwd)
 		}
 	}
 
-	fmt.Fprintf(stdout, "Provider: %s\n", opts.Provider)
-	fmt.Fprintf(stdout, "Data directory: %s\n", dataDir)
+	_, _ = fmt.Fprintf(stdout, "Provider: %s\n", opts.Provider)
+	_, _ = fmt.Fprintf(stdout, "Data directory: %s\n", dataDir)
 
 	apiURL := cmp.Or(opts.APIURL, DefaultAPIURL)
 	client := opts.HTTPClient
@@ -109,7 +109,7 @@ func Refresh(opts RefreshOptions) error {
 		client = http.DefaultClient
 	}
 
-	fmt.Fprintf(stdout, "Downloading data from %s...\n", apiURL)
+	_, _ = fmt.Fprintf(stdout, "Downloading data from %s...\n", apiURL)
 	allData, err := fetchModelsDevData(client, apiURL)
 	if err != nil {
 		return err
@@ -124,16 +124,16 @@ func Refresh(opts RefreshOptions) error {
 			}
 		}
 	}
-	fmt.Fprintf(stdout, "Downloaded %d providers with %d models\n", providerCount, modelCount)
+	_, _ = fmt.Fprintf(stdout, "Downloaded %d providers with %d models\n", providerCount, modelCount)
 
 	providerData, ok := allData[opts.Provider].(map[string]any)
 	if !ok {
 		return fmt.Errorf("provider %q not found in models.dev data", opts.Provider)
 	}
 	models, _ := providerData["models"].(map[string]any)
-	fmt.Fprintf(stdout, "Extracted %d models for %s\n", len(models), opts.Provider)
+	_, _ = fmt.Fprintf(stdout, "Extracted %d models for %s\n", len(models), opts.Provider)
 
-	fmt.Fprintln(stdout, "Loading augmentations...")
+	_, _ = fmt.Fprintln(stdout, "Loading augmentations...")
 	providerAug, modelAugs, err := LoadAugmentations(dataDir)
 	if err != nil {
 		return err
@@ -154,14 +154,14 @@ func Refresh(opts RefreshOptions) error {
 	}
 	slices.Sort(extraModels)
 	if len(extraModels) > 0 {
-		fmt.Fprintf(stdout, "Adding %d models from augmentations only...\n", len(extraModels))
+		_, _ = fmt.Fprintf(stdout, "Adding %d models from augmentations only...\n", len(extraModels))
 	}
 	for _, modelID := range extraModels {
 		profiles[modelID] = ApplyOverrides(Profile{}, providerAug, modelAugs[modelID])
 	}
 
 	if unknown := unknownKeysAcross(profiles); len(unknown) > 0 {
-		fmt.Fprintf(stderr,
+		_, _ = fmt.Fprintf(stderr,
 			"warning: profile keys not declared in modelprofiles.ModelProfile: %s. "+
 				"Add these fields to modelprofiles field declarations before publishing "+
 				"partner packages that use these profiles.\n",
@@ -173,7 +173,7 @@ func Refresh(opts RefreshOptions) error {
 	}
 
 	outputFile := filepath.Join(dataDir, profilesFileName)
-	fmt.Fprintf(stdout, "Writing to %s...\n", outputFile)
+	_, _ = fmt.Fprintf(stdout, "Writing to %s...\n", outputFile)
 	contents, err := BuildProfilesJSON(profiles)
 	if err != nil {
 		return fmt.Errorf("failed to encode profiles: %w", err)
@@ -182,7 +182,7 @@ func Refresh(opts RefreshOptions) error {
 		return err
 	}
 
-	fmt.Fprintf(stdout, "Successfully refreshed %d model profiles (%d bytes)\n", len(profiles), len(contents))
+	_, _ = fmt.Fprintf(stdout, "Successfully refreshed %d model profiles (%d bytes)\n", len(profiles), len(contents))
 	return nil
 }
 
@@ -191,7 +191,7 @@ func fetchModelsDevData(client *http.Client, apiURL string) (map[string]any, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", apiURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP error %d from %s", resp.StatusCode, apiURL)
@@ -383,10 +383,10 @@ func writeProfilesFileAtomic(dataDir, outputFile string, contents []byte) error 
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := tmp.Write(contents); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

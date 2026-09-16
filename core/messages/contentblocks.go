@@ -1,5 +1,7 @@
 package messages
 
+import "slices"
+
 // This file mirrors langchain_core/messages/content.py: a sealed ContentBlock
 // interface with concrete typed structs replacing the old map[string]any.
 //
@@ -313,7 +315,7 @@ var (
 
 // KNOWN_BLOCK_TYPES mirrors Python's KNOWN_BLOCK_TYPES set. Types not in this
 // set are treated as provider-specific (NonStandardContentBlock).
-var KNOWN_BLOCK_TYPES = map[string]bool{
+var KNOWN_BLOCK_TYPES = map[string]bool{ //nolint:staticcheck // ST1003: exported name mirrors Python's KNOWN_BLOCK_TYPES
 	"text":                   true,
 	"reasoning":              true,
 	"tool_call":              true,
@@ -716,14 +718,7 @@ func cloneDataBlock(id, fid, mt string, idx any, url, b64 string, ex map[string]
 }
 
 func cloneAnnotations(anns []Annotation) []Annotation {
-	if anns == nil {
-		return nil
-	}
-	out := make([]Annotation, len(anns))
-	for i, a := range anns {
-		out[i] = a
-	}
-	return out
+	return slices.Clone(anns)
 }
 
 // --- Parse helpers ---

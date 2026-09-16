@@ -2,6 +2,7 @@
 // langchain_core.exceptions module. These types let callers distinguish
 // categories of failure with errors.As/errors.Is while preserving the
 // underlying error chain through Unwrap.
+
 package lcerrors
 
 // ErrorCode mirrors Python's ErrorCode enum. The string values are stable and

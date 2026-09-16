@@ -72,7 +72,7 @@ func TestNewRuntimeDelegation(t *testing.T) {
 	})
 	t.Run("NilCtxNormalized", func(t *testing.T) {
 		// NewRuntime(nil) must not panic; methods stay safe to call.
-		rt := NewRuntime(nil)
+		rt := NewRuntime(nil) //nolint:staticcheck // SA1012: nil is the case under test
 		if err := rt.Err(); err != nil {
 			t.Errorf("Err() after nil ctx = %v, want nil", err)
 		}
@@ -390,7 +390,7 @@ func TestWithRuntimeCtx(t *testing.T) {
 	// A nil ctx is ignored: the previous backing ctx survives.
 	ctx2, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	rt2 := NewRuntime(ctx2).Override(WithRuntimeCtx(nil))
+	rt2 := NewRuntime(ctx2).Override(WithRuntimeCtx(nil)) //nolint:staticcheck // SA1012: nil override is the case under test
 	cancel()
 	if err := rt2.Err(); !errors.Is(err, context.Canceled) {
 		t.Errorf("Err after WithRuntimeCtx(nil) = %v, want context.Canceled (nil ctx ignored)", err)

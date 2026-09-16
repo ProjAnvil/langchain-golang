@@ -114,7 +114,7 @@ func interruptAndResumeWrites(interrupts []types.Interrupt, consumed []any) []ch
 		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedInterrupt, Value: interrupts})
 	}
 	if len(consumed) > 0 {
-		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedResume, Value: []any(consumed)})
+		writes = append(writes, checkpoint.Write{Channel: checkpoint.ReservedResume, Value: consumed})
 	}
 	return writes
 }

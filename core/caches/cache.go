@@ -1,3 +1,4 @@
+// Package caches provides the base-cache contract mirroring langchain_core.caches.
 package caches
 
 import (

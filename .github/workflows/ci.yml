@@ -1,0 +1,50 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        go-version: ['1.26.x', '1.27.x']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Root module tests
+        run: go test ./...
+      - name: Type-check integration tests (offline)
+        run: make vet-integration
+      - name: Nested sqlite saver
+        run: make test-sqlite
+      - name: Nested redis saver (miniredis)
+        run: make test-redis
+
+  postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.embedded-postgres-go
+          key: embedded-postgres-${{ runner.os }}
+      - name: Nested postgres saver (embedded)
+        run: make test-postgres
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2 # pinned: first v2 line built with go>=1.26 (v2.1.6 is built with go1.24 and hard-fails on this repo); bump deliberately

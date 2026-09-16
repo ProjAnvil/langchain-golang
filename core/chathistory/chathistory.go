@@ -1,3 +1,4 @@
+// Package chathistory provides chat-history stores mirroring langchain_core.chat_history.
 package chathistory
 
 import (

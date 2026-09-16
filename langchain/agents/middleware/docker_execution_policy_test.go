@@ -165,7 +165,7 @@ func TestDockerExecutionPolicyEnvSorted(t *testing.T) {
 func TestDockerExecutionPolicyResolveBinary(t *testing.T) {
 	stubLookPath(t, func(name string) (string, error) { return "", fmt.Errorf("not found") })
 	if _, err := (DockerExecutionPolicy{}).ResolveBinary(); err == nil ||
-		!strings.Contains(err.Error(), "Docker execution policy requires the 'docker' CLI to be installed") {
+		!strings.Contains(err.Error(), "docker execution policy requires the 'docker' CLI to be installed") {
 		t.Fatalf("expected missing-binary error, got %v", err)
 	}
 	stubLookPath(t, func(name string) (string, error) { return "/usr/bin/" + name, nil })

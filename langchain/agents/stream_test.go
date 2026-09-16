@@ -925,7 +925,6 @@ func TestStreamEvents_PIIStreamTransformer_BoundaryStraddle(t *testing.T) {
 
 	var deltaText string
 	var modelEndText string
-	var rawFinishTexts []string
 	const rawPat = "TOKEN-ABCDEFGHIJKLMNOPQRST"
 	for {
 		ev, ok, err := stream.Next(t.Context())
@@ -942,7 +941,6 @@ func TestStreamEvents_PIIStreamTransformer_BoundaryStraddle(t *testing.T) {
 			}
 			if ev.Delta != nil && ev.Delta.Content != nil && messages.BlockToMap(ev.Delta.Content)["type"] == "text" {
 				if text, ok := messages.BlockToMap(ev.Delta.Content)["text"].(string); ok {
-					rawFinishTexts = append(rawFinishTexts, text)
 					if strings.Contains(text, rawPat) {
 						t.Errorf("raw Delta.Content[text] leaked PII: %q", text)
 					}

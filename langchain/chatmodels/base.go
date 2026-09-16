@@ -116,7 +116,7 @@ func parseModel(model string, modelProvider string) (string, string, error) {
 	modelProvider = cmp.Or(modelProvider, attemptInferModelProvider(model))
 	if modelProvider == "" {
 		return "", "", fmt.Errorf(
-			"Unable to infer model provider for model=%q. Please specify 'model_provider' directly.\n\nSupported providers: %s",
+			"unable to infer model provider for model=%q. Please specify 'model_provider' directly.\n\nSupported providers: %s",
 			model,
 			strings.Join(BuiltinProviderNames(), ", "),
 		)
@@ -154,7 +154,7 @@ func ParseModel(model string, opts ...InitOption) (ChatModelSpec, error) {
 		return ChatModelSpec{}, err
 	}
 	if _, ok := BuiltinProviders[provider]; !ok {
-		return ChatModelSpec{}, fmt.Errorf("Unsupported provider='%s'", provider)
+		return ChatModelSpec{}, fmt.Errorf("unsupported provider='%s'", provider)
 	}
 	return ChatModelSpec{Model: parsedModel, Provider: provider}, nil
 }

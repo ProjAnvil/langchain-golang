@@ -52,11 +52,9 @@ func (c Config) normalize() (Config, error) {
 	if c.LengthFunc == nil {
 		c.LengthFunc = runeLen
 	}
-	if c.StripWhitespace == false {
-		// False is a valid explicit value, but Go cannot distinguish it from
-		// zero value. Keep Python's default by setting true in constructors when
-		// callers pass an all-zero Config.
-	}
+	// StripWhitespace: false is a valid explicit value, but Go cannot
+	// distinguish it from the zero value. Constructors keep Python's default
+	// (true) when callers pass an all-zero Config.
 	return c, nil
 }
 

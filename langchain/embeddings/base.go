@@ -46,7 +46,7 @@ func SupportsProvider(provider string) bool {
 func parseModelString(modelName string) (string, string, error) {
 	if !strings.Contains(modelName, ":") {
 		return "", "", fmt.Errorf(
-			"Invalid model format %q. Model name must be in format 'provider:model-name'. Supported providers: %v",
+			"invalid model format %q. Model name must be in format 'provider:model-name'. Supported providers: %v",
 			modelName,
 			BuiltinProviderNames(),
 		)
@@ -60,14 +60,14 @@ func parseModelString(modelName string) (string, string, error) {
 		return "", "", unsupportedProviderError(provider)
 	}
 	if model == "" {
-		return "", "", fmt.Errorf("Model name cannot be empty")
+		return "", "", fmt.Errorf("model name cannot be empty")
 	}
 	return provider, model, nil
 }
 
 func inferModelAndProvider(model string, provider string) (string, string, error) {
 	if strings.TrimSpace(model) == "" {
-		return "", "", fmt.Errorf("Model name cannot be empty")
+		return "", "", fmt.Errorf("model name cannot be empty")
 	}
 	provider = NormalizeProvider(provider)
 	if provider == "" && strings.Contains(model, ":") {
@@ -77,7 +77,7 @@ func inferModelAndProvider(model string, provider string) (string, string, error
 	modelName := model
 	if provider == "" {
 		return "", "", fmt.Errorf(
-			"Must specify either a model string in format 'provider:model-name' or explicitly set provider from: %v",
+			"must specify either a model string in format 'provider:model-name' or explicitly set provider from: %v",
 			BuiltinProviderNames(),
 		)
 	}
@@ -123,7 +123,7 @@ func InitEmbeddings(model string, opts ...InitOption) (EmbeddingsSpec, error) {
 
 func unsupportedProviderError(provider string) error {
 	return fmt.Errorf(
-		"Provider '%s' is not supported. Supported providers and their required packages:\n%s",
+		"provider '%s' is not supported. Supported providers and their required packages:\n%s",
 		provider,
 		providerList(),
 	)

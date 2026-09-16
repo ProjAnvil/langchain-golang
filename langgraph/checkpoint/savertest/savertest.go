@@ -246,7 +246,7 @@ func testListFilter(t *testing.T, newSaver func(t *testing.T) checkpoint.Saver) 
 
 	put := func(cfg checkpoint.Config, md checkpoint.Metadata) string {
 		t.Helper()
-		cp := sampleCheckpoint(checkpoint.NewID(int(md.Step + 10)))
+		cp := sampleCheckpoint(checkpoint.NewID(md.Step + 10))
 		if _, err := s.Put(ctx, cfg, cp, md, nil); err != nil {
 			t.Fatalf("Put %+v: %v", cfg, err)
 		}
@@ -547,7 +547,7 @@ func testConcurrentPut(t *testing.T, newSaver func(t *testing.T) checkpoint.Save
 				cp := sampleCheckpoint(checkpoint.NewID(g*putsPerGoroutine + i + 1))
 				next, err := s.Put(ctx, cfg, cp, checkpoint.Metadata{Source: "loop", Step: i}, nil)
 				if err != nil {
-					errs <- fmt.Errorf("Put %s: %w", threadID, err)
+					errs <- fmt.Errorf("put %s: %w", threadID, err)
 					return
 				}
 				if err := s.PutWrites(ctx, next, []checkpoint.Write{{Channel: "c", Value: i}}, "task-1", ""); err != nil {
