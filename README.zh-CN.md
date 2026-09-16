@@ -14,6 +14,11 @@
 
 ## 最新动态
 
+**v0.8.1** —— 容错与追踪隐私 parity：
+
+- **节点级错误处理器**：`NodePolicies.ErrorHandler`（langgraph 1.2.0 `error_handler=`）——重试耗尽后恢复函数可读状态、收到类型化 `NodeError`，返回 update 或 `Command`；ERROR write 先行落盘，崩溃后 resume 重跑 handler 而非节点。
+- **TracePolicy**：节点级与 middleware 级追踪载荷脱敏（langgraph 1.2.11 / langchain 1.3.15），在任何 tracer 观察到事件之前变换；processor panic 时 fail-closed。
+
 **v0.8.0** —— 工程化加固版本：
 
 - **CI**：GitHub Actions 覆盖主模块与全部 checkpoint 嵌套模块（go 1.26/1.27 矩阵）+ golangci-lint 门禁，存量 86 条 lint 告警清零。

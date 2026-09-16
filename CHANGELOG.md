@@ -4,6 +4,13 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-17
+
+### Added
+- langgraph: node-level error handlers (`NodePolicies.ErrorHandler`, mirroring langgraph 1.2.0 `error_handler=`): handlers receive the state snapshot and a typed `NodeError` after retries are exhausted and may return a plain update or a `Command`; the task error is persisted as a checkpoint ERROR write before the handler runs, so a crash mid-handler resumes into a handler re-run instead of the node.
+- langgraph: per-node `TracePolicy` (`NodePolicies.Trace`, mirroring langgraph 1.2.11) — emit-side payload transforms applied before any tracer observes chain events; `OmitPayload` helper included. Processor panics fail closed (deliberate divergence, see DIVERGENCES.md).
+- agents: middleware `TracePolicyProvider` hook (mirroring langchain 1.3.15) for per-middleware payload scrubbing.
+
 ## [0.8.0] - 2026-09-16
 
 ### Added
@@ -69,7 +76,8 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 ## [0.5.x] - 2026-08
 Early development line preceding the parity baseline.
 
-[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.6.5...v0.7.0

@@ -21,7 +21,8 @@ Deliberate design decisions where this port does not mirror Python. Each entry s
 ## Notable per-adapter behaviors
 
 - **anthropic `tool_choice=none`** — the Messages API has no `none` type; binding fails loudly instead of silently misrouting (bind no tools instead).
-- **TracePolicy processor failures (M0b, planned)** — upstream records the untransformed payload when a trace processor errors; the Go port will drop the payload (fail-closed) since the feature's motivation is PII/compliance.
+- **TracePolicy processor failures** — upstream records the untransformed payload when a trace processor errors; the Go port drops the payload (fail-closed) since the feature's motivation is PII/compliance.
+- **Error-handler abort semantics** — a failed superstep's successful handler outcomes are not committed (Go commits writes at superstep end vs Python's per-task `put_writes`), so a resume after a sibling-task failure re-runs an already-succeeded handler; effects must therefore be idempotent.
 
 ## Cleared as non-gaps (audited 2026-09-16)
 

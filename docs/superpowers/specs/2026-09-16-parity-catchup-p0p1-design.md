@@ -62,10 +62,10 @@ client、run.subagents typed channel 投影、deepagents（上游仍 pre-1.0，�
 | 里程碑 | 内容 | 版本 | 预估 |
 |---|---|---|---|
 | M0a 工程化 | CI、四大文档、ParallelToolCalls provider 序列化、核销 | v0.8.0 | ~1 周 |
-| M0b 容错合规 parity | node error handler、TracePolicy | v0.9.0 | ~1-1.5 周 |
-| M1 RAG 生产栈 | VectorStore filter 能力接口、pgvector、redisvector、reranker 栈、高级 retrievers | v0.10.0 | ~2-2.5 周 |
-| M2 模型与工具接入层 | MCP（langchain.mcp 蓝图）、Gemini、loaders 三件套 | v0.11.0 | ~2-2.5 周 |
-| M3 实用层+门面 | SQL toolkit、examples/、mkdocs 文档站、README 刷新 | v0.12.0 | ~1.5-2 周 |
+| M0b 容错合规 parity | node error handler、TracePolicy | v0.8.1 | ~1-1.5 周 |
+| M1 RAG 生产栈 | VectorStore filter 能力接口、pgvector、redisvector、reranker 栈、高级 retrievers | v0.9.0 | ~2-2.5 周 |
+| M2 模型与工具接入层 | MCP（langchain.mcp 蓝图）、Gemini、loaders 三件套 | v0.10.0 | ~2-2.5 周 |
+| M3 实用层+门面 | SQL toolkit、examples/、mkdocs 文档站、README 刷新 | v0.11.0 | ~1.5-2 周 |
 
 总计 ~8-9.5 周。每个里程碑独立走 plan → subagent 审计 → 实施（modern-go skill）→
 subagent 审计 → 发版。
@@ -119,7 +119,7 @@ core 侧 ParallelToolCalls 已完成），核销记录写入 CHANGELOG/DIVERGENC
   每项写 design decision 理由
 - **SECURITY.md**：漏洞上报渠道与支持版本
 
-## 6. M0b：容错合规 parity（v0.9.0）
+## 6. M0b：容错合规 parity（v0.8.1；2026-09-17 用户指定由 v0.9.0 改号）
 
 ### 6.1 Node-level error handler（补齐容错三件套）
 
@@ -162,7 +162,7 @@ langsmith/console/未来 OTel 一致生效；`core/tracers/langsmith.go` 不动�
 - 测试：omit 后脱敏；process 变换生效；langsmith 与 console 两个 tracer 都看到
   变换后载荷；processor 出错 fail-closed；与 PII redaction middleware 协同
 
-## 7. M1：RAG 生产栈（v0.10.0）
+## 7. M1：RAG 生产栈（v0.9.0）
 
 ### 7.1 前置：VectorStore 声明式 filter（可选能力接口）
 
@@ -216,7 +216,7 @@ Go interface 封闭，加方法即破坏实现方，故采用**可选能力接�
 - ContextualCompressionRetriever：由 7.4 提供
 - 测试：in-memory vector store + mock chat model 全链路单测
 
-## 8. M2：模型与工具接入层（v0.11.0）
+## 8. M2：模型与工具接入层（v0.10.0）
 
 ### 8.1 MCP adapter（`partners/mcp`，对标 langchain 1.4.0 `langchain.mcp` 快照）
 
@@ -289,7 +289,7 @@ pgvector→retrieve→rerank→agent）、MCP tools、Gemini、SQL agent、常�
 - **依赖策略**：partners/pgvector、partners/redisvector 进 root module（pgx v5、
   go-redis v9 成为 root 直接依赖）；CI 增加 pin 对齐检查（与 langgraph/checkpoint/
   postgres、redis 嵌套模块的版本一致性，make 目标实现）
-- **版本节奏**：M0a→v0.8.0、M0b→v0.9.0、M1→v0.10.0、M2→v0.11.0、M3→v0.12.0；
+- **版本节奏**：M0a→v0.8.0、M0b→v0.8.1（用户改号）、M1→v0.9.0、M2→v0.10.0、M3→v0.11.0；
   嵌套 checkpoint 模块随需 bump（沿用现有 pin 流程）；CHANGELOG 每版必更
 - **文档惯例**：新能力附双语 usage 文档进 docs/usage/；代码注释英文、Python parity
   出处标注（沿现有风格）

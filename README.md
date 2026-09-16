@@ -14,6 +14,11 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 
 ## What's New
 
+**v0.8.1** — fault-tolerance & trace-privacy parity:
+
+- **Node error handlers**: `NodePolicies.ErrorHandler` (langgraph 1.2.0 `error_handler=`) — recovery handlers receive state + a typed `NodeError` after retries are exhausted, return an update or a `Command`, and survive crashes (persisted ERROR write resumes into the handler).
+- **TracePolicy**: per-node and per-middleware traced-payload scrubbing (langgraph 1.2.11 / langchain 1.3.15), applied before any tracer observes events; fail-closed on processor panics.
+
 **v0.8.0** — engineering hardening release:
 
 - **CI**: GitHub Actions across the root module and all checkpoint modules (go 1.26/1.27 matrix) with a golangci-lint gate — 86 pre-existing lint findings cleared.
