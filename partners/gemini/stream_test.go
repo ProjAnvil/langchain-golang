@@ -88,8 +88,7 @@ func TestStreamToolCallsComplete(t *testing.T) {
 	for _, chunk := range chunks {
 		for _, call := range chunk.ToolCalls {
 			if call.Name == "magic_function" && call.ID != "" && call.Args["input"] != nil {
-				copied := call
-				complete = &copied
+				complete = new(call)
 			}
 		}
 	}
@@ -165,6 +164,32 @@ func TestStreamCancellationTerminates(t *testing.T) {
 	case <-terminated:
 	case <-time.After(10 * time.Second):
 		t.Fatalf("stream did not terminate after context cancellation")
+	}
+}
+
+// TestStreamCloseIdempotent: Close is safe to call repeatedly (the anthropic
+// adapter's contract) — a drain-then-Close or defer-Close consumer must not
+// panic on the second call.
+func TestStreamCloseIdempotent(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithAPIKey("test-key"),
+	)
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	_ = drainStream(t, stream)
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close after drain: %v", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
 	}
 }
 
@@ -256,8 +281,7 @@ func TestStreamCallbacks(t *testing.T) {
 			sawStream = true
 		case callbacks.EventChatModelEnd:
 			sawEnd = true
-			copied := event
-			endEvent = &copied
+			endEvent = new(event)
 		}
 	}
 	if !sawStart || !sawStream || !sawEnd {

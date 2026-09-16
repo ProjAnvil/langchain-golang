@@ -24,14 +24,13 @@ type echoOut struct {
 func newTestMCPServer(name string) *server.MCPServer {
 	s := server.NewMCPServer(name, "1.0.0")
 
-	readOnly, notDestructive := true, false
 	s.AddTool(
 		mcp.NewTool("echo",
 			mcp.WithDescription("echo the input"),
 			mcp.WithString("text", mcp.Required(), mcp.Description("text to echo")),
 			mcp.WithToolAnnotation(mcp.ToolAnnotation{
-				ReadOnlyHint:    &readOnly,
-				DestructiveHint: &notDestructive,
+				ReadOnlyHint:    new(true),
+				DestructiveHint: new(false),
 			}),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -73,11 +72,10 @@ func newTestMCPServer(name string) *server.MCPServer {
 		},
 	)
 
-	destructive := true
 	s.AddTool(
 		mcp.NewTool("danger",
 			mcp.WithDescription("destructive operation"),
-			mcp.WithToolAnnotation(mcp.ToolAnnotation{DestructiveHint: &destructive}),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{DestructiveHint: new(true)}),
 		),
 		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultText("deleted everything"), nil

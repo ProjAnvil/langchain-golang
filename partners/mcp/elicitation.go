@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -170,10 +171,7 @@ func (elicitationBridge) Elicit(ctx context.Context, request mcp.ElicitationRequ
 		return batch.wait(ctx, request.Params)
 	}
 	if graph.InterruptSupported(ctx) {
-		key := request.Params.ElicitationID
-		if key == "" {
-			key = "request"
-		}
+		key := cmp.Or(request.Params.ElicitationID, "request")
 		value := elicitInterruptValue(nil, []pendingElicitation{{key: key, params: request.Params}})
 		answers, err := DecodeElicitationResponses(graph.Interrupt(ctx, value))
 		if err != nil {

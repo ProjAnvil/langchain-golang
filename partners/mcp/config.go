@@ -88,10 +88,14 @@ func New(ctx context.Context, cfg MCPConfig) (*Adapter, error) {
 	members := make(map[string]Client, len(cfg.Servers))
 	for key, srv := range cfg.Servers {
 		if key == "" {
+			closeMembers(members)
 			return nil, fmt.Errorf("mcp: MCPConfig server key must not be empty")
 		}
 		cli, err := connectServer(ctx, key, srv)
 		if err != nil {
+			// A fleet whose later backend fails must not leak the ones
+			// already connected (stdio subprocesses, HTTP sessions).
+			closeMembers(members)
 			return nil, err
 		}
 		members[key] = cli
@@ -152,17 +156,33 @@ func NewClientGroup(ctx context.Context, clients map[string]Client, opts ...Clie
 		if cli == nil {
 			return nil, fmt.Errorf("mcp: ClientGroup member %q is nil", key)
 		}
+	}
+	started := make(map[string]Client, len(g.members))
+	for key, cli := range g.members {
+		started[key] = cli
 		if g.elicit {
 			armElicitation(cli)
 		}
 		if err := cli.Start(ctx); err != nil {
+			closeMembers(started)
 			return nil, fmt.Errorf("mcp: start server %q: %w", key, err)
 		}
 		if _, err := cli.Initialize(ctx, initializeRequest(g.elicit)); err != nil {
+			closeMembers(started)
 			return nil, fmt.Errorf("mcp: initialize server %q: %w", key, err)
 		}
 	}
 	return g, nil
+}
+
+// closeMembers closes every member connection, ignoring individual errors:
+// it backs the constructor failure paths, where surfacing the original
+// construction error matters more than the shutdown errors of the backends
+// being torn down.
+func closeMembers(members map[string]Client) {
+	for _, cli := range members {
+		_ = cli.Close()
+	}
 }
 
 // ClientNames returns the member keys, sorted.

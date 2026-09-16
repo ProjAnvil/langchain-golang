@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
@@ -143,7 +144,7 @@ func (m ChatModel) OutputSchema() schema.Schema {
 // tools, language.BindToolsOptions{}).
 func (m ChatModel) BindTools(boundTools []tools.Tool) (language.ChatModel, error) {
 	next := m
-	next.boundTools = append([]tools.Tool(nil), boundTools...)
+	next.boundTools = slices.Clone(boundTools)
 	return next, nil
 }
 
@@ -165,7 +166,7 @@ func (m ChatModel) BindToolsWithOptions(
 	opts language.BindToolsOptions,
 ) (language.ChatModel, error) {
 	next := m
-	next.boundTools = append([]tools.Tool(nil), boundTools...)
+	next.boundTools = slices.Clone(boundTools)
 	if opts.ToolChoice != "" {
 		next.toolConfig = toolConfigFromCore(opts.ToolChoice, boundTools)
 	}
@@ -312,8 +313,7 @@ func (m ChatModel) generateContent(
 func (m ChatModel) buildGenerateContentConfig(systemInstruction *genai.Content) (*genai.GenerateContentConfig, error) {
 	config := &genai.GenerateContentConfig{SystemInstruction: systemInstruction}
 	if m.config.Temperature != nil {
-		temperature := float32(*m.config.Temperature)
-		config.Temperature = &temperature
+		config.Temperature = new(float32(*m.config.Temperature))
 	}
 	if m.config.MaxTokens != nil {
 		config.MaxOutputTokens = int32(*m.config.MaxTokens)

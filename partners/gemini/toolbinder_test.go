@@ -194,9 +194,8 @@ func TestBindToolsParallelToolCallsIgnored(t *testing.T) {
 	var body map[string]any
 	model := captureRequestModel(t, &body)
 	var binder language.ToolBinder = model
-	disabled := false
 	bound, err := binder.BindToolsWithOptions(binderTestTools(t), language.BindToolsOptions{
-		ParallelToolCalls: &disabled,
+		ParallelToolCalls: new(false),
 	})
 	if err != nil {
 		t.Fatalf("BindToolsWithOptions: %v", err)

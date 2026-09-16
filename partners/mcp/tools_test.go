@@ -7,6 +7,7 @@ package mcp
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -29,13 +30,11 @@ func loadOne(t *testing.T, serverKey, want string) *Tool {
 	if err != nil {
 		t.Fatalf("LoadTools() error = %v", err)
 	}
-	for _, tl := range tools {
-		if tl.Name() == want {
-			return tl.(*Tool)
-		}
+	i := slices.IndexFunc(tools, func(tl coretools.Tool) bool { return tl.Name() == want })
+	if i < 0 {
+		t.Fatalf("tool %q not found among %v", want, toolNamesOf(tools))
 	}
-	t.Fatalf("tool %q not found among %v", want, toolNamesOf(tools))
-	return nil
+	return tools[i].(*Tool)
 }
 
 // TestMappingTextContent: text content lands in the model-visible Content.
@@ -94,9 +93,8 @@ func TestMappingImageBlock(t *testing.T) {
 		t.Fatalf("Artifact = %T, want *ToolArtifact", res.Artifact)
 	}
 	var img *coremessages.ImageBlock
-	for i, block := range artifact.ContentBlocks {
+	for _, block := range artifact.ContentBlocks {
 		if b, ok := block.(coremessages.ImageBlock); ok {
-			_ = i
 			img = &b
 			break
 		}
@@ -117,8 +115,8 @@ func TestMappingIsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("isError result must surface as an error")
 	}
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
+	toolErr, ok := errors.AsType[*ToolError](err)
+	if !ok {
 		t.Fatalf("error = %T, want *ToolError", err)
 	}
 	if !strings.Contains(toolErr.Message, "boom: bad input") {
@@ -146,21 +144,17 @@ func TestMappingTransportFailureRaised(t *testing.T) {
 		t.Fatalf("LoadTools() error = %v", err)
 	}
 	ts.Close() // drop the endpoint; the connections are now dead
-	for _, tl := range tools {
-		if tl.Name() != "srv_echo" {
-			continue
-		}
-		_, err := tl.Invoke(t.Context(), map[string]any{"text": "x"})
-		if err == nil {
-			t.Fatal("Invoke() on a dead connection must raise")
-		}
-		var toolErr *ToolError
-		if errors.As(err, &toolErr) {
-			t.Fatalf("transport failure must not map to ToolError, got %v", err)
-		}
-		return
+	i := slices.IndexFunc(tools, func(tl coretools.Tool) bool { return tl.Name() == "srv_echo" })
+	if i < 0 {
+		t.Fatal("srv_echo not found")
 	}
-	t.Fatal("srv_echo not found")
+	_, err = tools[i].Invoke(t.Context(), map[string]any{"text": "x"})
+	if err == nil {
+		t.Fatal("Invoke() on a dead connection must raise")
+	}
+	if _, ok := errors.AsType[*ToolError](err); ok {
+		t.Fatalf("transport failure must not map to ToolError, got %v", err)
+	}
 }
 
 // TestArgsSchemaConversion: the MCP input schema round-trips into the tool's

@@ -45,8 +45,7 @@ func newClient(cfg modelconfig.Config) (*genai.Client, error) {
 		clientCfg.HTTPOptions.Headers.Set(name, value)
 	}
 	if cfg.Timeout > 0 {
-		timeout := cfg.Timeout
-		clientCfg.HTTPOptions.Timeout = &timeout
+		clientCfg.HTTPOptions.Timeout = new(cfg.Timeout)
 	}
 	if cfg.HTTPClient != nil {
 		clientCfg.HTTPClient = cfg.HTTPClient

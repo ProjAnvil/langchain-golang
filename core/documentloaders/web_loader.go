@@ -2,6 +2,7 @@ package documentloaders
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -157,10 +158,7 @@ func defaultWebHeaders() map[string]string {
 }
 
 func webUserAgent() string {
-	if env := os.Getenv("USER_AGENT"); env != "" {
-		return env
-	}
-	return DefaultWebUserAgent
+	return cmp.Or(os.Getenv("USER_AGENT"), DefaultWebUserAgent)
 }
 
 var _ LazyLoader = (*WebLoader)(nil)

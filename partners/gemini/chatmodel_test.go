@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/language"
@@ -254,9 +255,11 @@ func TestChatModelEnvKeyFallback(t *testing.T) {
 }
 
 func TestChatModelBatch(t *testing.T) {
-	var requests int
+	// Batch fans the inputs out concurrently, so the handler goroutines need
+	// a synchronized counter.
+	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		_, _ = fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`)
 	}))
 	defer server.Close()
@@ -275,8 +278,8 @@ func TestChatModelBatch(t *testing.T) {
 	if len(responses) != 2 {
 		t.Fatalf("responses: %d", len(responses))
 	}
-	if requests != 2 {
-		t.Errorf("requests: %d want 2", requests)
+	if got := requests.Load(); got != 2 {
+		t.Errorf("requests: %d want 2", got)
 	}
 }
 

@@ -38,7 +38,7 @@ func mapToGenAISchema(m map[string]any) (*genai.Schema, error) {
 		out.Enum = enum
 	}
 	if v, ok := m["nullable"].(bool); ok {
-		out.Nullable = &v
+		out.Nullable = new(v)
 	}
 	out.Default = m["default"]
 

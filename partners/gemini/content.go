@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -202,10 +203,7 @@ func toolResponseParts(message messages.Message, toolCallNames map[string]string
 		}
 	}
 
-	name := toolCallNames[message.ToolCallID]
-	if name == "" {
-		name = message.ToolCallID
-	}
+	name := cmp.Or(toolCallNames[message.ToolCallID], message.ToolCallID)
 	var response map[string]any
 	if message.Content != "" {
 		var decoded map[string]any

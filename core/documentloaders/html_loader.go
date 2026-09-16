@@ -184,9 +184,8 @@ func endsSpace(s string) bool {
 // joinHTMLLines trims each line, drops empty lines, and joins the rest with
 // newlines, yielding stable paragraph-per-line output.
 func joinHTMLLines(raw string) string {
-	lines := strings.Split(raw, "\n")
-	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
+	kept := make([]string, 0, 8)
+	for line := range strings.SplitSeq(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			kept = append(kept, line)

@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -82,6 +83,7 @@ type genaiStream struct {
 	usageAttached bool
 	pending       []messages.Message
 	output        messages.Message
+	shutdown      sync.Once
 }
 
 // Next returns the next stream chunk. Iteration ends (ok=false) after the
@@ -113,6 +115,7 @@ func (s *genaiStream) Next(ctx context.Context) (messages.Message, bool, error) 
 				continue
 			}
 			s.ended = true
+			s.releaseResources()
 			if err := emit(ctx, s.cfg, callbacks.EventChatModelEnd, nil, s.output, nil); err != nil {
 				return messages.Message{}, false, err
 			}
@@ -226,13 +229,23 @@ func (s *genaiStream) handleResponse(response *genai.GenerateContentResponse) (m
 // Close terminates the stream: the underlying HTTP request is canceled (which
 // ends the SDK iterator and its response body) and further Next calls end
 // without emitting the chat-model-end event, mirroring the anthropic
-// adapter's Close.
+// adapter's Close. It is idempotent, like every other Stream implementation.
 func (s *genaiStream) Close() error {
 	s.finished = true
 	s.ended = true
-	close(s.pump)
-	s.cancel()
+	s.releaseResources()
 	return nil
+}
+
+// releaseResources stops the pump goroutine and cancels the stream context
+// exactly once, whether the stream is Closed early or ends naturally. Without
+// it a fully drained stream would leak its context.WithCancel registration
+// until the parent context ends.
+func (s *genaiStream) releaseResources() {
+	s.shutdown.Do(func() {
+		close(s.pump)
+		s.cancel()
+	})
 }
 
 func emitStream(ctx context.Context, cfg runnables.Config, chunk messages.Message) error {

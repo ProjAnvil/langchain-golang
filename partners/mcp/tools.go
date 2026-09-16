@@ -224,9 +224,12 @@ func (t *Tool) Invoke(ctx context.Context, input map[string]any) (coretools.Resu
 				if batch.deliver(responses) {
 					// A cancel answer abandons the whole call: wait for
 					// the in-flight CallTool to unwind (its handlers were
-					// released by the cancellation), then surface the
-					// cancellation.
-					<-outcomeCh
+					// released by the cancellation), bounded by ctx, then
+					// surface the cancellation.
+					select {
+					case <-outcomeCh:
+					case <-ctx.Done():
+					}
 					return coretools.Result{}, fmt.Errorf("%w (tool %q)", ErrElicitationCanceled, t.name)
 				}
 			}
