@@ -2,7 +2,7 @@
 
 All notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
-## [Unreleased]
+## [0.8.0] - 2026-09-16
 
 ### Added
 - CI (GitHub Actions): root module tests on a go 1.26/1.27 matrix, nested checkpoint module suites (sqlite, redis via miniredis, postgres via embedded binaries), golangci-lint v2.13.2 gate.
@@ -60,5 +60,6 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 ## [0.5.x] - 2026-08
 Early development line preceding the parity baseline.
 
-[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.6.5...v0.7.0
