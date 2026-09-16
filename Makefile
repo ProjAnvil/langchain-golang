@@ -1,4 +1,4 @@
-.PHONY: test test-sqlite test-postgres test-redis test-integration vet-integration
+.PHONY: test test-sqlite test-postgres test-redis test-integration vet-integration check-dep-alignment
 
 ## Run the offline unit test suite (default; no network, no keys).
 test:
@@ -35,3 +35,27 @@ test-integration:
 ## Type-check integration tests without running them (no network needed).
 vet-integration:
 	go vet -tags=integration ./integration/...
+
+## Verify the root go.mod pins of pgx/go-redis match the nested checkpoint
+## modules (spec §10 dependency policy: partners/pgvector and
+## partners/redisvector must not drift from langgraph/checkpoint/{postgres,redis}).
+## Exits non-zero on any mismatch.
+check-dep-alignment:
+	@set -e; \
+	for pair in \
+		"langgraph/checkpoint/postgres/go.mod github.com/jackc/pgx/v5" \
+		"langgraph/checkpoint/redis/go.mod github.com/redis/go-redis/v9"; do \
+		set -- $$pair; nested=$$1; dep=$$2; \
+		root_ver=$$(awk -v d="$$dep" '$$1==d {print $$2}' go.mod); \
+		nested_ver=$$(awk -v d="$$dep" '$$1==d {print $$2}' $$nested); \
+		if [ -z "$$root_ver" ]; then \
+			echo "ERROR: $$dep is missing from root go.mod"; exit 1; \
+		fi; \
+		if [ -z "$$nested_ver" ]; then \
+			echo "ERROR: $$dep is missing from $$nested"; exit 1; \
+		fi; \
+		if [ "$$root_ver" != "$$nested_ver" ]; then \
+			echo "ERROR: $$dep version mismatch: root go.mod has $$root_ver but $$nested has $$nested_ver"; exit 1; \
+		fi; \
+		echo "OK: $$dep $$root_ver (root == $$nested)"; \
+	done

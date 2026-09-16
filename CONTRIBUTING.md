@@ -35,6 +35,7 @@ Thanks for contributing! New partner integrations are especially welcome (Google
 - `make test-sqlite` / `make test-redis` / `make test-postgres` — nested checkpoint saver modules
 - `make test-integration` — live-provider tests (needs `.env`)
 - `make vet-integration` — type-check integration tests without network
+- `make check-dep-alignment` — verify the root go.mod pins of pgx/go-redis match the nested checkpoint modules (enforced in CI; keep versions in sync when bumping either side)
 
 ## Security
 
