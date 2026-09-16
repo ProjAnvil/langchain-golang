@@ -2,6 +2,8 @@
 
 All notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [Unreleased]
+
 ## [0.8.0] - 2026-09-16
 
 ### Added
@@ -12,8 +14,15 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 - Package-level godoc comments for all core/langchain/modelprofiles packages.
 
 ### Changed
-- Modernized to Go 1.26 idioms throughout (3a24fdf).
 - Error strings lowercased to Go convention across agents/embeddings/middleware (ST1005); lint findings cleared (86 → 0).
+
+## [0.7.1] - 2026-09-16
+
+### Changed
+- Modernized to Go 1.26 idioms throughout (3a24fdf).
+
+### Chore
+- Pin langchain-golang v0.7.1 in nested checkpoint modules (29cacb1).
 
 ## [0.7.0] - 2026-09-12
 
@@ -28,7 +37,7 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 - agents: interrupt-based human-in-the-loop with cross-process approval; middleware tool/state auto-collection; tool-returned Commands and agent-hook jumps; `write_todos` state; per-call response_format/tool_choice/model_settings overrides; apply update-only Commands from `wrap_model_call` middleware.
 - tracers: LangSmith run-tree tracing with a batched background client.
 - partners/openaicompat: OpenAI-compatible provider registry (groq, mistralai, deepseek, xai, openrouter, fireworks, perplexity).
-- partners/openai: multimodal inputs, Responses reasoning effort, streaming usage, sampling params (top_p/stop/seed/penalties/logit_bias/n/logprobs), real tiktoken BPE token counting with the official image token formula, honest capability declarations.
+- partners/openai: multimodal inputs, Responses reasoning effort, streaming usage, sampling params (top_p/stop/seed/penalties/logit_bias/n/logprobs), honest capability declarations.
 - partners/anthropic: usage cache token details, stop_sequences, explicit errors for non-base64 data URIs.
 - language/agents: bind_tools options with tool_choice (ToolStrategy forces "any").
 - standardtests: layered chat-model conformance suites (tool calling/choice, structured output, multimodal, streaming) wired to openai/anthropic/ollama.
@@ -61,5 +70,6 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 Early development line preceding the parity baseline.
 
 [Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...HEAD
-[0.8.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.0...v0.8.0
+[0.8.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.6.5...v0.7.0

@@ -85,6 +85,38 @@ func TestParallelToolCallsOmittedWhenNil(t *testing.T) {
 	}
 }
 
+func TestParallelToolCallsCombinedWithNamedTool(t *testing.T) {
+	// The other edge of the combination matrix: a named-tool choice and the
+	// parallel flag must coexist (CC nests the function, Responses flattens).
+	for _, tc := range []struct {
+		name            string
+		chatCompletions bool
+		body            string
+	}{
+		{"responses", false, toolChoiceResponsesBody},
+		{"chat completions", true, toolChoiceChatBody},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, got := toolChoiceServer(t, tc.body)
+			no := false
+			model := parallelToolCallsModel(t, server.URL, tc.chatCompletions, "GenerateUsername", &no)
+			if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			choice, ok := (*got)["tool_choice"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool_choice = %v, want object", (*got)["tool_choice"])
+			}
+			if choice["type"] != "function" {
+				t.Fatalf("tool_choice type = %v, want function", choice["type"])
+			}
+			if (*got)["parallel_tool_calls"] != false {
+				t.Fatalf("parallel_tool_calls = %v, want false", (*got)["parallel_tool_calls"])
+			}
+		})
+	}
+}
+
 func TestParallelToolCallsCombinedWithToolChoice(t *testing.T) {
 	// Combination matrix from the M0a spec: tool_choice and
 	// parallel_tool_calls must coexist in one payload on both API paths
