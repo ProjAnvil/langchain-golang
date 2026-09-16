@@ -14,14 +14,15 @@ import (
 // `toMessage` already consume.
 
 type chatCompletionsRequest struct {
-	Model          string         `json:"model"`
-	Messages       []chatMessage  `json:"messages"`
-	Tools          []chatToolDef  `json:"tools,omitempty"`
-	ToolChoice     any            `json:"tool_choice,omitempty"`
-	ResponseFormat map[string]any `json:"response_format,omitempty"`
-	Temperature    *float64       `json:"temperature,omitempty"`
-	MaxTokens      *int           `json:"max_tokens,omitempty"`
-	Stream         bool           `json:"stream,omitzero"`
+	Model             string         `json:"model"`
+	Messages          []chatMessage  `json:"messages"`
+	Tools             []chatToolDef  `json:"tools,omitempty"`
+	ToolChoice        any            `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"`
+	ResponseFormat    map[string]any `json:"response_format,omitempty"`
+	Temperature       *float64       `json:"temperature,omitempty"`
+	MaxTokens         *int           `json:"max_tokens,omitempty"`
+	Stream            bool           `json:"stream,omitzero"`
 	// Sampling knobs mirroring Python BaseChatOpenAI's optional fields,
 	// forwarded by _default_params' exclude_if_none map
 	// (chat_models/base.py:1340-1350): presence_penalty (:753),
@@ -204,6 +205,9 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) (chatCo
 	}
 	if m.toolChoice != nil {
 		payload.ToolChoice = m.toolChoice.value
+	}
+	if m.parallelToolCalls != nil {
+		payload.ParallelToolCalls = m.parallelToolCalls
 	}
 	// Same precedence as the Responses builder (buildRequest): a
 	// structuredOutput binding (InvokeStructured / WithStructuredOutput) wins

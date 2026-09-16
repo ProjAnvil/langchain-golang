@@ -31,6 +31,7 @@ type ChatModel struct {
 	chatCompletions    bool
 	reasoningEffort    string
 	toolChoice         *ToolChoice
+	parallelToolCalls  *bool
 	responseFormat     map[string]any
 	streamChunkTimeout time.Duration
 	// Sampling knobs mirroring Python BaseChatOpenAI's optional fields
@@ -162,16 +163,19 @@ func (m ChatModel) BindTools(boundTools []tools.Tool) (language.ChatModel, error
 // and any other non-empty string to the named function tool
 // ({"type":"function","function":{"name":X}}, flattened for the Responses
 // API by the existing request builders). A zero-value ToolChoice keeps any
-// constructor-level WithToolChoice value. ParallelToolCalls is NOT yet
-// supported by either payload struct and is silently ignored (the
-// Responses/Chat-Completions `parallel_tool_calls` field is not modeled).
+// constructor-level WithToolChoice value. ParallelToolCalls serializes as
+// `parallel_tool_calls` on both the Responses and Chat Completions paths
+// (Python BaseChatOpenAI default_params, chat_models/base.py:1340-1350
+// exclude_if_none family); nil keeps the provider default (field omitted).
 func (m ChatModel) BindToolsWithOptions(boundTools []tools.Tool, opts language.BindToolsOptions) (language.ChatModel, error) {
 	next := m
 	next.boundTools = append([]tools.Tool(nil), boundTools...)
 	if opts.ToolChoice != "" {
 		next.toolChoice = ptrToolChoice(toolChoiceFromCore(opts.ToolChoice))
 	}
-	// opts.ParallelToolCalls intentionally ignored: no payload field yet.
+	if opts.ParallelToolCalls != nil {
+		next.parallelToolCalls = opts.ParallelToolCalls
+	}
 	return next, nil
 }
 
@@ -452,6 +456,9 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	if m.toolChoice != nil {
 		payload.ToolChoice = responsesToolChoice(m.toolChoice.value)
 	}
+	if m.parallelToolCalls != nil {
+		payload.ParallelToolCalls = m.parallelToolCalls
+	}
 
 	var instructions []string
 	for _, message := range input {
@@ -549,17 +556,18 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 }
 
 type requestPayload struct {
-	Model           string           `json:"model"`
-	Input           []inputItem      `json:"input"`
-	Instructions    string           `json:"instructions,omitempty"`
-	Temperature     *float64         `json:"temperature,omitempty"`
-	MaxOutputTokens *int             `json:"max_output_tokens,omitempty"`
-	TopP            *float64         `json:"top_p,omitempty"`
-	Tools           []toolSpec       `json:"tools,omitempty"`
-	ToolChoice      any              `json:"tool_choice,omitempty"`
-	Text            *textConfig      `json:"text,omitempty"`
-	Stream          bool             `json:"stream,omitzero"`
-	Reasoning       *reasoningConfig `json:"reasoning,omitempty"`
+	Model             string           `json:"model"`
+	Input             []inputItem      `json:"input"`
+	Instructions      string           `json:"instructions,omitempty"`
+	Temperature       *float64         `json:"temperature,omitempty"`
+	MaxOutputTokens   *int             `json:"max_output_tokens,omitempty"`
+	TopP              *float64         `json:"top_p,omitempty"`
+	Tools             []toolSpec       `json:"tools,omitempty"`
+	ToolChoice        any              `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool            `json:"parallel_tool_calls,omitempty"`
+	Text              *textConfig      `json:"text,omitempty"`
+	Stream            bool             `json:"stream,omitzero"`
+	Reasoning         *reasoningConfig `json:"reasoning,omitempty"`
 }
 
 // reasoningConfig carries the Responses API reasoning controls. Effort maps
