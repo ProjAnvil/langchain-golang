@@ -6,7 +6,7 @@ replace github.com/projanvil/langchain-golang => ../../../
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
-	github.com/projanvil/langchain-golang v0.8.0
+	github.com/projanvil/langchain-golang v0.8.1
 	github.com/redis/go-redis/v9 v9.22.0
 )
 
