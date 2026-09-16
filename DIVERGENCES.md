@@ -12,6 +12,7 @@ Deliberate design decisions where this port does not mirror Python. Each entry s
 
 - **Cache short-circuit middleware** — Go's `cache` middleware short-circuits identical requests instead of Python's instrumentation-only behavior; Go idiom favors explicit memoization points.
 - **Blank-import provider registration + shim re-exports** — partner packages self-register via `init()` and top-level `langchain/` shims re-export the stable surface, mirroring Go stdlib plugin patterns rather than Python's explicit imports.
+- **SQL toolkit read-only guardrails** — langchain-community's SQLDatabaseToolkit executes whatever the model sends; the Go sqltoolkit rejects anything but a single SELECT/WITH statement (comments stripped before analysis, write keywords rejected in the statement body) on both `sql_db_query` and `sql_db_query_checker`, since an LLM with write access to a database is a footgun the port refuses to ship. The checker also validates via the database planner (EXPLAIN) instead of an extra LLM call, `sql_db_schema` accepts empty input to describe all tables, and sample-row values are tab-joined (upstream comma-joins row values but tab-joins headers).
 
 ## Deferred (upstream-triggered)
 
