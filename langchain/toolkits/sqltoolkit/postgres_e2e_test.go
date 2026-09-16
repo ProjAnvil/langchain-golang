@@ -2,6 +2,7 @@ package sqltoolkit
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -210,7 +211,7 @@ func TestE2EPostgresGuardrails(t *testing.T) {
 	if err == nil {
 		t.Fatalf("guardrail matrix created table %q", archive)
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("check archive table: %v", err)
 	}
 }
