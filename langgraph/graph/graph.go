@@ -2498,6 +2498,17 @@ func Interrupt(ctx context.Context, value any) any {
 	}})
 }
 
+// InterruptSupported reports whether ctx carries the interrupt state of a
+// graph node invocation, i.e. whether Interrupt may legally be called on ctx.
+// Partner adapters and tool implementations use it to decide between pausing
+// via Interrupt and failing with a descriptive error when they run outside a
+// graph (e.g. a tool invoked directly, with no checkpointered run around it):
+// calling Interrupt on an unsupported context panics with a plain error.
+func InterruptSupported(ctx context.Context) bool {
+	_, ok := ctx.Value(interruptCtxKey{}).(*taskInterruptState)
+	return ok
+}
+
 // InterruptConsumeCount reports how many resume values the node invocation
 // owning ctx has consumed via Interrupt so far. It returns 0 when ctx carries
 // no interrupt state (outside a node execution). The fn package uses it to
