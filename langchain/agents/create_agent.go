@@ -1903,11 +1903,10 @@ func buildModelNode(
 		// per-pair accumulator on each inner call (factory.py:311).
 		var mwCommands []*middleware.Command
 		for i := len(mws) - 1; i >= 0; i-- {
-			mw := mws[i]
 			if hook, ok := mws[i].(WrapModelCallResultHook); ok {
 				next := handler
 				handler = func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
-					result, err := hook.WrapModelCallResult(applyMiddlewareTracePolicy(c, mw), r, next)
+					result, err := hook.WrapModelCallResult(applyMiddlewareTracePolicy(c, mws[i]), r, next)
 					if err != nil {
 						return middleware.ModelResponse{}, err
 					}
@@ -1932,7 +1931,7 @@ func buildModelNode(
 			}
 			next := handler
 			handler = func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
-				return hook.WrapModelCall(applyMiddlewareTracePolicy(c, mw), r, next)
+				return hook.WrapModelCall(applyMiddlewareTracePolicy(c, mws[i]), r, next)
 			}
 		}
 

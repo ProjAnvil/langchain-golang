@@ -1534,8 +1534,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					nodeErr = ne
 					runHandler := true
 					if checkpointing && cpSink.mode != DurabilityExit {
-						writes := []checkpoint.Write{{Channel: checkpoint.ReservedError, Value: ne.Err.Error()}}
-						if werr := cpSink.putWrites(ctx, *currentCfg, writes, t.plannedID(*currentCfg, rs.step+1)); werr != nil {
+						if werr := cpSink.putWrites(ctx, *currentCfg, errorWrites(ne), t.plannedID(*currentCfg, rs.step+1)); werr != nil {
 							runHandler = false
 							err = fmt.Errorf("graph: persisting error write for thread %q: %w", opts.ThreadID, werr)
 						}
