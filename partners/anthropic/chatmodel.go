@@ -27,6 +27,7 @@ type ChatModel struct {
 	toolStrict        *bool
 	thinking          map[string]any
 	toolChoice        map[string]any
+	parallelToolCalls *bool
 	contextManagement map[string]any
 	inferenceGeo      string
 }
@@ -141,9 +142,11 @@ func (m ChatModel) BindTools(boundTools []tools.Tool) (language.ChatModel, error
 // supported by the Messages API (there is no none tool_choice type; the way
 // to express it is binding no tools), so it fails loudly rather than
 // silently misrouting. A zero-value ToolChoice keeps any constructor-level
-// WithToolChoice value. ParallelToolCalls is NOT supported (Anthropic
-// expresses it as disable_parallel_tool_use inside tool_choice, which this
-// adapter does not synthesize from the flag) and is silently ignored.
+// WithToolChoice value. ParallelToolCalls is expressed as
+// disable_parallel_tool_use inside tool_choice (inverted semantics,
+// langchain-anthropic's payload assembly): when set, a missing tool_choice
+// is synthesized as {"type":"auto"} so the flag always reaches the wire;
+// nil leaves tool_choice exactly as bound.
 func (m ChatModel) BindToolsWithOptions(boundTools []tools.Tool, opts language.BindToolsOptions) (language.ChatModel, error) {
 	next := m
 	next.boundTools = append([]tools.Tool(nil), boundTools...)
@@ -155,8 +158,9 @@ func (m ChatModel) BindToolsWithOptions(boundTools []tools.Tool, opts language.B
 		}
 		next.toolChoice = choice
 	}
-	// opts.ParallelToolCalls intentionally ignored: no payload field
-	// (see the godoc above).
+	if opts.ParallelToolCalls != nil {
+		next.parallelToolCalls = opts.ParallelToolCalls
+	}
 	return next, nil
 }
 
@@ -431,6 +435,17 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	}
 	if m.toolChoice != nil {
 		payload.ToolChoice = m.toolChoice
+	}
+	if m.parallelToolCalls != nil {
+		choice := payload.ToolChoice
+		if choice == nil {
+			choice = map[string]any{"type": "auto"}
+		} else {
+			// Copy so the constructor-level toolChoice map is never mutated.
+			choice = cloneAnyMap(choice)
+		}
+		choice["disable_parallel_tool_use"] = !*m.parallelToolCalls
+		payload.ToolChoice = choice
 	}
 	if m.contextManagement != nil {
 		payload.ContextManagement = m.contextManagement
