@@ -184,6 +184,7 @@ func TestValidateFilterErrors(t *testing.T) {
 		{"between too many bounds", map[string]any{"page": map[string]any{FilterBetween: []any{1, 2, 3}}}},
 		{"between non-numeric bounds", map[string]any{"page": map[string]any{FilterBetween: []any{"a", 5}}}},
 		{"between bool bound", map[string]any{"page": map[string]any{FilterBetween: []any{true, false}}}},
+		{"between mixed string and bool bounds", map[string]any{"page": map[string]any{FilterBetween: []any{"a", true}}}},
 		{"exists non-bool", map[string]any{"group": map[string]any{FilterExists: "yes"}}},
 		{"like non-string", map[string]any{"name": map[string]any{FilterLike: 42}}},
 	}

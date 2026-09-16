@@ -13,7 +13,8 @@ import (
 // ensembleRankConstant is the reciprocal-rank-fusion constant, mirroring
 // Python's EnsembleRetriever rank_constant c = 60: each member's contribution
 // to a document's fused score is weight / (rankConstant + rank) with a
-// 0-based rank.
+// 1-based rank (Python: enumerate(doc_list, start=1)), so the top-ranked
+// document contributes weight / 61.
 const ensembleRankConstant = 60
 
 // ensembleIDKey mirrors Python's EnsembleRetriever id_key ("id"): the
@@ -24,7 +25,7 @@ const ensembleIDKey = "id"
 // EnsembleRetriever fuses the ranked results of several retrievers (e.g. a
 // dense vector retriever and a sparse keyword retriever) with reciprocal rank
 // fusion: score(doc) = sum over members of weight / (60 + rank), where rank
-// is the document's 0-based position in that member's result list. Documents
+// is the document's 1-based position in that member's result list. Documents
 // are deduplicated by their id metadata (or page content), the first-seen
 // document wins, and the output is sorted by fused score descending with ties
 // keeping first-seen order.
@@ -121,7 +122,7 @@ func (r EnsembleRetriever) GetRelevantDocuments(
 				byKey[key] = index
 				fusedDocs = append(fusedDocs, fused{doc: doc.Clone()})
 			}
-			fusedDocs[index].score += r.weights[i] / float64(ensembleRankConstant+rank)
+			fusedDocs[index].score += r.weights[i] / float64(ensembleRankConstant+rank+1)
 		}
 	}
 

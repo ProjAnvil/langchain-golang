@@ -152,7 +152,7 @@ func (r *Reranker) CompressDocuments(
 			Model:     cfg.Model,
 			Query:     query,
 			Documents: texts,
-			TopN:      r.topN,
+			TopN:      max(r.topN, 0),
 		},
 		func(req *http.Request) { configureRequest(req, cfg) },
 	)
@@ -192,7 +192,7 @@ type rerankRequest struct {
 	Model     string   `json:"model"`
 	Query     string   `json:"query"`
 	Documents []string `json:"documents"`
-	TopN      int      `json:"top_n,omitempty"`
+	TopN      int      `json:"top_n,omitzero"`
 }
 
 type rerankResponse struct {

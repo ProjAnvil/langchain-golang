@@ -483,8 +483,8 @@ type searchHit struct {
 	embedding []float64
 }
 
-// knnSearch runs the KNN FT.SEARCH. filter may be nil; count is the KNN k
-// (and LIMIT) to request.
+// knnSearch runs the KNN FT.SEARCH after embedding the query. filter may be
+// nil; count is the KNN k (and LIMIT) to request.
 func (s *Store) knnSearch(
 	ctx context.Context,
 	query string,
@@ -495,6 +495,17 @@ func (s *Store) knnSearch(
 	if err != nil {
 		return nil, err
 	}
+	return s.knnSearchByVector(ctx, queryVector, filter, count)
+}
+
+// knnSearchByVector runs the KNN FT.SEARCH for an already-embedded query
+// vector; filter may be nil and count is the KNN k (and LIMIT) to request.
+func (s *Store) knnSearchByVector(
+	ctx context.Context,
+	queryVector []float64,
+	filter map[string]any,
+	count int,
+) ([]searchHit, error) {
 	filterClause, err := s.buildFilterQuery(filter)
 	if err != nil {
 		return nil, err
@@ -686,11 +697,7 @@ func cloneMetadata(metadata map[string]any) map[string]any {
 	if metadata == nil {
 		return map[string]any{}
 	}
-	out := make(map[string]any, len(metadata))
-	for key, value := range metadata {
-		out[key] = value
-	}
-	return out
+	return maps.Clone(metadata)
 }
 
 func metadataAt(metadatas []map[string]any, index int) map[string]any {

@@ -142,7 +142,8 @@ func validateCondition(field string, condition any) error {
 				field, op,
 			)
 		}
-		if !lowIsNumeric && !isStringOrNumeric(items[0]) && !isStringOrNumeric(items[1]) {
+		if !lowIsNumeric &&
+			(!isStringOrNumeric(items[0]) || !isStringOrNumeric(items[1])) {
 			return fmt.Errorf(
 				"invalid filter condition for field %q: %s bounds must both be numeric or both be strings",
 				field, op,

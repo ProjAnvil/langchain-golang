@@ -69,7 +69,9 @@ func (s *Store) MMRSearchWithOptions(
 	if err != nil {
 		return nil, err
 	}
-	sql, args, err := s.searchWithFilterSQL(ctx, query, opts.Filter, true)
+	// Build the candidate query straight from queryVector: going through
+	// searchWithFilterSQL would embed the query a second time.
+	sql, args, err := s.searchWithFilterSQLByVector(queryVector, opts.Filter, true)
 	if err != nil {
 		return nil, err
 	}

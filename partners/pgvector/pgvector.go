@@ -520,21 +520,32 @@ func (s *Store) embedQuery(ctx context.Context, query string) ([]float64, error)
 	return vector, nil
 }
 
-// searchWithFilterSQL builds the filtered search statement; the query vector
-// is always $1, filter operands follow, and the LIMIT placeholder is appended
-// by queryResults. When withEmbedding is set the stored embedding column is
-// selected too (used by MMR re-ranking).
+// searchWithFilterSQL builds the filtered search statement after embedding
+// the query; see searchWithFilterSQLByVector for the SQL shape.
 func (s *Store) searchWithFilterSQL(
 	ctx context.Context,
 	query string,
 	filter map[string]any,
 	withEmbedding bool,
 ) (string, []any, error) {
-	vector, err := s.embedQuery(ctx, query)
+	queryVector, err := s.embedQuery(ctx, query)
 	if err != nil {
 		return "", nil, err
 	}
-	args := []any{formatVector(vector)}
+	return s.searchWithFilterSQLByVector(queryVector, filter, withEmbedding)
+}
+
+// searchWithFilterSQLByVector builds the filtered search statement from an
+// already-embedded query vector; the query vector is always $1, filter
+// operands follow, and the LIMIT placeholder is appended by queryResults.
+// When withEmbedding is set the stored embedding column is selected too
+// (used by MMR re-ranking).
+func (s *Store) searchWithFilterSQLByVector(
+	queryVector []float64,
+	filter map[string]any,
+	withEmbedding bool,
+) (string, []any, error) {
+	args := []any{formatVector(queryVector)}
 	where, err := buildFilterClause(filter, &args)
 	if err != nil {
 		return "", nil, err

@@ -107,7 +107,9 @@ func (s *Store) MMRSearchWithOptions(
 	if err != nil {
 		return nil, err
 	}
-	hits, err := s.knnSearch(ctx, query, opts.Filter, fetchK)
+	// knnSearchByVector reuses queryVector: going through knnSearch would
+	// embed the query a second time.
+	hits, err := s.knnSearchByVector(ctx, queryVector, opts.Filter, fetchK)
 	if err != nil {
 		return nil, err
 	}

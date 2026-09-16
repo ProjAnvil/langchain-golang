@@ -20,8 +20,8 @@ func docsOf(contents ...string) []documents.Document {
 
 // Python parity: langchain_community EnsembleRetriever fuses ranked lists
 // with reciprocal rank fusion, score(doc) = sum(weight / (rank + 60)) over
-// 0-based ranks, sorted descending with the first-seen document winning ties
-// and duplicates.
+// 1-based ranks (enumerate(doc_list, start=1)), sorted descending with the
+// first-seen document winning ties and duplicates.
 func TestEnsembleRetrieverRRFOrdering(t *testing.T) {
 	first := Static{Documents: docsOf("doc-a", "doc-b", "doc-c")}
 	second := Static{Documents: docsOf("doc-c", "doc-d")}
@@ -39,16 +39,16 @@ func TestEnsembleRetrieverRRFOrdering(t *testing.T) {
 	for _, doc := range docs {
 		contents = append(contents, doc.PageContent)
 	}
-	// R1: [a, b, c], R2: [c, d], equal weights 0.5:
-	//   c: 0.5/62 + 0.5/60 (rank 2 in R1, rank 0 in R2) -> highest
-	//   a: 0.5/60
-	//   b: 0.5/61, d: 0.5/61 (tie; b seen first via R1)
+	// R1: [a, b, c], R2: [c, d], equal weights 0.5, 1-based ranks:
+	//   c: 0.5/63 + 0.5/61 (rank 3 in R1, rank 1 in R2) -> highest
+	//   a: 0.5/61
+	//   b: 0.5/62, d: 0.5/62 (tie; b seen first via R1)
 	want := []string{"doc-c", "doc-a", "doc-b", "doc-d"}
 	if !slices.Equal(contents, want) {
 		t.Fatalf("fused docs: got %v want %v", contents, want)
 	}
 
-	wantScoreC := 0.5/(60+2) + 0.5/(60+0)
+	wantScoreC := 0.5/(60+3) + 0.5/(60+1)
 	gotScore, ok := docs[0].Metadata["score"].(float64)
 	if !ok || math.Abs(gotScore-wantScoreC) > 1e-12 {
 		t.Fatalf("fused score metadata: got %v want %v", docs[0].Metadata["score"], wantScoreC)
@@ -112,7 +112,7 @@ func TestEnsembleRetrieverDeduplicatesByIDKey(t *testing.T) {
 	if len(docs) != 1 || docs[0].PageContent != "content-from-first" {
 		t.Fatalf("docs: got %v", docs)
 	}
-	wantScore := 0.5/60 + 0.5/60
+	wantScore := 0.5/61 + 0.5/61
 	gotScore, ok := docs[0].Metadata["score"].(float64)
 	if !ok || math.Abs(gotScore-wantScore) > 1e-12 {
 		t.Fatalf("fused score: got %v want %v", docs[0].Metadata["score"], wantScore)
