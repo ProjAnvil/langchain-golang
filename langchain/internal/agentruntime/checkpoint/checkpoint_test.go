@@ -1,7 +1,6 @@
 package checkpoint
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -58,7 +57,7 @@ func TestMemorySaverImplementsSaver(t *testing.T) {
 // retrieves it by ID and as "latest", and the parent link is taken from the
 // caller's current position.
 func TestPutGetRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	first := Checkpoint{V: 1, ID: "cp-1", TS: time.Now(), ChannelValues: map[string]any{"step": 1}}
@@ -114,7 +113,7 @@ func TestPutGetRoundTrip(t *testing.T) {
 // TestList verifies List returns the thread history newest first and honors
 // the ListOptions Limit and Filter through the shim.
 func TestList(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	for _, tc := range []struct {
@@ -168,7 +167,7 @@ func TestList(t *testing.T) {
 // surfaced as PendingWrites, and that writing against an unknown checkpoint
 // errors.
 func TestPutWrites(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	cfg, err := saver.Put(ctx, Config{ThreadID: "t1"}, Checkpoint{V: 1, ID: "cp-1", TS: time.Now()}, Metadata{Source: "loop"}, nil)
@@ -204,7 +203,7 @@ func TestPutWrites(t *testing.T) {
 // TestDeleteThread verifies DeleteThread removes a thread's checkpoints and
 // leaves other threads untouched.
 func TestDeleteThread(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 	put := func(threadID, cpID string) {
 		t.Helper()

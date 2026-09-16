@@ -53,7 +53,7 @@ func TestWithAgentNameSurfacedViaContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if !reader.ok || reader.got != "tracer-agent" {
@@ -71,7 +71,7 @@ func TestWithAgentNameEmptyHasNoContextTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if reader.ok {
@@ -94,7 +94,7 @@ func TestWithAgentDebugEmitsVerboseLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func TestWithAgentDebugOffIsSilent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if strings.Contains(buf.String(), "agents:") {
@@ -149,7 +149,7 @@ func TestWithAgentDebugEmitsToolDispatchLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	logs := buf.String()
@@ -174,7 +174,7 @@ func TestWithAgentSystemPromptTemplateRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if len(model.invocations) != 1 {
@@ -202,7 +202,7 @@ func TestWithAgentSystemPromptTemplatePerInvokeVars(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 	if _, err := agent.InvokeWithStateAndVars(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		map[string]any{"role": "per-invoke-override"},
 	); err != nil {
@@ -231,7 +231,7 @@ func TestWithAgentSystemPromptTemplateWinsOverLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	invoked := model.invocations[0]
@@ -248,7 +248,7 @@ func TestWithAgentSystemPromptBackwardCompatible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	invoked := model.invocations[0]
@@ -277,7 +277,7 @@ func TestWithAgentSystemPromptTemplateNilClears(t *testing.T) {
 	if agent.systemPromptTemplate != nil {
 		t.Fatalf("expected nil template after clearing, got %#v", agent.systemPromptTemplate)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	invoked := model.invocations[0]

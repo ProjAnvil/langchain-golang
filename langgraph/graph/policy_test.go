@@ -56,7 +56,7 @@ func TestRetryPolicyFlakyNodeSucceeds(t *testing.T) {
 		return map[string]any{"done": true}, nil
 	}, NodePolicies{Retry: fastRetryPolicy(3)})
 
-	result, err := cg.Invoke(context.Background(), nil)
+	result, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRetryPolicyNonRetryableFailsImmediately(t *testing.T) {
 		return nil, NonRetryable(errFlaky)
 	}, NodePolicies{Retry: &RetryPolicy{InitialInterval: time.Millisecond, MaxAttempts: 5, NoJitter: true}})
 
-	_, err := cg.Invoke(context.Background(), nil)
+	_, err := cg.Invoke(t.Context(), nil)
 	if !errors.Is(err, errFlaky) {
 		t.Fatalf("Invoke() error = %v, want %v (NonRetryable must not mask the wrapped error)", err, errFlaky)
 	}
@@ -93,7 +93,7 @@ func TestRetryPolicyMaxAttemptsExhaustedSurfacesLastError(t *testing.T) {
 		return nil, fmt.Errorf("failure %d", n)
 	}, NodePolicies{Retry: fastRetryPolicy(3)})
 
-	_, err := cg.Invoke(context.Background(), nil)
+	_, err := cg.Invoke(t.Context(), nil)
 	if err == nil || !strings.Contains(err.Error(), "failure 3") {
 		t.Fatalf("Invoke() error = %v, want the last attempt's error (failure 3)", err)
 	}
@@ -120,7 +120,7 @@ func TestRetryPolicyBackoffIncreases(t *testing.T) {
 	}})
 
 	start := time.Now()
-	_, err := cg.Invoke(context.Background(), nil)
+	_, err := cg.Invoke(t.Context(), nil)
 	elapsed := time.Since(start)
 	if !errors.Is(err, errFlaky) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
@@ -156,7 +156,7 @@ func TestRetryPolicyInterruptIsTerminal(t *testing.T) {
 		return nil, nil // unreachable
 	}, NodePolicies{Retry: fastRetryPolicy(3)})
 
-	result, err := cg.Invoke(context.Background(), nil)
+	result, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -180,7 +180,7 @@ func TestRetryPolicyContextCancelDuringBackoff(t *testing.T) {
 		RetryOn:         alwaysRetry,
 	}})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	time.AfterFunc(50*time.Millisecond, cancel)
 
@@ -232,7 +232,7 @@ func TestRetryPolicyEventsBalancedAcrossAttempts(t *testing.T) {
 	}, NodePolicies{Retry: fastRetryPolicy(3)})
 
 	sink := &retryRecordingSink{}
-	if _, err := cg.InvokeStream(context.Background(), nil, Options{}, sink); err != nil {
+	if _, err := cg.InvokeStream(t.Context(), nil, Options{}, sink); err != nil {
 		t.Fatalf("InvokeStream() error = %v", err)
 	}
 	if got := attempts.Load(); got != 3 {
@@ -367,7 +367,7 @@ func TestAddNodeDelegatesToAddNodeWithPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.Invoke(context.Background(), nil); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := cg.Invoke(t.Context(), nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Invoke() error = %v, want context.DeadlineExceeded", err)
 	}
 	if got := attempts.Load(); got != 1 {
@@ -467,7 +467,7 @@ func TestWithDefaultRetryPolicyRetriesNodesWithoutOwnPolicy(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	result, err := cg.Invoke(context.Background(), nil)
+	result, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -497,7 +497,7 @@ func TestPerNodeRetryPolicyOverridesGraphDefault(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	_, err = cg.Invoke(context.Background(), nil)
+	_, err = cg.Invoke(t.Context(), nil)
 	if !errors.Is(err, errFlaky) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
 	}
@@ -519,7 +519,7 @@ func TestGraphDefaultAppliesToNodeWithOtherPoliciesOnly(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	if _, err := cg.Invoke(context.Background(), nil); err != nil {
+	if _, err := cg.Invoke(t.Context(), nil); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 	if got := attempts.Load(); got != 3 {
@@ -540,7 +540,7 @@ func TestWithoutDefaultRetryPolicyNoRetry(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	_, err = cg.Invoke(context.Background(), nil)
+	_, err = cg.Invoke(t.Context(), nil)
 	if !errors.Is(err, errFlaky) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
 	}
@@ -560,7 +560,7 @@ func TestWithDefaultRetryPolicyNilDisables(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	if _, err := cg.Invoke(context.Background(), nil); !errors.Is(err, errFlaky) {
+	if _, err := cg.Invoke(t.Context(), nil); !errors.Is(err, errFlaky) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
 	}
 	if got := attempts.Load(); got != 1 {
@@ -590,7 +590,7 @@ func TestWithDefaultRetryPolicyNonRetryableNotRetried(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	_, err = cg.Invoke(context.Background(), nil)
+	_, err = cg.Invoke(t.Context(), nil)
 	if !errors.Is(err, errFlaky) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errFlaky)
 	}

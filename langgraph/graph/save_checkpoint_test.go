@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -139,7 +138,7 @@ func TestNonZeroCounters(t *testing.T) {
 func TestSaveCheckpointSnapshotsDeltaAtCadence(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraphFreq(t, 2, WithCheckpointer(saver))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -202,7 +201,7 @@ func TestSaveCheckpointSnapshotsDeltaAtCadence(t *testing.T) {
 func TestSaveCheckpointPersistsDeltaCountersAcrossResume(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraphFreq(t, 4, WithCheckpointer(saver)) // freq=4: cadence never fires here
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// First run completes; latest checkpoint is step-1 loop with counters
 	// {items:{2,2}} (items stored as sentinel, value omitted).
@@ -252,7 +251,7 @@ func TestSaveCheckpointPersistsDeltaCountersAcrossResume(t *testing.T) {
 func TestUpdateStateForcesDeltaSnapshot(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraphFreq(t, 2, WithCheckpointer(saver)) // freq=2: snapshots at step-1, update cadence does not fire
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)

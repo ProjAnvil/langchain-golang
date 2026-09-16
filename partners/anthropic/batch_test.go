@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,7 +34,7 @@ func TestChatModelBatchPreservesOrder(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("claude-test"),
 	)
-	outputs, err := model.Batch(context.Background(), [][]messages.Message{
+	outputs, err := model.Batch(t.Context(), [][]messages.Message{
 		{messages.Human("first")},
 		{messages.Human("second")},
 		{messages.Human("third")},
@@ -64,7 +63,7 @@ func TestChatModelBatchPropagatesError(t *testing.T) {
 		modelconfig.WithModel("claude-test"),
 		modelconfig.WithMaxRetries(0),
 	)
-	_, err := model.Batch(context.Background(), [][]messages.Message{
+	_, err := model.Batch(t.Context(), [][]messages.Message{
 		{messages.Human("boom")},
 	})
 	if err == nil {

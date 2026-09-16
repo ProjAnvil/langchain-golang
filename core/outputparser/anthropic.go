@@ -11,7 +11,7 @@ type AnthropicToolCall struct {
 	ID    string         `json:"id,omitempty"`
 	Name  string         `json:"name"`
 	Args  map[string]any `json:"args"`
-	Index int            `json:"index,omitempty"`
+	Index int            `json:"index,omitzero"`
 }
 
 // AnthropicToolsOutputParser extracts Anthropic tool_use blocks from a message.

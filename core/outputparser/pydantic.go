@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/lcerrors"
@@ -250,12 +251,14 @@ func validateSchema(value any, spec schema.Schema, path string) error {
 		kinds = []string{"any"}
 	}
 	var lastErr error
+	if slices.Contains(kinds, "null") {
+		if value == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("%s: expected null, got %T", path, value)
+	}
 	for _, kind := range kinds {
 		if kind == "null" {
-			if value == nil {
-				return nil
-			}
-			lastErr = fmt.Errorf("%s: expected null, got %T", path, value)
 			continue
 		}
 		if err := validateSchemaType(value, spec, path, kind); err != nil {

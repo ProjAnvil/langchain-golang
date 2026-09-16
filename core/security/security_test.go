@@ -47,7 +47,7 @@ func TestSSRFSafeTransportBlocksResolvedPrivateIP(t *testing.T) {
 	transport := NewSSRFSafeTransport(DefaultSSRFPolicy(), nil, func(context.Context, string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("127.0.0.1")}, nil
 	})
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com/path", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/path", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestSSRFSafeTransportPinsIPAndPreservesHost(t *testing.T) {
 		}
 		return []net.IP{net.ParseIP("127.0.0.1")}, nil
 	})
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com:"+port+"/path", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com:"+port+"/path", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestValidateSafeURLAndIsSafeURL(t *testing.T) {
 
 func TestDefaultDNSResolver(t *testing.T) {
 	// IP literals resolve without network access.
-	ips, err := defaultDNSResolver(context.Background(), "127.0.0.1")
+	ips, err := defaultDNSResolver(t.Context(), "127.0.0.1")
 	if err != nil {
 		t.Fatalf("resolve IP literal: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestDefaultDNSResolver(t *testing.T) {
 		t.Fatalf("resolved IPs: %v", ips)
 	}
 	// An over-long hostname fails inside the resolver without any network.
-	if _, err := defaultDNSResolver(context.Background(), strings.Repeat("a", 250)+".example.com"); err == nil {
+	if _, err := defaultDNSResolver(t.Context(), strings.Repeat("a", 250)+".example.com"); err == nil {
 		t.Fatal("unresolvable hostname succeeded")
 	}
 }
@@ -342,7 +342,7 @@ func TestRoundTripSchemeValidation(t *testing.T) {
 		t.Fatal("resolver should not be called for blocked schemes")
 		return nil, nil
 	})
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "ftp://example.com/file", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "ftp://example.com/file", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestRoundTripResolverFailures(t *testing.T) {
 	failing := NewSSRFSafeTransport(policy, nil, func(context.Context, string) ([]net.IP, error) {
 		return nil, errors.New("dns exploded")
 	})
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com/", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestRoundTripAllowedHostBypassesResolution(t *testing.T) {
 		t.Fatal("resolver called for allowed host")
 		return nil, nil
 	})
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestRoundTripHTTPSPinsIPAndSetsServerName(t *testing.T) {
 		}
 		return []net.IP{net.ParseIP("127.0.0.1")}, nil
 	})
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://secure.example.com:"+port+"/", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://secure.example.com:"+port+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestRoundTripNilResolverUsesDefault(t *testing.T) {
 		AllowedHosts:   map[string]bool{},
 	}
 	transport := NewSSRFSafeTransport(policy, nil, nil)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

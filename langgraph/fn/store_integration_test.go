@@ -6,7 +6,6 @@ package fn
 // and any tasks it dispatches, mirroring Python's `@entrypoint(store=...)`.
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/graph"
@@ -49,7 +48,7 @@ func TestEntrypointStoreRuntimeWiring(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	out, err := e.Invoke(ctx, "first", graph.Options{})
 	if err != nil {
 		t.Fatalf("Invoke first: %v", err)

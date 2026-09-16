@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/retry"
@@ -361,7 +361,7 @@ func (r ConfigurableAlternatives[I, O]) availableKeys() []string {
 	for key := range r.Choices {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 

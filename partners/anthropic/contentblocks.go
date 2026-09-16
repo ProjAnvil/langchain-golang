@@ -171,15 +171,14 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 		return "", "", false
 	}
 	rest := uri[len("data:"):]
-	comma := strings.Index(rest, ",")
-	if comma < 0 {
+	meta, payload, found := strings.Cut(rest, ",")
+	if !found {
 		return "", "", false
 	}
-	meta := rest[:comma]
-	data = rest[comma+1:]
+	data = payload
 	mediaType = "text/plain"
 	base64 := false
-	for _, part := range strings.Split(meta, ";") {
+	for part := range strings.SplitSeq(meta, ";") {
 		switch {
 		case part == "base64":
 			base64 = true

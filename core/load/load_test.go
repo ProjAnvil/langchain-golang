@@ -15,7 +15,9 @@ func (fakeSerializable) LCAttributes() map[string]any { return map[string]any{"n
 
 type namespaceOnlySerializable struct{}
 
-func (namespaceOnlySerializable) LCNamespace() []string        { return []string{"langchain", "tests", "NsOnly"} }
+func (namespaceOnlySerializable) LCNamespace() []string {
+	return []string{"langchain", "tests", "NsOnly"}
+}
 func (namespaceOnlySerializable) LCID() []string               { return nil }
 func (namespaceOnlySerializable) LCAttributes() map[string]any { return nil }
 

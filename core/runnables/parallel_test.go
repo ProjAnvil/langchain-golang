@@ -15,7 +15,7 @@ func TestParallelMapPreservesOrderUnderConcurrency(t *testing.T) {
 	for i := range inputs {
 		inputs[i] = i
 	}
-	outputs, err := ParallelMap(context.Background(), Config{MaxConcurrency: 8}, inputs,
+	outputs, err := ParallelMap(t.Context(), Config{MaxConcurrency: 8}, inputs,
 		func(_ context.Context, n int) (string, error) {
 			// Stagger completion so earlier inputs finish late.
 			time.Sleep(time.Duration(200-n) * time.Microsecond)
@@ -35,7 +35,7 @@ func TestParallelMapRespectsConcurrencyLimit(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	var mu sync.Mutex // guards peak readback
 	inputs := make([]int, 64)
-	outputs, err := ParallelMap(context.Background(), Config{MaxConcurrency: 4}, inputs,
+	outputs, err := ParallelMap(t.Context(), Config{MaxConcurrency: 4}, inputs,
 		func(_ context.Context, n int) (int, error) {
 			cur := inFlight.Add(1)
 			mu.Lock()
@@ -61,7 +61,7 @@ func TestParallelMapRespectsConcurrencyLimit(t *testing.T) {
 func TestParallelMapSequentialWhenLimitOne(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	inputs := make([]int, 16)
-	_, err := ParallelMap(context.Background(), Config{MaxConcurrency: 1}, inputs,
+	_, err := ParallelMap(t.Context(), Config{MaxConcurrency: 1}, inputs,
 		func(_ context.Context, n int) (int, error) {
 			cur := inFlight.Add(1)
 			for {
@@ -88,7 +88,7 @@ func TestParallelMapDefaultBoundApplies(t *testing.T) {
 	}
 	var inFlight, peak atomic.Int32
 	inputs := make([]int, DefaultParallelism()*4)
-	_, err := ParallelMap(context.Background(), Config{}, inputs,
+	_, err := ParallelMap(t.Context(), Config{}, inputs,
 		func(_ context.Context, n int) (int, error) {
 			cur := inFlight.Add(1)
 			for {
@@ -111,7 +111,7 @@ func TestParallelMapDefaultBoundApplies(t *testing.T) {
 
 func TestParallelMapJoinsErrorsInOrder(t *testing.T) {
 	inputs := []int{0, 1, 2}
-	_, err := ParallelMap(context.Background(), Config{}, inputs,
+	_, err := ParallelMap(t.Context(), Config{}, inputs,
 		func(_ context.Context, n int) (int, error) {
 			if n == 1 {
 				return 0, fmt.Errorf("boom-%d", n)
@@ -125,7 +125,7 @@ func TestParallelMapJoinsErrorsInOrder(t *testing.T) {
 		t.Fatalf("err = %q, want single boom-1", got)
 	}
 
-	_, err = ParallelMap(context.Background(), Config{}, []int{0, 1, 2},
+	_, err = ParallelMap(t.Context(), Config{}, []int{0, 1, 2},
 		func(_ context.Context, n int) (int, error) {
 			return 0, fmt.Errorf("e%d", n)
 		})
@@ -136,7 +136,7 @@ func TestParallelMapJoinsErrorsInOrder(t *testing.T) {
 }
 
 func TestParallelMapCancelSkipsUnstarted(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	inputs := make([]int, 500)
 	_, err := ParallelMap(ctx, Config{MaxConcurrency: 2}, inputs,
 		func(_ context.Context, n int) (int, error) {
@@ -173,7 +173,7 @@ func TestFuncBatchHonorsMaxConcurrency(t *testing.T) {
 		nil,
 	)
 	inputs := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-	outputs, err := fn.Batch(context.Background(), inputs, WithMaxConcurrency(2))
+	outputs, err := fn.Batch(t.Context(), inputs, WithMaxConcurrency(2))
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}

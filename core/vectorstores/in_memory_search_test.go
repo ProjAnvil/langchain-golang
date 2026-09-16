@@ -29,7 +29,7 @@ func (shortEmbedder) EmbedQuery(_ context.Context, _ string) ([]float64, error) 
 
 func TestInMemorySimilaritySearchWrapper(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(16))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 		documents.New("gamma delta", nil),
 	})
@@ -37,7 +37,7 @@ func TestInMemorySimilaritySearchWrapper(t *testing.T) {
 		t.Fatalf("add documents: %v", err)
 	}
 
-	docs, err := store.SimilaritySearch(context.Background(), "alpha", 2)
+	docs, err := store.SimilaritySearch(t.Context(), "alpha", 2)
 	if err != nil {
 		t.Fatalf("similarity search: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestInMemorySimilaritySearchWrapper(t *testing.T) {
 func TestInMemoryAddDocumentsErrors(t *testing.T) {
 	docs := []documents.Document{documents.New("alpha", nil), documents.New("beta", nil)}
 
-	if _, err := NewInMemory(nil).AddDocuments(context.Background(), docs); err == nil {
+	if _, err := NewInMemory(nil).AddDocuments(t.Context(), docs); err == nil {
 		t.Fatal("expected error for nil embedder")
 	}
 
@@ -64,21 +64,21 @@ func TestInMemoryAddDocumentsErrors(t *testing.T) {
 		t.Fatalf("expected canceled error, got %v", err)
 	}
 
-	if _, err := NewInMemory(shortEmbedder{}).AddDocuments(context.Background(), docs); err == nil {
+	if _, err := NewInMemory(shortEmbedder{}).AddDocuments(t.Context(), docs); err == nil {
 		t.Fatal("expected embedding count mismatch error")
 	}
 }
 
 func TestInMemorySearchWithScoreFilterEdgeCases(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(16))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 	})
 	if err != nil {
 		t.Fatalf("add documents: %v", err)
 	}
 
-	results, err := store.SimilaritySearchWithScoreFilter(context.Background(), "alpha", 0, nil)
+	results, err := store.SimilaritySearchWithScoreFilter(t.Context(), "alpha", 0, nil)
 	if err != nil {
 		t.Fatalf("k<=0 search: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestInMemorySearchWithScoreFilterEdgeCases(t *testing.T) {
 		t.Fatalf("k<=0 should return nil results, got %#v", results)
 	}
 
-	if _, err := NewInMemory(nil).SimilaritySearchWithScoreFilter(context.Background(), "q", 1, nil); err == nil {
+	if _, err := NewInMemory(nil).SimilaritySearchWithScoreFilter(t.Context(), "q", 1, nil); err == nil {
 		t.Fatal("expected error for nil embedder")
 	}
 
@@ -97,13 +97,13 @@ func TestInMemorySearchWithScoreFilterEdgeCases(t *testing.T) {
 
 func TestInMemorySearchByVectorEdgeCases(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(16))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 	})
 	if err != nil {
 		t.Fatalf("add documents: %v", err)
 	}
-	vector, err := embeddings.NewFake(16).EmbedQuery(context.Background(), "alpha")
+	vector, err := embeddings.NewFake(16).EmbedQuery(t.Context(), "alpha")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestInMemorySearchByVectorEdgeCases(t *testing.T) {
 		t.Fatalf("expected canceled error, got %v", err)
 	}
 
-	results, err := store.SimilaritySearchWithScoreByVector(context.Background(), vector, -1, nil)
+	results, err := store.SimilaritySearchWithScoreByVector(t.Context(), vector, -1, nil)
 	if err != nil {
 		t.Fatalf("k<=0 search: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestInMemorySearchByVectorEdgeCases(t *testing.T) {
 
 func TestInMemoryRelevanceScoresThreshold(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(16))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 		documents.New("gamma delta", nil),
 	})
@@ -137,7 +137,7 @@ func TestInMemoryRelevanceScoresThreshold(t *testing.T) {
 
 	// A high threshold keeps only near-identical matches.
 	threshold := 0.99
-	results, err := store.SimilaritySearchWithRelevanceScores(context.Background(), "alpha beta", 2, &threshold)
+	results, err := store.SimilaritySearchWithRelevanceScores(t.Context(), "alpha beta", 2, &threshold)
 	if err != nil {
 		t.Fatalf("relevance search: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestInMemoryRelevanceScoresThreshold(t *testing.T) {
 
 	// A zero threshold keeps everything.
 	zero := 0.0
-	results, err = store.SimilaritySearchWithRelevanceScores(context.Background(), "alpha", 2, &zero)
+	results, err = store.SimilaritySearchWithRelevanceScores(t.Context(), "alpha", 2, &zero)
 	if err != nil {
 		t.Fatalf("relevance search: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestInMemoryRelevanceScoresThreshold(t *testing.T) {
 }
 
 func TestInMemoryMMREdgeCases(t *testing.T) {
-	if _, err := NewInMemory(nil).MaxMarginalRelevanceSearch(context.Background(), "q", 1, 1, 0.5, nil); err == nil {
+	if _, err := NewInMemory(nil).MaxMarginalRelevanceSearch(t.Context(), "q", 1, 1, 0.5, nil); err == nil {
 		t.Fatal("expected error for nil embedder")
 	}
 
@@ -179,11 +179,11 @@ func TestInMemoryMMREdgeCases(t *testing.T) {
 	for _, text := range []string{"alpha beta", "alpha gamma", "beta delta", "gamma delta", "delta epsilon", "epsilon zeta"} {
 		docs = append(docs, documents.New(text, nil))
 	}
-	if _, err := store.AddDocuments(context.Background(), docs); err != nil {
+	if _, err := store.AddDocuments(t.Context(), docs); err != nil {
 		t.Fatalf("add documents: %v", err)
 	}
 
-	vector, err := embeddings.NewFake(16).EmbedQuery(context.Background(), "alpha")
+	vector, err := embeddings.NewFake(16).EmbedQuery(t.Context(), "alpha")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestInMemoryMMREdgeCases(t *testing.T) {
 	}
 
 	// Zero k and fetchK fall back to the defaults k=4, fetchK=20.
-	selected, err := store.MaxMarginalRelevanceSearchByVector(context.Background(), vector, 0, 0, 0.5, nil)
+	selected, err := store.MaxMarginalRelevanceSearchByVector(t.Context(), vector, 0, 0, 0.5, nil)
 	if err != nil {
 		t.Fatalf("mmr by vector: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestInMemoryMMREdgeCases(t *testing.T) {
 // ID in idSequence no longer has a stored document.
 func TestInMemorySearchSkipsStaleSequenceIDs(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(16))
-	ids, err := store.AddDocuments(context.Background(), []documents.Document{
+	ids, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 		documents.New("gamma delta", nil),
 	})
@@ -218,11 +218,11 @@ func TestInMemorySearchSkipsStaleSequenceIDs(t *testing.T) {
 	delete(store.documents, ids[0])
 	delete(store.vectors, ids[0])
 
-	vector, err := embeddings.NewFake(16).EmbedQuery(context.Background(), "alpha")
+	vector, err := embeddings.NewFake(16).EmbedQuery(t.Context(), "alpha")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	results, err := store.SimilaritySearchWithScoreByVector(context.Background(), vector, 5, nil)
+	results, err := store.SimilaritySearchWithScoreByVector(t.Context(), vector, 5, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

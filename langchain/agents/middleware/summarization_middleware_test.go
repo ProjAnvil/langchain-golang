@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -15,7 +14,7 @@ func TestSummarizationMiddlewareNoMessages(t *testing.T) {
 		t.Fatal("summarizer should not be called")
 		return "", nil
 	})
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{})
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without messages: %#v %v", update, err)
 	}
@@ -26,7 +25,7 @@ func TestSummarizationMiddlewareRequiresSummarizer(t *testing.T) {
 		Trigger: []TriggerClause{{Messages: 1}},
 		Keep:    KeepPolicy{Messages: 1},
 	}
-	_, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"),
 	}})
 	if err == nil || !strings.Contains(err.Error(), "summarizer function") {
@@ -41,7 +40,7 @@ func TestSummarizationMiddlewareKeepCoversAllMessages(t *testing.T) {
 	})
 	middleware.Trigger = []TriggerClause{{Messages: 1}}
 	middleware.Keep = KeepPolicy{Messages: 10}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"),
 	}})
 	if err != nil || update != nil {
@@ -57,7 +56,7 @@ func TestSummarizationMiddlewareSummarizeErrorPropagates(t *testing.T) {
 	middleware.Trigger = []TriggerClause{{Messages: 2}}
 	middleware.Keep = KeepPolicy{Messages: 1}
 	middleware.TrimTokensToSummarize = 0
-	_, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"),
 	}})
 	if !errors.Is(err, wantErr) {
@@ -73,7 +72,7 @@ func TestSummarizationMiddlewareEmptyAfterTrim(t *testing.T) {
 	middleware.Trigger = []TriggerClause{{Messages: 2}}
 	middleware.Keep = KeepPolicy{Messages: 1}
 	middleware.TrimTokensToSummarize = 1
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one two three four five"),
 		messages.Human("keep me"),
 	}})
@@ -100,13 +99,13 @@ func TestSummarizationMiddlewareDefaultTrigger(t *testing.T) {
 	for i := range below {
 		below[i] = messages.Human("msg")
 	}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": below})
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": below})
 	if err != nil || update != nil || called {
 		t.Fatalf("default trigger should not fire at 49 messages: %#v %v", update, err)
 	}
 
 	at := append(below, messages.Human("msg"))
-	update, err = middleware.BeforeModel(context.Background(), map[string]any{"messages": at})
+	update, err = middleware.BeforeModel(t.Context(), map[string]any{"messages": at})
 	if err != nil || update == nil || !called {
 		t.Fatalf("default trigger should fire at 50 messages: %#v %v", update, err)
 	}
@@ -121,14 +120,14 @@ func TestSummarizationMiddlewareTokenTrigger(t *testing.T) {
 	middleware.TrimTokensToSummarize = 0
 	middleware.TokenCounter = func(msgs []messages.Message) int { return len(msgs) * 5 }
 
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"),
 	}})
 	if err != nil || update != nil {
 		t.Fatalf("token trigger should not fire below threshold: %#v %v", update, err)
 	}
 
-	update, err = middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err = middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"), messages.Human("three"),
 	}})
 	if err != nil || update == nil {
@@ -149,7 +148,7 @@ func TestSummarizationMiddlewareReportedTokensTrigger(t *testing.T) {
 	ai := messages.AI("answer")
 	ai.UsageMetadata.TotalTokens = 150
 	ai.ResponseMetadata = map[string]any{"model_provider": "anthropic"}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), ai, messages.Human("two"),
 	}})
 	if err != nil || update == nil {
@@ -158,7 +157,7 @@ func TestSummarizationMiddlewareReportedTokensTrigger(t *testing.T) {
 
 	// Provider mismatch: no trigger.
 	ai.ResponseMetadata = map[string]any{"model_provider": "openai"}
-	update, err = middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err = middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), ai, messages.Human("two"),
 	}})
 	if err != nil || update != nil {
@@ -224,7 +223,7 @@ func TestSummarizationMiddlewareTokenKeepPolicy(t *testing.T) {
 	middleware.TrimTokensToSummarize = 0
 	middleware.TokenCounter = func(msgs []messages.Message) int { return len(msgs) * 5 }
 
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"), messages.Human("three"), messages.Human("four"),
 	}})
 	if err != nil {
@@ -248,7 +247,7 @@ func TestSummarizationMiddlewareFractionKeepWithoutProfile(t *testing.T) {
 	for i := range msgs {
 		msgs[i] = messages.Human("msg")
 	}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": msgs})
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": msgs})
 	if err != nil {
 		t.Fatalf("before model: %v", err)
 	}
@@ -364,7 +363,7 @@ func TestSummarizationMiddlewareDefaultPromptUsed(t *testing.T) {
 	middleware.Keep = KeepPolicy{Messages: 1}
 	middleware.TrimTokensToSummarize = 0
 
-	_, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"),
 	}})
 	if err != nil {

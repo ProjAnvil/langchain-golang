@@ -8,7 +8,7 @@ import (
 )
 
 func TestInMemoryDocumentIndexUpsertGeneratesIDs(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	idx := NewInMemoryDocumentIndex(4)
 	docs := []documents.Document{
 		documents.New("alpha", nil),
@@ -43,7 +43,7 @@ func TestInMemoryDocumentIndexUpsertGeneratesIDs(t *testing.T) {
 }
 
 func TestInMemoryDocumentIndexUpsertOverwrites(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	idx := NewInMemoryDocumentIndex(4)
 	const id = "fixed-id"
 
@@ -80,7 +80,7 @@ func TestInMemoryDocumentIndexUpsertOverwrites(t *testing.T) {
 }
 
 func TestInMemoryDocumentIndexDeleteReportsCounts(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	idx := NewInMemoryDocumentIndex(4)
 	_, err := idx.Upsert(ctx, []documents.Document{
 		documents.New("alpha", nil).WithID("id-1"),
@@ -111,7 +111,7 @@ func TestInMemoryDocumentIndexDeleteReportsCounts(t *testing.T) {
 }
 
 func TestInMemoryDocumentIndexDeleteNilErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	idx := NewInMemoryDocumentIndex(4)
 
 	_, err := idx.Delete(ctx, nil)
@@ -121,7 +121,7 @@ func TestInMemoryDocumentIndexDeleteNilErrors(t *testing.T) {
 }
 
 func TestInMemoryDocumentIndexGetReturnsPresentInOrder(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	idx := NewInMemoryDocumentIndex(4)
 	_, err := idx.Upsert(ctx, []documents.Document{
 		documents.New("alpha", nil).WithID("id-a"),
@@ -144,7 +144,7 @@ func TestInMemoryDocumentIndexGetReturnsPresentInOrder(t *testing.T) {
 }
 
 func TestInMemoryDocumentIndexGetRelevantDocumentsRanksByCount(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	idx := NewInMemoryDocumentIndex(2)
 	_, err := idx.Upsert(ctx, []documents.Document{
 		documents.New("apple apple apple", nil).WithID("three"),
@@ -169,7 +169,7 @@ func TestInMemoryDocumentIndexGetRelevantDocumentsRanksByCount(t *testing.T) {
 }
 
 func TestNewInMemoryDocumentIndexDefaultsTopK(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	idx := NewInMemoryDocumentIndex(0)
 	docs := []documents.Document{
 		documents.New("apple one", nil),

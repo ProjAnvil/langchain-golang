@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
@@ -385,9 +386,7 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 		if len(writes) > 0 {
 			// Reverse: we walked newest-to-oldest, so writes are in reverse
 			// chronological order. ReplayWrites expects oldest-first.
-			for i, j := 0, len(writes)-1; i < j; i, j = i+1, j-1 {
-				writes[i], writes[j] = writes[j], writes[i]
-			}
+			slices.Reverse(writes)
 			delta.ReplayWrites(writes)
 		}
 		if delta.IsAvailable() {

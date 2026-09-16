@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -37,7 +36,7 @@ func snapshotLinearGraph(t *testing.T, saver checkpoint.Saver, calls map[string]
 func TestGetState(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := snapshotLinearGraph(t, saver, map[string]int{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -107,7 +106,7 @@ func TestGetState(t *testing.T) {
 func TestGetStateHistory(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := snapshotLinearGraph(t, saver, map[string]int{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -161,7 +160,7 @@ func TestGetStateInterrupts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	result, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"})
 	if err != nil {
@@ -217,7 +216,7 @@ func TestUpdateState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"route": "b"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -283,7 +282,7 @@ func TestUpdateState(t *testing.T) {
 
 func TestUpdateStateAsNodeErrors(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	g := NewStateGraph()
 	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
@@ -343,7 +342,7 @@ func TestTimeTravelCheckpointID(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	calls := map[string]int{}
 	cg := snapshotLinearGraph(t, saver, calls)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -410,7 +409,7 @@ func TestNewTurnFromPinnedCheckpoint(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	calls := map[string]int{}
 	cg := snapshotLinearGraph(t, saver, calls)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("turn 1 Invoke() error = %v", err)
@@ -478,7 +477,7 @@ func TestStateAPIsRequireCheckpointer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	cfg := checkpoint.Config{ThreadID: "t1"}
 
 	if _, err := cg.GetState(ctx, cfg); err == nil || !strings.Contains(err.Error(), "checkpointer") {
@@ -501,7 +500,7 @@ func TestStateAPIsRequireCheckpointer(t *testing.T) {
 // form <node>:<taskID> (taskCheckpointNS), discovered here from the parent
 // checkpoints' Metadata.Parents records.
 func TestUpdateStateSubgraphNamespace(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 
 	child := compileChild(t, "child_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {

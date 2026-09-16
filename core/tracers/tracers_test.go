@@ -2,7 +2,6 @@ package tracers
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -50,12 +49,12 @@ func TestMemoryTracerFilterReplayAndSubscribe(t *testing.T) {
 
 func TestContextTracerRoundTrip(t *testing.T) {
 	tracer := NewMemoryTracer()
-	ctx := ContextWithTracer(context.Background(), tracer)
+	ctx := ContextWithTracer(t.Context(), tracer)
 	got, ok := TracerFromContext(ctx)
 	if !ok || got != tracer {
 		t.Fatalf("tracer from context: %#v ok=%v", got, ok)
 	}
-	if _, ok := TracerFromContext(context.Background()); ok {
+	if _, ok := TracerFromContext(t.Context()); ok {
 		t.Fatal("unexpected tracer in empty context")
 	}
 }

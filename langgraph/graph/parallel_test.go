@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ func TestSuperstepMaxConcurrencyBoundsParallelNodes(t *testing.T) {
 		return map[string]any{}, nil
 	})
 	g.AddEdge(types.START, "seed")
-	for b := 0; b < branches; b++ {
+	for b := range branches {
 		name := "leaf" + string(rune('A'+b))
 		g.AddNode(name, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 			cur := inFlight.Add(1)
@@ -45,7 +44,7 @@ func TestSuperstepMaxConcurrencyBoundsParallelNodes(t *testing.T) {
 		t.Fatalf("Compile: %v", err)
 	}
 
-	if _, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{MaxConcurrency: limit}); err != nil {
+	if _, err := compiled.InvokeWithOptions(t.Context(), map[string]any{}, Options{MaxConcurrency: limit}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if got := peak.Load(); got > limit {
@@ -65,7 +64,7 @@ func TestSuperstepUnboundedByDefault(t *testing.T) {
 		return map[string]any{}, nil
 	})
 	g.AddEdge(types.START, "seed")
-	for b := 0; b < 6; b++ {
+	for b := range 6 {
 		name := "leaf" + string(rune('A'+b))
 		g.AddNode(name, func(_ runtime.Runtime, _ map[string]any) (any, error) {
 			cur := inFlight.Add(1)
@@ -87,7 +86,7 @@ func TestSuperstepUnboundedByDefault(t *testing.T) {
 		t.Fatalf("Compile: %v", err)
 	}
 
-	if _, err := compiled.InvokeWithOptions(context.Background(), map[string]any{}, Options{}); err != nil {
+	if _, err := compiled.InvokeWithOptions(t.Context(), map[string]any{}, Options{}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if got := peak.Load(); got != 6 {

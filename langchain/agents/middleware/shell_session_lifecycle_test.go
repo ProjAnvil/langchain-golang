@@ -10,7 +10,7 @@ import (
 func newStartedSession(t *testing.T) *ShellSession {
 	t.Helper()
 	s := NewShellSession(t.TempDir(), []string{"/bin/sh"}, map[string]string{})
-	if err := s.Start(context.Background()); err != nil {
+	if err := s.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Stop(5 * time.Second) })
@@ -39,25 +39,25 @@ func TestNewShellSessionArgumentHandling(t *testing.T) {
 
 func TestShellSessionStartTwiceIsNoop(t *testing.T) {
 	s := newStartedSession(t)
-	if err := s.Start(context.Background()); err != nil {
+	if err := s.Start(t.Context()); err != nil {
 		t.Fatalf("second Start should be a no-op: %v", err)
 	}
 }
 
 func TestShellSessionStartFailure(t *testing.T) {
 	s := NewShellSession(t.TempDir(), []string{"/nonexistent-lg-shell"}, nil)
-	if err := s.Start(context.Background()); err == nil {
+	if err := s.Start(t.Context()); err == nil {
 		t.Fatal("expected start failure for missing shell binary")
 	}
 }
 
 func TestShellSessionEnvPassthrough(t *testing.T) {
 	s := NewShellSession(t.TempDir(), []string{"/bin/sh"}, map[string]string{"LG_SESSION_VAR": "session-value"})
-	if err := s.Start(context.Background()); err != nil {
+	if err := s.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Stop(5 * time.Second) })
-	r, err := s.Execute(context.Background(), "echo \"$LG_SESSION_VAR\"", 10*time.Second)
+	r, err := s.Execute(t.Context(), "echo \"$LG_SESSION_VAR\"", 10*time.Second)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestShellSessionEnvPassthrough(t *testing.T) {
 
 func TestShellSessionExecuteTimeout(t *testing.T) {
 	s := newStartedSession(t)
-	r, err := s.Execute(context.Background(), "sleep 2", 200*time.Millisecond)
+	r, err := s.Execute(t.Context(), "sleep 2", 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestShellSessionExecuteTimeout(t *testing.T) {
 
 func TestShellSessionExecuteContextCanceled(t *testing.T) {
 	s := newStartedSession(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	r, err := s.Execute(ctx, "sleep 2", 30*time.Second)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestShellSessionExecuteContextCanceled(t *testing.T) {
 func TestShellSessionExecuteAfterShellExit(t *testing.T) {
 	s := newStartedSession(t)
 	// "exit" terminates the shell; the reader hits EOF before any marker.
-	if _, err := s.Execute(context.Background(), "exit", 10*time.Second); err == nil ||
+	if _, err := s.Execute(t.Context(), "exit", 10*time.Second); err == nil ||
 		!strings.Contains(err.Error(), "read shell output") {
 		t.Fatalf("expected read error after shell exit, got %v", err)
 	}
@@ -101,14 +101,14 @@ func TestShellSessionExecuteAfterShellExit(t *testing.T) {
 
 func TestShellSessionRestart(t *testing.T) {
 	s := newStartedSession(t)
-	if _, err := s.Execute(context.Background(), "export LG_RESTART_VAR=before", 10*time.Second); err != nil {
+	if _, err := s.Execute(t.Context(), "export LG_RESTART_VAR=before", 10*time.Second); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if err := s.Restart(context.Background(), 5*time.Second); err != nil {
+	if err := s.Restart(t.Context(), 5*time.Second); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
 	// After a restart the env from the previous shell is gone.
-	r, err := s.Execute(context.Background(), "echo \"[$LG_RESTART_VAR]\"", 10*time.Second)
+	r, err := s.Execute(t.Context(), "echo \"[$LG_RESTART_VAR]\"", 10*time.Second)
 	if err != nil {
 		t.Fatalf("Execute after restart: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestShellSessionExecuteAfterStop(t *testing.T) {
 	if err := s.Stop(5 * time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if _, err := s.Execute(context.Background(), "printf hi", time.Second); err == nil {
+	if _, err := s.Execute(t.Context(), "printf hi", time.Second); err == nil {
 		t.Fatal("expected error executing on a stopped session")
 	}
 	// Stopping again is a no-op.

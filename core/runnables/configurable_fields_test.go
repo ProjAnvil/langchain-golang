@@ -30,7 +30,7 @@ func TestConfigurableFieldsOverridesAndDefaults(t *testing.T) {
 	}
 
 	// (b) Explicit override is passed through to the inner runnable.
-	if _, err := wrapped.Invoke(context.Background(), "input", WithConfigurable("temperature", 0.9)); err != nil {
+	if _, err := wrapped.Invoke(t.Context(), "input", WithConfigurable("temperature", 0.9)); err != nil {
 		t.Fatalf("invoke with override: %v", err)
 	}
 	if len(seen) != 1 || seen[0] != 0.9 {
@@ -38,7 +38,7 @@ func TestConfigurableFieldsOverridesAndDefaults(t *testing.T) {
 	}
 
 	// (c) Unset key falls back to the field default.
-	if _, err := wrapped.Invoke(context.Background(), "input"); err != nil {
+	if _, err := wrapped.Invoke(t.Context(), "input"); err != nil {
 		t.Fatalf("invoke with default: %v", err)
 	}
 	if len(seen) != 2 || seen[1] != 0.7 {
@@ -105,7 +105,7 @@ func TestConfigurableFieldsBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("configurable fields: %v", err)
 	}
 
-	got, err := wrapped.Batch(context.Background(), []string{"a", "b"}, WithRunID("root"))
+	got, err := wrapped.Batch(t.Context(), []string{"a", "b"}, WithRunID("root"))
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -122,12 +122,12 @@ func TestConfigurableFieldsBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("child configurable: %#v", child.Configurable)
 	}
 
-	stream, err := wrapped.Stream(context.Background(), "x")
+	stream, err := wrapped.Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != "x!" {
 		t.Fatalf("chunk=%q ok=%v err=%v", chunk, ok, err)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 )
 
 // CountTokensOption configures CountTokensApproximately.
@@ -203,7 +204,7 @@ func TrimMessages(msgs []Message, opts TrimMessagesOptions) ([]Message, error) {
 	if len(opts.EndOn) > 0 {
 		last := -1
 		for i, m := range out {
-			if roleIn(m.Role, opts.EndOn) {
+			if slices.Contains(opts.EndOn, m.Role) {
 				last = i
 			}
 		}
@@ -233,7 +234,7 @@ func TrimMessages(msgs []Message, opts TrimMessagesOptions) ([]Message, error) {
 	if len(opts.StartOn) > 0 {
 		first := -1
 		for i, m := range out {
-			if roleIn(m.Role, opts.StartOn) {
+			if slices.Contains(opts.StartOn, m.Role) {
 				first = i
 				break
 			}
@@ -246,13 +247,4 @@ func TrimMessages(msgs []Message, opts TrimMessagesOptions) ([]Message, error) {
 		out = append([]Message{system}, out...)
 	}
 	return out, nil
-}
-
-func roleIn(r Role, roles []Role) bool {
-	for _, want := range roles {
-		if r == want {
-			return true
-		}
-	}
-	return false
 }

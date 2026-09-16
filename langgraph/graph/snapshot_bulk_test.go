@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -34,7 +33,7 @@ func bulkUpdateGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
 func TestBulkUpdateStateMultipleSupersteps(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := bulkUpdateGraph(t, saver)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -82,7 +81,7 @@ func TestBulkUpdateStateMultipleSupersteps(t *testing.T) {
 func TestBulkUpdateStateMultipleUpdatesInSuperstep(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := bulkUpdateGraph(t, saver)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -123,7 +122,7 @@ func TestBulkUpdateStateMultipleUpdatesInSuperstep(t *testing.T) {
 func TestBulkUpdateStateEmptyInput(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := bulkUpdateGraph(t, saver)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -152,7 +151,7 @@ func TestBulkUpdateStateRequiresCheckpointer(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	if _, err := cg.BulkUpdateState(context.Background(), checkpoint.Config{ThreadID: "t1"},
+	if _, err := cg.BulkUpdateState(t.Context(), checkpoint.Config{ThreadID: "t1"},
 		[][]BulkUpdate{{{Values: map[string]any{"x": 1}, AsNode: "a"}}}); err == nil ||
 		!strings.Contains(err.Error(), "checkpointer") {
 		t.Fatalf("BulkUpdateState() error = %v, want a checkpointer error", err)

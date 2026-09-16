@@ -116,7 +116,7 @@ func TestCreateAgentToolLoop(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestCreateAgentDictToolSpecs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestCreateAgentNoTools(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestCreateAgentSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -261,7 +261,7 @@ func TestCreateAgentWrapModelCallOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -289,7 +289,7 @@ func TestCreateAgentModelCallLimitMiddlewareEndsBeforeModelCall(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestCreateAgentToolCallLimitMiddlewareEndsRun(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestCreateAgentToolStrategyStructuredOutput(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("what is the answer?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -415,9 +415,8 @@ func TestCreateAgentToolStrategyMultipleStructuredOutputsError(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
-	var multiErr *MultipleStructuredOutputsError
-	if !errors.As(err, &multiErr) {
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
+	if _, ok := errors.AsType[*MultipleStructuredOutputsError](err); !ok {
 		t.Fatalf("expected MultipleStructuredOutputsError, got %v", err)
 	}
 }
@@ -434,7 +433,7 @@ func TestCreateAgentProviderStrategyStructuredOutput(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("what is the answer?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -480,7 +479,7 @@ func TestCreateAgentRawDictResponseFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -519,7 +518,7 @@ func TestCreateAgentSchemaResponseFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -556,7 +555,7 @@ func TestCreateAgentAutoStrategyResolution(t *testing.T) {
 			t.Fatalf("create agent: %v", err)
 		}
 
-		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+		state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("what is the answer?")})
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -577,7 +576,7 @@ func TestCreateAgentAutoStrategyResolution(t *testing.T) {
 			t.Fatalf("create agent: %v", err)
 		}
 
-		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+		state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("what is the answer?")})
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -595,8 +594,7 @@ func TestCreateAgentAutoStrategyResolution(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error from CreateAgent for model with neither capability")
 		}
-		var unsupported *StructuredOutputUnsupportedError
-		if !errors.As(err, &unsupported) {
+		if _, ok := errors.AsType[*StructuredOutputUnsupportedError](err); !ok {
 			t.Fatalf("expected *StructuredOutputUnsupportedError from CreateAgent, got %T (%v)", err, err)
 		}
 	})
@@ -627,7 +625,7 @@ func TestCreateAgentAutoStrategyResolution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent with nil *AutoStrategy: %v", err)
 		}
-		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+		state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -679,7 +677,7 @@ func TestCreateAgentBeforeAfterAgentHooksRunOncePerRun(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -720,7 +718,7 @@ func TestCreateAgentAfterAgentRunsOnJumpToEnd(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -740,7 +738,7 @@ func TestCreateAgentAfterAgentErrorPropagates(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected AfterAgent error to propagate, got %v", err)
 	}
@@ -773,7 +771,7 @@ func TestCreateAgentInterruptThroughBeforeModelHook(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	first, err := agent.Graph.InvokeWithOptions(context.Background(),
+	first, err := agent.Graph.InvokeWithOptions(t.Context(),
 		map[string]any{"messages": []messages.Message{messages.Human("hi")}},
 		graphpkg.Options{ThreadID: "t1"},
 	)
@@ -787,7 +785,7 @@ func TestCreateAgentInterruptThroughBeforeModelHook(t *testing.T) {
 		t.Fatalf("expected model to not be invoked before resume, got %d invocations", len(model.invocations))
 	}
 
-	second, err := agent.Graph.InvokeWithOptions(context.Background(), nil,
+	second, err := agent.Graph.InvokeWithOptions(t.Context(), nil,
 		graphpkg.Options{ThreadID: "t1", Resume: true},
 	)
 	if err != nil {
@@ -834,7 +832,7 @@ func TestCreateAgent_InterruptBeforeNode(t *testing.T) {
 
 	// First invoke: model runs once and requests a tool call; the run pauses
 	// before the tools node dispatches.
-	first, err := agent.Graph.InvokeWithOptions(context.Background(),
+	first, err := agent.Graph.InvokeWithOptions(t.Context(),
 		map[string]any{"messages": []messages.Message{messages.Human("hi")}},
 		graphpkg.Options{ThreadID: "t1"},
 	)
@@ -859,7 +857,7 @@ func TestCreateAgent_InterruptBeforeNode(t *testing.T) {
 	}
 
 	// Resume: tools node runs, model runs again and produces the final answer.
-	second, err := agent.Graph.InvokeWithOptions(context.Background(), nil,
+	second, err := agent.Graph.InvokeWithOptions(t.Context(), nil,
 		graphpkg.Options{ThreadID: "t1"},
 	)
 	if err != nil {
@@ -929,7 +927,7 @@ func TestCreateAgent_StoreInjectedIntoTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("read")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("read")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	select {
@@ -972,10 +970,10 @@ func TestCreateAgent_CacheHitSkipsModel(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 	msgs := []messages.Message{messages.Human("hi")}
-	if _, err := agent.Invoke(context.Background(), msgs); err != nil {
+	if _, err := agent.Invoke(t.Context(), msgs); err != nil {
 		t.Fatalf("invoke 1: %v", err)
 	}
-	out2, err := agent.Invoke(context.Background(), msgs)
+	out2, err := agent.Invoke(t.Context(), msgs)
 	if err != nil {
 		t.Fatalf("invoke 2: %v", err)
 	}
@@ -1040,7 +1038,7 @@ func TestCreateAgent_CacheSkipsToolCallResponses(t *testing.T) {
 	}
 	msgs := []messages.Message{messages.Human("hi")}
 
-	out1, err := agent.Invoke(context.Background(), msgs)
+	out1, err := agent.Invoke(t.Context(), msgs)
 	if err != nil {
 		t.Fatalf("invoke 1: %v", err)
 	}
@@ -1059,7 +1057,7 @@ func TestCreateAgent_CacheSkipsToolCallResponses(t *testing.T) {
 		t.Fatalf("invoke 1 did not produce a tool-result message: %+v", out1)
 	}
 
-	out2, err := agent.Invoke(context.Background(), msgs)
+	out2, err := agent.Invoke(t.Context(), msgs)
 	if err != nil {
 		t.Fatalf("invoke 2: %v", err)
 	}
@@ -1133,7 +1131,7 @@ func TestStreamEvents_CacheDoesNotSuppressEvents(t *testing.T) {
 	msgs := []messages.Message{messages.Human("hi")}
 
 	runAndAssert := func(label string) {
-		stream, err := agent.StreamEvents(context.Background(), msgs)
+		stream, err := agent.StreamEvents(t.Context(), msgs)
 		if err != nil {
 			t.Fatalf("%s: StreamEvents: %v", label, err)
 		}
@@ -1172,9 +1170,9 @@ func TestCreateAgent_ModelString(t *testing.T) {
 	const provider = "test-openai-5x7"
 	const wantContent = "Hello from test server"
 
-	var requestCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		if r.URL.Path != "/responses" {
 			t.Errorf("path: got %q want /responses", r.URL.Path)
 		}
@@ -1196,12 +1194,12 @@ func TestCreateAgent_ModelString(t *testing.T) {
 	})
 
 	t.Run("nil positional model resolved from string", func(t *testing.T) {
-		atomic.StoreInt32(&requestCount, 0)
+		requestCount.Store(0)
 		agent, err := CreateAgent(nil, nil, WithAgentModel(provider+":gpt-test"))
 		if err != nil {
 			t.Fatalf("CreateAgent: unexpected error: %v", err)
 		}
-		out, err := agent.Invoke(context.Background(), []messages.Message{
+		out, err := agent.Invoke(t.Context(), []messages.Message{
 			messages.Human("hello"),
 		})
 		if err != nil {
@@ -1214,7 +1212,7 @@ func TestCreateAgent_ModelString(t *testing.T) {
 			t.Fatalf("AI message: got role=%q content=%q want role=%q content=%q",
 				out[1].Role, out[1].Content, messages.RoleAI, wantContent)
 		}
-		if got := atomic.LoadInt32(&requestCount); got != 1 {
+		if got := requestCount.Load(); got != 1 {
 			t.Fatalf("expected exactly 1 HTTP request to test server, got %d", got)
 		}
 	})
@@ -1222,13 +1220,13 @@ func TestCreateAgent_ModelString(t *testing.T) {
 	t.Run("ModelString overrides positional model", func(t *testing.T) {
 		// The positional fake would error if invoked. The resolved
 		// (string-derived) model wins; the fake is never consulted.
-		atomic.StoreInt32(&requestCount, 0)
+		requestCount.Store(0)
 		fake := &erroringModel{}
 		agent, err := CreateAgent(fake, nil, WithAgentModel(provider+":gpt-test"))
 		if err != nil {
 			t.Fatalf("CreateAgent: unexpected error: %v", err)
 		}
-		out, err := agent.Invoke(context.Background(), []messages.Message{
+		out, err := agent.Invoke(t.Context(), []messages.Message{
 			messages.Human("hello"),
 		})
 		if err != nil {
@@ -1237,7 +1235,7 @@ func TestCreateAgent_ModelString(t *testing.T) {
 		if len(out) != 2 || out[1].Content != wantContent {
 			t.Fatalf("unexpected output: %#v", out)
 		}
-		if got := atomic.LoadInt32(&requestCount); got != 1 {
+		if got := requestCount.Load(); got != 1 {
 			t.Fatalf("expected exactly 1 HTTP request to test server (positional model should not be used), got %d", got)
 		}
 		if fake.invoked {
@@ -1335,7 +1333,7 @@ func TestCreateAgentRecursionLimitStopsToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected recursion-limit error for a looping agent, got nil")
 	}
 }
@@ -1351,7 +1349,7 @@ func TestCreateAgentInterruptAfterSurfacesViaInvoke(t *testing.T) {
 	}
 	// Agent.Invoke treats a paused run as a terminal failure, pointing the
 	// caller at Agent.Graph for resumption.
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected an interrupted-run error from Invoke, got nil")
 	}
@@ -1383,7 +1381,7 @@ func TestCreateAgentDictToolSpecValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent with schema key variants: %v", err)
 		}
-		out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+		out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -1409,7 +1407,7 @@ func TestCreateAgentDictToolSpecHasNoExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -1490,7 +1488,7 @@ func TestBeforeModelHookErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected before_model error to propagate, got nil")
 	}
 }
@@ -1505,7 +1503,7 @@ func TestBeforeModelCommandHookErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected command hook error to propagate, got nil")
 	}
 }
@@ -1522,7 +1520,7 @@ func TestBeforeModelCommandHookNilCommandContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -1541,7 +1539,7 @@ func TestBeforeModelCommandHookCommandEndsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -1563,7 +1561,7 @@ func TestBeforeModelJumpToEndShortCircuits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -1588,7 +1586,7 @@ func TestBeforeModelMessagesReshapeIsLocalOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -1613,7 +1611,7 @@ func TestAfterModelHookErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected after_model error to propagate, got nil")
 	}
 }
@@ -1632,8 +1630,8 @@ func TestCreateAgentCacheHitWithDebugAndSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	for i := 0; i < 2; i++ {
-		out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	for i := range 2 {
+		out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 		if err != nil {
 			t.Fatalf("invoke %d: %v", i, err)
 		}
@@ -1719,7 +1717,7 @@ func TestAgentHookNodesWithDebug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -1741,7 +1739,7 @@ func TestBeforeAgentHookErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected before_agent error to propagate, got nil")
 	}
 }
@@ -1757,7 +1755,7 @@ func TestModelNodeHandlesEmptyAndNonAIResponses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+		state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -1777,7 +1775,7 @@ func TestModelNodeHandlesEmptyAndNonAIResponses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+		state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
 		}
@@ -1794,7 +1792,7 @@ func TestProviderStrategyInvalidJSONPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected a parse error for non-JSON model output, got nil")
 	}
 }
@@ -1822,8 +1820,7 @@ func TestResponseFormatPointerVariants(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected StructuredOutputUnsupportedError for a no-capability model")
 	}
-	var unsupported *StructuredOutputUnsupportedError
-	if !errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[*StructuredOutputUnsupportedError](err); !ok {
 		t.Fatalf("expected *StructuredOutputUnsupportedError, got %T: %v", err, err)
 	}
 }
@@ -1839,7 +1836,7 @@ func TestInvokeModelRejectsNonChatModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected error for non-ChatModel request.Model")
 	}
@@ -1856,7 +1853,7 @@ func TestInvokeModelRejectsNonTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected error for non-Tool request.Tools entry")
 	}
@@ -1868,7 +1865,7 @@ func TestInvokeModelBindToolsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected BindTools error to propagate")
 	}
@@ -1880,7 +1877,7 @@ func TestNativeStructuredCallerErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected InvokeStructured error to propagate")
 	}
 	if !model.nativeCalled {
@@ -1906,7 +1903,7 @@ func TestStateSchemaNilReducerDefaultsToLastValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -1934,7 +1931,7 @@ func TestSystemPromptTemplateRenderFailureFallsBackToLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if len(model.invocations) != 1 || len(model.invocations[0]) != 2 {

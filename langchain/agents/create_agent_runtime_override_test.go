@@ -230,7 +230,7 @@ func TestMiddlewareResponseFormatOverrideSwitchesToolToProvider(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("what is the answer?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestMiddlewareModelSettingsOverrideFlowsToBind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestMiddlewareToolChoiceOverrideReachesFakeChatModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if got := model.BoundToolChoice(); got != language.ToolChoiceNone {
@@ -385,7 +385,7 @@ func TestAutoStrategyDynamicModelRechecksEffectiveStrategyPerCall(t *testing.T) 
 	msgs := []messages.Message{messages.Human("what is the answer?")}
 
 	// Call 1: tool-calling model -> ToolStrategy effective.
-	state1, err := agent.InvokeWithState(context.Background(), msgs)
+	state1, err := agent.InvokeWithState(t.Context(), msgs)
 	if err != nil {
 		t.Fatalf("invoke 1: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestAutoStrategyDynamicModelRechecksEffectiveStrategyPerCall(t *testing.T) 
 	}
 
 	// Call 2: structured-output model -> ProviderStrategy effective (re-check).
-	state2, err := agent.InvokeWithState(context.Background(), msgs)
+	state2, err := agent.InvokeWithState(t.Context(), msgs)
 	if err != nil {
 		t.Fatalf("invoke 2: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestStreamingProviderStrategyBindsResponseFormat(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("weather in Tokyo?")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -529,11 +529,11 @@ func TestCacheKeyDistinguishesRuntimeEffectiveStrategy(t *testing.T) {
 	}
 	msgs := []messages.Message{messages.Human("same question")}
 
-	if _, err := agent.Invoke(context.Background(), msgs); err != nil {
+	if _, err := agent.Invoke(t.Context(), msgs); err != nil {
 		t.Fatalf("invoke 1: %v", err)
 	}
 
-	state2, err := agent.InvokeWithState(context.Background(), msgs)
+	state2, err := agent.InvokeWithState(t.Context(), msgs)
 	if err != nil {
 		t.Fatalf("invoke 2: a false cache hit served the tool-format response to the provider-format call: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestMiddlewareToolStrategyOverrideRequiresUpfrontDeclaredSpecs(t *testing.T
 		t.Fatalf("create agent: %v", err)
 	}
 
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected an error for a ToolStrategy override introducing an undeclared structured tool")
 	}
@@ -615,7 +615,7 @@ func TestMiddlewareToolStrategyOverrideNarrowsBoundStructuredTools(t *testing.T)
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("weather in Tokyo?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

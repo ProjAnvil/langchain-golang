@@ -52,7 +52,7 @@ func TestModelRetryMiddlewareRetryOnPredicateStopsRetries(t *testing.T) {
 		t.Fatalf("new middleware: %v", err)
 	}
 	calls := 0
-	_, err = middleware.WrapModelCall(context.Background(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		calls++
 		return ModelResponse{}, permanent
 	})
@@ -72,7 +72,7 @@ func TestModelRetryMiddlewareFailureFormatter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	response, err := middleware.WrapModelCall(context.Background(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	response, err := middleware.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, errors.New("down")
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func TestModelRetryMiddlewareDefaultFailureMessagePlural(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	response, err := middleware.WrapModelCall(context.Background(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	response, err := middleware.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, errors.New("down")
 	})
 	if err != nil {

@@ -28,7 +28,7 @@ func (failSerde) LoadsTyped(string, []byte) (any, error) { return nil, errors.Ne
 // other tests sharing the default database. Skips in -short mode via newPool.
 func newIsolatedPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	admin := newPool(t)
 	name := fmt.Sprintf("pgiso_%d", time.Now().UnixNano())
 	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
@@ -55,7 +55,7 @@ func TestDeadPoolErrors(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping embedded-postgres test in -short mode")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	pool, err := pgxpool.New(ctx, "postgres://postgres:postgres@localhost:1/postgres?sslmode=disable")
 	if err != nil {
 		t.Fatalf("pgxpool.New (lazy) = %v, want nil error", err)
@@ -98,7 +98,7 @@ func TestDeadPoolErrors(t *testing.T) {
 // needs a matching row to fire on) — the same technique as
 // TestDeleteThreadDroppedTableError.
 func TestManagementDroppedTablesError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	setup := func(t *testing.T) (*postgres.Saver, *pgxpool.Pool) {
 		t.Helper()
@@ -211,7 +211,7 @@ func TestManagementDroppedTablesError(t *testing.T) {
 // IF NOT EXISTS is a no-op, so the SELECT is the first failing statement.
 func TestSetupMigrationVersionReadError(t *testing.T) {
 	pool := newIsolatedPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := pool.Exec(ctx, `CREATE TABLE checkpoint_migrations (x INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("create broken migrations table: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestSetupMigrationVersionReadError(t *testing.T) {
 // migration error must name the failing version.
 func TestSetupMigrationExecError(t *testing.T) {
 	pool := newIsolatedPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := pool.Exec(ctx, postgres.Migrations[0]); err != nil {
 		t.Fatalf("create migrations table: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestSetupMigrationExecError(t *testing.T) {
 // here) but breaks the version INSERT — Setup must report the record failure.
 func TestSetupMigrationRecordError(t *testing.T) {
 	pool := newIsolatedPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := pool.Exec(ctx,
 		`CREATE TABLE checkpoint_migrations (v INTEGER PRIMARY KEY, extra TEXT NOT NULL)`); err != nil {
 		t.Fatalf("create rigged migrations table: %v", err)
@@ -263,7 +263,7 @@ func TestSetupMigrationRecordError(t *testing.T) {
 // on the most recent row.
 func TestPutWritesResolvesLatestCheckpoint(t *testing.T) {
 	s := newEmptySaver(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cp := checkpoint.Checkpoint{
 		V:  1,
@@ -292,7 +292,7 @@ func TestPutWritesResolvesLatestCheckpoint(t *testing.T) {
 func TestPutWritesEncodeError(t *testing.T) {
 	s := newEmptySaver(t)
 	pool := newPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cp := checkpoint.Checkpoint{
 		V:  1,
@@ -314,7 +314,7 @@ func TestPutWritesEncodeError(t *testing.T) {
 // an error, never silently dropped.
 func TestListUnmarshalableFilter(t *testing.T) {
 	s := newEmptySaver(t)
-	_, err := s.List(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{
+	_, err := s.List(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{
 		Filter: map[string]any{"bad": func() {}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "encode list filter") {
@@ -328,7 +328,7 @@ func TestListUnmarshalableFilter(t *testing.T) {
 func TestEmptyBlobTypeSkipped(t *testing.T) {
 	s := newEmptySaver(t)
 	pool := newPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cp := checkpoint.Checkpoint{
 		V:               1,
@@ -358,7 +358,7 @@ func TestEmptyBlobTypeSkipped(t *testing.T) {
 // database cannot be decoded: unknown serde type tags on blobs/writes and
 // JSONB values that are not objects in the checkpoints/metadata columns.
 func TestCorruptedStorageErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	putCheckpoint := func(t *testing.T, threadID string) checkpoint.Config {
 		t.Helper()
@@ -452,7 +452,7 @@ func TestCorruptedStorageErrors(t *testing.T) {
 // the blobs table is gone (the checkpoints row itself reads fine).
 func TestDroppedBlobsTableError(t *testing.T) {
 	pool := newIsolatedPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := postgres.New(pool, serde.NewJSONSerializer())
 	if err := s.Setup(ctx); err != nil {
 		t.Fatalf("Setup: %v", err)
@@ -482,7 +482,7 @@ func TestDroppedBlobsTableError(t *testing.T) {
 // intact checkpoints table first — fails on the batch exec.
 func TestDroppedWritesTableError(t *testing.T) {
 	pool := newIsolatedPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := postgres.New(pool, serde.NewJSONSerializer())
 	if err := s.Setup(ctx); err != nil {
 		t.Fatalf("Setup: %v", err)
@@ -513,7 +513,7 @@ func TestDroppedWritesTableError(t *testing.T) {
 // order inside one transaction; a missing table must abort with an error.
 func TestDeleteThreadDroppedTableError(t *testing.T) {
 	pool := newIsolatedPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	s := postgres.New(pool, serde.NewJSONSerializer())
 	if err := s.Setup(ctx); err != nil {
 		t.Fatalf("Setup: %v", err)

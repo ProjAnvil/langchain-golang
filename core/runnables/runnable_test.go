@@ -18,7 +18,7 @@ func TestFuncBatchPreservesOrder(t *testing.T) {
 		schema.Integer("output"),
 	)
 
-	got, err := r.Batch(context.Background(), []int{1, 2, 3})
+	got, err := r.Batch(t.Context(), []int{1, 2, 3})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -40,13 +40,13 @@ func TestFuncStream(t *testing.T) {
 		schema.String("output"),
 	)
 
-	stream, err := r.Stream(context.Background(), "hello")
+	stream, err := r.Stream(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
 
-	got, ok, err := stream.Next(context.Background())
+	got, ok, err := stream.Next(t.Context())
 	if err != nil {
 		t.Fatalf("next: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestFuncStream(t *testing.T) {
 		t.Fatalf("first chunk: got %q ok=%v", got, ok)
 	}
 
-	_, ok, err = stream.Next(context.Background())
+	_, ok, err = stream.Next(t.Context())
 	if err != nil {
 		t.Fatalf("next end: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestFuncStreamPropagatesInvokeError(t *testing.T) {
 		return "", wantErr
 	}, schema.String(""), schema.String(""))
 
-	if _, err := r.Stream(context.Background(), "x"); err != wantErr {
+	if _, err := r.Stream(t.Context(), "x"); err != wantErr {
 		t.Fatalf("stream err: got %v want %v", err, wantErr)
 	}
 }
@@ -116,7 +116,7 @@ func TestFuncBatchJoinsErrors(t *testing.T) {
 		return input, nil
 	}, schema.Integer(""), schema.Integer(""))
 
-	got, err := r.Batch(context.Background(), []int{1, -1})
+	got, err := r.Batch(t.Context(), []int{1, -1})
 	if err == nil {
 		t.Fatal("expected joined error")
 	}

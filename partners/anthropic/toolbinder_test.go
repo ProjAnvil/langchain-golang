@@ -41,7 +41,7 @@ func bindWithToolChoice(t *testing.T, choice language.ToolChoice) map[string]any
 	if err != nil {
 		t.Fatalf("BindToolsWithOptions: %v", err)
 	}
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	return request

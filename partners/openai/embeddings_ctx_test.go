@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -168,7 +167,7 @@ func TestEmbeddingsSplitLongTextIntoTokenChunks(t *testing.T) {
 	server, fake := newCtxTestServer(t, chunkVectors)
 
 	model := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	vectors, err := model.EmbedDocuments(context.Background(), []string{text})
+	vectors, err := model.EmbedDocuments(t.Context(), []string{text})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -215,7 +214,7 @@ func TestEmbeddingsBoundaryExactlyCtxLengthNotSplit(t *testing.T) {
 	server, fake := newCtxTestServer(t, [][]float64{{3, 4}})
 
 	model := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	vectors, err := model.EmbedDocuments(context.Background(), []string{text})
+	vectors, err := model.EmbedDocuments(t.Context(), []string{text})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -243,7 +242,7 @@ func TestEmbeddingsCtxLengthOption(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		WithEmbeddingCtxLength(100),
 	)
-	vectors, err := model.EmbedDocuments(context.Background(), []string{text})
+	vectors, err := model.EmbedDocuments(t.Context(), []string{text})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -267,7 +266,7 @@ func TestEmbeddingsCtxLengthOption(t *testing.T) {
 		modelconfig.WithBaseURL(server2.URL),
 		WithEmbeddingCtxLength(0),
 	)
-	vectors2, err := model2.EmbedDocuments(context.Background(), []string{text})
+	vectors2, err := model2.EmbedDocuments(t.Context(), []string{text})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -301,7 +300,7 @@ func TestEmbeddingsMixedBatchUsesTokenArrays(t *testing.T) {
 		WithEmbeddingCtxLength(100),
 		WithEmbeddingChunkSize(3),
 	)
-	vectors, err := model.EmbedDocuments(context.Background(), []string{"alpha", long, "omega"})
+	vectors, err := model.EmbedDocuments(t.Context(), []string{"alpha", long, "omega"})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -353,7 +352,7 @@ func TestEmbeddingsQuerySplitsLongText(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		WithEmbeddingCtxLength(200),
 	)
-	vector, err := model.EmbedQuery(context.Background(), text)
+	vector, err := model.EmbedQuery(t.Context(), text)
 	if err != nil {
 		t.Fatalf("EmbedQuery: %v", err)
 	}

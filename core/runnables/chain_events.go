@@ -28,7 +28,7 @@ func NewRunID() string {
 	var b [16]byte
 	if _, err := crand.Read(b[:]); err != nil {
 		now := time.Now().UnixNano()
-		for i := 0; i < 16; i++ {
+		for i := range 16 {
 			b[i] = byte(now >> (uint(i%8) * 8))
 		}
 	}

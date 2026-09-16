@@ -13,7 +13,7 @@ import (
 
 func TestCheckpointSinkSyncPutCheckpoint(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
-	sink := newCheckpointSink(saver, DurabilitySync, context.Background(), nil)
+	sink := newCheckpointSink(saver, DurabilitySync, t.Context(), nil)
 
 	cp := checkpoint.Checkpoint{
 		V:             1,
@@ -23,7 +23,7 @@ func TestCheckpointSinkSyncPutCheckpoint(t *testing.T) {
 	}
 	cfg := checkpoint.Config{ThreadID: "t1"}
 
-	resultCfg, err := sink.putCheckpoint(context.Background(), cfg, cp, checkpoint.Metadata{Source: "input", Step: -1}, nil)
+	resultCfg, err := sink.putCheckpoint(t.Context(), cfg, cp, checkpoint.Metadata{Source: "input", Step: -1}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestCheckpointSinkSyncPutCheckpoint(t *testing.T) {
 		t.Fatalf("expected checkpoint ID cp-1, got %s", resultCfg.CheckpointID)
 	}
 
-	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	tup, err := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if err != nil || tup == nil {
 		t.Fatal("checkpoint not found in saver")
 	}
@@ -43,19 +43,19 @@ func TestCheckpointSinkSyncPutCheckpoint(t *testing.T) {
 
 func TestCheckpointSinkSyncPutWrites(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
-	saver.Put(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
+	saver.Put(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
 		V: 1, ID: "cp-1", TS: time.Now(),
 	}, checkpoint.Metadata{Source: "input", Step: -1}, nil)
 
-	sink := newCheckpointSink(saver, DurabilitySync, context.Background(), nil)
+	sink := newCheckpointSink(saver, DurabilitySync, t.Context(), nil)
 
 	writes := []checkpoint.Write{{Channel: "msg", Value: "hello"}}
-	err := sink.putWrites(context.Background(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"}, writes, "task-1")
+	err := sink.putWrites(t.Context(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"}, writes, "task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tup, _ := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	tup, _ := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if len(tup.PendingWrites) == 0 {
 		t.Fatal("expected pending writes in saver")
 	}
@@ -66,22 +66,22 @@ func TestCheckpointSinkSyncPutWrites(t *testing.T) {
 func TestCheckpointSinkAsyncOrdering(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	// Seed a checkpoint
-	saver.Put(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
+	saver.Put(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
 		V: 1, ID: "cp-1", TS: time.Now(),
 	}, checkpoint.Metadata{Source: "input", Step: -1}, nil)
 
-	sink := newCheckpointSink(saver, DurabilityAsync, context.Background(), nil)
+	sink := newCheckpointSink(saver, DurabilityAsync, t.Context(), nil)
 
 	// Submit 3 PutWrites + 1 PutCheckpoint
-	for i := 0; i < 3; i++ {
-		err := sink.putWrites(context.Background(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
+	for i := range 3 {
+		err := sink.putWrites(t.Context(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
 			[]checkpoint.Write{{Channel: "ch", Value: i}}, "task-write")
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	_, err := sink.putCheckpoint(context.Background(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
+	_, err := sink.putCheckpoint(t.Context(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
 		checkpoint.Checkpoint{V: 1, ID: "cp-2", TS: time.Now(), ChannelValues: map[string]any{"ch": 3}},
 		checkpoint.Metadata{Source: "loop", Step: 0}, nil)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestCheckpointSinkAsyncOrdering(t *testing.T) {
 	}
 
 	// Verify checkpoint cp-2 exists
-	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	tup, err := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if err != nil || tup == nil {
 		t.Fatal("expected checkpoint after flush")
 	}
@@ -101,7 +101,7 @@ func TestCheckpointSinkAsyncOrdering(t *testing.T) {
 
 func TestCheckpointSinkAsyncPanicRecovery(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
-	saver.Put(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
+	saver.Put(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
 		V: 1, ID: "cp-1", TS: time.Now(),
 	}, checkpoint.Metadata{Source: "input", Step: -1}, nil)
 
@@ -109,15 +109,15 @@ func TestCheckpointSinkAsyncPanicRecovery(t *testing.T) {
 	callCount := 0
 	panicky := &panickySaver{Saver: saver, panicOnPutCount: 1, callCount: &callCount}
 
-	sink := newCheckpointSink(panicky, DurabilityAsync, context.Background(), nil)
+	sink := newCheckpointSink(panicky, DurabilityAsync, t.Context(), nil)
 
 	// Submit a Put that will panic
-	sink.putCheckpoint(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
+	sink.putCheckpoint(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
 		V: 1, ID: "cp-99", TS: time.Now(),
 	}, checkpoint.Metadata{Source: "loop", Step: 0}, nil)
 
 	// Submit a PutWrites that should still be processed (per-request recover)
-	err := sink.putWrites(context.Background(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
+	err := sink.putWrites(t.Context(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
 		[]checkpoint.Write{{Channel: "ch", Value: "after-panic"}}, "task-survive")
 	if err != nil {
 		t.Fatal(err)
@@ -146,13 +146,13 @@ func (p *panickySaver) Put(ctx context.Context, cfg checkpoint.Config, cp checkp
 func TestCheckpointSinkAsyncNoLeak(t *testing.T) {
 	before := runtime.NumGoroutine()
 	saver := checkpoint.NewMemorySaver()
-	saver.Put(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
+	saver.Put(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
 		V: 1, ID: "cp-1", TS: time.Now(),
 	}, checkpoint.Metadata{Source: "input", Step: -1}, nil)
 
-	for i := 0; i < 5; i++ {
-		sink := newCheckpointSink(saver, DurabilityAsync, context.Background(), nil)
-		sink.putWrites(context.Background(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
+	for i := range 5 {
+		sink := newCheckpointSink(saver, DurabilityAsync, t.Context(), nil)
+		sink.putWrites(t.Context(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
 			[]checkpoint.Write{{Channel: "ch", Value: i}}, "task")
 		sink.flush()
 	}
@@ -201,7 +201,7 @@ func TestCloneAnyShallow(t *testing.T) {
 
 func TestSinkRequestExecuteUnknownKind(t *testing.T) {
 	req := sinkRequest{kind: sinkRequestKind(99)}
-	if err := req.execute(checkpoint.NewMemorySaver(), context.Background()); err == nil {
+	if err := req.execute(checkpoint.NewMemorySaver(), t.Context()); err == nil {
 		t.Fatal("execute() error = nil, want an unknown-kind error")
 	}
 }
@@ -209,7 +209,7 @@ func TestSinkRequestExecuteUnknownKind(t *testing.T) {
 func TestCheckpointSinkUnknownDurabilityMode(t *testing.T) {
 	// An unrecognized durability mode is a no-op: no saver calls, no error.
 	sink := &checkpointSink{mode: Durability("weird")}
-	cfg, err := sink.putCheckpoint(context.Background(), checkpoint.Config{ThreadID: "t"},
+	cfg, err := sink.putCheckpoint(t.Context(), checkpoint.Config{ThreadID: "t"},
 		checkpoint.Checkpoint{V: 1, ID: "cp", TS: time.Now()}, checkpoint.Metadata{}, nil)
 	if err != nil {
 		t.Fatalf("putCheckpoint() error = %v", err)
@@ -217,7 +217,7 @@ func TestCheckpointSinkUnknownDurabilityMode(t *testing.T) {
 	if cfg.CheckpointID != "cp" {
 		t.Fatalf("putCheckpoint() cfg = %+v, want the new checkpoint ID", cfg)
 	}
-	if err := sink.putWrites(context.Background(), checkpoint.Config{ThreadID: "t"},
+	if err := sink.putWrites(t.Context(), checkpoint.Config{ThreadID: "t"},
 		[]checkpoint.Write{{Channel: "ch", Value: 1}}, "task"); err != nil {
 		t.Fatalf("putWrites() error = %v", err)
 	}
@@ -227,23 +227,23 @@ func TestCheckpointSinkAsyncRequestsAfterFlush(t *testing.T) {
 	// After flush the worker has exited: further requests must return
 	// immediately via the workerDone guard instead of blocking on writeCh.
 	saver := checkpoint.NewMemorySaver()
-	sink := newCheckpointSink(saver, DurabilityAsync, context.Background(), nil)
+	sink := newCheckpointSink(saver, DurabilityAsync, t.Context(), nil)
 	if err := sink.flush(); err != nil {
 		t.Fatalf("flush() error = %v", err)
 	}
-	if _, err := sink.putCheckpoint(context.Background(), checkpoint.Config{ThreadID: "t"},
+	if _, err := sink.putCheckpoint(t.Context(), checkpoint.Config{ThreadID: "t"},
 		checkpoint.Checkpoint{V: 1, ID: "cp", TS: time.Now()}, checkpoint.Metadata{}, nil); err != nil {
 		t.Fatalf("putCheckpoint() after flush error = %v", err)
 	}
-	if err := sink.putWrites(context.Background(), checkpoint.Config{ThreadID: "t"},
+	if err := sink.putWrites(t.Context(), checkpoint.Config{ThreadID: "t"},
 		[]checkpoint.Write{{Channel: "ch", Value: 1}}, "task"); err != nil {
 		t.Fatalf("putWrites() after flush error = %v", err)
 	}
 }
 
 func TestCheckpointSinkAsyncWorkerErrorSurfacesAtFlush(t *testing.T) {
-	sink := newCheckpointSink(&putErrSaver{Saver: checkpoint.NewMemorySaver()}, DurabilityAsync, context.Background(), nil)
-	if _, err := sink.putCheckpoint(context.Background(), checkpoint.Config{ThreadID: "t"},
+	sink := newCheckpointSink(&putErrSaver{Saver: checkpoint.NewMemorySaver()}, DurabilityAsync, t.Context(), nil)
+	if _, err := sink.putCheckpoint(t.Context(), checkpoint.Config{ThreadID: "t"},
 		checkpoint.Checkpoint{V: 1, ID: "cp", TS: time.Now()}, checkpoint.Metadata{}, nil); err != nil {
 		t.Fatalf("putCheckpoint() error = %v, want nil (async defers errors to flush)", err)
 	}
@@ -267,7 +267,7 @@ func newExitSinkWithState(t *testing.T, saver checkpoint.Saver) *checkpointSink 
 		t.Fatalf("applyWrites() error = %v", err)
 	}
 	sink := &checkpointSink{saver: saver, mode: DurabilityExit}
-	sink.setFlushContext(context.Background(), Options{ThreadID: "t"}, rs,
+	sink.setFlushContext(t.Context(), Options{ThreadID: "t"}, rs,
 		checkpoint.Config{ThreadID: "t", CheckpointID: "final"}, checkpoint.Metadata{Source: "loop", Step: 0})
 	sink.accumulateExitWrites([]checkpoint.Write{{Channel: "x", Value: 1}}, "task-1")
 	return sink
@@ -288,7 +288,7 @@ func TestFlushExitSuccess(t *testing.T) {
 	if err := sink.flushExit(); err != nil {
 		t.Fatalf("flushExit() error = %v", err)
 	}
-	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t"})
+	tup, err := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t"})
 	if err != nil || tup == nil {
 		t.Fatalf("final checkpoint not persisted: tup = %v, err = %v", tup, err)
 	}

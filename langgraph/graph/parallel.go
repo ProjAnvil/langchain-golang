@@ -12,12 +12,8 @@ import (
 // max_concurrency is not configured.
 func defaultSuperstepParallelism() int {
 	workers := runtime.GOMAXPROCS(0) + 4
-	if workers > 32 {
-		workers = 32
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers = min(workers, 32)
+	workers = max(workers, 1)
 	return workers
 }
 
@@ -28,12 +24,8 @@ func superstepBound(maxConcurrency, count int) int {
 	if limit <= 0 {
 		limit = defaultSuperstepParallelism()
 	}
-	if limit > count {
-		limit = count
-	}
-	if limit < 1 {
-		limit = 1
-	}
+	limit = min(limit, count)
+	limit = max(limit, 1)
 	return limit
 }
 
@@ -56,7 +48,7 @@ func runSuperstepBounded(active []task, execute []bool, limit int, fn func(i int
 	indexes := make(chan int)
 	var wg sync.WaitGroup
 	wg.Add(limit)
-	for w := 0; w < limit; w++ {
+	for range limit {
 		go func() {
 			defer wg.Done()
 			for i := range indexes {

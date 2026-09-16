@@ -3,7 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,7 +28,7 @@ func drainStream(t *testing.T, s runnables.Stream[StreamEvent]) []StreamEvent {
 	t.Helper()
 	var out []StreamEvent
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		ev, ok, err := s.Next(ctx)
 		cancel()
 		if err != nil {
@@ -163,7 +163,7 @@ func TestStreamEventsModelDeltaSequenceAndAssembledMessage(t *testing.T) {
 	model := &streamSequenceModel{
 		responses: []messages.Message{messages.AI("Hi there")},
 		streamChunks: [][]messages.Message{
-			{messages.AI("Hi"), messages.AI(" there"), messages.AI("") /* final empty chunk */ },
+			{messages.AI("Hi"), messages.AI(" there"), messages.AI("") /* final empty chunk */},
 		},
 	}
 	agent, err := CreateAgent(model, nil)
@@ -171,7 +171,7 @@ func TestStreamEventsModelDeltaSequenceAndAssembledMessage(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestStreamEventsToolLoopEventOrderAndEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agentStream.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agentStream.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestStreamEventsToolLoopEventOrderAndEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create invoke agent: %v", err)
 	}
-	invokeState, err := agentInvoke.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	invokeState, err := agentInvoke.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke with state: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestStreamEventsNodeLifecycleBeforeAfterAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -472,20 +472,20 @@ func TestStreamEventsConcurrentFanOutBalanced(t *testing.T) {
 	g := graph.NewStateGraph()
 	g.AddReducer("out", appendStringReducer)
 
-	var concurrentNow int32
-	var maxConcurrent int32
+	var concurrentNow atomic.Int32
+	var maxConcurrent atomic.Int32
 	g.AddNode("fanout", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return nil, nil
 	})
 	g.AddNode("worker", func(_ runtime.Runtime, state map[string]any) (any, error) {
-		n := atomic.AddInt32(&concurrentNow, 1)
+		n := concurrentNow.Add(1)
 		for {
-			old := atomic.LoadInt32(&maxConcurrent)
-			if n <= old || atomic.CompareAndSwapInt32(&maxConcurrent, old, n) {
+			old := maxConcurrent.Load()
+			if n <= old || maxConcurrent.CompareAndSwap(old, n) {
 				break
 			}
 		}
-		defer atomic.AddInt32(&concurrentNow, -1)
+		defer concurrentNow.Add(-1)
 		// Hold long enough to guarantee overlap under the scheduler.
 		time.Sleep(10 * time.Millisecond)
 		return map[string]any{"out": []string{state["subject"].(string)}}, nil
@@ -511,7 +511,7 @@ func TestStreamEventsConcurrentFanOutBalanced(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = cg.InvokeStream(context.Background(), map[string]any{"subjects": []string{"a", "b", "c"}}, graph.Options{}, sink)
+		_, _ = cg.InvokeStream(t.Context(), map[string]any{"subjects": []string{"a", "b", "c"}}, graph.Options{}, sink)
 	}()
 
 	var collected []graph.RawEvent
@@ -536,8 +536,8 @@ collect:
 		}
 	}
 
-	if maxConcurrent < 2 {
-		t.Fatalf("expected concurrent worker execution (maxConcurrent>=2), got %d", maxConcurrent)
+	if got := maxConcurrent.Load(); got < 2 {
+		t.Fatalf("expected concurrent worker execution (maxConcurrent>=2), got %d", got)
 	}
 	// Balance check: per-node start count == end count.
 	starts := map[string]int{}
@@ -593,7 +593,7 @@ func TestStreamEventsInterruptEndsCleanly(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestStreamEventsCloseStopsProducer(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestStreamEventsCloseStopsProducer(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 		defer cancel()
 		for {
 			_, ok, err := stream.Next(ctx)
@@ -686,8 +686,12 @@ func (m *blockingStreamModel) Stream(ctx context.Context, input []messages.Messa
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (m *blockingStreamModel) InputSchema() schema.Schema  { return schema.Object(map[string]schema.Schema{}) }
-func (m *blockingStreamModel) OutputSchema() schema.Schema { return schema.Object(map[string]schema.Schema{}) }
+func (m *blockingStreamModel) InputSchema() schema.Schema {
+	return schema.Object(map[string]schema.Schema{})
+}
+func (m *blockingStreamModel) OutputSchema() schema.Schema {
+	return schema.Object(map[string]schema.Schema{})
+}
 func (m *blockingStreamModel) BindTools(boundTools []coretools.Tool) (language.ChatModel, error) {
 	return m, nil
 }
@@ -730,7 +734,7 @@ func appendStringReducer(existing any, next any) (any, error) {
 	if n, ok := next.([]string); ok {
 		out = append(out, n...)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out, nil
 }
 
@@ -773,7 +777,7 @@ func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
@@ -783,7 +787,7 @@ func TestStreamEvents_MiddlewareTransformsDelta(t *testing.T) {
 	var deltaText string
 	var modelEndText string
 	for {
-		ev, ok, err := stream.Next(context.Background())
+		ev, ok, err := stream.Next(t.Context())
 		if err != nil || !ok {
 			break
 		}
@@ -871,7 +875,7 @@ func TestStreamEvents_MiddlewareTransformOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
@@ -879,7 +883,7 @@ func TestStreamEvents_MiddlewareTransformOrder(t *testing.T) {
 
 	var deltaText string
 	for {
-		ev, ok, err := stream.Next(context.Background())
+		ev, ok, err := stream.Next(t.Context())
 		if err != nil || !ok {
 			break
 		}
@@ -913,7 +917,7 @@ func TestStreamEvents_PIIStreamTransformer_BoundaryStraddle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
@@ -924,7 +928,7 @@ func TestStreamEvents_PIIStreamTransformer_BoundaryStraddle(t *testing.T) {
 	var rawFinishTexts []string
 	const rawPat = "TOKEN-ABCDEFGHIJKLMNOPQRST"
 	for {
-		ev, ok, err := stream.Next(context.Background())
+		ev, ok, err := stream.Next(t.Context())
 		if err != nil || !ok {
 			break
 		}
@@ -1003,10 +1007,10 @@ func (m *failingStreamModel) Stream(ctx context.Context, input []messages.Messag
 
 func TestStreamEventsRequiresGraph(t *testing.T) {
 	var nilAgent *Agent
-	if _, err := nilAgent.StreamEvents(context.Background(), nil); err == nil {
+	if _, err := nilAgent.StreamEvents(t.Context(), nil); err == nil {
 		t.Fatal("expected error for nil agent")
 	}
-	if _, err := (&Agent{}).StreamEvents(context.Background(), nil); err == nil {
+	if _, err := (&Agent{}).StreamEvents(t.Context(), nil); err == nil {
 		t.Fatal("expected error for agent without a compiled graph")
 	}
 }
@@ -1020,7 +1024,7 @@ func TestStreamEventsDebugLogging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -1042,7 +1046,7 @@ func TestStreamEventsModelErrorTerminatesWithErr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -1059,7 +1063,7 @@ func TestStreamEventsStreamChunkErrorTerminatesWithErr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -1076,13 +1080,13 @@ func TestEventStreamNextHonorsContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
 	defer stream.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := stream.Next(ctx); err == nil {
 		t.Fatal("expected Next to return the context error for a cancelled ctx")
@@ -1116,7 +1120,7 @@ type foreignEventSink struct{}
 func (foreignEventSink) EmitRawEvent(graph.RawEvent) {}
 
 func TestSinkFromContextWithForeignOrSuppressedSink(t *testing.T) {
-	ctx := graph.ContextWithEventSink(context.Background(), foreignEventSink{})
+	ctx := graph.ContextWithEventSink(t.Context(), foreignEventSink{})
 	if sinkFromContext(ctx) != nil {
 		t.Fatal("expected nil for a non-agents event sink")
 	}
@@ -1147,7 +1151,7 @@ func TestStreamChunkBridgeContentBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -1205,7 +1209,7 @@ func TestStreamEventsRejectsNonChatModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -1229,7 +1233,7 @@ func TestStreamEventsRejectsNonTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -1245,7 +1249,7 @@ func TestStreamEventsBindToolsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -1264,7 +1268,7 @@ func TestStreamEventsWithSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}

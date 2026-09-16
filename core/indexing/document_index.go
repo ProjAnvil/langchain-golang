@@ -1,9 +1,10 @@
 package indexing
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -142,8 +143,8 @@ func (m *InMemoryDocumentIndex) GetRelevantDocuments(ctx context.Context, query 
 	for _, doc := range m.store {
 		counts = append(counts, scored{doc: doc, count: strings.Count(doc.PageContent, query)})
 	}
-	sort.SliceStable(counts, func(i, j int) bool {
-		return counts[i].count > counts[j].count
+	slices.SortStableFunc(counts, func(a, b scored) int {
+		return cmp.Compare(b.count, a.count)
 	})
 	if len(counts) > m.topK {
 		counts = counts[:m.topK]

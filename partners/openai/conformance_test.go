@@ -53,14 +53,14 @@ type conformanceResponsesRequest struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"input"`
 	Tools []struct {
-		Type        string         `json:"type"`
-		Name        string         `json:"name"`
-		Parameters  schema.Schema  `json:"parameters"`
-		Description string         `json:"description"`
+		Type        string        `json:"type"`
+		Name        string        `json:"name"`
+		Parameters  schema.Schema `json:"parameters"`
+		Description string        `json:"description"`
 	} `json:"tools"`
-	ToolChoice  any               `json:"tool_choice"`
-	Text        *conformanceText `json:"text"`
-	Stream      bool             `json:"stream"`
+	ToolChoice any              `json:"tool_choice"`
+	Text       *conformanceText `json:"text"`
+	Stream     bool             `json:"stream"`
 }
 
 type conformanceText struct {

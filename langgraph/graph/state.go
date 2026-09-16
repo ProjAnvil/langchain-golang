@@ -3,7 +3,7 @@ package graph
 import (
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -189,7 +189,7 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 		for k := range w.update {
 			keys = append(keys, k)
 		}
-		sort.Strings(keys)
+		slices.Sort(keys)
 		for _, k := range keys {
 			if _, ok := grouped[k]; !ok {
 				writtenOrder = append(writtenOrder, k)
@@ -221,7 +221,7 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 			untouched = append(untouched, key)
 		}
 	}
-	sort.Strings(untouched)
+	slices.Sort(untouched)
 	for _, key := range untouched {
 		changed, err := rs.channels[key].Update(nil)
 		if err != nil {

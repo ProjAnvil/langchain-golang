@@ -2,7 +2,9 @@ package prompts
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -402,12 +404,7 @@ func promptWithTemplateVariables(prefix *PromptTemplate, suffix PromptTemplate) 
 	for _, variable := range suffix.InputVariables() {
 		seen[variable] = true
 	}
-	out := make([]string, 0, len(seen))
-	for variable := range seen {
-		out = append(out, variable)
-	}
-	sortStrings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func validatePromptVariables(got []string, want []string) error {

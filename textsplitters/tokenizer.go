@@ -197,10 +197,7 @@ func (s *TokenTextSplitter) CreateDocuments(texts []string, metadatas []map[stri
 		for _, chunk := range chunks {
 			chunkMetadata := cloneMetadata(metadata)
 			if s.cfg.AddStartIndex {
-				offset := index + previousChunkLen - s.cfg.ChunkOverlap
-				if offset < 0 {
-					offset = 0
-				}
+				offset := max(index+previousChunkLen-s.cfg.ChunkOverlap, 0)
 				found := strings.Index(text[offset:], chunk)
 				if found >= 0 {
 					index = offset + found
@@ -233,10 +230,7 @@ func (s *TokenIDTextSplitter) CreateDocuments(texts []string, metadatas []map[st
 		for _, chunk := range chunks {
 			chunkMetadata := cloneMetadata(metadata)
 			if s.cfg.AddStartIndex {
-				offset := index + previousChunkLen - s.cfg.ChunkOverlap
-				if offset < 0 {
-					offset = 0
-				}
+				offset := max(index+previousChunkLen-s.cfg.ChunkOverlap, 0)
 				found := strings.Index(text[offset:], chunk)
 				if found >= 0 {
 					index = offset + found

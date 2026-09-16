@@ -376,7 +376,7 @@ func (b *streamChunkBridge) push(chunk messages.Message) {
 			Event: streamevents.EventContentBlockFinish,
 			Index: idx,
 			Content: messages.NonStandardContentBlock{
-				Type: "invalid_tool_call",
+				Type:  "invalid_tool_call",
 				Value: map[string]any{"id": call.ID, "name": call.Name, "args": call.Args},
 			},
 		})

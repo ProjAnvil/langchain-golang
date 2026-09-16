@@ -1,7 +1,6 @@
 package checkpoint
 
 import (
-	"context"
 	"slices"
 	"testing"
 	"time"
@@ -9,7 +8,7 @@ import (
 
 func TestInMemoryCacheSetGetRoundtrip(t *testing.T) {
 	c := NewInMemoryCache()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, ok, err := c.Get(ctx, "ns", "k"); err != nil || ok {
 		t.Fatalf("Get() on empty cache = (ok=%v, err=%v), want a clean miss", ok, err)
@@ -45,7 +44,7 @@ func TestInMemoryCacheSetGetRoundtrip(t *testing.T) {
 
 func TestInMemoryCacheZeroValueReady(t *testing.T) {
 	var c InMemoryCache
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := c.Set(ctx, "ns", "k", []Write{{Channel: "a", Value: 1}}, 0); err != nil {
 		t.Fatalf("zero-value Set() error = %v", err)
 	}
@@ -56,7 +55,7 @@ func TestInMemoryCacheZeroValueReady(t *testing.T) {
 
 func TestInMemoryCacheTTLExpiry(t *testing.T) {
 	c := NewInMemoryCache()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if err := c.Set(ctx, "ns", "short", []Write{{Channel: "a", Value: 1}}, 20*time.Millisecond); err != nil {
 		t.Fatalf("Set() error = %v", err)
@@ -81,7 +80,7 @@ func TestInMemoryCacheTTLExpiry(t *testing.T) {
 
 func TestInMemoryCacheClearNamespace(t *testing.T) {
 	c := NewInMemoryCache()
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := c.Set(ctx, "ns1", "k", []Write{{Channel: "a", Value: 1}}, 0); err != nil {
 		t.Fatalf("Set() error = %v", err)
 	}

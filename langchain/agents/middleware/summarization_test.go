@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -32,7 +31,7 @@ func TestSummarizationMiddlewareSummarizesWhenTriggered(t *testing.T) {
 	middleware.Trigger = []TriggerClause{{Messages: 3}}
 	middleware.Keep = KeepPolicy{Messages: 1}
 
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"),
 		messages.AI("two"),
 		messages.Human("three"),
@@ -55,7 +54,7 @@ func TestSummarizationMiddlewareDoesNotTriggerBelowThreshold(t *testing.T) {
 		return "", nil
 	})
 	middleware.Trigger = []TriggerClause{{Messages: 5}}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{messages.Human("one")}})
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{messages.Human("one")}})
 	if err != nil {
 		t.Fatalf("before model: %v", err)
 	}
@@ -75,7 +74,7 @@ func TestSummarizationMiddlewareFractionTrigger(t *testing.T) {
 	middleware.Trigger = []TriggerClause{{Fraction: 0.5}} // threshold = 10 tokens
 	middleware.Keep = KeepPolicy{Messages: 1}
 
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"),
 		messages.Human("two"),
 	}})
@@ -99,7 +98,7 @@ func TestSummarizationMiddlewareFractionTriggerBelowThreshold(t *testing.T) {
 	middleware.TokenCounter = func(msgs []messages.Message) int { return len(msgs) * 5 }
 	middleware.Trigger = []TriggerClause{{Fraction: 0.5}} // threshold = 10 tokens
 
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"),
 	}})
 	if err != nil {
@@ -118,7 +117,7 @@ func TestSummarizationMiddlewareFractionTriggerWithoutProfileNeverFires(t *testi
 	// No Model set: fraction clauses can't be resolved and must not fire,
 	// rather than erroring or falling back to some other metric.
 	middleware.Trigger = []TriggerClause{{Fraction: 0.01}}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"), messages.Human("three"),
 	}})
 	if err != nil {
@@ -138,7 +137,7 @@ func TestSummarizationMiddlewareFractionKeep(t *testing.T) {
 	middleware.Trigger = []TriggerClause{{Messages: 4}}
 	middleware.Keep = KeepPolicy{Fraction: 0.5} // budget = 10 tokens -> keep last 2 messages
 
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"),
 		messages.Human("two"),
 		messages.Human("three"),
@@ -164,7 +163,7 @@ func TestSummarizationMiddlewareTrimTokensToSummarize(t *testing.T) {
 	middleware.Keep = KeepPolicy{Messages: 1}
 	middleware.TrimTokensToSummarize = 10 // budget only fits the trailing 2 of the 4 summarized messages
 
-	_, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("h1"),
 		messages.AI("a1"),
 		messages.Human("h2"),
@@ -190,7 +189,7 @@ func TestSummarizationMiddlewareTrimDisabled(t *testing.T) {
 	middleware.Keep = KeepPolicy{Messages: 1}
 	middleware.TrimTokensToSummarize = 0
 
-	_, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.AI("a1"), // would be dropped by dropUntilHuman if trimming were enabled
 		messages.Human("h1"),
 		messages.AI("a2"),

@@ -251,7 +251,7 @@ func testSearchLimitOffset(t *testing.T, newStore func(t *testing.T) store.Store
 	ctx := context.Background()
 	s := newStore(t)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := fmt.Sprintf("k%d", i)
 		if err := s.Put(ctx, []string{"ns"}, key, map[string]any{"i": i}, nil); err != nil {
 			t.Fatalf("Put %s: %v", key, err)
@@ -468,12 +468,10 @@ func testConcurrentPutGet(t *testing.T, newStore func(t *testing.T) store.Store)
 	const putsPerGoroutine = 10
 	errs := make(chan error, goroutines*putsPerGoroutine)
 	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
+	for g := range goroutines {
+		wg.Go(func() {
 			ns := []string{"ns", fmt.Sprintf("g%d", g)}
-			for i := 0; i < putsPerGoroutine; i++ {
+			for i := range putsPerGoroutine {
 				key := fmt.Sprintf("k%d", i)
 				val := map[string]any{"g": g, "i": i}
 				if err := s.Put(ctx, ns, key, val, nil); err != nil {
@@ -486,7 +484,7 @@ func testConcurrentPutGet(t *testing.T, newStore func(t *testing.T) store.Store)
 					return
 				}
 			}
-		}(g)
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -497,7 +495,7 @@ func testConcurrentPutGet(t *testing.T, newStore func(t *testing.T) store.Store)
 		return
 	}
 	// Every written item is now readable.
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		ns := []string{"ns", fmt.Sprintf("g%d", g)}
 		results, err := s.Search(ctx, ns, store.SearchOptions{Limit: 100})
 		if err != nil {

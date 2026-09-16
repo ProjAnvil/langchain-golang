@@ -32,7 +32,7 @@ func TestChatCompletionsInvoke(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hello")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hello")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestChatCompletionsToolCalls(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("search hi")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("search hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestChatCompletionsToolResultSerialization(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	_, err := model.Invoke(context.Background(), []messages.Message{
+	_, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Tool("toolcall-9", "result"),
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestChatCompletionsUsageMetadataCacheTokens(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestDefaultStillResponsesAPI(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if gotPath != "/responses" {
@@ -193,7 +193,7 @@ func TestChatCompletionsToolsNestedFunctionShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 

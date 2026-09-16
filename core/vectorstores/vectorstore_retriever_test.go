@@ -1,7 +1,6 @@
 package vectorstores_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -18,7 +17,7 @@ func TestAsRetrieverMMR(t *testing.T) {
 		DocumentVectors: [][]float64{{1, 0}, {0.8, 0.6}, {0, 1}},
 		QueryVector:     []float64{1, 0},
 	})
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("A", nil),
 		documents.New("B", nil),
 		documents.New("C", nil),
@@ -36,7 +35,7 @@ func TestAsRetrieverMMR(t *testing.T) {
 		t.Fatalf("as retriever: %v", err)
 	}
 
-	docs, err := retriever.GetRelevantDocuments(context.Background(), "query")
+	docs, err := retriever.GetRelevantDocuments(t.Context(), "query")
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
@@ -53,7 +52,7 @@ func TestAsRetrieverMMR(t *testing.T) {
 // threshold.
 func TestAsRetrieverSimilarityScoreThreshold(t *testing.T) {
 	store := vectorstores.NewInMemory(embeddings.NewFake(32))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 		documents.New("gamma delta", nil),
 	})
@@ -70,7 +69,7 @@ func TestAsRetrieverSimilarityScoreThreshold(t *testing.T) {
 		t.Fatalf("as retriever: %v", err)
 	}
 
-	docs, err := retriever.GetRelevantDocuments(context.Background(), "alpha")
+	docs, err := retriever.GetRelevantDocuments(t.Context(), "alpha")
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
@@ -86,7 +85,7 @@ func TestAsRetrieverSimilarityScoreThreshold(t *testing.T) {
 // documents paired with relevance scores ordered from most to least similar.
 func TestSimilaritySearchWithRelevanceScores(t *testing.T) {
 	store := vectorstores.NewInMemory(embeddings.NewFake(32))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 		documents.New("gamma delta", nil),
 	})
@@ -94,7 +93,7 @@ func TestSimilaritySearchWithRelevanceScores(t *testing.T) {
 		t.Fatalf("add documents: %v", err)
 	}
 
-	results, err := store.SimilaritySearchWithRelevanceScores(context.Background(), "alpha", 2, nil)
+	results, err := store.SimilaritySearchWithRelevanceScores(t.Context(), "alpha", 2, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

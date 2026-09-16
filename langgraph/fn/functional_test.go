@@ -19,7 +19,6 @@ package fn
 //     Invoke and call counters instead.
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -40,8 +39,8 @@ import (
 // one interrupt, which it returns.
 func requireInterrupt(t *testing.T, err error) types.Interrupt {
 	t.Helper()
-	var ierr *InterruptError
-	if !errors.As(err, &ierr) {
+	ierr, ok := errors.AsType[*InterruptError](err)
+	if !ok {
 		t.Fatalf("Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 	if len(ierr.Interrupts) != 1 {
@@ -83,7 +82,7 @@ func TestFunctionalImpTaskAwaitAll(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "question" {
 		t.Fatalf("interrupt value = %v, want %q", intr.Value, "question")
@@ -175,7 +174,7 @@ func TestFunctionalImpNested(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "question" {
 		t.Fatalf("interrupt value = %v, want %q", intr.Value, "question")
@@ -230,7 +229,7 @@ func TestFunctionalInterrupt(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "Provide value for bar:" {
 		t.Fatalf("interrupt value = %v, want %q", intr.Value, "Provide value for bar:")
@@ -280,7 +279,7 @@ func TestFunctionalInterruptTask(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e1.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "Provide value for bar:" {
 		t.Fatalf("segment 1 interrupt value = %v, want %q", intr.Value, "Provide value for bar:")
@@ -369,7 +368,7 @@ func TestFunctionalMultipleInterrupts(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, map[string]any{}, graph.Options{ThreadID: "1"})
 	requireInterrupt(t, err)
 	_, err = e.Invoke(ctx, nil, graph.Options{ThreadID: "1", Resume: "a"})
@@ -417,7 +416,7 @@ func TestFunctionalMultipleInterruptsCache(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	want := map[string]any{"values": []any{2, "a", 2, "b", 4, "c", 4, "d", 6, "e", 6, "f"}}
 	// run drives a full six-interrupt conversation on thread and returns the
 	// final result.
@@ -504,7 +503,7 @@ func TestFunctionalMultipleTasksBeforeInterruptResume(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, map[string]any{"x": 5}, graph.Options{ThreadID: "1"})
 	if intr := requireInterrupt(t, err); intr.Value != "Result so far is 12. What next?" {
 		t.Fatalf("interrupt value = %v, want %q", intr.Value, "Result so far is 12. What next?")
@@ -581,7 +580,7 @@ func TestFunctionalNamedTasks(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	out, err := e.Invoke(context.Background(), "", graph.Options{})
+	out, err := e.Invoke(t.Context(), "", graph.Options{})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -629,7 +628,7 @@ func TestFunctionalSubgraphsMixedStateGraph(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// call_same_subgraph: two chained add invocations inside one node; the
 	// intermediate results must match Python's (5, then 15).
@@ -732,7 +731,7 @@ func TestFunctionalImpException(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	out, err := e.Invoke(ctx, 1, graph.Options{ThreadID: "1"})
 	if err != nil || out != "done" {
 		t.Fatalf("first Invoke() = %q, %v; want %q, nil", out, err, "done")
@@ -786,7 +785,7 @@ func TestFunctionalPreviousSurvivesInterruptResume(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	// First turn: no previous; interrupt, resume, completes with ["a"].
 	_, err = e.Invoke(ctx, "a", graph.Options{ThreadID: "1"})
 	requireInterrupt(t, err)
@@ -836,7 +835,7 @@ func TestFunctionalStreamInterruptPassthrough(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	var chunks []graph.StreamChunk
 	for chunk, err := range e.Stream(ctx, "in", graph.Options{ThreadID: "1"}) {
 		if err != nil {

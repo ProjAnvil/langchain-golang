@@ -29,9 +29,7 @@ func NewInMemory(requestsPerSecond float64, checkEvery time.Duration, maxBucketS
 	if checkEvery <= 0 {
 		checkEvery = 100 * time.Millisecond
 	}
-	if maxBucketSize < 1 {
-		maxBucketSize = 1
-	}
+	maxBucketSize = max(maxBucketSize, 1)
 	return &InMemoryRateLimiter{
 		RequestsPerSecond: requestsPerSecond,
 		CheckEvery:        checkEvery,

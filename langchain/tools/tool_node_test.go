@@ -98,7 +98,7 @@ func TestToolNodeInvokeSuccess(t *testing.T) {
 	msgs := []messages.Message{
 		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "echo", Args: map[string]any{"x": "hello"}}),
 	}
-	results, err := node.Invoke(context.Background(), msgs, nil)
+	results, err := node.Invoke(t.Context(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -124,7 +124,7 @@ func TestToolNodeInvokeNoPendingCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewToolNode() error = %v", err)
 	}
-	results, err := node.Invoke(context.Background(), []messages.Message{messages.Human("hi")}, nil)
+	results, err := node.Invoke(t.Context(), []messages.Message{messages.Human("hi")}, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -145,7 +145,7 @@ func TestToolNodeInvokeUnknownTool(t *testing.T) {
 	msgs := []messages.Message{
 		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "does-not-exist", Args: nil}),
 	}
-	results, err := node.Invoke(context.Background(), msgs, nil)
+	results, err := node.Invoke(t.Context(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -172,7 +172,7 @@ func TestToolNodeInvokeErrorHandledByDefault(t *testing.T) {
 	msgs := []messages.Message{
 		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"}),
 	}
-	results, err := node.Invoke(context.Background(), msgs, nil)
+	results, err := node.Invoke(t.Context(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v, want nil (error should be converted to a ToolMessage)", err)
 	}
@@ -196,24 +196,24 @@ func TestToolNodeInvokeErrorPropagatesWhenUnhandled(t *testing.T) {
 	msgs := []messages.Message{
 		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"}),
 	}
-	_, err = node.Invoke(context.Background(), msgs, nil)
+	_, err = node.Invoke(t.Context(), msgs, nil)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error to propagate, got %v", err)
 	}
 }
 
 func TestToolNodeInvokeParallelPreservesOrder(t *testing.T) {
-	var concurrent int32
-	var maxConcurrent int32
+	var concurrent atomic.Int32
+	var maxConcurrent atomic.Int32
 	slow := echoTool(t, "slow", func(_ context.Context, input map[string]any) (Result, error) {
-		n := atomic.AddInt32(&concurrent, 1)
+		n := concurrent.Add(1)
 		for {
-			old := atomic.LoadInt32(&maxConcurrent)
-			if n <= old || atomic.CompareAndSwapInt32(&maxConcurrent, old, n) {
+			old := maxConcurrent.Load()
+			if n <= old || maxConcurrent.CompareAndSwap(old, n) {
 				break
 			}
 		}
-		defer atomic.AddInt32(&concurrent, -1)
+		defer concurrent.Add(-1)
 		// Hold the slot briefly so concurrently dispatched calls actually
 		// overlap; without this the assertion depends on scheduler luck.
 		time.Sleep(10 * time.Millisecond)
@@ -225,12 +225,12 @@ func TestToolNodeInvokeParallelPreservesOrder(t *testing.T) {
 	}
 
 	var calls []messages.ToolCall
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		calls = append(calls, messages.ToolCall{ID: fmt.Sprintf("%d", i), Name: "slow", Args: map[string]any{"i": i}})
 	}
 	msgs := []messages.Message{aiMessageWithCalls(calls...)}
 
-	results, err := node.Invoke(context.Background(), msgs, nil)
+	results, err := node.Invoke(t.Context(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -245,8 +245,8 @@ func TestToolNodeInvokeParallelPreservesOrder(t *testing.T) {
 			t.Fatalf("result[%d].Content = %q, want %q", i, result.Content, fmt.Sprintf("%d", i))
 		}
 	}
-	if atomic.LoadInt32(&maxConcurrent) < 2 {
-		t.Fatalf("expected tool calls to run concurrently, max concurrent = %d", maxConcurrent)
+	if maxConcurrent.Load() < 2 {
+		t.Fatalf("expected tool calls to run concurrently, max concurrent = %d", maxConcurrent.Load())
 	}
 }
 
@@ -255,10 +255,10 @@ func TestToolNodeWithToolCallWrapper(t *testing.T) {
 		return Result{Content: fmt.Sprintf("%v", input["x"])}, nil
 	})
 
-	var wrapperCalls int32
+	var wrapperCalls atomic.Int32
 	node, err := NewToolNode([]Tool{echo}, WithToolCallWrapper(
 		func(ctx context.Context, req ToolCallRequest, next ToolHandler) (messages.Message, error) {
-			atomic.AddInt32(&wrapperCalls, 1)
+			wrapperCalls.Add(1)
 			modified := req.ToolCall
 			modified.Args = map[string]any{"x": "wrapped"}
 			return next(ctx, ToolCallRequest{ToolCall: modified, Tool: req.Tool, State: req.State})
@@ -271,15 +271,15 @@ func TestToolNodeWithToolCallWrapper(t *testing.T) {
 	msgs := []messages.Message{
 		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "echo", Args: map[string]any{"x": "original"}}),
 	}
-	results, err := node.Invoke(context.Background(), msgs, nil)
+	results, err := node.Invoke(t.Context(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 	if len(results) != 1 || results[0].Content != "wrapped" {
 		t.Fatalf("expected wrapper to modify args, got %+v", results)
 	}
-	if atomic.LoadInt32(&wrapperCalls) != 1 {
-		t.Fatalf("expected wrapper to be called once, got %d", wrapperCalls)
+	if wrapperCalls.Load() != 1 {
+		t.Fatalf("expected wrapper to be called once, got %d", wrapperCalls.Load())
 	}
 }
 
@@ -300,7 +300,7 @@ func TestToolNodeWithToolCallWrapperShortCircuit(t *testing.T) {
 	}
 
 	msgs := []messages.Message{aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "echo"})}
-	results, err := node.Invoke(context.Background(), msgs, nil)
+	results, err := node.Invoke(t.Context(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -322,7 +322,7 @@ func TestToolNodeAppendToolResults(t *testing.T) {
 		messages.Human("hi"),
 		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "echo"}),
 	}
-	out, err := node.AppendToolResults(context.Background(), msgs)
+	out, err := node.AppendToolResults(t.Context(), msgs)
 	if err != nil {
 		t.Fatalf("AppendToolResults() error = %v", err)
 	}
@@ -335,7 +335,7 @@ func TestToolNodeAppendToolResults(t *testing.T) {
 
 	// No pending calls: input returned unchanged.
 	noCalls := []messages.Message{messages.Human("hi"), messages.AI("done")}
-	out2, err := node.AppendToolResults(context.Background(), noCalls)
+	out2, err := node.AppendToolResults(t.Context(), noCalls)
 	if err != nil {
 		t.Fatalf("AppendToolResults() error = %v", err)
 	}
@@ -381,7 +381,7 @@ func TestInvokeToolCallsFullSurfacesCommandArtifact(t *testing.T) {
 		{ID: "1", Name: "navigate", Args: map[string]any{}},
 		{ID: "2", Name: "plain", Args: map[string]any{}},
 	}
-	outcomes, err := node.InvokeToolCallsFull(context.Background(), calls, nil)
+	outcomes, err := node.InvokeToolCallsFull(t.Context(), calls, nil)
 	if err != nil {
 		t.Fatalf("InvokeToolCallsFull() error = %v", err)
 	}
@@ -396,7 +396,7 @@ func TestInvokeToolCallsFullSurfacesCommandArtifact(t *testing.T) {
 	}
 
 	// InvokeToolCalls discards commands but returns the same messages.
-	msgs, err := node.InvokeToolCalls(context.Background(), calls, nil)
+	msgs, err := node.InvokeToolCalls(t.Context(), calls, nil)
 	if err != nil {
 		t.Fatalf("InvokeToolCalls() error = %v", err)
 	}
@@ -421,7 +421,7 @@ func TestInvokeToolCallsFullWithWrapper(t *testing.T) {
 		t.Fatalf("NewToolNode() error = %v", err)
 	}
 	calls := []messages.ToolCall{{ID: "1", Name: "navigate", Args: map[string]any{}}}
-	outcomes, err := node.InvokeToolCallsFull(context.Background(), calls, nil)
+	outcomes, err := node.InvokeToolCallsFull(t.Context(), calls, nil)
 	if err != nil {
 		t.Fatalf("InvokeToolCallsFull() error = %v", err)
 	}
@@ -438,7 +438,7 @@ func TestInvokeToolCallsFullWithWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewToolNode() error = %v", err)
 	}
-	outcomes, err = node.InvokeToolCallsFull(context.Background(), calls, nil)
+	outcomes, err = node.InvokeToolCallsFull(t.Context(), calls, nil)
 	if err != nil {
 		t.Fatalf("InvokeToolCallsFull() error = %v", err)
 	}
@@ -459,7 +459,7 @@ func TestNewToolNodeNilErrorHandlerFallsBackToDefault(t *testing.T) {
 	}
 
 	msgs := []messages.Message{aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"})}
-	results, err := node.Invoke(context.Background(), msgs, nil)
+	results, err := node.Invoke(t.Context(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v, want nil (nil handler should fall back to the default)", err)
 	}
@@ -485,7 +485,7 @@ func TestToolNodeAppendToolResultsErrorPropagates(t *testing.T) {
 		messages.Human("hi"),
 		aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"}),
 	}
-	out, err := node.AppendToolResults(context.Background(), msgs)
+	out, err := node.AppendToolResults(t.Context(), msgs)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error to propagate, got %v", err)
 	}
@@ -516,7 +516,7 @@ func TestToolNodeWithToolNodeStore(t *testing.T) {
 		t.Fatalf("NewToolNode() error = %v", err)
 	}
 	calls := []messages.ToolCall{{ID: "1", Name: "echo"}}
-	outcomes, err := node.InvokeToolCallsFull(context.Background(), calls, nil)
+	outcomes, err := node.InvokeToolCallsFull(t.Context(), calls, nil)
 	if err != nil {
 		t.Fatalf("InvokeToolCallsFull() error = %v", err)
 	}
@@ -532,7 +532,7 @@ func TestToolNodeWithToolNodeStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewToolNode() error = %v", err)
 	}
-	if _, err := node.InvokeToolCalls(context.Background(), calls, nil); err != nil {
+	if _, err := node.InvokeToolCalls(t.Context(), calls, nil); err != nil {
 		t.Fatalf("InvokeToolCalls() error = %v", err)
 	}
 	if sawStore.Load() != 1 || sawNilStore.Load() != 1 {

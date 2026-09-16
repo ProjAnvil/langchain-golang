@@ -1,10 +1,11 @@
 package openai
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/modelconfig"
@@ -170,7 +171,7 @@ func mergeChunkedEmbeddings(vectors [][]float64, weights []int) []float64 {
 		totalWeight = 1
 	}
 	average := make([]float64, dims)
-	for d := 0; d < dims; d++ {
+	for d := range dims {
 		for k, v := range vectors {
 			average[d] += v[d] * float64(weights[k])
 		}
@@ -272,8 +273,8 @@ func (e Embeddings) lenSafeEmbedDocuments(
 			return nil, err
 		}
 		batchChunks := chunks[batch[0]:batch[1]]
-		sort.SliceStable(response.Data, func(i int, j int) bool {
-			return response.Data[i].Index < response.Data[j].Index
+		slices.SortStableFunc(response.Data, func(a, b embeddingDataPayload) int {
+			return cmp.Compare(a.Index, b.Index)
 		})
 		if len(response.Data) != len(batchChunks) {
 			return nil, fmt.Errorf("embedding count mismatch: got %d want %d", len(response.Data), len(batchChunks))

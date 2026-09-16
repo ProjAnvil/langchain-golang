@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,7 @@ func TestTextModelInvoke(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	response, err := model.Invoke(context.Background(), "hello")
+	response, err := model.Invoke(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -56,7 +55,7 @@ func TestTextModelRequestUsesPromptField(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	if _, err := model.Invoke(context.Background(), "the prompt"); err != nil {
+	if _, err := model.Invoke(t.Context(), "the prompt"); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -81,7 +80,7 @@ func TestTextModelNon2xxSurfacesError(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	if _, err := model.Invoke(context.Background(), "hello"); err == nil {
+	if _, err := model.Invoke(t.Context(), "hello"); err == nil {
 		t.Fatal("expected non-2xx error")
 	}
 }

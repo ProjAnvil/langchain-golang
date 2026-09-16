@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +26,7 @@ func TestChatCompletionsSystemRoleMapping(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	if _, err := model.Invoke(context.Background(), []messages.Message{
+	if _, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("be terse"),
 		messages.Human("hi"),
 	}); err != nil {
@@ -54,7 +53,7 @@ func TestChatCompletionsInvokeHTTPError(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		modelconfig.WithMaxRetries(0),
 	).WithChatCompletions()
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected error for 500 response")
 	}
 }
@@ -71,7 +70,7 @@ func TestChatCompletionsEmptyChoices(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -89,7 +88,7 @@ func TestAzureTextModelInvokeError(t *testing.T) {
 	m := NewAzureTextModel(server.URL, "txt-dep", "2024-01-01", "az-key",
 		modelconfig.WithMaxRetries(0),
 	)
-	if _, err := m.Invoke(context.Background(), "prompt"); err == nil {
+	if _, err := m.Invoke(t.Context(), "prompt"); err == nil {
 		t.Fatal("expected error for 500 response")
 	}
 }
@@ -103,7 +102,7 @@ func TestAzureEmbeddingsOrdersByIndex(t *testing.T) {
 	defer server.Close()
 
 	e := NewAzureEmbeddings(server.URL, "emb-dep", "2024-01-01", "az-key")
-	vectors, err := e.EmbedDocuments(context.Background(), []string{"first", "second"})
+	vectors, err := e.EmbedDocuments(t.Context(), []string{"first", "second"})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -119,7 +118,7 @@ func TestRefreshBadTokenURL(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, "://bad-url", "client-1")
 
-	if _, err := provider.AccessToken(context.Background()); err == nil {
+	if _, err := provider.AccessToken(t.Context()); err == nil {
 		t.Fatal("expected request construction error")
 	}
 }
@@ -131,7 +130,7 @@ func TestRefreshTransportError(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, "http://127.0.0.1:1/oauth/token", "client-1")
 
-	if _, err := provider.AccessToken(context.Background()); err == nil {
+	if _, err := provider.AccessToken(t.Context()); err == nil {
 		t.Fatal("expected transport error")
 	}
 }
@@ -144,7 +143,7 @@ func TestCodexChatModelInvokeHTTPError(t *testing.T) {
 
 	model := codexTestModel(server, freshCodexProvider())
 	model.chat.config.MaxRetries = 0
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil || !strings.Contains(err.Error(), "openai") {
 		t.Fatalf("expected provider error, got %v", err)
 	}

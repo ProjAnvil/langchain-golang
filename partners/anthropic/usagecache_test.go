@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,7 +32,7 @@ func invokeCacheModel(t *testing.T, server *httptest.Server, opts ...modelconfig
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("claude-test"),
 	}, opts...)...)
-	response, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	response, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -233,13 +232,13 @@ func TestRequestStopSequencesStream(t *testing.T) {
 		modelconfig.WithModel("m"),
 		WithStopSequences([]string{"DONE"}),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}

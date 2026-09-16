@@ -23,7 +23,7 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -326,7 +326,7 @@ func (n *ToolNode) invalidToolMessage(call messages.ToolCall) messages.Message {
 	for name := range n.byName {
 		available = append(available, name)
 	}
-	sort.Strings(available)
+	slices.Sort(available)
 	content := fmt.Sprintf("Error: %s is not a valid tool, try one of [%s].", call.Name, strings.Join(available, ", "))
 	return errorToolMessage(call.ID, call.Name, content)
 }

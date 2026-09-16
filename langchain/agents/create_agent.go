@@ -83,6 +83,7 @@ package agents
 // persisted normally.
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -2864,9 +2865,7 @@ func detectStructuredOutput(
 			if toolStrategy != nil {
 				content = toolStrategy.ToolMessageContent
 			}
-			if content == "" {
-				content = fmt.Sprintf("Returned structured response via %s.", call.Name)
-			}
+			content = cmp.Or(content, fmt.Sprintf("Returned structured response via %s.", call.Name))
 			toolMsg := messages.Tool(call.ID, content)
 			toolMsg.Name = call.Name
 			updatedMessages := append(append([]messages.Message(nil), newMessages...), toolMsg)

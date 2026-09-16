@@ -1,7 +1,6 @@
 package exampleselectors
 
 import (
-	"context"
 	"testing"
 )
 
@@ -16,7 +15,7 @@ func TestLengthBasedSelector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := selector.SelectExamples(context.Background(), map[string]string{"input": "large"})
+	got, err := selector.SelectExamples(t.Context(), map[string]string{"input": "large"})
 	if err != nil {
 		t.Fatal(err)
 	}

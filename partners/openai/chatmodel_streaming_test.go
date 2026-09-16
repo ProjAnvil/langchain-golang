@@ -30,7 +30,7 @@ func TestChatModelBatch(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	outputs, err := model.Batch(context.Background(), [][]messages.Message{
+	outputs, err := model.Batch(t.Context(), [][]messages.Message{
 		{messages.Human("one")},
 		{messages.Human("two")},
 	})
@@ -72,7 +72,7 @@ func TestChatModelEmptyResponseIsError(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil || !strings.Contains(err.Error(), "response parsed but empty") {
 		t.Fatalf("expected empty-response error, got %v", err)
 	}
@@ -91,7 +91,7 @@ func TestChatModelInvokeErrorEmitsErrorCallback(t *testing.T) {
 		modelconfig.WithMaxRetries(0),
 	)
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -122,7 +122,7 @@ func TestChatModelStreamErrorEmitsErrorCallback(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -150,7 +150,7 @@ func TestChatModelCallbackMetadataPropagated(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 		runnables.WithMetadata("request_id", "req-1"),
@@ -188,13 +188,13 @@ func TestResponseStreamNextCanceledContext(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := stream.Next(ctx); err == nil {
 		t.Fatal("expected context error")
@@ -212,13 +212,13 @@ func TestResponseStreamMalformedEvent(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "decode openai stream event") {
 		t.Fatalf("expected decode error, got %v", err)
 	}
@@ -238,13 +238,13 @@ func TestResponseStreamRefusal(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok {
 		t.Fatalf("Next: ok=%v err=%v", ok, err)
 	}
@@ -276,7 +276,7 @@ func TestResponseStreamIgnoredEvents(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestResponseStreamIgnoredEvents(t *testing.T) {
 
 	var chunks []messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -309,13 +309,13 @@ func TestResponseStreamFailedEventWithoutMessage(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil || err.Error() != "openai stream error" {
 		t.Fatalf("expected generic stream error, got %v", err)
 	}
@@ -339,7 +339,7 @@ func TestResponseStreamCompletedWithoutResponse(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -348,11 +348,11 @@ func TestResponseStreamCompletedWithoutResponse(t *testing.T) {
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk.Content != "hi" {
 		t.Fatalf("chunk = %+v ok=%v err=%v", chunk, ok, err)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream end, ok=%v err=%v", ok, err)
 	}
 	// The still-open text block must be finished before the message finish.
@@ -379,7 +379,7 @@ func TestResponseStreamFunctionCallWithoutArguments(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestResponseStreamFunctionCallWithoutArguments(t *testing.T) {
 
 	var last messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -415,13 +415,13 @@ func TestChatCompletionsStreamNextCanceledContext(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := stream.Next(ctx); err == nil {
 		t.Fatal("expected context error")
@@ -439,13 +439,13 @@ func TestChatCompletionsStreamMalformedEvent(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "decode openai chat completions stream event") {
 		t.Fatalf("expected decode error, got %v", err)
 	}
@@ -465,13 +465,13 @@ func TestChatCompletionsStreamInvalidToolCallArguments(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok {
 		t.Fatalf("Next: ok=%v err=%v", ok, err)
 	}
@@ -501,21 +501,21 @@ func TestChatCompletionsStreamEOFWithoutDone(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk.Content != "hi" {
 		t.Fatalf("chunk = %+v ok=%v err=%v", chunk, ok, err)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream end after EOF, ok=%v err=%v", ok, err)
 	}
 	// A subsequent Next stays done.
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream to stay done, ok=%v err=%v", ok, err)
 	}
 }
@@ -530,7 +530,7 @@ func TestChatCompletionsStreamNon2xx(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -544,7 +544,7 @@ func TestChatCompletionsStreamBadBaseURL(t *testing.T) {
 		modelconfig.WithBaseURL("://bad-url"),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -573,7 +573,7 @@ func TestChatCompletionsRequestSamplingParamsAndToolCalls(t *testing.T) {
 
 	ai := messages.AI("let me search")
 	ai.ToolCalls = []messages.ToolCall{{ID: "call_1", Name: "search", Args: map[string]any{"q": "hi"}}}
-	_, err := model.Invoke(context.Background(), []messages.Message{
+	_, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("search please"),
 		ai,
 		messages.Tool("call_1", "result"),

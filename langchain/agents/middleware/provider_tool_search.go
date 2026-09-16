@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -81,7 +81,7 @@ func (m *ProviderToolSearchMiddleware) prepareRequest(request ModelRequest) (Mod
 			}
 		}
 		if len(unknown) > 0 {
-			sort.Strings(unknown)
+			slices.Sort(unknown)
 			return ModelRequest{}, fmt.Errorf("ProviderToolSearchMiddleware: searchable_tools references tool(s) not bound to the model: %s", strings.Join(unknown, ", "))
 		}
 	}

@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -32,8 +31,8 @@ func asRecursionError(t *testing.T, err error) *types.GraphRecursionError {
 	if err == nil {
 		t.Fatal("expected recursion limit error, got nil")
 	}
-	var rle *types.GraphRecursionError
-	if !errors.As(err, &rle) {
+	rle, ok := errors.AsType[*types.GraphRecursionError](err)
+	if !ok {
 		t.Fatalf("expected *types.GraphRecursionError, got %T: %v", err, err)
 	}
 	return rle
@@ -44,7 +43,7 @@ func asRecursionError(t *testing.T, err error) *types.GraphRecursionError {
 // unchanged from the pre-typed-error era.
 func TestGraphRecursionErrorTyped(t *testing.T) {
 	cg := newLoopGraph(t, 5)
-	_, err := cg.Invoke(context.Background(), map[string]any{})
+	_, err := cg.Invoke(t.Context(), map[string]any{})
 	rle := asRecursionError(t, err)
 	if rle.Limit != 5 {
 		t.Fatalf("rle.Limit = %d, want 5", rle.Limit)
@@ -71,7 +70,7 @@ func TestRecursionLimitRuntimeOverrideWins(t *testing.T) {
 		{name: "lower", limit: 2, want: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{RecursionLimit: tc.limit})
+			_, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{RecursionLimit: tc.limit})
 			rle := asRecursionError(t, err)
 			if rle.Limit != tc.want {
 				t.Fatalf("rle.Limit = %d, want %d", rle.Limit, tc.want)
@@ -93,7 +92,7 @@ func TestRecursionLimitZeroKeepsCompiledDefault(t *testing.T) {
 		{name: "negative", opts: Options{RecursionLimit: -1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, tc.opts)
+			_, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, tc.opts)
 			rle := asRecursionError(t, err)
 			if rle.Limit != 5 {
 				t.Fatalf("rle.Limit = %d, want 5 (compiled default)", rle.Limit)
@@ -115,7 +114,7 @@ func TestGraphRecursionErrorNodeNamesPendingNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), map[string]any{})
+	_, err = cg.Invoke(t.Context(), map[string]any{})
 	rle := asRecursionError(t, err)
 	if rle.Node != "b" {
 		t.Fatalf("rle.Node = %q, want %q", rle.Node, "b")
@@ -140,7 +139,7 @@ func TestGraphRecursionErrorNodeEmptyWhenAmbiguous(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), map[string]any{})
+	_, err = cg.Invoke(t.Context(), map[string]any{})
 	rle := asRecursionError(t, err)
 	if rle.Node != "" {
 		t.Fatalf("rle.Node = %q, want empty (two pending tasks)", rle.Node)
@@ -161,7 +160,7 @@ func TestRecursionLimitDefaultStays100(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), map[string]any{})
+	_, err = cg.Invoke(t.Context(), map[string]any{})
 	rle := asRecursionError(t, err)
 	if rle.Limit != 100 {
 		t.Fatalf("rle.Limit = %d, want 100 (default)", rle.Limit)
@@ -172,7 +171,7 @@ func TestRecursionLimitDefaultStays100(t *testing.T) {
 // per-invoke override (nil sink: the non-emitting event path).
 func TestRecursionLimitInvokeStreamOverride(t *testing.T) {
 	cg := newLoopGraph(t, 5)
-	_, err := cg.InvokeStream(context.Background(), map[string]any{}, Options{RecursionLimit: 3}, nil)
+	_, err := cg.InvokeStream(t.Context(), map[string]any{}, Options{RecursionLimit: 3}, nil)
 	rle := asRecursionError(t, err)
 	if rle.Limit != 3 {
 		t.Fatalf("rle.Limit = %d, want 3", rle.Limit)
@@ -184,7 +183,7 @@ func TestRecursionLimitInvokeStreamOverride(t *testing.T) {
 func TestRecursionLimitStreamOverride(t *testing.T) {
 	cg := newLoopGraph(t, 5)
 	var lastErr error
-	for _, err := range cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+	for _, err := range cg.Stream(t.Context(), map[string]any{}, StreamOptions{
 		Options: Options{RecursionLimit: 3},
 		Modes:   []StreamMode{StreamValues},
 	}) {
@@ -222,7 +221,7 @@ func TestRecursionLimitSubgraphPropagation(t *testing.T) {
 		t.Fatalf("parent Compile() error = %v", err)
 	}
 
-	_, err = parentCg.InvokeWithOptions(context.Background(), map[string]any{}, Options{RecursionLimit: 3})
+	_, err = parentCg.InvokeWithOptions(t.Context(), map[string]any{}, Options{RecursionLimit: 3})
 	rle := asRecursionError(t, err)
 	if rle.Limit != 3 {
 		t.Fatalf("rle.Limit = %d, want 3 (parent override propagated to child)", rle.Limit)
@@ -252,7 +251,7 @@ func TestRecursionLimitSubgraphPropagationCheckpointed(t *testing.T) {
 		t.Fatalf("parent Compile() error = %v", err)
 	}
 
-	_, err = parentCg.InvokeWithOptions(context.Background(), map[string]any{}, Options{
+	_, err = parentCg.InvokeWithOptions(t.Context(), map[string]any{}, Options{
 		ThreadID:       "recursion-subgraph-checkpointed",
 		RecursionLimit: 3,
 	})
@@ -293,7 +292,7 @@ func TestRecursionLimitNestedSubgraphPropagation(t *testing.T) {
 		t.Fatalf("parent Compile() error = %v", err)
 	}
 
-	_, err = parentCg.InvokeWithOptions(context.Background(), map[string]any{}, Options{RecursionLimit: 2})
+	_, err = parentCg.InvokeWithOptions(t.Context(), map[string]any{}, Options{RecursionLimit: 2})
 	rle := asRecursionError(t, err)
 	if rle.Limit != 2 {
 		t.Fatalf("rle.Limit = %d, want 2 (override propagated through nested subgraphs)", rle.Limit)

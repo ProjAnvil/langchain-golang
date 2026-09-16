@@ -210,7 +210,7 @@ func reflectStructSchema(t reflect.Type, depth int) (schema.Schema, error) {
 	}
 	props := make(map[string]schema.Schema)
 	var required []string
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		if !field.IsExported() {
 			continue
@@ -249,12 +249,11 @@ func parseJSONTag(tag string) (name string, omitempty bool, skip bool) {
 	if tag == "" {
 		return "", false, false
 	}
-	parts := strings.Split(tag, ",")
-	if parts[0] == "-" {
+	name, opts, _ := strings.Cut(tag, ",")
+	if name == "-" {
 		return "-", false, true
 	}
-	name = parts[0]
-	for _, opt := range parts[1:] {
+	for opt := range strings.SplitSeq(opts, ",") {
 		if opt == "omitempty" {
 			omitempty = true
 		}
@@ -352,12 +351,12 @@ func coerceAnyToResult(v any) (Result, error) {
 
 // isContextType reports whether t is context.Context.
 func isContextType(t reflect.Type) bool {
-	return t == reflect.TypeOf((*context.Context)(nil)).Elem()
+	return t == reflect.TypeFor[context.Context]()
 }
 
 // isErrorType reports whether t satisfies the error interface.
 func isErrorType(t reflect.Type) bool {
-	return t == reflect.TypeOf((*error)(nil)).Elem()
+	return t == reflect.TypeFor[error]()
 }
 
 // isAnyReturn reports whether t is tools.Result or the empty interface. It

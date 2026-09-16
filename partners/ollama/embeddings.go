@@ -98,15 +98,15 @@ func (e Embeddings) buildOptions() map[string]any {
 }
 
 type embedRequest struct {
-	Model     string         `json:"model"`
-	Input     []string       `json:"input"`
+	Model      string         `json:"model"`
+	Input      []string       `json:"input"`
 	Dimensions *int           `json:"dimensions,omitempty"`
-	KeepAlive any            `json:"keep_alive,omitempty"`
-	Options   map[string]any `json:"options,omitempty"`
+	KeepAlive  any            `json:"keep_alive,omitempty"`
+	Options    map[string]any `json:"options,omitempty"`
 }
 
 type embedResponse struct {
-	Model        string      `json:"model"`
-	Embeddings   [][]float64 `json:"embeddings"`
-	TotalDuration int64      `json:"total_duration"`
+	Model         string      `json:"model"`
+	Embeddings    [][]float64 `json:"embeddings"`
+	TotalDuration int64       `json:"total_duration"`
 }

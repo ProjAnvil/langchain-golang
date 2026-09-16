@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ func TestPIIMiddlewareCustomDetector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pii middleware: %v", err)
 	}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("the SECRET is out"),
 	}})
 	if err != nil {
@@ -48,7 +47,7 @@ func TestPIIMiddlewareBeforeModelNoopPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pii middleware: %v", err)
 	}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("user@example.com"),
 	}})
 	if err != nil || update != nil {
@@ -60,17 +59,17 @@ func TestPIIMiddlewareBeforeModelNoopPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pii middleware: %v", err)
 	}
-	update, err = middleware.BeforeModel(context.Background(), nil)
+	update, err = middleware.BeforeModel(t.Context(), nil)
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update for nil state: %#v %v", update, err)
 	}
-	update, err = middleware.BeforeModel(context.Background(), map[string]any{"messages": "nope"})
+	update, err = middleware.BeforeModel(t.Context(), map[string]any{"messages": "nope"})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update for wrong message type: %#v %v", update, err)
 	}
 
 	// Human message without PII: unmodified.
-	update, err = middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err = middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("nothing sensitive"),
 	}})
 	if err != nil || update != nil {
@@ -89,13 +88,12 @@ func TestPIIMiddlewareBeforeModelToolResultBlockError(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "lookup"}}
-	_, err = middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err = middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("hi"),
 		ai,
 		messages.Tool("1", "saw user@example.com"),
 	}})
-	var piiErr PIIDetectionError
-	if !errors.As(err, &piiErr) {
+	if _, ok := errors.AsType[PIIDetectionError](err); !ok {
 		t.Fatalf("expected PIIDetectionError from tool result, got %v", err)
 	}
 }
@@ -109,7 +107,7 @@ func TestPIIMiddlewareBeforeModelToolResultsWithoutAI(t *testing.T) {
 		t.Fatalf("new pii middleware: %v", err)
 	}
 	// No AI message: tool results are not scanned.
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Tool("1", "saw user@example.com"),
 	}})
 	if err != nil || update != nil {
@@ -123,7 +121,7 @@ func TestPIIMiddlewareAfterModelNoopPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pii middleware: %v", err)
 	}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.AI("contact user@example.com"),
 	}})
 	if err != nil || update != nil {
@@ -135,19 +133,19 @@ func TestPIIMiddlewareAfterModelNoopPaths(t *testing.T) {
 		t.Fatalf("new pii middleware: %v", err)
 	}
 	// No messages.
-	update, err = middleware.AfterModel(context.Background(), map[string]any{})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without messages: %#v %v", update, err)
 	}
 	// No AI message.
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("user@example.com"),
 	}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without AI message: %#v %v", update, err)
 	}
 	// AI message without PII: unchanged.
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.AI("nothing sensitive"),
 	}})
 	if err != nil || update != nil {
@@ -164,11 +162,10 @@ func TestPIIMiddlewareAfterModelBlockErrorOnContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pii middleware: %v", err)
 	}
-	_, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.AI("write to user@example.com"),
 	}})
-	var piiErr PIIDetectionError
-	if !errors.As(err, &piiErr) {
+	if _, ok := errors.AsType[PIIDetectionError](err); !ok {
 		t.Fatalf("expected PIIDetectionError, got %v", err)
 	}
 }
@@ -184,9 +181,8 @@ func TestPIIMiddlewareAfterModelBlockErrorOnToolArgs(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "send", Args: map[string]any{"to": "user@example.com"}}}
-	_, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
-	var piiErr PIIDetectionError
-	if !errors.As(err, &piiErr) {
+	_, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
+	if _, ok := errors.AsType[PIIDetectionError](err); !ok {
 		t.Fatalf("expected PIIDetectionError from tool args, got %v", err)
 	}
 }
@@ -201,7 +197,7 @@ func TestPIIMiddlewareAfterModelRedactsInvalidToolCalls(t *testing.T) {
 		"to":    "user@example.com",
 		"count": 3,
 	}}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -222,7 +218,7 @@ func TestPIIMiddlewareAfterModelNilToolArgs(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "send"}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update for nil args: %#v %v", update, err)
 	}

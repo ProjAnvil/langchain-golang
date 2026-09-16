@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +40,7 @@ func TestChatCompletionsSamplingParamsInPayload(t *testing.T) {
 		WithN(2).
 		WithLogprobs(true).
 		WithTopLogprobs(5)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -93,7 +92,7 @@ func TestChatCompletionsSamplingParamsOmittedByDefault(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	for _, key := range []string{
@@ -131,7 +130,7 @@ func TestResponsesSamplingParams(t *testing.T) {
 		WithStop("END").
 		WithSeed(7).
 		WithPresencePenalty(0.1)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if gotBody["top_p"] != 0.8 {

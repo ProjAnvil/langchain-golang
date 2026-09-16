@@ -24,7 +24,7 @@ func TestRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry: %v", err)
 	}
-	got, err := retrying.Invoke(context.Background(), "value")
+	got, err := retrying.Invoke(t.Context(), "value")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -45,14 +45,14 @@ func TestRouter(t *testing.T) {
 		"add":    add,
 		"double": double,
 	})
-	got, err := router.Invoke(context.Background(), RouterInput[int]{Key: "double", Input: 4})
+	got, err := router.Invoke(t.Context(), RouterInput[int]{Key: "double", Input: 4})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if got != 8 {
 		t.Fatalf("got %d", got)
 	}
-	_, err = router.Invoke(context.Background(), RouterInput[int]{Key: "missing", Input: 4})
+	_, err = router.Invoke(t.Context(), RouterInput[int]{Key: "missing", Input: 4})
 	if err == nil {
 		t.Fatal("expected missing route error")
 	}
@@ -76,7 +76,7 @@ func TestConfigurableAlternatives(t *testing.T) {
 		t.Fatalf("new alternatives: %v", err)
 	}
 
-	got, err := runnable.Invoke(context.Background(), 4)
+	got, err := runnable.Invoke(t.Context(), 4)
 	if err != nil {
 		t.Fatalf("default invoke: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestConfigurableAlternatives(t *testing.T) {
 		t.Fatalf("default got %d", got)
 	}
 
-	got, err = runnable.Invoke(context.Background(), 4, WithConfigurable("mode", "double"))
+	got, err = runnable.Invoke(t.Context(), 4, WithConfigurable("mode", "double"))
 	if err != nil {
 		t.Fatalf("configured invoke: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestConfigurableAlternatives(t *testing.T) {
 		t.Fatalf("configured got %d", got)
 	}
 
-	batch, err := runnable.Batch(context.Background(), []int{2, 3}, WithConfigurable("mode", "double"))
+	batch, err := runnable.Batch(t.Context(), []int{2, 3}, WithConfigurable("mode", "double"))
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -119,16 +119,16 @@ func TestConfigurableAlternativesStreamAndUnknownKey(t *testing.T) {
 		t.Fatalf("new alternatives: %v", err)
 	}
 
-	stream, err := runnable.Stream(context.Background(), "x", WithConfigurable("model", "stream"))
+	stream, err := runnable.Stream(t.Context(), "x", WithConfigurable("model", "stream"))
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	got, ok, err := stream.Next(context.Background())
+	got, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || got != "x-stream" {
 		t.Fatalf("next got=%q ok=%v err=%v", got, ok, err)
 	}
 
-	_, err = runnable.Invoke(context.Background(), "x", WithConfigurable("model", "missing"))
+	_, err = runnable.Invoke(t.Context(), "x", WithConfigurable("model", "missing"))
 	if err == nil {
 		t.Fatal("expected unknown alternative error")
 	}
@@ -146,7 +146,7 @@ func TestSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sequence: %v", err)
 	}
-	got, err := seq.Invoke(context.Background(), "four")
+	got, err := seq.Invoke(t.Context(), "four")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestSequencePropagatesChildConfig(t *testing.T) {
 	}
 
 	got, err := seq.Invoke(
-		context.Background(),
+		t.Context(),
 		"input",
 		WithRunID("root"),
 		WithTags("parent"),
@@ -191,7 +191,7 @@ func TestSequenceStreamFlattensFirstAndSecondStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sequence: %v", err)
 	}
-	stream, err := seq.Stream(context.Background(), "ignored")
+	stream, err := seq.Stream(t.Context(), "ignored")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestParallel(t *testing.T) {
 		"length": length,
 		"text":   upper,
 	})
-	got, err := parallel.Invoke(context.Background(), "go")
+	got, err := parallel.Invoke(t.Context(), "go")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestParallelPropagatesChildConfigByKey(t *testing.T) {
 	})
 
 	_, err := parallel.Invoke(
-		context.Background(),
+		t.Context(),
 		"input",
 		WithRunID("root"),
 		WithTags("parent"),
@@ -253,7 +253,7 @@ func TestRouterPropagatesRouteConfig(t *testing.T) {
 	})
 
 	got, err := router.Invoke(
-		context.Background(),
+		t.Context(),
 		RouterInput[string]{Key: "chosen", Input: "input"},
 		WithRunID("root"),
 		WithTags("parent"),
@@ -284,7 +284,7 @@ func TestConfigurableAlternativesPropagatesSelectedConfig(t *testing.T) {
 	}
 
 	got, err := runnable.Invoke(
-		context.Background(),
+		t.Context(),
 		"input",
 		WithRunID("root"),
 		WithTags("parent"),
@@ -306,7 +306,7 @@ func TestParallelStreamEmitsKeyedChunks(t *testing.T) {
 		"b": anyStreamingRunnable{values: []any{10}},
 	})
 
-	stream, err := parallel.Stream(context.Background(), "ignored")
+	stream, err := parallel.Stream(t.Context(), "ignored")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -440,7 +440,7 @@ func collectStreamValues[T any](t *testing.T, stream Stream[T]) []T {
 	t.Helper()
 	out := []T{}
 	for {
-		value, ok, err := stream.Next(context.Background())
+		value, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -592,7 +592,7 @@ func TestNewRetryErrorsAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry: %v", err)
 	}
-	if _, err := retrying.Invoke(context.Background(), "x"); err != errTestSentinel {
+	if _, err := retrying.Invoke(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("invoke err: got %v want %v", err, errTestSentinel)
 	}
 	if attempts != 3 {
@@ -612,7 +612,7 @@ func TestRetryBatchAndSchemas(t *testing.T) {
 		t.Fatalf("new retry: %v", err)
 	}
 
-	got, err := retrying.Batch(context.Background(), []int{2, -1})
+	got, err := retrying.Batch(t.Context(), []int{2, -1})
 	if err == nil {
 		t.Fatal("expected joined batch error")
 	}
@@ -663,12 +663,12 @@ func TestRetryStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry: %v", err)
 	}
-	stream, err := retrying.Stream(context.Background(), "chunk")
+	stream, err := retrying.Stream(t.Context(), "chunk")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	got, ok, err := stream.Next(context.Background())
+	got, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || got != "chunk" {
 		t.Fatalf("next got=%q ok=%v err=%v", got, ok, err)
 	}
@@ -681,7 +681,7 @@ func TestRetryStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry: %v", err)
 	}
-	if _, err := retrying.Stream(context.Background(), "x"); err != errTestSentinel {
+	if _, err := retrying.Stream(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
 	}
 	if exhausted.calls != 2 {
@@ -695,7 +695,7 @@ func TestRouterBatchStreamAndSchemas(t *testing.T) {
 	}, schema.Integer(""), schema.Integer("routed"))
 	router := NewRouter(map[string]Runnable[int, int]{"add": add})
 
-	got, err := router.Batch(context.Background(), []RouterInput[int]{
+	got, err := router.Batch(t.Context(), []RouterInput[int]{
 		{Key: "add", Input: 1},
 		{Key: "missing", Input: 2},
 	})
@@ -706,17 +706,17 @@ func TestRouterBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	stream, err := router.Stream(context.Background(), RouterInput[int]{Key: "add", Input: 4})
+	stream, err := router.Stream(t.Context(), RouterInput[int]{Key: "add", Input: 4})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != 5 {
 		t.Fatalf("chunk=%d ok=%v err=%v", chunk, ok, err)
 	}
 
-	if _, err := router.Stream(context.Background(), RouterInput[int]{Key: "missing", Input: 1}); err == nil {
+	if _, err := router.Stream(t.Context(), RouterInput[int]{Key: "missing", Input: 1}); err == nil {
 		t.Fatal("expected missing route stream error")
 	}
 
@@ -779,7 +779,7 @@ func TestConfigurableAlternativesSelectionEdgeCases(t *testing.T) {
 	}
 
 	// A nil configurable value falls back to the default runnable.
-	got, err := runnable.Invoke(context.Background(), "x", WithConfigurable("mode", nil))
+	got, err := runnable.Invoke(t.Context(), "x", WithConfigurable("mode", nil))
 	if err != nil {
 		t.Fatalf("nil value invoke: %v", err)
 	}
@@ -788,7 +788,7 @@ func TestConfigurableAlternativesSelectionEdgeCases(t *testing.T) {
 	}
 
 	// A non-string configurable value is stringified before lookup.
-	_, err = runnable.Invoke(context.Background(), "x", WithConfigurable("mode", 42))
+	_, err = runnable.Invoke(t.Context(), "x", WithConfigurable("mode", 42))
 	if err == nil || !strings.Contains(err.Error(), `"42"`) {
 		t.Fatalf("expected unknown alternative error for numeric key, got %v", err)
 	}
@@ -804,7 +804,7 @@ func TestConfigurableAlternativesSelectionEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new strict alternatives: %v", err)
 	}
-	_, err = strict.Invoke(context.Background(), "x", WithConfigurable("mode", "nope"))
+	_, err = strict.Invoke(t.Context(), "x", WithConfigurable("mode", "nope"))
 	if err == nil || !strings.Contains(err.Error(), "available: []") {
 		t.Fatalf("expected empty available list error, got %v", err)
 	}
@@ -832,7 +832,7 @@ func TestSequenceBatchAndErrors(t *testing.T) {
 		t.Fatalf("new sequence: %v", err)
 	}
 
-	got, err := seq.Batch(context.Background(), []string{"ab", "abc"})
+	got, err := seq.Batch(t.Context(), []string{"ab", "abc"})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -840,10 +840,10 @@ func TestSequenceBatchAndErrors(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	if _, err := seq.Batch(context.Background(), []string{"bad"}); err == nil {
+	if _, err := seq.Batch(t.Context(), []string{"bad"}); err == nil {
 		t.Fatal("expected batch error from first step")
 	}
-	if _, err := seq.Invoke(context.Background(), "bad"); err != errTestSentinel {
+	if _, err := seq.Invoke(t.Context(), "bad"); err != errTestSentinel {
 		t.Fatalf("invoke err: got %v want %v", err, errTestSentinel)
 	}
 
@@ -871,7 +871,7 @@ func TestParallelBatchAndSchemas(t *testing.T) {
 	}, schema.String("text"), schema.Integer(""))
 	parallel := NewParallel(map[string]Runnable[string, any]{"length": length})
 
-	got, err := parallel.Batch(context.Background(), []string{"a", "bb"})
+	got, err := parallel.Batch(t.Context(), []string{"a", "bb"})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -933,12 +933,12 @@ func TestParallelStreamStepError(t *testing.T) {
 	parallel := NewParallel(map[string]Runnable[string, any]{
 		"fail": failingStreamRunnable{},
 	})
-	stream, err := parallel.Stream(context.Background(), "x")
+	stream, err := parallel.Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); err != errTestSentinel {
+	if _, _, err := stream.Next(t.Context()); err != errTestSentinel {
 		t.Fatalf("next err: got %v want %v", err, errTestSentinel)
 	}
 }
@@ -991,7 +991,7 @@ func TestParallelStreamConstructionError(t *testing.T) {
 		"a": closeErrStreamRunnable{},
 		"b": closeErrStreamRunnable{failStream: true},
 	})
-	_, err := parallel.Stream(context.Background(), "x")
+	_, err := parallel.Stream(t.Context(), "x")
 	if err == nil || !strings.Contains(err.Error(), "b:") {
 		t.Fatalf("stream err: %v", err)
 	}
@@ -1004,15 +1004,15 @@ func TestParallelStreamCloseErr(t *testing.T) {
 	parallel := NewParallel(map[string]Runnable[string, any]{
 		"a": closeErrStreamRunnable{},
 	})
-	stream, err := parallel.Stream(context.Background(), "x")
+	stream, err := parallel.Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	value, ok, err := stream.Next(context.Background())
+	value, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || value["a"] != 1 {
 		t.Fatalf("first chunk=%#v ok=%v err=%v", value, ok, err)
 	}
-	if _, _, err := stream.Next(context.Background()); err != errTestSentinel {
+	if _, _, err := stream.Next(t.Context()); err != errTestSentinel {
 		t.Fatalf("expected close error on exhaustion, got %v", err)
 	}
 	// The failed-close item stays in the stream's item list, so Close joins
@@ -1039,15 +1039,15 @@ func TestConfigurableAlternativesBatchAndStreamErrors(t *testing.T) {
 		t.Fatalf("new alternatives: %v", err)
 	}
 
-	if _, err := runnable.Batch(context.Background(), []int{1}, WithConfigurable("mode", "nope")); err == nil {
+	if _, err := runnable.Batch(t.Context(), []int{1}, WithConfigurable("mode", "nope")); err == nil {
 		t.Fatal("expected batch error for unknown alternative")
 	}
-	if _, err := runnable.Stream(context.Background(), 1, WithConfigurable("mode", "nope")); err == nil {
+	if _, err := runnable.Stream(t.Context(), 1, WithConfigurable("mode", "nope")); err == nil {
 		t.Fatal("expected stream error for unknown alternative")
 	}
 
 	// An explicit default key selects the default runnable for the batch.
-	got, err := runnable.Batch(context.Background(), []int{1, 2}, WithConfigurable("mode", "default"))
+	got, err := runnable.Batch(t.Context(), []int{1, 2}, WithConfigurable("mode", "default"))
 	if err != nil {
 		t.Fatalf("default batch: %v", err)
 	}
@@ -1056,12 +1056,12 @@ func TestConfigurableAlternativesBatchAndStreamErrors(t *testing.T) {
 	}
 
 	// Streaming from the default alternative works too.
-	stream, err := runnable.Stream(context.Background(), 4)
+	stream, err := runnable.Stream(t.Context(), 4)
 	if err != nil {
 		t.Fatalf("default stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != 5 {
 		t.Fatalf("chunk=%d ok=%v err=%v", chunk, ok, err)
 	}
@@ -1077,7 +1077,7 @@ func TestParallelInvokeStepError(t *testing.T) {
 		}, schema.String(""), schema.Integer("")),
 	})
 
-	got, err := parallel.Invoke(context.Background(), "abc")
+	got, err := parallel.Invoke(t.Context(), "abc")
 	if err == nil || !strings.Contains(err.Error(), "fail:") {
 		t.Fatalf("expected keyed step error, got %v", err)
 	}
@@ -1092,7 +1092,7 @@ func TestSequenceStreamFirstStepError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sequence: %v", err)
 	}
-	if _, err := seq.Stream(context.Background(), "x"); err != errTestSentinel {
+	if _, err := seq.Stream(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
 	}
 }
@@ -1153,7 +1153,7 @@ func (anyCloseErrStreamRunnable) InputSchema() schema.Schema  { return schema.Sc
 func (anyCloseErrStreamRunnable) OutputSchema() schema.Schema { return schema.Schema{} }
 
 func TestSequenceStreamNextErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// The first stage's stream fails mid-iteration.
 	seq, err := NewSequence[string, any, any](
@@ -1238,11 +1238,11 @@ func TestSequenceStreamCloseWithOpenStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new sequence: %v", err)
 	}
-	stream, err := seq.Stream(context.Background(), "x")
+	stream, err := seq.Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || !ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || !ok {
 		t.Fatalf("first next: ok=%v err=%v", ok, err)
 	}
 	if err := stream.Close(); !errors.Is(err, errTestSentinel) {

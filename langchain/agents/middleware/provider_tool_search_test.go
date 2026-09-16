@@ -18,7 +18,7 @@ func TestProviderToolSearchMiddlewareDefersSearchableTools(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		if len(request.Tools) != 3 {
 			t.Fatalf("tool count mismatch: %#v", request.Tools)
 		}
@@ -51,7 +51,7 @@ func TestProviderToolSearchMiddlewarePassesThroughWhenNothingDeferred(t *testing
 		t.Fatalf("new request: %v", err)
 	}
 
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		if len(request.Tools) != 1 {
 			t.Fatalf("tool count mismatch: %#v", request.Tools)
 		}
@@ -72,7 +72,7 @@ func TestProviderToolSearchMiddlewareRejectsUnknownSearchableTool(t *testing.T) 
 		t.Fatalf("new request: %v", err)
 	}
 
-	_, err = middleware.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "not bound") {
@@ -90,7 +90,7 @@ func TestProviderToolSearchMiddlewareRejectsUnsupportedProvider(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	_, err = middleware.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires a provider") {
@@ -108,7 +108,7 @@ func TestProviderToolSearchMiddlewareAnthropicSpec(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		spec := request.Tools[1].(map[string]any)
 		if spec["type"] != "tool_search_tool_bm25_20251119" || spec["name"] != "tool_search_tool_bm25" {
 			t.Fatalf("anthropic spec mismatch: %#v", spec)

@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -15,7 +14,7 @@ import (
 // shape, Python's checkpoints-mode contract) with non-empty Values.
 func TestStreamCheckpointsMode(t *testing.T) {
 	cg := streamLinearGraph(t, WithCheckpointer(checkpoint.NewMemorySaver()))
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Options: Options{ThreadID: "t"}, Modes: []StreamMode{StreamCheckpoints}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -60,7 +59,7 @@ func TestStreamTasksMode(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Modes: []StreamMode{StreamTasks}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -104,7 +103,7 @@ func TestStreamTasksMode(t *testing.T) {
 // modes instead of rejecting them as unknown.
 func TestStreamCheckpointsTasksNotRejected(t *testing.T) {
 	cg := streamLinearGraph(t)
-	if _, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	if _, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Modes: []StreamMode{StreamCheckpoints, StreamTasks}})); err != nil {
 		t.Fatalf("Stream() rejected checkpoints/tasks modes: %v", err)
 	}

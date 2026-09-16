@@ -41,10 +41,10 @@ func TestOutputParserExceptionSatisfiesErrorsAPI(t *testing.T) {
 	if !errors.Is(ope, root) {
 		t.Fatal("errors.Is(ope, root) = false, want true")
 	}
-	// errors.As must extract *OutputParserException.
-	var target *lcerrors.OutputParserException
-	if !errors.As(ope, &target) {
-		t.Fatal("errors.As(ope, &target) = false, want true")
+	// errors.AsType must extract *OutputParserException.
+	target, ok := errors.AsType[*lcerrors.OutputParserException](ope)
+	if !ok {
+		t.Fatal("errors.AsType(ope) = false, want true")
 	}
 	if target.Err != root {
 		t.Fatalf("target.Err = %v, want %v", target.Err, root)
@@ -52,9 +52,8 @@ func TestOutputParserExceptionSatisfiesErrorsAPI(t *testing.T) {
 
 	// Both behaviors must survive an additional wrapping layer.
 	wrapped := fmt.Errorf("context: %w", ope)
-	var target2 *lcerrors.OutputParserException
-	if !errors.As(wrapped, &target2) {
-		t.Fatal("errors.As(wrapped, &target2) = false, want true")
+	if _, ok := errors.AsType[*lcerrors.OutputParserException](wrapped); !ok {
+		t.Fatal("errors.AsType(wrapped) = false, want true")
 	}
 	if !errors.Is(wrapped, root) {
 		t.Fatal("errors.Is(wrapped, root) = false, want true")
@@ -90,8 +89,8 @@ func TestLangChainException(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", got, "something went wrong")
 	}
 
-	var target *lcerrors.LangChainException
-	if !errors.As(err, &target) {
+	target, ok := errors.AsType[*lcerrors.LangChainException](err)
+	if !ok {
 		t.Fatal("errors.As into *LangChainException = false, want true")
 	}
 	if target.Message != "something went wrong" {
@@ -110,8 +109,8 @@ func TestContextOverflowError(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", got, "input exceeds context window")
 	}
 
-	var target *lcerrors.ContextOverflowError
-	if !errors.As(err, &target) {
+	target, ok := errors.AsType[*lcerrors.ContextOverflowError](err)
+	if !ok {
 		t.Fatal("errors.As into *ContextOverflowError = false, want true")
 	}
 	if target.Message != "input exceeds context window" {
@@ -138,8 +137,8 @@ func TestJSONParserReturnsOutputParserException(t *testing.T) {
 		t.Fatal("expected parse error")
 	}
 
-	var target *lcerrors.OutputParserException
-	if !errors.As(err, &target) {
+	target, ok := errors.AsType[*lcerrors.OutputParserException](err)
+	if !ok {
 		t.Fatalf("errors.As into *lcerrors.OutputParserException = false, got %T: %v", err, err)
 	}
 	if target.LLMOutput != "{bad json}" {

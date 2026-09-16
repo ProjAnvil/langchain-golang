@@ -145,8 +145,7 @@ func TestDeltaOverwrite(t *testing.T) {
 			NewOverwrite([]int{10}),
 			NewOverwrite([]int{20}),
 		})
-		var iu *InvalidUpdateError
-		if !errors.As(err, &iu) {
+		if _, ok := errors.AsType[*InvalidUpdateError](err); !ok {
 			t.Fatalf("Update(two Overwrites) error = %v, want *InvalidUpdateError", err)
 		}
 	})

@@ -25,7 +25,7 @@ func TestToolRetryMiddlewareRetriesUntilSuccess(t *testing.T) {
 	}
 
 	calls := 0
-	response, err := retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	response, err := retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		calls++
 		if calls < 3 {
 			return messages.Message{}, errors.New("temporary")
@@ -56,7 +56,7 @@ func TestToolRetryMiddlewareSkipsUnmatchedTool(t *testing.T) {
 	}
 
 	calls := 0
-	_, err = retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "calculator", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err = retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "calculator", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		calls++
 		return messages.Message{}, errors.New("not retried")
 	})
@@ -87,7 +87,7 @@ func TestToolRetryMiddlewareToolInstances(t *testing.T) {
 	}
 
 	calls := 0
-	_, err = retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err = retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		calls++
 		return messages.Message{}, errors.New("temporary")
 	})
@@ -99,7 +99,7 @@ func TestToolRetryMiddlewareToolInstances(t *testing.T) {
 	}
 
 	calls = 0
-	_, err = retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "calculator", ID: "call_2"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err = retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "calculator", ID: "call_2"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		calls++
 		return messages.Message{}, errors.New("not retried")
 	})
@@ -119,7 +119,7 @@ func TestToolRetryMiddlewareFailureContinuesWithToolMessage(t *testing.T) {
 		t.Fatalf("new retry middleware: %v", err)
 	}
 
-	response, err := retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	response, err := retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, errors.New("down")
 	})
 	if err != nil {
@@ -146,7 +146,7 @@ func TestToolRetryMiddlewareOnFailureErrorReraises(t *testing.T) {
 		t.Fatalf("new retry middleware: %v", err)
 	}
 
-	_, err = retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err = retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, wantErr
 	})
 	if !errors.Is(err, wantErr) {

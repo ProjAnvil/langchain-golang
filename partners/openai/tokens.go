@@ -218,11 +218,11 @@ func imageBlockSize(block messages.ImageBlock) (width, height int, ok bool) {
 // data URLs ("data:image/png;base64,...").
 func base64ImageSize(data string) (int, int, bool) {
 	if strings.HasPrefix(data, "data:") {
-		comma := strings.Index(data, ",")
-		if comma < 0 {
+		_, payload, found := strings.Cut(data, ",")
+		if !found {
 			return 0, 0, false
 		}
-		data = data[comma+1:]
+		data = payload
 	}
 	raw, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {

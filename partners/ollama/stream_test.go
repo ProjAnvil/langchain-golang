@@ -1,7 +1,6 @@
 package ollama
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -34,7 +33,7 @@ func TestChatModelStreamTextDeltas(t *testing.T) {
 		modelconfig.WithModel("llama3"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -48,7 +47,7 @@ func TestChatModelStreamTextDeltas(t *testing.T) {
 	}
 	var content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -88,7 +87,7 @@ func TestChatModelStreamProtocolEvents(t *testing.T) {
 		modelconfig.WithModel("llama3"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -98,7 +97,7 @@ func TestChatModelStreamProtocolEvents(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -169,7 +168,7 @@ func TestChatModelStreamMultipleToolCalls(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("compute")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -180,7 +179,7 @@ func TestChatModelStreamMultipleToolCalls(t *testing.T) {
 
 	var last messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -229,7 +228,7 @@ func TestChatModelStreamToolCalls(t *testing.T) {
 		modelconfig.WithModel("llama3"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("add")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -240,7 +239,7 @@ func TestChatModelStreamToolCalls(t *testing.T) {
 
 	var last messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -309,7 +308,7 @@ func TestChatModelStreamReasoning(t *testing.T) {
 		WithReasoning(true),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("how many r")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -321,7 +320,7 @@ func TestChatModelStreamReasoning(t *testing.T) {
 	var content string
 	var reasoning string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -367,7 +366,7 @@ func TestChatModelStreamSkipsLoadOnlyChunk(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -375,7 +374,7 @@ func TestChatModelStreamSkipsLoadOnlyChunk(t *testing.T) {
 
 	var content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -402,7 +401,7 @@ func TestChatModelStreamHTTPError(t *testing.T) {
 		modelconfig.WithMaxRetries(0),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -424,14 +423,14 @@ func TestChatModelStreamMalformedChunk(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		_, _ = fmt.Fprint(w, `{"model":"llama3","created_at":"t1","message":{"role":"assistant","content":"ok"},"done":false}`+"\n")
-		_, _ = fmt.Fprint(w, `{not valid json}` + "\n")
+		_, _ = fmt.Fprint(w, `{not valid json}`+"\n")
 	}))
 	defer server.Close()
 
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -442,7 +441,7 @@ func TestChatModelStreamMalformedChunk(t *testing.T) {
 
 	var streamErr error
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			streamErr = err
 			break

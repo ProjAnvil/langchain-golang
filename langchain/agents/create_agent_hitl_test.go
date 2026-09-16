@@ -60,7 +60,7 @@ func TestCreateAgentHITLPauseShape(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	values, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+	values, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first invoke: %v", err)
@@ -111,7 +111,7 @@ func TestCreateAgentHITLPauseShape(t *testing.T) {
 
 	// Approve through Agent.Resume: only the hitl node re-runs, the tool
 	// executes, and the model's SECOND call is a fresh one after the tool.
-	values, interrupts, err = agent.Resume(context.Background(), graphpkg.Options{
+	values, interrupts, err = agent.Resume(t.Context(), graphpkg.Options{
 		ThreadID: "t1",
 		Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}}},
 	})
@@ -157,12 +157,12 @@ func TestCreateAgentHitlMintedIDsUniqueForIdenticalModelCalls(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	first, _, err := agent.InvokeWithStateOptions(context.Background(),
+	first, _, err := agent.InvokeWithStateOptions(t.Context(),
 		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first invoke: %v", err)
 	}
-	second, _, err := agent.InvokeWithStateOptions(context.Background(),
+	second, _, err := agent.InvokeWithStateOptions(t.Context(),
 		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t2"})
 	if err != nil {
 		t.Fatalf("second invoke: %v", err)
@@ -201,7 +201,6 @@ func TestMintAIMessageIDsMonotonicFactor(t *testing.T) {
 	}
 }
 
-
 // TestCreateAgentHITLDecisionBranches (design §6.5): approve, edit, reject,
 // and respond each applied to the committed AI message on resume.
 func TestCreateAgentHITLDecisionBranches(t *testing.T) {
@@ -221,12 +220,12 @@ func TestCreateAgentHITLDecisionBranches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil || len(interrupts) != 1 {
 			t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 		}
-		values, _, err := agent.Resume(context.Background(), graphpkg.Options{
+		values, _, err := agent.Resume(t.Context(), graphpkg.Options{
 			ThreadID: "t1",
 			Resume: middleware.HITLResponse{Decisions: []middleware.Decision{{
 				Type:         middleware.DecisionEdit,
@@ -270,12 +269,12 @@ func TestCreateAgentHITLDecisionBranches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil || len(interrupts) != 1 {
 			t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 		}
-		values, _, err := agent.Resume(context.Background(), graphpkg.Options{
+		values, _, err := agent.Resume(t.Context(), graphpkg.Options{
 			ThreadID: "t1",
 			Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionReject, Message: "not allowed"}}},
 		})
@@ -324,12 +323,12 @@ func TestCreateAgentHITLDecisionBranches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil || len(interrupts) != 1 {
 			t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 		}
-		values, _, err := agent.Resume(context.Background(), graphpkg.Options{
+		values, _, err := agent.Resume(t.Context(), graphpkg.Options{
 			ThreadID: "t1",
 			Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionRespond, Message: "human answer"}}},
 		})
@@ -373,7 +372,7 @@ func TestCreateAgentHITLMixedBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+	_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first invoke: %v", err)
@@ -388,7 +387,7 @@ func TestCreateAgentHITLMixedBatch(t *testing.T) {
 	if len(request.ActionRequests) != 2 {
 		t.Fatalf("expected both calls in the request, got %#v", request.ActionRequests)
 	}
-	values, _, err := agent.Resume(context.Background(), graphpkg.Options{
+	values, _, err := agent.Resume(t.Context(), graphpkg.Options{
 		ThreadID: "t1",
 		Resume: middleware.HITLResponse{Decisions: []middleware.Decision{
 			{Type: middleware.DecisionApprove},
@@ -438,14 +437,14 @@ func TestCreateAgentHITLNilResumeRepauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+	_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 	if err != nil || len(interrupts) != 1 {
 		t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 	}
 	firstID := interrupts[0].ID
 
-	values, interrupts, err := agent.Resume(context.Background(), graphpkg.Options{ThreadID: "t1"})
+	values, interrupts, err := agent.Resume(t.Context(), graphpkg.Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("nil resume: %v", err)
 	}
@@ -462,7 +461,7 @@ func TestCreateAgentHITLNilResumeRepauses(t *testing.T) {
 	}
 
 	// A subsequent valued resume still completes.
-	_, interrupts, err = agent.Resume(context.Background(), graphpkg.Options{
+	_, interrupts, err = agent.Resume(t.Context(), graphpkg.Options{
 		ThreadID: "t1",
 		Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}}},
 	})
@@ -500,12 +499,12 @@ func TestCreateAgentHITLResumeValidation(t *testing.T) {
 
 	t.Run("decision count mismatch", func(t *testing.T) {
 		agent := newAgent(t)
-		_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil || len(interrupts) != 1 {
 			t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 		}
-		_, _, err = agent.Resume(context.Background(), graphpkg.Options{
+		_, _, err = agent.Resume(t.Context(), graphpkg.Options{
 			ThreadID: "t1",
 			Resume:   middleware.HITLResponse{}, // zero decisions for one interrupted call
 		})
@@ -516,12 +515,12 @@ func TestCreateAgentHITLResumeValidation(t *testing.T) {
 
 	t.Run("disallowed decision type", func(t *testing.T) {
 		agent := newAgent(t)
-		_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil || len(interrupts) != 1 {
 			t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 		}
-		_, _, err = agent.Resume(context.Background(), graphpkg.Options{
+		_, _, err = agent.Resume(t.Context(), graphpkg.Options{
 			ThreadID: "t1",
 			Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionReject}}},
 		})
@@ -532,12 +531,12 @@ func TestCreateAgentHITLResumeValidation(t *testing.T) {
 
 	t.Run("undecodable resume value", func(t *testing.T) {
 		agent := newAgent(t)
-		_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil || len(interrupts) != 1 {
 			t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 		}
-		_, _, err = agent.Resume(context.Background(), graphpkg.Options{ThreadID: "t1", Resume: "yes"})
+		_, _, err = agent.Resume(t.Context(), graphpkg.Options{ThreadID: "t1", Resume: "yes"})
 		if err == nil || !strings.Contains(err.Error(), "cannot decode HITL response") {
 			t.Fatalf("expected decode error, got %v", err)
 		}
@@ -563,7 +562,7 @@ func TestCreateAgentHITLMintsAIID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	values, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+	values, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 	if err != nil || len(interrupts) != 1 {
 		t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
@@ -574,7 +573,7 @@ func TestCreateAgentHITLMintsAIID(t *testing.T) {
 	}
 	mintedID := pausedMsgs[1].ID
 
-	values, _, err = agent.Resume(context.Background(), graphpkg.Options{
+	values, _, err = agent.Resume(t.Context(), graphpkg.Options{
 		ThreadID: "t1",
 		Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionReject}}},
 	})
@@ -622,12 +621,12 @@ func TestCreateAgentHITLReturnDirectAndStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil || len(interrupts) != 1 {
 			t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
 		}
-		values, interrupts, err := agent.Resume(context.Background(), graphpkg.Options{
+		values, interrupts, err := agent.Resume(t.Context(), graphpkg.Options{
 			ThreadID: "t1",
 			Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}}},
 		})
@@ -666,7 +665,7 @@ func TestCreateAgentHITLReturnDirectAndStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		values, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+		values, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 			[]messages.Message{messages.Human("the answer?")}, graphpkg.Options{ThreadID: "t1"})
 		if err != nil {
 			t.Fatalf("invoke: %v", err)
@@ -703,7 +702,7 @@ func TestCreateAgentHITLWithInterruptBeforeTools(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	_, interrupts, err := agent.InvokeWithStateOptions(context.Background(),
+	_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
 		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
 	if err != nil || len(interrupts) != 1 || !strings.HasPrefix(interrupts[0].ID, "hitl-") {
 		t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
@@ -711,7 +710,7 @@ func TestCreateAgentHITLWithInterruptBeforeTools(t *testing.T) {
 
 	// Approve: the hitl node completes, then the run pauses AGAIN before the
 	// tools node dispatches.
-	_, interrupts, err = agent.Resume(context.Background(), graphpkg.Options{
+	_, interrupts, err = agent.Resume(t.Context(), graphpkg.Options{
 		ThreadID: "t1",
 		Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}}},
 	})
@@ -730,7 +729,7 @@ func TestCreateAgentHITLWithInterruptBeforeTools(t *testing.T) {
 
 	// Boundary interrupts resume with a nil value (no in-node interrupt to
 	// answer).
-	values, interrupts, err := agent.Resume(context.Background(), graphpkg.Options{ThreadID: "t1"})
+	values, interrupts, err := agent.Resume(t.Context(), graphpkg.Options{ThreadID: "t1"})
 	if err != nil || len(interrupts) != 0 {
 		t.Fatalf("boundary resume: %v interrupts=%+v", err, interrupts)
 	}

@@ -90,7 +90,7 @@ func TestModelFallbackMiddlewareStripsCacheControlForNonAnthropicFallback(t *tes
 
 	var fallbackReq ModelRequest
 	calls := 0
-	_, err = fallback.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = fallback.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if calls == 0 {
 			calls++
 			return ModelResponse{}, errors.New("primary failed")
@@ -118,7 +118,7 @@ func TestModelFallbackMiddlewareKeepsCacheControlForAnthropicFallback(t *testing
 
 	var fallbackReq ModelRequest
 	calls := 0
-	_, err = fallback.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = fallback.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if calls == 0 {
 			calls++
 			return ModelResponse{}, errors.New("primary failed")
@@ -154,7 +154,7 @@ func TestModelFallbackMiddlewareResolvesStringFallbackSpec(t *testing.T) {
 
 	var fallbackModel any
 	calls := 0
-	_, err = fallback.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = fallback.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if calls == 0 {
 			calls++
 			return ModelResponse{}, errors.New("primary failed")

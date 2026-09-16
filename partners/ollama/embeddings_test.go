@@ -1,7 +1,6 @@
 package ollama
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +33,7 @@ func TestEmbeddingsEmbedDocuments(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("nomic-embed-text"),
 	)
-	vectors, err := embeddings.EmbedDocuments(context.Background(), []string{"hello", "world"})
+	vectors, err := embeddings.EmbedDocuments(t.Context(), []string{"hello", "world"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -63,7 +62,7 @@ func TestEmbeddingsEmbedQuery(t *testing.T) {
 	defer server.Close()
 
 	embeddings := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	vector, err := embeddings.EmbedQuery(context.Background(), "query text")
+	vector, err := embeddings.EmbedQuery(t.Context(), "query text")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
@@ -86,7 +85,7 @@ func TestEmbeddingsDimensionsAndKeepAlive(t *testing.T) {
 		WithEmbeddingDimensions(768),
 		WithKeepAlive("10m"),
 	)
-	_, err := embeddings.EmbedDocuments(context.Background(), []string{"hi"})
+	_, err := embeddings.EmbedDocuments(t.Context(), []string{"hi"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -101,7 +100,7 @@ func TestEmbeddingsDimensionsAndKeepAlive(t *testing.T) {
 
 func TestEmbeddingsEmptyInputReturnsNil(t *testing.T) {
 	embeddings := NewEmbeddings(modelconfig.WithBaseURL("http://unreachable.invalid"))
-	vectors, err := embeddings.EmbedDocuments(context.Background(), nil)
+	vectors, err := embeddings.EmbedDocuments(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -121,7 +120,7 @@ func TestEmbeddingsPropagatesError(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithMaxRetries(0),
 	)
-	_, err := embeddings.EmbedDocuments(context.Background(), []string{"hi"})
+	_, err := embeddings.EmbedDocuments(t.Context(), []string{"hi"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -134,7 +133,7 @@ func TestEmbeddingsCountMismatch(t *testing.T) {
 	defer server.Close()
 
 	embeddings := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	_, err := embeddings.EmbedDocuments(context.Background(), []string{"a", "b"})
+	_, err := embeddings.EmbedDocuments(t.Context(), []string{"a", "b"})
 	if err == nil {
 		t.Fatal("expected count mismatch error")
 	}
@@ -165,7 +164,7 @@ func TestEmbeddingsTemperatureOption(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithTemperature(0.3),
 	)
-	if _, err := embeddings.EmbedDocuments(context.Background(), []string{"hi"}); err != nil {
+	if _, err := embeddings.EmbedDocuments(t.Context(), []string{"hi"}); err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
 	if got.Options["temperature"] != 0.3 {
@@ -186,7 +185,7 @@ func TestEmbeddingsTemperatureMergesWithSamplingOptions(t *testing.T) {
 		modelconfig.WithTemperature(0.3),
 		WithTopP(0.8),
 	)
-	if _, err := embeddings.EmbedDocuments(context.Background(), []string{"hi"}); err != nil {
+	if _, err := embeddings.EmbedDocuments(t.Context(), []string{"hi"}); err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
 	if got.Options["temperature"] != 0.3 {

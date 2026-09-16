@@ -1,7 +1,6 @@
 package outputparser
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -11,7 +10,7 @@ import (
 
 func TestStringParser(t *testing.T) {
 	parser := StringParser{}
-	got, err := parser.Parse(context.Background(), "hello")
+	got, err := parser.Parse(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -22,7 +21,7 @@ func TestStringParser(t *testing.T) {
 
 func TestJSONParser(t *testing.T) {
 	parser := NewJSONParser[map[string]any]("")
-	got, err := parser.Parse(context.Background(), `{"name":"Ada","age":37}`)
+	got, err := parser.Parse(t.Context(), `{"name":"Ada","age":37}`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -40,7 +39,7 @@ type jsonNumber interface {
 
 func TestJSONParserInvalid(t *testing.T) {
 	parser := NewJSONParser[map[string]any]("")
-	_, err := parser.Parse(context.Background(), `{bad json}`)
+	_, err := parser.Parse(t.Context(), `{bad json}`)
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
@@ -48,14 +47,14 @@ func TestJSONParserInvalid(t *testing.T) {
 
 func TestJSONParserMarkdownAndResult(t *testing.T) {
 	parser := NewJSONParser[map[string]any]("")
-	got, err := parser.Parse(context.Background(), "Here:\n```json\n{\"name\":\"Ada\"}\n```")
+	got, err := parser.Parse(t.Context(), "Here:\n```json\n{\"name\":\"Ada\"}\n```")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got["name"] != "Ada" {
 		t.Fatalf("got %#v", got)
 	}
-	result, ok, err := parser.ParseResult(context.Background(), []outputs.Generation{
+	result, ok, err := parser.ParseResult(t.Context(), []outputs.Generation{
 		outputs.NewGeneration(`{"answer": 42}`, nil),
 	}, false)
 	if err != nil || !ok {
@@ -64,7 +63,7 @@ func TestJSONParserMarkdownAndResult(t *testing.T) {
 	if result["answer"].(jsonNumber).String() != "42" {
 		t.Fatalf("result %#v", result)
 	}
-	partial, ok, err := parser.ParseResult(context.Background(), []outputs.Generation{
+	partial, ok, err := parser.ParseResult(t.Context(), []outputs.Generation{
 		outputs.NewGeneration(`{"answer": 42`, nil),
 	}, true)
 	if err != nil || !ok {
@@ -97,7 +96,7 @@ func TestJSONParserFormatInstructionsWithSchema(t *testing.T) {
 
 func TestCommaSeparatedListParser(t *testing.T) {
 	parser := CommaSeparatedListParser{}
-	got, err := parser.Parse(context.Background(), `foo, "bar, baz", qux`)
+	got, err := parser.Parse(t.Context(), `foo, "bar, baz", qux`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -114,7 +113,7 @@ func TestCommaSeparatedListParser(t *testing.T) {
 
 func TestNumberedListParser(t *testing.T) {
 	parser := NumberedListParser{}
-	got, err := parser.Parse(context.Background(), "1. alpha\n2. beta\nnot an item")
+	got, err := parser.Parse(t.Context(), "1. alpha\n2. beta\nnot an item")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -125,7 +124,7 @@ func TestNumberedListParser(t *testing.T) {
 
 func TestMarkdownListParser(t *testing.T) {
 	parser := MarkdownListParser{}
-	got, err := parser.Parse(context.Background(), "- alpha\n* beta\nplain")
+	got, err := parser.Parse(t.Context(), "- alpha\n* beta\nplain")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -136,7 +135,7 @@ func TestMarkdownListParser(t *testing.T) {
 
 func TestXMLParser(t *testing.T) {
 	parser := XMLParser{Tags: []string{"foo", "bar", "baz"}}
-	got, err := parser.Parse(context.Background(), "```xml\n<foo><bar><baz>ok</baz></bar></foo>\n```")
+	got, err := parser.Parse(t.Context(), "```xml\n<foo><bar><baz>ok</baz></bar></foo>\n```")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -150,7 +149,7 @@ func TestXMLParser(t *testing.T) {
 
 func TestXMLParserInvalid(t *testing.T) {
 	parser := XMLParser{}
-	_, err := parser.Parse(context.Background(), "<foo><bar></foo>")
+	_, err := parser.Parse(t.Context(), "<foo><bar></foo>")
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
@@ -180,7 +179,7 @@ func TestParserFormatInstructions(t *testing.T) {
 
 func TestCommaSeparatedListParserFallback(t *testing.T) {
 	parser := CommaSeparatedListParser{}
-	got, err := parser.Parse(context.Background(), `a, "unclosed, c`)
+	got, err := parser.Parse(t.Context(), `a, "unclosed, c`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -197,7 +196,7 @@ func TestCommaSeparatedListParserFallback(t *testing.T) {
 
 func TestJSONParserParseResultEmpty(t *testing.T) {
 	parser := NewJSONParser[map[string]any]("")
-	_, ok, err := parser.ParseResult(context.Background(), nil, false)
+	_, ok, err := parser.ParseResult(t.Context(), nil, false)
 	if err == nil || ok {
 		t.Fatalf("expected error for empty result, ok=%v err=%v", ok, err)
 	}
@@ -205,7 +204,7 @@ func TestJSONParserParseResultEmpty(t *testing.T) {
 
 func TestJSONParserParseResultPartialIncomplete(t *testing.T) {
 	parser := NewJSONParser[map[string]any]("")
-	_, ok, err := parser.ParseResult(context.Background(), []outputs.Generation{
+	_, ok, err := parser.ParseResult(t.Context(), []outputs.Generation{
 		outputs.NewGeneration(`tru`, nil),
 	}, true)
 	if err != nil {
@@ -246,7 +245,7 @@ func TestExtractJSONMarkdown(t *testing.T) {
 
 func TestXMLParserWithEncodingDeclaration(t *testing.T) {
 	parser := XMLParser{}
-	got, err := parser.Parse(context.Background(), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<foo>bar</foo>")
+	got, err := parser.Parse(t.Context(), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<foo>bar</foo>")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -284,7 +283,7 @@ func TestParseXMLNodeErrors(t *testing.T) {
 
 func TestXMLNodeValueWithChildrenAndText(t *testing.T) {
 	parser := XMLParser{}
-	got, err := parser.Parse(context.Background(), "<foo><bar>1</bar>tail</foo>")
+	got, err := parser.Parse(t.Context(), "<foo><bar>1</bar>tail</foo>")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

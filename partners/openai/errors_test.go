@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -21,15 +20,15 @@ func TestInvokeRateLimitedIsTyped(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if !errors.Is(err, lcerrors.ErrRateLimited) {
 		t.Fatalf("invoke err not ErrRateLimited: %v", err)
 	}
 	if errors.Is(err, lcerrors.ErrProvider) {
 		t.Fatal("429 must not match ErrProvider")
 	}
-	var pe *lcerrors.ProviderError
-	if !errors.As(err, &pe) || pe.RetryAfter != 5*time.Second {
+	pe, ok := errors.AsType[*lcerrors.ProviderError](err)
+	if !ok || pe.RetryAfter != 5*time.Second {
 		t.Fatalf("ProviderError RetryAfter = %v", pe)
 	}
 }
@@ -45,7 +44,7 @@ func TestInvokeServerErrorIsTypedProvider(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		modelconfig.WithMaxRetries(0),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if !errors.Is(err, lcerrors.ErrProvider) {
 		t.Fatalf("invoke err not ErrProvider: %v", err)
 	}
@@ -65,7 +64,7 @@ func TestInvokeTimeoutIsTyped(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		func(c *modelconfig.Config) { c.HTTPClient = &http.Client{Timeout: time.Millisecond} },
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if !errors.Is(err, lcerrors.ErrTimeout) {
 		t.Fatalf("invoke err not ErrTimeout: %v", err)
 	}
@@ -78,9 +77,9 @@ func TestStreamRateLimitedIsTyped(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil && stream != nil {
-		_, _, err = stream.Next(context.Background())
+		_, _, err = stream.Next(t.Context())
 	}
 	if !errors.Is(err, lcerrors.ErrRateLimited) {
 		t.Fatalf("stream err not ErrRateLimited: %v", err)

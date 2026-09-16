@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"maps"
 	"reflect"
 	"strings"
@@ -248,7 +247,7 @@ func TestNewPanicsOnNilArgs(t *testing.T) {
 }
 
 func TestNewFromConnStringBadDSN(t *testing.T) {
-	s, err := NewFromConnString(context.Background(), "postgres://%zz", serde.NewJSONSerializer())
+	s, err := NewFromConnString(t.Context(), "postgres://%zz", serde.NewJSONSerializer())
 	if err == nil {
 		t.Fatalf("NewFromConnString with an unparsable DSN = (%v, nil), want an error", s)
 	}
@@ -259,7 +258,7 @@ func TestNewFromConnStringBadDSN(t *testing.T) {
 // pool, so reaching the database would panic instead).
 func TestPutEncodeErrors(t *testing.T) {
 	s := newTestSaver()
-	ctx := context.Background()
+	ctx := t.Context()
 	md := checkpoint.Metadata{}
 
 	t.Run("unversioned composite channel", func(t *testing.T) {
@@ -306,7 +305,7 @@ func TestPutEncodeErrors(t *testing.T) {
 // pool here proves it.
 func TestPutWritesEmptyBatch(t *testing.T) {
 	s := newTestSaver()
-	if err := s.PutWrites(context.Background(), checkpoint.Config{ThreadID: "t1"}, nil, "task-1", ""); err != nil {
+	if err := s.PutWrites(t.Context(), checkpoint.Config{ThreadID: "t1"}, nil, "task-1", ""); err != nil {
 		t.Fatalf("PutWrites with no writes = %v, want nil", err)
 	}
 }

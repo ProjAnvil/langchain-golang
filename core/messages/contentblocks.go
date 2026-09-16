@@ -29,14 +29,14 @@ type Annotation interface {
 
 // Citation annotates a text span citing a document source.
 type Citation struct {
-	Type        string         `json:"type"` // always "citation"
-	ID          string         `json:"id,omitempty"`
-	URL         string         `json:"url,omitempty"`
-	Title       string         `json:"title,omitempty"`
-	StartIndex  *int           `json:"start_index,omitempty"`
-	EndIndex    *int           `json:"end_index,omitempty"`
-	CitedText   string         `json:"cited_text,omitempty"`
-	Extras      map[string]any `json:"extras,omitempty"`
+	Type       string         `json:"type"` // always "citation"
+	ID         string         `json:"id,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	Title      string         `json:"title,omitempty"`
+	StartIndex *int           `json:"start_index,omitempty"`
+	EndIndex   *int           `json:"end_index,omitempty"`
+	CitedText  string         `json:"cited_text,omitempty"`
+	Extras     map[string]any `json:"extras,omitempty"`
 }
 
 // AnnotationType returns the discriminator for Citation.
@@ -62,10 +62,10 @@ func (NonStandardAnnotation) isAnnotation() {}
 
 // TextBlock mirrors Python's TextContentBlock (type="text").
 type TextBlock struct {
-	ID          string       `json:"id,omitempty"`
-	Text        string       `json:"text"`
-	Annotations []Annotation `json:"annotations,omitempty"`
-	Index       any          `json:"index,omitempty"`
+	ID          string         `json:"id,omitempty"`
+	Text        string         `json:"text"`
+	Annotations []Annotation   `json:"annotations,omitempty"`
+	Index       any            `json:"index,omitempty"`
 	Extras      map[string]any `json:"-"`
 }
 
@@ -314,20 +314,20 @@ var (
 // KNOWN_BLOCK_TYPES mirrors Python's KNOWN_BLOCK_TYPES set. Types not in this
 // set are treated as provider-specific (NonStandardContentBlock).
 var KNOWN_BLOCK_TYPES = map[string]bool{
-	"text":                  true,
-	"reasoning":             true,
-	"tool_call":             true,
-	"invalid_tool_call":     true,
-	"tool_call_chunk":       true,
-	"image":                 true,
-	"audio":                 true,
-	"file":                  true,
-	"text-plain":            true,
-	"video":                 true,
-	"server_tool_call":      true,
+	"text":                   true,
+	"reasoning":              true,
+	"tool_call":              true,
+	"invalid_tool_call":      true,
+	"tool_call_chunk":        true,
+	"image":                  true,
+	"audio":                  true,
+	"file":                   true,
+	"text-plain":             true,
+	"video":                  true,
+	"server_tool_call":       true,
 	"server_tool_call_chunk": true,
-	"server_tool_result":    true,
-	"non_standard":          true,
+	"server_tool_result":     true,
+	"non_standard":           true,
 }
 
 // --- Bridge helpers ---

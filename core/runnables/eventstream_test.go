@@ -135,7 +135,7 @@ func (r esChunkSource) OutputSchema() schema.Schema { return schema.String("") }
 
 func TestStreamEventsFuncGoldenSequence(t *testing.T) {
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), esUpper(), "go", runnables.StreamEventOptions{},
+		t.Context(), esUpper(), "go", runnables.StreamEventOptions{},
 	), "")
 	esAssertNames(t, events, "on_chain_start:func", "on_chain_end:func")
 	start, end := events[0], events[1]
@@ -159,7 +159,7 @@ func TestStreamEventsFuncGoldenSequence(t *testing.T) {
 func TestStreamEventsPipeGoldenSequence(t *testing.T) {
 	chain := runnables.Pipe(esDouble(), esUpper())
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "go", runnables.StreamEventOptions{},
+		t.Context(), chain, "go", runnables.StreamEventOptions{},
 	), "")
 	esAssertNames(t, events,
 		"on_chain_start:sequence",
@@ -218,7 +218,7 @@ func TestStreamEventsRetryGoldenSequence(t *testing.T) {
 		t.Fatalf("new retry: %v", err)
 	}
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), retryable, "x", runnables.StreamEventOptions{},
+		t.Context(), retryable, "x", runnables.StreamEventOptions{},
 	), "")
 	esAssertNames(t, events,
 		"on_chain_start:retry",
@@ -245,7 +245,7 @@ func TestStreamEventsWithFallbacksGoldenSequence(t *testing.T) {
 		t.Fatalf("new fallbacks: %v", err)
 	}
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), fb, "x", runnables.StreamEventOptions{},
+		t.Context(), fb, "x", runnables.StreamEventOptions{},
 	), "")
 	esAssertNames(t, events,
 		"on_chain_start:with_fallbacks",
@@ -272,7 +272,7 @@ func TestStreamEventsPickGoldenSequence(t *testing.T) {
 		t.Fatalf("new pick: %v", err)
 	}
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), pick, "x", runnables.StreamEventOptions{},
+		t.Context(), pick, "x", runnables.StreamEventOptions{},
 	), "")
 	esAssertNames(t, events,
 		"on_chain_start:pick",
@@ -287,7 +287,7 @@ func TestStreamEventsPickGoldenSequence(t *testing.T) {
 func TestStreamEventsRouterGoldenSequence(t *testing.T) {
 	router := runnables.NewRouter(map[string]runnables.Runnable[string, string]{"a": esUpper()})
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), router,
+		t.Context(), router,
 		runnables.RouterInput[string]{Key: "a", Input: "x"},
 		runnables.StreamEventOptions{},
 	), "")
@@ -309,14 +309,14 @@ func TestStreamEventsBindIsTransparent(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), bound, "x", runnables.StreamEventOptions{},
+		t.Context(), bound, "x", runnables.StreamEventOptions{},
 	), "")
 	esAssertNames(t, events, "on_chain_start:func", "on_chain_end:func")
 }
 
 func TestStreamEventsFuncErrorYieldsTerminalError(t *testing.T) {
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), esFlakyFunc(99, "boom"), "x", runnables.StreamEventOptions{},
+		t.Context(), esFlakyFunc(99, "boom"), "x", runnables.StreamEventOptions{},
 	), "boom")
 	esAssertNames(t, events, "on_chain_start:func", "on_chain_error:func")
 }
@@ -365,7 +365,7 @@ func (s *esFailStream) Close() error { return nil }
 func TestStreamEventsMidStreamErrorYieldsTerminalError(t *testing.T) {
 	chain := runnables.Pipe(esFailingSource{err: errors.New("wire cut")}, esUpper())
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "ignored", runnables.StreamEventOptions{},
+		t.Context(), chain, "ignored", runnables.StreamEventOptions{},
 	), "wire cut")
 	esAssertNames(t, events,
 		"on_chain_start:sequence",
@@ -394,7 +394,7 @@ func TestStreamEventsEachConcurrentPairing(t *testing.T) {
 		t.Fatalf("new each: %v", err)
 	}
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), each, []string{"a", "b", "c"}, runnables.StreamEventOptions{},
+		t.Context(), each, []string{"a", "b", "c"}, runnables.StreamEventOptions{},
 	), "")
 	if first := events[0]; first.Event != "on_chain_start" || first.Name != "each" {
 		t.Fatalf("first event %s:%s", first.Event, first.Name)
@@ -443,7 +443,7 @@ func TestStreamEventsEachConcurrentPairing(t *testing.T) {
 func TestStreamEventsNoFiltersIncludesEverything(t *testing.T) {
 	chain := runnables.Pipe(esUpper(), esUpper())
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x", runnables.StreamEventOptions{},
+		t.Context(), chain, "x", runnables.StreamEventOptions{},
 	), "")
 	if len(events) != 7 {
 		t.Fatalf("unfiltered stream yielded %d events, want 7: %v", len(events), esNames(events))
@@ -453,7 +453,7 @@ func TestStreamEventsNoFiltersIncludesEverything(t *testing.T) {
 func TestStreamEventsIncludeNamesOR(t *testing.T) {
 	chain := runnables.Pipe(esUpper(), esUpper())
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x",
+		t.Context(), chain, "x",
 		runnables.StreamEventOptions{IncludeNames: []string{"seq:step:1", "seq:step:2"}},
 	), "")
 	esAssertNames(t, events,
@@ -465,7 +465,7 @@ func TestStreamEventsIncludeNamesOR(t *testing.T) {
 func TestStreamEventsExcludeNames(t *testing.T) {
 	chain := runnables.Pipe(esUpper(), esUpper())
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x",
+		t.Context(), chain, "x",
 		runnables.StreamEventOptions{ExcludeNames: []string{"sequence"}},
 	), "")
 	esAssertNames(t, events,
@@ -479,7 +479,7 @@ func TestStreamEventsIncludeTypesByRunType(t *testing.T) {
 		messages.AI("Hi"), messages.AI("!"),
 	))
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), model,
+		t.Context(), model,
 		[]messages.Message{messages.Human("hello")},
 		runnables.StreamEventOptions{IncludeTypes: []string{"chat_model"}},
 	), "")
@@ -489,7 +489,7 @@ func TestStreamEventsIncludeTypesByRunType(t *testing.T) {
 	// The chat model at the root emits no chain runs, so a chain-only filter
 	// sees nothing.
 	chainOnly := esCollect(t, runnables.StreamEvents(
-		context.Background(), model,
+		t.Context(), model,
 		[]messages.Message{messages.Human("hello")},
 		runnables.StreamEventOptions{IncludeTypes: []string{"chain"}},
 	), "")
@@ -501,7 +501,7 @@ func TestStreamEventsIncludeTypesByRunType(t *testing.T) {
 func TestStreamEventsExcludeTypes(t *testing.T) {
 	chain := runnables.Pipe(esUpper(), esUpper())
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x",
+		t.Context(), chain, "x",
 		runnables.StreamEventOptions{ExcludeTypes: []string{"chain"}},
 	), "")
 	if len(events) != 0 {
@@ -512,7 +512,7 @@ func TestStreamEventsExcludeTypes(t *testing.T) {
 func TestStreamEventsIncludeExcludeTags(t *testing.T) {
 	chain := runnables.Pipe(esUpper(), esUpper())
 	all := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x", runnables.StreamEventOptions{},
+		t.Context(), chain, "x", runnables.StreamEventOptions{},
 		runnables.WithTags("red"),
 	), "")
 	for _, event := range all {
@@ -528,7 +528,7 @@ func TestStreamEventsIncludeExcludeTags(t *testing.T) {
 		}
 	}
 	kept := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x",
+		t.Context(), chain, "x",
 		runnables.StreamEventOptions{IncludeTags: []string{"red"}},
 		runnables.WithTags("red"),
 	), "")
@@ -536,7 +536,7 @@ func TestStreamEventsIncludeExcludeTags(t *testing.T) {
 		t.Fatalf("include red kept %d of %d events", len(kept), len(all))
 	}
 	dropped := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x",
+		t.Context(), chain, "x",
 		runnables.StreamEventOptions{ExcludeTags: []string{"red"}},
 		runnables.WithTags("red"),
 	), "")
@@ -544,7 +544,7 @@ func TestStreamEventsIncludeExcludeTags(t *testing.T) {
 		t.Fatalf("exclude red yielded %v", esNames(dropped))
 	}
 	missed := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x",
+		t.Context(), chain, "x",
 		runnables.StreamEventOptions{IncludeTags: []string{"blue"}},
 		runnables.WithTags("red"),
 	), "")
@@ -560,7 +560,7 @@ func TestStreamEventsFilteredRunKeepsSiblingParentIDs(t *testing.T) {
 	}
 	chain := runnables.Pipe(retryable, esUpper())
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), chain, "x",
+		t.Context(), chain, "x",
 		runnables.StreamEventOptions{ExcludeNames: []string{"retry"}},
 	), "")
 	// The retry run's own start/end are filtered out, but its attempts still
@@ -648,7 +648,7 @@ func TestStreamEventsBreakJoinsWithoutLeak(t *testing.T) {
 	before := runtime.NumGoroutine()
 	sawEvent := make(chan runnables.StreamEvent, 1)
 	for event := range runnables.StreamEvents(
-		context.Background(), chain, "ignored", runnables.StreamEventOptions{},
+		t.Context(), chain, "ignored", runnables.StreamEventOptions{},
 	) {
 		sawEvent <- event
 		break // consumer abandons the iterator after the first event
@@ -681,7 +681,7 @@ func TestStreamEventsBreakJoinsWithoutLeak(t *testing.T) {
 	}
 	// The driver is reusable after an abandoned iteration.
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), esUpper(), "again", runnables.StreamEventOptions{},
+		t.Context(), esUpper(), "again", runnables.StreamEventOptions{},
 	), "")
 	esAssertNames(t, events, "on_chain_start:func", "on_chain_end:func")
 }
@@ -689,12 +689,10 @@ func TestStreamEventsBreakJoinsWithoutLeak(t *testing.T) {
 func TestStreamEventsHonorsCallerContextCancellation(t *testing.T) {
 	source := &esBlockingSource{}
 	chain := runnables.Pipe(runnables.Runnable[string, string](source), esUpper())
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	events := make([]runnables.StreamEvent, 0, 1)
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for event := range runnables.StreamEvents(ctx, chain, "ignored", runnables.StreamEventOptions{}) {
 			if event.Event == "" {
 				continue
@@ -706,7 +704,7 @@ func TestStreamEventsHonorsCallerContextCancellation(t *testing.T) {
 			// the pre-cancel events.
 			break
 		}
-	}()
+	})
 	wg.Wait()
 	if !source.closed.Load() {
 		t.Fatal("external cancellation must join the producer goroutine")
@@ -723,7 +721,7 @@ func TestStreamEventsChatModelLegacyChunks(t *testing.T) {
 		messages.AI("Hello"), messages.AI(" world"),
 	))
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), model,
+		t.Context(), model,
 		[]messages.Message{messages.Human("hi")},
 		runnables.StreamEventOptions{},
 	), "")
@@ -764,7 +762,7 @@ func TestStreamEventsChatModelLegacyChunks(t *testing.T) {
 func TestStreamEventsChatModelInvokeOutputPassesThrough(t *testing.T) {
 	model := language.NewFakeChatModel()
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), model,
+		t.Context(), model,
 		[]messages.Message{messages.Human("hi")},
 		runnables.StreamEventOptions{},
 	), "")
@@ -891,7 +889,7 @@ func (s *esV3Stream) Close() error { return nil }
 
 func TestStreamEventsChatModelV3Protocol(t *testing.T) {
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), esV3Model{},
+		t.Context(), esV3Model{},
 		[]messages.Message{messages.Human("hi")},
 		runnables.StreamEventOptions{},
 	), "")
@@ -935,7 +933,7 @@ func TestStreamEventsChatModelV3Protocol(t *testing.T) {
 func TestStreamEventsCallerCallbacksSeeEventsToo(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	events := esCollect(t, runnables.StreamEvents(
-		context.Background(), esUpper(), "x", runnables.StreamEventOptions{},
+		t.Context(), esUpper(), "x", runnables.StreamEventOptions{},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	), "")
 	esAssertNames(t, events, "on_chain_start:func", "on_chain_end:func")

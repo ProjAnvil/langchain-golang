@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,17 +60,17 @@ type StreamEventOptions struct {
 // Includes reports whether event passes the filter; see StreamEventOptions
 // for the include-OR / exclude-AND semantics.
 func (o StreamEventOptions) Includes(event StreamEvent) bool {
-	if len(o.IncludeNames) > 0 && !containsString(o.IncludeNames, event.Name) {
+	if len(o.IncludeNames) > 0 && !slices.Contains(o.IncludeNames, event.Name) {
 		return false
 	}
-	if len(o.ExcludeNames) > 0 && containsString(o.ExcludeNames, event.Name) {
+	if len(o.ExcludeNames) > 0 && slices.Contains(o.ExcludeNames, event.Name) {
 		return false
 	}
 	runType := eventRunType(event.Event)
-	if len(o.IncludeTypes) > 0 && !containsString(o.IncludeTypes, runType) {
+	if len(o.IncludeTypes) > 0 && !slices.Contains(o.IncludeTypes, runType) {
 		return false
 	}
-	if len(o.ExcludeTypes) > 0 && containsString(o.ExcludeTypes, runType) {
+	if len(o.ExcludeTypes) > 0 && slices.Contains(o.ExcludeTypes, runType) {
 		return false
 	}
 	if len(o.IncludeTags) > 0 && !overlapsTags(o.IncludeTags, event.Tags) {
@@ -81,18 +82,9 @@ func (o StreamEventOptions) Includes(event StreamEvent) bool {
 	return true
 }
 
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 func overlapsTags(want []string, tags []string) bool {
 	for _, tag := range tags {
-		if containsString(want, tag) {
+		if slices.Contains(want, tag) {
 			return true
 		}
 	}

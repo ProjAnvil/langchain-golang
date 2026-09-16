@@ -23,13 +23,13 @@ func (s *listErrSaver) List(context.Context, checkpoint.Config, checkpoint.ListO
 func TestGetStateErrors(t *testing.T) {
 	t.Run("saver GetTuple error", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(&getTupleErrSaver{Saver: checkpoint.NewMemorySaver()}))
-		if _, err := cg.GetState(context.Background(), checkpoint.Config{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+		if _, err := cg.GetState(t.Context(), checkpoint.Config{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 			t.Fatalf("GetState() error = %v, want %v", err, errSaverBoom)
 		}
 	})
 	t.Run("pinned checkpoint not found", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(checkpoint.NewMemorySaver()))
-		_, err := cg.GetState(context.Background(), checkpoint.Config{ThreadID: "t", CheckpointID: "nope"})
+		_, err := cg.GetState(t.Context(), checkpoint.Config{ThreadID: "t", CheckpointID: "nope"})
 		if err == nil || !strings.Contains(err.Error(), `"nope"`) {
 			t.Fatalf("GetState() error = %v, want it to name the missing checkpoint", err)
 		}
@@ -38,7 +38,7 @@ func TestGetStateErrors(t *testing.T) {
 
 func TestGetStateHistoryListError(t *testing.T) {
 	cg := compileLinear(t, noopNode, WithCheckpointer(&listErrSaver{Saver: checkpoint.NewMemorySaver()}))
-	if _, err := cg.GetStateHistory(context.Background(), checkpoint.Config{ThreadID: "t"}, checkpoint.ListOptions{}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.GetStateHistory(t.Context(), checkpoint.Config{ThreadID: "t"}, checkpoint.ListOptions{}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("GetStateHistory() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -46,30 +46,30 @@ func TestGetStateHistoryListError(t *testing.T) {
 func TestUpdateStateErrors(t *testing.T) {
 	t.Run("saver GetTuple error", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(&getTupleErrSaver{Saver: checkpoint.NewMemorySaver()}))
-		if _, err := cg.UpdateState(context.Background(), checkpoint.Config{ThreadID: "t"}, map[string]any{"x": 1}, "a"); !errors.Is(err, errSaverBoom) {
+		if _, err := cg.UpdateState(t.Context(), checkpoint.Config{ThreadID: "t"}, map[string]any{"x": 1}, "a"); !errors.Is(err, errSaverBoom) {
 			t.Fatalf("UpdateState() error = %v, want %v", err, errSaverBoom)
 		}
 	})
 	t.Run("no checkpoint for thread", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(checkpoint.NewMemorySaver()))
-		_, err := cg.UpdateState(context.Background(), checkpoint.Config{ThreadID: "t"}, map[string]any{"x": 1}, "a")
+		_, err := cg.UpdateState(t.Context(), checkpoint.Config{ThreadID: "t"}, map[string]any{"x": 1}, "a")
 		if err == nil || !strings.Contains(err.Error(), "no checkpoint found") {
 			t.Fatalf("UpdateState() error = %v, want a no-checkpoint error", err)
 		}
 	})
 	t.Run("pinned checkpoint not found", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(checkpoint.NewMemorySaver()))
-		_, err := cg.UpdateState(context.Background(), checkpoint.Config{ThreadID: "t", CheckpointID: "nope"}, map[string]any{"x": 1}, "a")
+		_, err := cg.UpdateState(t.Context(), checkpoint.Config{ThreadID: "t", CheckpointID: "nope"}, map[string]any{"x": 1}, "a")
 		if err == nil || !strings.Contains(err.Error(), `"nope"`) {
 			t.Fatalf("UpdateState() error = %v, want it to name the missing checkpoint", err)
 		}
 	})
 	t.Run("applyWrites error", func(t *testing.T) {
 		cg := newErrUpdateChannelGraph(t, checkpoint.NewMemorySaver())
-		if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
+		if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
 			t.Fatalf("InvokeWithOptions() error = %v", err)
 		}
-		if _, err := cg.UpdateState(context.Background(), checkpoint.Config{ThreadID: "t"}, map[string]any{"bad": 1}, "a"); !errors.Is(err, errSaverBoom) {
+		if _, err := cg.UpdateState(t.Context(), checkpoint.Config{ThreadID: "t"}, map[string]any{"bad": 1}, "a"); !errors.Is(err, errSaverBoom) {
 			t.Fatalf("UpdateState() error = %v, want %v", err, errSaverBoom)
 		}
 	})
@@ -85,10 +85,10 @@ func TestUpdateStateErrors(t *testing.T) {
 		}
 		// The run itself fails at staticNext, but only after the input
 		// checkpoint is saved, so the thread has a checkpoint to update.
-		if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err == nil {
+		if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err == nil {
 			t.Fatal("InvokeWithOptions() error = nil, want a no-outgoing-edge error")
 		}
-		if _, err := cg.UpdateState(context.Background(), checkpoint.Config{ThreadID: "t"}, map[string]any{"x": 2}, "a"); err == nil ||
+		if _, err := cg.UpdateState(t.Context(), checkpoint.Config{ThreadID: "t"}, map[string]any{"x": 2}, "a"); err == nil ||
 			!strings.Contains(err.Error(), "no outgoing edge") {
 			t.Fatalf("UpdateState() error = %v, want a no-outgoing-edge error", err)
 		}
@@ -107,10 +107,10 @@ func TestBulkUpdateStateInnerErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
 		t.Fatalf("InvokeWithOptions() error = %v", err)
 	}
-	_, err = cg.BulkUpdateState(context.Background(), checkpoint.Config{ThreadID: "t"}, [][]BulkUpdate{
+	_, err = cg.BulkUpdateState(t.Context(), checkpoint.Config{ThreadID: "t"}, [][]BulkUpdate{
 		{{Values: map[string]any{"x": 2}, AsNode: "a"}},
 		{{Values: map[string]any{"x": 3}, AsNode: "ghost"}},
 	})
@@ -143,7 +143,7 @@ func deltaSnapshotBlob(t *testing.T, seed []int) any {
 // must rebuild d1 from a plain-value seed at the grandparent plus replayed
 // writes, and d2 from a snapshot blob at the parent plus replayed writes.
 func TestReconstructDeltaChannelsAncestorWalk(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 
 	put := func(parent string, cp checkpoint.Checkpoint) checkpoint.Config {
@@ -226,7 +226,7 @@ func (s *failAncestorTupleSaver) GetTuple(ctx context.Context, cfg checkpoint.Co
 // ancestor lookup stops the parent-chain walk silently: GetState still
 // succeeds with the delta channel left unreconstructed.
 func TestReconstructDeltaChannelsAncestorLoadFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	base := checkpoint.NewMemorySaver()
 	saver := &failAncestorTupleSaver{Saver: base, badID: "cp0"}
 
@@ -269,7 +269,7 @@ func TestReconstructDeltaChannelsAncestorLoadFailure(t *testing.T) {
 // TestReconstructDeltaChannelsCancelledWalk verifies that a cancelled context
 // aborts the parent-chain walk: reconstruction stops at the current tuple.
 func TestReconstructDeltaChannelsCancelledWalk(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 	if _, err := saver.Put(ctx, checkpoint.Config{ThreadID: "t"}, checkpoint.Checkpoint{
 		V: 1, ID: "cp0", TS: time.Now(),

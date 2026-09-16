@@ -3,13 +3,13 @@ package utils
 import (
 	"reflect"
 	"regexp"
-	"sort"
+	"slices"
 	"testing"
 )
 
 func sortedCopy(values []string) []string {
 	out := append([]string(nil), values...)
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

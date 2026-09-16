@@ -138,9 +138,6 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// intPtr returns a pointer to i, for SandboxReadOptions.Limit.
-func intPtr(i int) *int { return &i }
-
 // numberedLines renders format for i in [from, to] and joins with newlines.
 func numberedLines(format string, from, to int) string {
 	lines := make([]string, 0, to-from+1)
@@ -458,7 +455,7 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		backend, root := factory(t)
 		testPath := sandboxPath(root, "limit_test.txt")
 		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Row_%d_content", 1, 100)).Error)
-		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{Limit: intPtr(5)}))
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{Limit: new(5)}))
 		requireContains(t, "content", data.Content, "Row_1_content", "Row_5_content")
 		requireNotContains(t, "content", data.Content, "Row_6_content")
 	})
@@ -467,7 +464,7 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		backend, root := factory(t)
 		testPath := sandboxPath(root, "offset_limit_test.txt")
 		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Row_%d_content", 1, 20)).Error)
-		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 10, Limit: intPtr(5)}))
+		data := requireFileData(t, "read", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 10, Limit: new(5)}))
 		requireContains(t, "content", data.Content, "Row_11_content", "Row_15_content")
 		requireNotContains(t, "content", data.Content, "Row_10_content", "Row_16_content")
 	})
@@ -476,7 +473,7 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		backend, root := factory(t)
 		testPath := sandboxPath(root, "zero_limit.txt")
 		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Line 1\nLine 2\nLine 3").Error)
-		result := backend.Read(ctx, testPath, SandboxReadOptions{Limit: intPtr(0)})
+		result := backend.Read(ctx, testPath, SandboxReadOptions{Limit: new(0)})
 		content := ""
 		if result.FileData != nil {
 			content = result.FileData.Content
@@ -488,7 +485,7 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		backend, root := factory(t)
 		testPath := sandboxPath(root, "offset_beyond.txt")
 		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, "Line 1\nLine 2\nLine 3").Error)
-		result := backend.Read(ctx, testPath, SandboxReadOptions{Offset: 100, Limit: intPtr(10)})
+		result := backend.Read(ctx, testPath, SandboxReadOptions{Offset: 100, Limit: new(10)})
 		content := ""
 		if result.FileData != nil {
 			content = result.FileData.Content
@@ -501,7 +498,7 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		backend, root := factory(t)
 		testPath := sandboxPath(root, "offset_exact.txt")
 		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Line %d", 1, 5)).Error)
-		result := backend.Read(ctx, testPath, SandboxReadOptions{Offset: 5, Limit: intPtr(10)})
+		result := backend.Read(ctx, testPath, SandboxReadOptions{Offset: 5, Limit: new(10)})
 		content := ""
 		if result.FileData != nil {
 			content = result.FileData.Content
@@ -514,13 +511,13 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		backend, root := factory(t)
 		testPath := sandboxPath(root, "large_chunked.txt")
 		requireNoSandboxError(t, "write", backend.Write(ctx, testPath, numberedLines("Line_%04d_content", 0, 999)).Error)
-		first := requireFileData(t, "read first chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 0, Limit: intPtr(100)}))
+		first := requireFileData(t, "read first chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 0, Limit: new(100)}))
 		requireContains(t, "first chunk", first.Content, "Line_0000_content", "Line_0099_content")
 		requireNotContains(t, "first chunk", first.Content, "Line_0100_content")
-		middle := requireFileData(t, "read middle chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 500, Limit: intPtr(100)}))
+		middle := requireFileData(t, "read middle chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 500, Limit: new(100)}))
 		requireContains(t, "middle chunk", middle.Content, "Line_0500_content", "Line_0599_content")
 		requireNotContains(t, "middle chunk", middle.Content, "Line_0499_content")
-		last := requireFileData(t, "read last chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 900, Limit: intPtr(100)}))
+		last := requireFileData(t, "read last chunk", backend.Read(ctx, testPath, SandboxReadOptions{Offset: 900, Limit: new(100)}))
 		requireContains(t, "last chunk", last.Content, "Line_0900_content", "Line_0999_content")
 	})
 
@@ -1129,7 +1126,7 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 			" | control-ish \\r \\n" +
 			" | suffix"
 		lines := make([]string, 0, 2500)
-		for i := 0; i < 2500; i++ {
+		for i := range 2500 {
 			lines = append(lines, fmt.Sprintf("%04d:%s", i, line))
 		}
 		content := strings.Join(lines, "\n")
@@ -1138,7 +1135,7 @@ func RunSandboxConformance(t *testing.T, factory SandboxFactory) {
 		pages := make([]string, 0, 25)
 		for offset := 0; offset < len(lines); offset += 100 {
 			page := requireFileData(t, "read page", backend.Read(ctx, testPath,
-				SandboxReadOptions{Offset: offset, Limit: intPtr(100)}))
+				SandboxReadOptions{Offset: offset, Limit: new(100)}))
 			requireDeepEqual(t, "page content", page.Content, strings.Join(lines[offset:offset+100], "\n"))
 			pages = append(pages, page.Content)
 		}

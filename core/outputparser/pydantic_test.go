@@ -1,7 +1,6 @@
 package outputparser
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -21,7 +20,7 @@ func TestPydanticParserParsesTypedStruct(t *testing.T) {
 		},
 	}, "name", "age"))
 
-	got, err := parser.Parse(context.Background(), `{"name":"Ada","age":37,"tags":["math","code"]}`)
+	got, err := parser.Parse(t.Context(), `{"name":"Ada","age":37,"tags":["math","code"]}`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -36,7 +35,7 @@ func TestPydanticParserRejectsMissingRequiredField(t *testing.T) {
 		"age":  schema.Integer("person age"),
 	}, "name", "age"))
 
-	_, err := parser.Parse(context.Background(), `{"name":"Ada"}`)
+	_, err := parser.Parse(t.Context(), `{"name":"Ada"}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) {
 		t.Fatalf("err: got %v", err)
 	}
@@ -51,7 +50,7 @@ func TestPydanticParserRejectsWrongType(t *testing.T) {
 		"age":  schema.Integer("person age"),
 	}, "name", "age"))
 
-	_, err := parser.Parse(context.Background(), `{"name":"Ada","age":"old"}`)
+	_, err := parser.Parse(t.Context(), `{"name":"Ada","age":"old"}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) {
 		t.Fatalf("err: got %v", err)
 	}
@@ -74,18 +73,18 @@ func TestPydanticParserEnumConstAndNullable(t *testing.T) {
 		},
 	}, "status", "kind", "note"))
 
-	got, err := parser.Parse(context.Background(), `{"status":"ok","kind":"event","note":null}`)
+	got, err := parser.Parse(t.Context(), `{"status":"ok","kind":"event","note":null}`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if got["note"] != nil {
 		t.Fatalf("note: %#v", got)
 	}
-	_, err = parser.Parse(context.Background(), `{"status":"bad","kind":"event","note":null}`)
+	_, err = parser.Parse(t.Context(), `{"status":"bad","kind":"event","note":null}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) || !strings.Contains(err.Error(), "enum") {
 		t.Fatalf("enum err: %v", err)
 	}
-	_, err = parser.Parse(context.Background(), `{"status":"ok","kind":"other","note":null}`)
+	_, err = parser.Parse(t.Context(), `{"status":"ok","kind":"other","note":null}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) || !strings.Contains(err.Error(), "const") {
 		t.Fatalf("const err: %v", err)
 	}
@@ -112,18 +111,18 @@ func TestPydanticParserStringNumberArrayConstraints(t *testing.T) {
 		},
 	}, "code", "score", "items"))
 
-	if _, err := parser.Parse(context.Background(), `{"code":"AB","score":7.5,"items":["x"]}`); err != nil {
+	if _, err := parser.Parse(t.Context(), `{"code":"AB","score":7.5,"items":["x"]}`); err != nil {
 		t.Fatalf("parse valid: %v", err)
 	}
-	_, err := parser.Parse(context.Background(), `{"code":"a","score":7.5,"items":["x"]}`)
+	_, err := parser.Parse(t.Context(), `{"code":"a","score":7.5,"items":["x"]}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) || !strings.Contains(err.Error(), "at least") {
 		t.Fatalf("string err: %v", err)
 	}
-	_, err = parser.Parse(context.Background(), `{"code":"AB","score":11,"items":["x"]}`)
+	_, err = parser.Parse(t.Context(), `{"code":"AB","score":11,"items":["x"]}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) || !strings.Contains(err.Error(), "maximum") {
 		t.Fatalf("number err: %v", err)
 	}
-	_, err = parser.Parse(context.Background(), `{"code":"AB","score":7.5,"items":["x","y","z"]}`)
+	_, err = parser.Parse(t.Context(), `{"code":"AB","score":7.5,"items":["x","y","z"]}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) || !strings.Contains(err.Error(), "items") {
 		t.Fatalf("array err: %v", err)
 	}
@@ -156,14 +155,14 @@ func TestPydanticParserCombinatorsAndAdditionalProperties(t *testing.T) {
 		"additionalProperties": false,
 	})
 
-	if _, err := parser.Parse(context.Background(), `{"name":"Ada","id":1,"flag":true}`); err != nil {
+	if _, err := parser.Parse(t.Context(), `{"name":"Ada","id":1,"flag":true}`); err != nil {
 		t.Fatalf("parse valid: %v", err)
 	}
-	_, err := parser.Parse(context.Background(), `{"name":"Ada","id":{},"flag":true}`)
+	_, err := parser.Parse(t.Context(), `{"name":"Ada","id":{},"flag":true}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) || !strings.Contains(err.Error(), "anyOf") {
 		t.Fatalf("anyOf err: %v", err)
 	}
-	_, err = parser.Parse(context.Background(), `{"name":"Ada","id":1,"flag":true,"extra":"no"}`)
+	_, err = parser.Parse(t.Context(), `{"name":"Ada","id":1,"flag":true,"extra":"no"}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) || !strings.Contains(err.Error(), "additional") {
 		t.Fatalf("additional err: %v", err)
 	}
@@ -240,7 +239,7 @@ type parsedPerson struct {
 
 func TestPydanticParserInvalidJSON(t *testing.T) {
 	parser := NewPydanticParser[map[string]any](schema.Schema{})
-	_, err := parser.Parse(context.Background(), `not json at all`)
+	_, err := parser.Parse(t.Context(), `not json at all`)
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
@@ -252,7 +251,7 @@ func TestPydanticParserInvalidJSON(t *testing.T) {
 func TestPydanticParserDecodeTypedError(t *testing.T) {
 	// Empty schema passes validation, but decoding into the typed struct fails.
 	parser := NewPydanticParser[parsedPerson](schema.Schema{})
-	_, err := parser.Parse(context.Background(), `{"name":"Ada","age":"old"}`)
+	_, err := parser.Parse(t.Context(), `{"name":"Ada","age":"old"}`)
 	if !errors.Is(err, lcerrors.ErrSchemaValidation) {
 		t.Fatalf("err: got %v", err)
 	}

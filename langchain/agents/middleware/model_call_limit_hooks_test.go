@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -45,7 +44,7 @@ func TestModelCallLimitMiddlewareBeforeModelEndBehavior(t *testing.T) {
 	}
 
 	// Below the limits: no command.
-	cmd, err := middleware.BeforeModel(context.Background(), map[string]any{
+	cmd, err := middleware.BeforeModel(t.Context(), map[string]any{
 		ThreadModelCallCountKey: 1,
 		RunModelCallCountKey:    0,
 	})
@@ -54,7 +53,7 @@ func TestModelCallLimitMiddlewareBeforeModelEndBehavior(t *testing.T) {
 	}
 
 	// Run limit exceeded: jump to end with an AI message.
-	cmd, err = middleware.BeforeModel(context.Background(), map[string]any{
+	cmd, err = middleware.BeforeModel(t.Context(), map[string]any{
 		ThreadModelCallCountKey: 1,
 		RunModelCallCountKey:    1,
 	})
@@ -77,11 +76,10 @@ func TestModelCallLimitMiddlewareBeforeModelErrorBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	_, err = middleware.BeforeModel(context.Background(), map[string]any{
+	_, err = middleware.BeforeModel(t.Context(), map[string]any{
 		ThreadModelCallCountKey: 1,
 	})
-	var limitErr ModelCallLimitExceededError
-	if !errors.As(err, &limitErr) {
+	if _, ok := errors.AsType[ModelCallLimitExceededError](err); !ok {
 		t.Fatalf("expected ModelCallLimitExceededError, got %v", err)
 	}
 }
@@ -92,7 +90,7 @@ func TestModelCallLimitMiddlewareAfterModelIncrements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{
+	update, err := middleware.AfterModel(t.Context(), map[string]any{
 		ThreadModelCallCountKey: int64(2),
 		RunModelCallCountKey:    float64(3),
 	})
@@ -104,7 +102,7 @@ func TestModelCallLimitMiddlewareAfterModelIncrements(t *testing.T) {
 	}
 
 	// Nil state counts from zero.
-	update, err = middleware.AfterModel(context.Background(), nil)
+	update, err = middleware.AfterModel(t.Context(), nil)
 	if err != nil || update[ThreadModelCallCountKey] != 1 {
 		t.Fatalf("nil state mismatch: %#v %v", update, err)
 	}

@@ -24,7 +24,7 @@ func TestModelRetryMiddlewareRetriesUntilSuccess(t *testing.T) {
 		t.Fatalf("new retry middleware: %v", err)
 	}
 
-	response, err := retry.WrapModelCall(context.Background(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	response, err := retry.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		calls++
 		if calls < 3 {
 			return ModelResponse{}, errors.New("temporary")
@@ -56,7 +56,7 @@ func TestModelRetryMiddlewareNonRetryableFailureContinues(t *testing.T) {
 	}
 
 	calls := 0
-	response, err := retry.WrapModelCall(context.Background(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	response, err := retry.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		calls++
 		return ModelResponse{}, errors.New("no retry")
 	})
@@ -81,7 +81,7 @@ func TestModelRetryMiddlewareOnFailureErrorReraises(t *testing.T) {
 		t.Fatalf("new retry middleware: %v", err)
 	}
 
-	_, err = retry.WrapModelCall(context.Background(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = retry.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, wantErr
 	})
 	if !errors.Is(err, wantErr) {
@@ -100,7 +100,7 @@ func TestModelRetryMiddlewareCustomFailureFormatter(t *testing.T) {
 		t.Fatalf("new retry middleware: %v", err)
 	}
 
-	response, err := retry.WrapModelCall(context.Background(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	response, err := retry.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, errors.New("hidden")
 	})
 	if err != nil {

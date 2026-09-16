@@ -12,10 +12,10 @@ import (
 
 // countModelCallsMiddleware counts model invocations (see create_agent_test.go
 // for the original; duplicated here for locality).
-type agentHooksCountModelCalls struct{ calls *int32 }
+type agentHooksCountModelCalls struct{ calls *atomic.Int32 }
 
 func (m agentHooksCountModelCalls) WrapModelCall(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
-	atomic.AddInt32(m.calls, 1)
+	m.calls.Add(1)
 	return handler(ctx, request)
 }
 
@@ -24,7 +24,7 @@ func (m agentHooksCountModelCalls) WrapModelCall(ctx context.Context, request mi
 // before_agent nodes' conditional edge routes jump_to "end" to the exit
 // node): no model call happens, and the hook's other state keys persist.
 func TestBeforeAgentJumpToEnd(t *testing.T) {
-	var modelCalls int32
+	var modelCalls atomic.Int32
 	model := &sequenceModel{responses: []messages.Message{messages.AI("never")}}
 
 	agent, err := CreateAgent(model, nil,
@@ -38,11 +38,11 @@ func TestBeforeAgentJumpToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if n := atomic.LoadInt32(&modelCalls); n != 0 {
+	if n := modelCalls.Load(); n != 0 {
 		t.Fatalf("model called %d times, want 0 (jump_to end must skip the loop)", n)
 	}
 	if got, _ := state["skipped"].(bool); !got {
@@ -68,7 +68,7 @@ func TestBeforeAgentJumpToModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -84,10 +84,10 @@ func TestBeforeAgentJumpToModel(t *testing.T) {
 // jumpBackAfterAgent implements the update-returning AfterAgent shape: on its
 // first run it jumps back into the model loop; afterwards it lets the run
 // finish.
-type jumpBackAfterAgent struct{ ran *int32 }
+type jumpBackAfterAgent struct{ ran *atomic.Int32 }
 
 func (m jumpBackAfterAgent) AfterAgent(ctx context.Context, state map[string]any) (map[string]any, error) {
-	if atomic.AddInt32(m.ran, 1) == 1 {
+	if m.ran.Add(1) == 1 {
 		return map[string]any{"jump_to": "model", "after_ran": true}, nil
 	}
 	return map[string]any{"after_ran": true}, nil
@@ -98,7 +98,7 @@ func (m jumpBackAfterAgent) AfterAgent(ctx context.Context, state map[string]any
 // 1753-1776: the after_agent → END edge carries model_destination =
 // loop_entry_node), and that its state update persists.
 func TestAfterAgentJumpBackToModel(t *testing.T) {
-	var afterRuns int32
+	var afterRuns atomic.Int32
 	model := &sequenceModel{responses: []messages.Message{
 		messages.AI("first"),
 		messages.AI("second"),
@@ -110,11 +110,11 @@ func TestAfterAgentJumpBackToModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if n := atomic.LoadInt32(&afterRuns); n != 2 {
+	if n := afterRuns.Load(); n != 2 {
 		t.Fatalf("after_agent ran %d times, want 2", n)
 	}
 	if n := len(model.invocations); n != 2 {
@@ -141,7 +141,7 @@ func TestAfterAgentUpdateWithoutJump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -159,13 +159,13 @@ func (m jumpAfterAgentUpdate) AfterAgent(ctx context.Context, state map[string]a
 // duplicateNamedMiddleware pairs a Name() with a marker for T12d tests.
 type duplicateNamedMiddleware struct {
 	name  string
-	marks *int32
+	marks *atomic.Int32
 }
 
 func (m duplicateNamedMiddleware) Name() string { return m.name }
 
 func (m duplicateNamedMiddleware) BeforeModel(ctx context.Context, state map[string]any) (map[string]any, error) {
-	atomic.AddInt32(m.marks, 1)
+	m.marks.Add(1)
 	return nil, nil
 }
 
@@ -175,7 +175,7 @@ func (m duplicateNamedMiddleware) BeforeModel(ctx context.Context, state map[str
 // duplicate middleware instances."). Two instances of the same type share the
 // type-derived name, like two instances of one Python middleware class.
 func TestCreateAgentRejectsDuplicateMiddlewareNames(t *testing.T) {
-	var marks int32
+	var marks atomic.Int32
 	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
 
 	_, err := CreateAgent(model, nil, WithAgentMiddleware(
@@ -192,10 +192,10 @@ func TestCreateAgentRejectsDuplicateMiddlewareNames(t *testing.T) {
 
 // noNameAfterModelMiddleware has no Name() method: its middleware name
 // defaults to the Go type name, the analog of Python's class-name default.
-type noNameAfterModelMiddleware struct{ marks *int32 }
+type noNameAfterModelMiddleware struct{ marks *atomic.Int32 }
 
 func (m noNameAfterModelMiddleware) AfterModel(ctx context.Context, state map[string]any) (map[string]any, error) {
-	atomic.AddInt32(m.marks, 1)
+	m.marks.Add(1)
 	return nil, nil
 }
 
@@ -203,7 +203,7 @@ func (m noNameAfterModelMiddleware) AfterModel(ctx context.Context, state map[st
 // instances of the same middleware type (no Name override) are also rejected,
 // mirroring Python where the default name is the class name.
 func TestCreateAgentRejectsDuplicateMiddlewareInstances(t *testing.T) {
-	var marks int32
+	var marks atomic.Int32
 	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
 
 	_, err := CreateAgent(model, nil, WithAgentMiddleware(
@@ -222,7 +222,7 @@ func TestCreateAgentRejectsDuplicateMiddlewareInstances(t *testing.T) {
 // (including distinct Name() values and distinct function middleware) do not
 // trip the duplicate check.
 func TestCreateAgentAllowsDistinctMiddleware(t *testing.T) {
-	var marks1, marks2, marks3 int32
+	var marks1, marks2, marks3 atomic.Int32
 	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
 
 	agent, err := CreateAgent(model, nil, WithAgentMiddleware(
@@ -234,10 +234,10 @@ func TestCreateAgentAllowsDistinctMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("distinct middleware must be accepted: %v", err)
 	}
-	if _, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	_ = marks3
+	_ = &marks3
 }
 
 // TestCreateAgentNamesAIMessages verifies the agent's Name (create_agent
@@ -252,7 +252,7 @@ func TestCreateAgentNamesAIMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestCreateAgentWithoutNameLeavesAIMessageUnnamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

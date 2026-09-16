@@ -977,8 +977,7 @@ func (g *CompiledGraph) InvokeStream(ctx context.Context, input map[string]any, 
 // chain so callers can still recover the command via errors.As. The
 // AddSubgraph wrapper bypasses this by calling run directly.
 func topLevelParentCommandError(err error) error {
-	var pce *ParentCommandError
-	if errors.As(err, &pce) {
+	if _, ok := errors.AsType[*ParentCommandError](err); ok {
 		return fmt.Errorf("graph: Command targeting the parent graph surfaced from the top-level graph, which has no parent: %w", err)
 	}
 	return err

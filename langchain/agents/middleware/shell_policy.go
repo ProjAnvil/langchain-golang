@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -197,7 +197,7 @@ func (d DockerExecutionPolicy) BuildCommand(command []string, workspace string) 
 	for k := range d.Env {
 		envKeys = append(envKeys, k)
 	}
-	sort.Strings(envKeys)
+	slices.Sort(envKeys)
 	for _, k := range envKeys {
 		args = append(args, "-e", k+"="+d.Env[k])
 	}
@@ -299,7 +299,7 @@ func (c CodexSandboxExecutionPolicy) BuildCommand(command []string, _ string) []
 	for k := range c.ConfigOverrides {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	for _, k := range keys {
 		args = append(args, "-c", k+"="+formatCodexOverride(c.ConfigOverrides[k]))
 	}

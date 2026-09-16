@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +13,7 @@ func TestShellToolMiddlewareRunCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "printf hello", false)
+	result, err := middleware.Run(t.Context(), "printf hello", false)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -28,13 +27,13 @@ func TestShellToolMiddlewareValidatesPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	if _, err := middleware.Run(context.Background(), "", false); err == nil {
+	if _, err := middleware.Run(t.Context(), "", false); err == nil {
 		t.Fatal("expected empty payload error")
 	}
-	if _, err := middleware.Run(context.Background(), "echo hi", true); err == nil {
+	if _, err := middleware.Run(t.Context(), "echo hi", true); err == nil {
 		t.Fatal("expected command plus restart error")
 	}
-	result, err := middleware.Run(context.Background(), "", true)
+	result, err := middleware.Run(t.Context(), "", true)
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
@@ -54,7 +53,7 @@ func TestShellToolMiddlewareTimeoutAndTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "printf 'abcdef\\nsecond\\n'", false)
+	result, err := middleware.Run(t.Context(), "printf 'abcdef\\nsecond\\n'", false)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -62,7 +61,7 @@ func TestShellToolMiddlewareTimeoutAndTruncation(t *testing.T) {
 		t.Fatalf("truncation mismatch: %#v", result)
 	}
 
-	result, err = middleware.Run(context.Background(), "sleep 1", false)
+	result, err = middleware.Run(t.Context(), "sleep 1", false)
 	if err != nil {
 		t.Fatalf("run timeout command: %v", err)
 	}
@@ -80,7 +79,7 @@ func TestShellToolMiddlewareRedactsOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "printf user@example.com", false)
+	result, err := middleware.Run(t.Context(), "printf user@example.com", false)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -112,7 +111,7 @@ func TestShellLifecycleStartupResourcesAndShutdown(t *testing.T) {
 	}
 	state := map[string]any{}
 
-	update, err := middleware.BeforeAgent(context.Background(), state)
+	update, err := middleware.BeforeAgent(t.Context(), state)
 	if err != nil {
 		t.Fatalf("before agent: %v", err)
 	}
@@ -121,7 +120,7 @@ func TestShellLifecycleStartupResourcesAndShutdown(t *testing.T) {
 		t.Fatalf("resources mismatch: %#v", resources)
 	}
 
-	second, err := middleware.BeforeAgent(context.Background(), state)
+	second, err := middleware.BeforeAgent(t.Context(), state)
 	if err != nil {
 		t.Fatalf("second before agent: %v", err)
 	}
@@ -137,7 +136,7 @@ func TestShellLifecycleStartupResourcesAndShutdown(t *testing.T) {
 		t.Fatalf("startup should run once, got %q", string(data))
 	}
 
-	result, err := middleware.RunWithState(context.Background(), state, "pwd", false)
+	result, err := middleware.RunWithState(t.Context(), state, "pwd", false)
 	if err != nil {
 		t.Fatalf("run with state: %v", err)
 	}
@@ -153,7 +152,7 @@ func TestShellLifecycleStartupResourcesAndShutdown(t *testing.T) {
 		t.Fatalf("run workspace mismatch: %#v", result)
 	}
 
-	if err := middleware.AfterAgent(context.Background(), state); err != nil {
+	if err := middleware.AfterAgent(t.Context(), state); err != nil {
 		t.Fatalf("after agent: %v", err)
 	}
 	if !resources.ShutdownRan || !resources.Closed {
@@ -175,10 +174,10 @@ func TestShellLifecycleRestartRerunsStartup(t *testing.T) {
 		t.Fatalf("new shell middleware: %v", err)
 	}
 	state := map[string]any{}
-	if _, err := middleware.BeforeAgent(context.Background(), state); err != nil {
+	if _, err := middleware.BeforeAgent(t.Context(), state); err != nil {
 		t.Fatalf("before agent: %v", err)
 	}
-	if _, err := middleware.RunWithState(context.Background(), state, "", true); err != nil {
+	if _, err := middleware.RunWithState(t.Context(), state, "", true); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "restart.log"))
@@ -195,7 +194,7 @@ func TestShellLifecycleStartupFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	_, err = middleware.BeforeAgent(context.Background(), map[string]any{})
+	_, err = middleware.BeforeAgent(t.Context(), map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "startup command") {
 		t.Fatalf("expected startup failure, got %v", err)
 	}
@@ -208,13 +207,13 @@ func TestShellLifecycleOwnedWorkspaceCleanup(t *testing.T) {
 	}
 	workspace := middleware.WorkspaceRoot
 	state := map[string]any{}
-	if _, err := middleware.BeforeAgent(context.Background(), state); err != nil {
+	if _, err := middleware.BeforeAgent(t.Context(), state); err != nil {
 		t.Fatalf("before agent: %v", err)
 	}
 	if _, err := os.Stat(workspace); err != nil {
 		t.Fatalf("workspace should exist before cleanup: %v", err)
 	}
-	if err := middleware.AfterAgent(context.Background(), state); err != nil {
+	if err := middleware.AfterAgent(t.Context(), state); err != nil {
 		t.Fatalf("after agent: %v", err)
 	}
 	if _, err := os.Stat(workspace); !os.IsNotExist(err) {

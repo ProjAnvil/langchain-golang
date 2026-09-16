@@ -50,7 +50,7 @@ func TestBindToolsWithOptionsMapsAnyToRequired(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, got := toolChoiceServer(t, tc.body)
 			model := toolBinderBoundModel(t, server.URL, tc.chatCompletions, language.ToolChoiceAny)
-			if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+			if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 				t.Fatalf("Invoke: %v", err)
 			}
 			if (*got)["tool_choice"] != "required" {
@@ -65,7 +65,7 @@ func TestBindToolsWithOptionsStringModes(t *testing.T) {
 	for _, mode := range []language.ToolChoice{language.ToolChoiceAuto, language.ToolChoiceNone} {
 		server, got := toolChoiceServer(t, toolChoiceResponsesBody)
 		model := toolBinderBoundModel(t, server.URL, false, mode)
-		if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 			t.Fatalf("Invoke: %v", err)
 		}
 		if (*got)["tool_choice"] != string(mode) {
@@ -80,7 +80,7 @@ func TestBindToolsWithOptionsStringModes(t *testing.T) {
 func TestBindToolsWithOptionsNamedToolFlattens(t *testing.T) {
 	server, got := toolChoiceServer(t, toolChoiceResponsesBody)
 	model := toolBinderBoundModel(t, server.URL, false, language.ToolChoice("GenerateUsername"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	choice, ok := (*got)["tool_choice"].(map[string]any)
@@ -107,7 +107,7 @@ func TestBindToolsWithOptionsZeroOmitsToolChoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BindToolsWithOptions: %v", err)
 	}
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if _, present := (*got)["tool_choice"]; present {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -31,21 +32,21 @@ type ToolCall struct {
 // InputTokenDetails breaks down input token counts. Mirrors Python's
 // InputTokenDetails (langchain_core/messages/ai.py).
 type InputTokenDetails struct {
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitzero"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitzero"`
 }
 
 // OutputTokenDetails breaks down output token counts. Mirrors Python's
 // OutputTokenDetails (langchain_core/messages/ai.py).
 type OutputTokenDetails struct {
-	ReasoningOutputTokens int `json:"reasoning_output_tokens,omitempty"`
+	ReasoningOutputTokens int `json:"reasoning_output_tokens,omitzero"`
 }
 
 // UsageMetadata contains token accounting returned by providers.
 type UsageMetadata struct {
-	InputTokens        int                 `json:"input_tokens,omitempty"`
-	OutputTokens       int                 `json:"output_tokens,omitempty"`
-	TotalTokens        int                 `json:"total_tokens,omitempty"`
+	InputTokens        int                 `json:"input_tokens,omitzero"`
+	OutputTokens       int                 `json:"output_tokens,omitzero"`
+	TotalTokens        int                 `json:"total_tokens,omitzero"`
 	InputTokenDetails  *InputTokenDetails  `json:"input_token_details,omitempty"`
 	OutputTokenDetails *OutputTokenDetails `json:"output_token_details,omitempty"`
 }
@@ -384,13 +385,13 @@ type FilterOptions struct {
 func Filter(values []Message, opts FilterOptions) []Message {
 	out := make([]Message, 0, len(values))
 	for _, message := range values {
-		if !containsRoleOrEmpty(opts.IncludeRoles, message.Role) || containsRole(opts.ExcludeRoles, message.Role) {
+		if !containsRoleOrEmpty(opts.IncludeRoles, message.Role) || slices.Contains(opts.ExcludeRoles, message.Role) {
 			continue
 		}
-		if !containsStringOrEmpty(opts.IncludeNames, message.Name) || containsString(opts.ExcludeNames, message.Name) {
+		if !containsStringOrEmpty(opts.IncludeNames, message.Name) || slices.Contains(opts.ExcludeNames, message.Name) {
 			continue
 		}
-		if !containsStringOrEmpty(opts.IncludeIDs, message.ID) || containsString(opts.ExcludeIDs, message.ID) {
+		if !containsStringOrEmpty(opts.IncludeIDs, message.ID) || slices.Contains(opts.ExcludeIDs, message.ID) {
 			continue
 		}
 		cloned := Clone(message)
@@ -553,30 +554,12 @@ func mergeText(a string, b string) string {
 	return a + "\n" + b
 }
 
-func containsRole(values []Role, role Role) bool {
-	for _, value := range values {
-		if value == role {
-			return true
-		}
-	}
-	return false
-}
-
 func containsRoleOrEmpty(values []Role, role Role) bool {
-	return len(values) == 0 || containsRole(values, role)
-}
-
-func containsString(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
-			return true
-		}
-	}
-	return false
+	return len(values) == 0 || slices.Contains(values, role)
 }
 
 func containsStringOrEmpty(values []string, value string) bool {
-	return len(values) == 0 || containsString(values, value)
+	return len(values) == 0 || slices.Contains(values, value)
 }
 
 func cloneBlocks(values []ContentBlock) []ContentBlock {

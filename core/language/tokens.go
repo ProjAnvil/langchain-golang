@@ -23,26 +23,15 @@ type MessageTokenCounter interface {
 	GetNumTokensFromMessages(msgs []messages.Message) (int, error)
 }
 
-// gpt2Tokenizer lazily caches the GPT-2 (r50k_base) BPE tokenizer used by
+// getGPT2Tokenizer lazily caches the GPT-2 (r50k_base) BPE tokenizer used by
 // DefaultGetTokenIDs. The tiktoken-go vocabulary is embedded in the library,
-// so constructing it does no network I/O; sync.Once builds it once per
-// process.
-var (
-	gpt2Once        sync.Once
-	gpt2Tokenizer   tokenizer.Codec
-	gpt2TokenizerEr error
-)
-
-// getGPT2Tokenizer returns the cached GPT-2 codec, constructing it on first
-// use. It requests R50kBase rather than GPT2Enc because tiktoken-go v0.8.1's
-// Get does not register the "gpt2" spelling (ForModel(GPT2) routes to it and
-// fails); r50k_base is the identical GPT-2 vocabulary.
-func getGPT2Tokenizer() (tokenizer.Codec, error) {
-	gpt2Once.Do(func() {
-		gpt2Tokenizer, gpt2TokenizerEr = tokenizer.Get(tokenizer.R50kBase)
-	})
-	return gpt2Tokenizer, gpt2TokenizerEr
-}
+// so constructing it does no network I/O; sync.OnceValues builds it once per
+// process. It requests R50kBase rather than GPT2Enc because tiktoken-go
+// v0.8.1's Get does not register the "gpt2" spelling (ForModel(GPT2) routes
+// to it and fails); r50k_base is the identical GPT-2 vocabulary.
+var getGPT2Tokenizer = sync.OnceValues(func() (tokenizer.Codec, error) {
+	return tokenizer.Get(tokenizer.R50kBase)
+})
 
 // DefaultGetTokenIDs mirrors Python's fallback get_token_ids
 // (language_models/base.py:98-104): models without a tokenizer of their own

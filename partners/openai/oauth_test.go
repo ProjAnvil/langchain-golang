@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,7 +34,7 @@ func TestRefreshFailurePreservesStoredToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, server.URL+"/oauth/token", "client-1")
 
-	_, err := provider.AccessToken(context.Background())
+	_, err := provider.AccessToken(t.Context())
 	if err == nil {
 		t.Fatal("expected refresh error")
 	}
@@ -58,7 +57,7 @@ func TestRefreshMissingAccessToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, server.URL+"/oauth/token", "client-1")
 
-	_, err := provider.AccessToken(context.Background())
+	_, err := provider.AccessToken(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "access_token") {
 		t.Fatalf("expected missing access_token error, got %v", err)
 	}
@@ -78,12 +77,12 @@ func TestAccessTokenRefreshesThenCaches(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, server.URL+"/oauth/token", "client-1")
 
-	got, err := provider.AccessToken(context.Background())
+	got, err := provider.AccessToken(t.Context())
 	if err != nil || got != "fresh" {
 		t.Fatalf("first AccessToken = %q, %v", got, err)
 	}
 	// Second call uses the freshly cached (valid) token, no refresh.
-	got, err = provider.AccessToken(context.Background())
+	got, err = provider.AccessToken(t.Context())
 	if err != nil || got != "fresh" {
 		t.Fatalf("second AccessToken = %q, %v", got, err)
 	}

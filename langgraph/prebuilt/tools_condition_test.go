@@ -16,7 +16,7 @@ import (
 // route runs the router directly, mirroring Python's direct tools_condition(state) calls.
 func route(t *testing.T, router graph.ConditionalEdge, state map[string]any) []any {
 	t.Helper()
-	out, err := router(runtime.NewRuntime(context.Background()), state)
+	out, err := router(runtime.NewRuntime(t.Context()), state)
 	if err != nil {
 		t.Fatalf("router error = %v", err)
 	}
@@ -90,7 +90,7 @@ func TestToolsConditionNoMessagesErrors(t *testing.T) {
 		"empty list":  {"messages": []messages.Message{}},
 	}
 	for name, state := range cases {
-		if _, err := ToolsCondition()(runtime.NewRuntime(context.Background()), state); err == nil ||
+		if _, err := ToolsCondition()(runtime.NewRuntime(t.Context()), state); err == nil ||
 			!strings.Contains(err.Error(), "no messages found in input state to tools_condition") {
 			t.Errorf("%s: error = %v, want a 'no messages found in input state to tools_condition' error", name, err)
 		}
@@ -131,7 +131,7 @@ func TestToolsConditionEndToEnd(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	res, err := compiled.Invoke(context.Background(), map[string]any{
+	res, err := compiled.Invoke(t.Context(), map[string]any{
 		"messages": []messages.Message{messages.Human("run the tool")},
 	})
 	if err != nil {

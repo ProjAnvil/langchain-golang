@@ -3,7 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 )
 
 // exampleSearchArgs is the argument struct FromFunc reflects into a JSON
@@ -40,7 +40,7 @@ func ExampleFromFunc_struct() {
 	for name := range props {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	fmt.Println(names)
 	if required, ok := sch["required"].([]string); ok {
 		fmt.Println(required)

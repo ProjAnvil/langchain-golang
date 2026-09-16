@@ -111,8 +111,7 @@ func ResponseError(provider, endpoint string, resp *http.Response) error {
 // HTTP 408, any 5xx response, or a network/timeout failure classified as
 // ErrTimeout.
 func IsRetryable(err error) bool {
-	var pe *lcerrors.ProviderError
-	if errors.As(err, &pe) {
+	if pe, ok := errors.AsType[*lcerrors.ProviderError](err); ok {
 		return lcerrors.IsRetryableStatus(pe.StatusCode)
 	}
 	return errors.Is(err, lcerrors.ErrTimeout)

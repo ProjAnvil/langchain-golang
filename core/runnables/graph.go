@@ -1,10 +1,12 @@
 package runnables
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -450,12 +452,7 @@ func runnableTypeName(value any) string {
 }
 
 func sortedRunnableKeys[T any](values map[string]T) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(values))
 }
 
 func cloneGraphMetadata(metadata map[string]any) map[string]any {
@@ -481,11 +478,11 @@ func (g Graph) normalized() Graph {
 		out.Nodes[i] = node
 	}
 	copy(out.Edges, g.Edges)
-	sort.SliceStable(out.Nodes, func(i, j int) bool { return out.Nodes[i].ID < out.Nodes[j].ID })
-	sort.SliceStable(out.Edges, func(i, j int) bool {
-		left := out.Edges[i].Source + "\x00" + out.Edges[i].Target + "\x00" + out.Edges[i].Label
-		right := out.Edges[j].Source + "\x00" + out.Edges[j].Target + "\x00" + out.Edges[j].Label
-		return left < right
+	slices.SortStableFunc(out.Nodes, func(a, b GraphNode) int { return cmp.Compare(a.ID, b.ID) })
+	slices.SortStableFunc(out.Edges, func(a, b GraphEdge) int {
+		left := a.Source + "\x00" + a.Target + "\x00" + a.Label
+		right := b.Source + "\x00" + b.Target + "\x00" + b.Label
+		return cmp.Compare(left, right)
 	})
 	return out
 }

@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +24,7 @@ func TestRequestAIMessageWithToolCalls(t *testing.T) {
 	}}
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{
+	if _, err := model.Invoke(t.Context(), []messages.Message{
 		ai,
 		messages.Human("and tomorrow?"),
 	}); err != nil {
@@ -61,7 +60,7 @@ func TestRequestAIMessageEmptyGetsBlankTextBlock(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{
+	if _, err := model.Invoke(t.Context(), []messages.Message{
 		messages.AI(""),
 	}); err != nil {
 		t.Fatalf("invoke: %v", err)
@@ -88,7 +87,7 @@ func TestRequestSystemTextAndBlocksCombine(t *testing.T) {
 	}
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{
+	if _, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("plain system"),
 		withBlocks,
 		messages.Human("hi"),
@@ -116,7 +115,7 @@ func TestRequestToolMessagePlainContent(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{
+	if _, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Tool("toolu_1", "sunny"),
 	}); err != nil {
 		t.Fatalf("invoke: %v", err)
@@ -142,7 +141,7 @@ func TestRequestToolMessageContentPrependedToBlocks(t *testing.T) {
 	}
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{toolResult}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{toolResult}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -163,7 +162,7 @@ func TestRequestToolMessageInvalidBlockFails(t *testing.T) {
 	toolResult.ContentBlocks = []messages.ContentBlock{
 		messages.ParseContentBlock(map[string]any{"type": "image"}),
 	}
-	if _, err := model.Invoke(context.Background(), []messages.Message{toolResult}); err == nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{toolResult}); err == nil {
 		t.Fatal("invoke with invalid tool_result block should fail")
 	}
 }
@@ -174,7 +173,7 @@ func TestRequestSystemInvalidBlockFails(t *testing.T) {
 	sys.ContentBlocks = []messages.ContentBlock{
 		messages.ParseContentBlock(map[string]any{"type": "image"}),
 	}
-	if _, err := model.Invoke(context.Background(), []messages.Message{sys}); err == nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{sys}); err == nil {
 		t.Fatal("invoke with invalid system block should fail")
 	}
 }
@@ -186,7 +185,7 @@ func TestInvokeUnknownResponseBlockPassesThrough(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("q")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("q")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -213,7 +212,7 @@ func TestInvokeRedactedThinkingWithID(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("q")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("q")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -232,7 +231,7 @@ func TestStructuredToolIsNotInvocable(t *testing.T) {
 	if tool.Name() != "response_format" || tool.Description() != "desc" {
 		t.Fatalf("structuredTool accessors: %+v", tool)
 	}
-	if _, err := tool.Invoke(context.Background(), map[string]any{}); err == nil ||
+	if _, err := tool.Invoke(t.Context(), map[string]any{}); err == nil ||
 		!strings.Contains(err.Error(), "not invocable") {
 		t.Fatalf("structuredTool.Invoke should fail: %v", err)
 	}
@@ -245,7 +244,7 @@ func TestInvokeStructuredNoToolCallFails(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	_, err := model.InvokeStructured(context.Background(), []messages.Message{
+	_, err := model.InvokeStructured(t.Context(), []messages.Message{
 		messages.Human("q"),
 	}, map[string]any{"type": "object"})
 	if err == nil || !strings.Contains(err.Error(), "no tool_call") {
@@ -264,7 +263,7 @@ func TestRequestAIMessageWithContentBlocks(t *testing.T) {
 	}
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{ai}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{ai}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -284,7 +283,7 @@ func TestRequestAIMessageInvalidBlockFails(t *testing.T) {
 		messages.ParseContentBlock(map[string]any{"type": "image"}),
 	}
 	model := NewChatModel(modelconfig.WithBaseURL("http://127.0.0.1:1"), modelconfig.WithModel("m"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{ai}); err == nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{ai}); err == nil {
 		t.Fatal("invoke with invalid assistant block should fail")
 	}
 }
@@ -330,7 +329,7 @@ func TestInvokeStructuredInvokeErrorPropagates(t *testing.T) {
 		modelconfig.WithModel("m"),
 		modelconfig.WithMaxRetries(0),
 	)
-	_, err := model.InvokeStructured(context.Background(), []messages.Message{
+	_, err := model.InvokeStructured(t.Context(), []messages.Message{
 		messages.Human("q"),
 	}, map[string]any{"type": "object", "title": "schema"})
 	if err == nil || !strings.Contains(err.Error(), "structured output") {

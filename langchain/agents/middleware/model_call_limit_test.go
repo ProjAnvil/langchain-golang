@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -16,7 +15,7 @@ func TestModelCallLimitMiddlewareBeforeModelAllowsUnderLimit(t *testing.T) {
 		t.Fatalf("new call limit middleware: %v", err)
 	}
 
-	command, err := middleware.BeforeModel(context.Background(), map[string]any{ThreadModelCallCountKey: 1})
+	command, err := middleware.BeforeModel(t.Context(), map[string]any{ThreadModelCallCountKey: 1})
 	if err != nil {
 		t.Fatalf("before model: %v", err)
 	}
@@ -33,7 +32,7 @@ func TestModelCallLimitMiddlewareBeforeModelEndsWhenExceeded(t *testing.T) {
 		t.Fatalf("new call limit middleware: %v", err)
 	}
 
-	command, err := middleware.BeforeModel(context.Background(), map[string]any{
+	command, err := middleware.BeforeModel(t.Context(), map[string]any{
 		ThreadModelCallCountKey: 2,
 		RunModelCallCountKey:    1,
 	})
@@ -62,9 +61,9 @@ func TestModelCallLimitMiddlewareBeforeModelErrorsWhenExceeded(t *testing.T) {
 		t.Fatalf("new call limit middleware: %v", err)
 	}
 
-	_, err = middleware.BeforeModel(context.Background(), map[string]any{RunModelCallCountKey: 1})
-	var limitErr ModelCallLimitExceededError
-	if !errors.As(err, &limitErr) {
+	_, err = middleware.BeforeModel(t.Context(), map[string]any{RunModelCallCountKey: 1})
+	limitErr, ok := errors.AsType[ModelCallLimitExceededError](err)
+	if !ok {
 		t.Fatalf("expected ModelCallLimitExceededError, got %v", err)
 	}
 	if limitErr.RunCount != 1 || limitErr.RunLimit == nil || *limitErr.RunLimit != 1 {
@@ -79,7 +78,7 @@ func TestModelCallLimitMiddlewareAfterModelIncrementsCounts(t *testing.T) {
 		t.Fatalf("new call limit middleware: %v", err)
 	}
 
-	update, err := middleware.AfterModel(context.Background(), map[string]any{
+	update, err := middleware.AfterModel(t.Context(), map[string]any{
 		ThreadModelCallCountKey: int64(2),
 		RunModelCallCountKey:    float64(3),
 	})

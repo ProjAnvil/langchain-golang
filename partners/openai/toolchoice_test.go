@@ -71,7 +71,7 @@ func TestToolChoiceStringModesResponsesAPI(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, got := toolChoiceServer(t, toolChoiceResponsesBody)
 			model := toolChoiceBoundModel(t, server.URL, false).WithToolChoice(tc.choice)
-			if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+			if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 				t.Fatalf("Invoke: %v", err)
 			}
 			if (*got)["tool_choice"] != tc.want {
@@ -84,7 +84,7 @@ func TestToolChoiceStringModesResponsesAPI(t *testing.T) {
 func TestToolChoiceStringModesChatCompletions(t *testing.T) {
 	server, got := toolChoiceServer(t, toolChoiceChatBody)
 	model := toolChoiceBoundModel(t, server.URL, true).WithToolChoice(ToolChoiceAuto())
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if (*got)["tool_choice"] != "auto" {
@@ -97,7 +97,7 @@ func TestToolChoiceFunctionResponsesAPIFlattens(t *testing.T) {
 	// {"type":"function","name":X} on the Responses API.
 	server, got := toolChoiceServer(t, toolChoiceResponsesBody)
 	model := toolChoiceBoundModel(t, server.URL, false).WithToolChoice(ToolChoiceFunction("MakeASandwich"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	choice, ok := (*got)["tool_choice"].(map[string]any)
@@ -115,7 +115,7 @@ func TestToolChoiceFunctionResponsesAPIFlattens(t *testing.T) {
 func TestToolChoiceFunctionChatCompletionsNested(t *testing.T) {
 	server, got := toolChoiceServer(t, toolChoiceChatBody)
 	model := toolChoiceBoundModel(t, server.URL, true).WithToolChoice(ToolChoiceFunction("MakeASandwich"))
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	choice, ok := (*got)["tool_choice"].(map[string]any)
@@ -138,7 +138,7 @@ func TestToolChoiceRawPassthrough(t *testing.T) {
 		}
 		server, got := toolChoiceServer(t, body)
 		model := toolChoiceBoundModel(t, server.URL, chatCompletions).WithToolChoice(ToolChoiceRaw(raw))
-		if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 			t.Fatalf("Invoke: %v", err)
 		}
 		choice, ok := (*got)["tool_choice"].(map[string]any)
@@ -152,7 +152,7 @@ func TestToolChoiceOmittedByDefault(t *testing.T) {
 	// Python False/None: no tool_choice key in the payload.
 	server, got := toolChoiceServer(t, toolChoiceResponsesBody)
 	model := toolChoiceBoundModel(t, server.URL, false)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if _, present := (*got)["tool_choice"]; present {

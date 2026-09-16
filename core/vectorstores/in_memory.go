@@ -1,10 +1,11 @@
 package vectorstores
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -308,8 +309,8 @@ func (s *InMemory) similaritySearchWithScoreByVectorLocked(
 			Score:    cosine(queryVector, s.vectors[id]),
 		})
 	}
-	sort.SliceStable(results, func(i int, j int) bool {
-		return results[i].Score > results[j].Score
+	slices.SortStableFunc(results, func(a, b SearchResult) int {
+		return cmp.Compare(b.Score, a.Score)
 	})
 	if len(results) > k {
 		results = results[:k]

@@ -15,7 +15,7 @@ func TestFuncBeforeModelAdapter(t *testing.T) {
 		state["k"] = "v"
 		return state, nil
 	})
-	out, err := hook.BeforeModel(context.Background(), map[string]any{})
+	out, err := hook.BeforeModel(t.Context(), map[string]any{})
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestFuncAfterModelAdapter(t *testing.T) {
 	hook := FuncAfterModel(func(ctx context.Context, state map[string]any) (map[string]any, error) {
 		return map[string]any{"seen": true}, nil
 	})
-	out, err := hook.AfterModel(context.Background(), map[string]any{})
+	out, err := hook.AfterModel(t.Context(), map[string]any{})
 	if err != nil || out["seen"] != true {
 		t.Fatalf("after_model: err=%v out=%#v", err, out)
 	}
@@ -38,7 +38,7 @@ func TestFuncWrapModelCallAdapter(t *testing.T) {
 	hook := FuncWrapModelCall(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelResponse, error) {
 		return handler(ctx, request)
 	})
-	resp, err := hook.WrapModelCall(context.Background(), middleware.ModelRequest{}, func(ctx context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
+	resp, err := hook.WrapModelCall(t.Context(), middleware.ModelRequest{}, func(ctx context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
 		return middleware.ModelResponse{Result: []messages.Message{messages.AI("ok")}}, nil
 	})
 	if err != nil || len(resp.Result) != 1 {
@@ -50,7 +50,7 @@ func TestFuncWrapToolCallAdapter(t *testing.T) {
 	hook := FuncWrapToolCall(func(ctx context.Context, request middleware.ToolCallRequest, handler middleware.ToolHandler) (messages.Message, error) {
 		return handler(ctx, request)
 	})
-	msg, err := hook.WrapToolCall(context.Background(), middleware.ToolCallRequest{}, func(ctx context.Context, r middleware.ToolCallRequest) (messages.Message, error) {
+	msg, err := hook.WrapToolCall(t.Context(), middleware.ToolCallRequest{}, func(ctx context.Context, r middleware.ToolCallRequest) (messages.Message, error) {
 		return messages.Tool("id", "result"), nil
 	})
 	if err != nil || msg.Content != "result" {
@@ -66,11 +66,11 @@ func TestFuncBeforeAndAfterAgentAdapters(t *testing.T) {
 	after := FuncAfterAgent(func(ctx context.Context, state map[string]any) error {
 		return nil
 	})
-	out, err := before.BeforeAgent(context.Background(), map[string]any{})
+	out, err := before.BeforeAgent(t.Context(), map[string]any{})
 	if err != nil || out["before"] != true {
 		t.Fatalf("before_agent: err=%v out=%#v", err, out)
 	}
-	if err := after.AfterAgent(context.Background(), map[string]any{}); err != nil {
+	if err := after.AfterAgent(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("after_agent: %v", err)
 	}
 }
@@ -81,7 +81,7 @@ func TestFuncBeforeModelCommandAdapter(t *testing.T) {
 		called = true
 		return &middleware.Command{Update: map[string]any{"k": "v"}, Goto: "end"}, nil
 	})
-	cmd, err := hook.BeforeModel(context.Background(), map[string]any{})
+	cmd, err := hook.BeforeModel(t.Context(), map[string]any{})
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}

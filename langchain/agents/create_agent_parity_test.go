@@ -55,7 +55,7 @@ func TestCreateAgentReturnDirectEndsLoopAfterTool(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	msgs, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	msgs, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestCreateAgentReturnDirectMixedToolsContinueLoop(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	msgs, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	msgs, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestCreateAgentToolStrategyHandleErrorsRetryDefault(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("weather?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestCreateAgentToolStrategyHandleErrorsCustomMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("weather?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestCreateAgentToolStrategyHandleErrorsTypeList(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("weather?")}); err != nil {
+		if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("weather?")}); err != nil {
 			t.Fatalf("expected retry to absorb the multiple-outputs error, got %v", err)
 		}
 		if len(model.invocations) != 2 {
@@ -260,9 +260,8 @@ func TestCreateAgentToolStrategyHandleErrorsTypeList(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create agent: %v", err)
 		}
-		_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("weather?")})
-		var multiErr *MultipleStructuredOutputsError
-		if !errors.As(err, &multiErr) {
+		_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("weather?")})
+		if _, ok := errors.AsType[*MultipleStructuredOutputsError](err); !ok {
 			t.Fatalf("expected MultipleStructuredOutputsError to propagate, got %v", err)
 		}
 	})
@@ -313,9 +312,9 @@ func TestCreateAgentDefaultRecursionLimit9999(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("loop forever")})
-	var recErr *types.GraphRecursionError
-	if !errors.As(err, &recErr) {
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("loop forever")})
+	recErr, ok := errors.AsType[*types.GraphRecursionError](err)
+	if !ok {
 		t.Fatalf("expected GraphRecursionError, got %v", err)
 	}
 	if recErr.Limit != 9999 {
@@ -349,7 +348,7 @@ func TestCreateAgentDynamicModel(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	msgs, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	msgs, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

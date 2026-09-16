@@ -80,7 +80,7 @@ func TestStateSchema_LastValueAcrossSupersteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res, err := compiled.Invoke(context.Background(), map[string]any{})
+	res, err := compiled.Invoke(t.Context(), map[string]any{})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestStateSchema_CustomReducerAccumulates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res, err := compiled.Invoke(context.Background(), map[string]any{})
+	res, err := compiled.Invoke(t.Context(), map[string]any{})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestStateSchema_NameCollisionOverridesDefault(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if !called() {
@@ -191,7 +191,7 @@ func TestStateSchema_NameCollisionOverridesDefault(t *testing.T) {
 //
 // Spec mapping: context_schema test #4.
 func TestContextSchema_RoundTrip(t *testing.T) {
-	ctx := WithContextValues(context.Background(), map[string]any{
+	ctx := WithContextValues(t.Context(), map[string]any{
 		"user_id": "u123",
 		"count":   7,
 	})
@@ -214,7 +214,7 @@ func TestContextSchema_RoundTrip(t *testing.T) {
 //
 // Spec mapping: context_schema test #4 (absent-key half, stressed).
 func TestContextSchema_AbsentMapReturnsFalse(t *testing.T) {
-	ctx := context.Background() // no WithContextValues call
+	ctx := t.Context() // no WithContextValues call
 	if v, ok := ContextValue(ctx, "anything"); ok || v != nil {
 		t.Fatalf("context with no values map: got (%v, %v), want (nil, false)", v, ok)
 	}
@@ -244,7 +244,7 @@ func TestContextSchema_ValueVisibleInsideNodeDuringInvoke(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	ctx := WithContextValues(context.Background(), map[string]any{"tenant_id": "acme"})
+	ctx := WithContextValues(t.Context(), map[string]any{"tenant_id": "acme"})
 	if _, err := agent.InvokeWithState(ctx, []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestContextSchema_WorksWithoutSchemaDeclared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	ctx := WithContextValues(context.Background(), map[string]any{"k": "v"})
+	ctx := WithContextValues(t.Context(), map[string]any{"k": "v"})
 	if _, err := agent.InvokeWithState(ctx, []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

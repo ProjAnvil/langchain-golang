@@ -136,10 +136,11 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 		if line == "" {
 			continue
 		}
-		if !strings.HasPrefix(line, "data:") {
+		rest, ok := strings.CutPrefix(line, "data:")
+		if !ok {
 			continue
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		data := strings.TrimSpace(rest)
 		if data == "[DONE]" {
 			s.done = true
 			chunk, ok := s.finalToolCallChunk()

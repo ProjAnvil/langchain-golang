@@ -39,7 +39,7 @@ func TestFuncToolInvoke(t *testing.T) {
 		t.Fatalf("new tool: %v", err)
 	}
 
-	got, err := tool.Invoke(context.Background(), map[string]any{"a": 2, "b": 3})
+	got, err := tool.Invoke(t.Context(), map[string]any{"a": 2, "b": 3})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -64,31 +64,31 @@ func TestSimpleToolParity(t *testing.T) {
 		t.Fatalf("args schema: %#v", args)
 	}
 
-	got, err := tool.InvokeString(context.Background(), "hello")
+	got, err := tool.InvokeString(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("invoke string: %v", err)
 	}
 	if got.Content != "echo: hello" {
 		t.Fatalf("content: %q", got.Content)
 	}
-	got, err = tool.Invoke(context.Background(), map[string]any{"tool_input": "world"})
+	got, err = tool.Invoke(t.Context(), map[string]any{"tool_input": "world"})
 	if err != nil {
 		t.Fatalf("invoke map: %v", err)
 	}
 	if got.Content != "echo: world" {
 		t.Fatalf("content: %q", got.Content)
 	}
-	got, err = tool.Invoke(context.Background(), map[string]any{"query": "compat"})
+	got, err = tool.Invoke(t.Context(), map[string]any{"query": "compat"})
 	if err != nil {
 		t.Fatalf("invoke compat map: %v", err)
 	}
 	if got.Content != "echo: compat" {
 		t.Fatalf("content: %q", got.Content)
 	}
-	if _, err := tool.Invoke(context.Background(), map[string]any{"a": "1", "b": "2"}); err == nil {
+	if _, err := tool.Invoke(t.Context(), map[string]any{"a": "1", "b": "2"}); err == nil {
 		t.Fatal("expected too many arguments error")
 	}
-	if _, err := tool.Invoke(context.Background(), map[string]any{"tool_input": 3}); err == nil {
+	if _, err := tool.Invoke(t.Context(), map[string]any{"tool_input": 3}); err == nil {
 		t.Fatal("expected non-string input error")
 	}
 }
@@ -115,7 +115,7 @@ func TestStructuredFuncConstructorParity(t *testing.T) {
 
 func TestFuncInvokeRequiresFunction(t *testing.T) {
 	var tool Func
-	if _, err := tool.Invoke(context.Background(), map[string]any{}); err == nil {
+	if _, err := tool.Invoke(t.Context(), map[string]any{}); err == nil {
 		t.Fatal("expected missing function error")
 	}
 }
@@ -177,7 +177,7 @@ func TestCreateRetrieverTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := tool.Invoke(context.Background(), map[string]any{"query": "anything"})
+	got, err := tool.Invoke(t.Context(), map[string]any{"query": "anything"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestNewFuncErrors(t *testing.T) {
 
 func TestSimpleInvokeStringRequiresFunction(t *testing.T) {
 	var tool Simple
-	if _, err := tool.InvokeString(context.Background(), "hi"); err == nil {
+	if _, err := tool.InvokeString(t.Context(), "hi"); err == nil {
 		t.Fatal("expected missing function error")
 	}
 }
@@ -312,7 +312,7 @@ func TestCreateRetrieverToolValidation(t *testing.T) {
 		"empty query":   {"query": ""},
 		"non-string":    {"query": 3},
 	} {
-		if _, err := tool.Invoke(context.Background(), input); err == nil {
+		if _, err := tool.Invoke(t.Context(), input); err == nil {
 			t.Fatalf("expected query validation error for %s", name)
 		}
 	}
@@ -324,7 +324,7 @@ func TestCreateRetrieverToolErrorPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tool.Invoke(context.Background(), map[string]any{"query": "q"}); err == nil {
+	if _, err := tool.Invoke(t.Context(), map[string]any{"query": "q"}); err == nil {
 		t.Fatal("expected retriever error to propagate")
 	}
 }
@@ -340,7 +340,7 @@ func TestCreateRetrieverToolDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := tool.Invoke(context.Background(), map[string]any{"query": "q"})
+	got, err := tool.Invoke(t.Context(), map[string]any{"query": "q"})
 	if err != nil {
 		t.Fatal(err)
 	}

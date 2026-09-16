@@ -3,9 +3,10 @@ package vectorstores
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/documents"
 	"github.com/projanvil/langchain-golang/core/embeddings"
@@ -76,11 +77,7 @@ func LoadInMemory(path string, embedder embeddings.Embeddings) (*InMemory, error
 		return nil, fmt.Errorf("vectorstores: load: decode %s: %w", path, err)
 	}
 	store := NewInMemory(embedder)
-	ids := make([]string, 0, len(records))
-	for id := range records {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := slices.Sorted(maps.Keys(records))
 	for _, id := range ids {
 		record := records[id]
 		docID := record.ID

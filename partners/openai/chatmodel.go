@@ -558,7 +558,7 @@ type requestPayload struct {
 	Tools           []toolSpec       `json:"tools,omitempty"`
 	ToolChoice      any              `json:"tool_choice,omitempty"`
 	Text            *textConfig      `json:"text,omitempty"`
-	Stream          bool             `json:"stream,omitempty"`
+	Stream          bool             `json:"stream,omitzero"`
 	Reasoning       *reasoningConfig `json:"reasoning,omitempty"`
 }
 
@@ -599,7 +599,7 @@ type responseFormat struct {
 	Type   string        `json:"type"`
 	Name   string        `json:"name,omitempty"`
 	Schema schema.Schema `json:"schema,omitempty"`
-	Strict bool          `json:"strict,omitempty"`
+	Strict bool          `json:"strict,omitzero"`
 }
 
 type responsePayload struct {

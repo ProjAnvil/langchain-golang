@@ -78,10 +78,7 @@ func (s TextSplitter) CreateDocuments(texts []string, metadatas []map[string]any
 		for _, chunk := range split(text) {
 			chunkMetadata := cloneMetadata(metadata)
 			if s.cfg.AddStartIndex {
-				offset := index + previousChunkLen - s.cfg.ChunkOverlap
-				if offset < 0 {
-					offset = 0
-				}
+				offset := max(index+previousChunkLen-s.cfg.ChunkOverlap, 0)
 				found := strings.Index(text[offset:], chunk)
 				if found >= 0 {
 					index = offset + found

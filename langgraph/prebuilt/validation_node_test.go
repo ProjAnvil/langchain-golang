@@ -37,7 +37,7 @@ func selectNumberTool(t *testing.T) tools.Tool {
 // invokeValidation runs the node directly on a {"messages": ...} state.
 func invokeValidation(t *testing.T, node graph.NodeFunc, msgs []messages.Message) []messages.Message {
 	t.Helper()
-	out, err := node(runtime.NewRuntime(context.Background()), map[string]any{"messages": msgs})
+	out, err := node(runtime.NewRuntime(t.Context()), map[string]any{"messages": msgs})
 	if err != nil {
 		t.Fatalf("ValidationNode error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestValidationNodeCustomMessagesKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewValidationNode() error = %v", err)
 	}
-	out, err := node(runtime.NewRuntime(context.Background()), map[string]any{"chat_history": []messages.Message{
+	out, err := node(runtime.NewRuntime(t.Context()), map[string]any{"chat_history": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "c1", Name: "SelectNumber", Args: map[string]any{"some_val": 1, "some_other_val": "x"}}),
 	}})
 	if err != nil {
@@ -124,11 +124,11 @@ func TestValidationNodeInputErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewValidationNode() error = %v", err)
 	}
-	if _, err := node(runtime.NewRuntime(context.Background()), map[string]any{}); err == nil ||
+	if _, err := node(runtime.NewRuntime(t.Context()), map[string]any{}); err == nil ||
 		!strings.Contains(err.Error(), "no message found in input") {
 		t.Errorf("missing key: error = %v, want a 'no message found in input' error", err)
 	}
-	if _, err := node(runtime.NewRuntime(context.Background()), map[string]any{"messages": []messages.Message{messages.Human("hi")}}); err == nil ||
+	if _, err := node(runtime.NewRuntime(t.Context()), map[string]any{"messages": []messages.Message{messages.Human("hi")}}); err == nil ||
 		!strings.Contains(err.Error(), "last message to be an AI message") {
 		t.Errorf("last not AI: error = %v, want a 'last message to be an AI message' error", err)
 	}
@@ -141,7 +141,7 @@ func TestValidationNodeUnknownTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewValidationNode() error = %v", err)
 	}
-	_, err = node(runtime.NewRuntime(context.Background()), map[string]any{"messages": []messages.Message{
+	_, err = node(runtime.NewRuntime(t.Context()), map[string]any{"messages": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "c1", Name: "Nope", Args: map[string]any{}}),
 	}})
 	if err == nil || !strings.Contains(err.Error(), `no schema for tool "Nope"`) {
@@ -245,7 +245,7 @@ func TestValidationNodeInGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := compiled.Invoke(context.Background(), nil)
+	res, err := compiled.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}

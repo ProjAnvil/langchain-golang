@@ -3,7 +3,8 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -166,12 +167,7 @@ func (m *ToolCallLimitMiddleware) otherPendingTools(calls []messages.ToolCall) [
 			seen[call.Name] = true
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func lastAIMessage(state map[string]any) *messages.Message {

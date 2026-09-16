@@ -21,7 +21,7 @@ type chatCompletionsRequest struct {
 	ResponseFormat map[string]any `json:"response_format,omitempty"`
 	Temperature    *float64       `json:"temperature,omitempty"`
 	MaxTokens      *int           `json:"max_tokens,omitempty"`
-	Stream         bool           `json:"stream,omitempty"`
+	Stream         bool           `json:"stream,omitzero"`
 	// Sampling knobs mirroring Python BaseChatOpenAI's optional fields,
 	// forwarded by _default_params' exclude_if_none map
 	// (chat_models/base.py:1340-1350): presence_penalty (:753),

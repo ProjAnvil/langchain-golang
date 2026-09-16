@@ -68,7 +68,7 @@ func TestToolStrategyForcesToolChoiceAny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("what is the answer?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestNoResponseFormatLeavesToolChoiceEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestMiddlewareToolChoiceOverridePassedThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -197,7 +197,7 @@ func TestToolStrategyModelWithoutToolBinderFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("what is the answer?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("what is the answer?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

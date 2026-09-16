@@ -54,7 +54,7 @@ func TestChatModelInvokeResponsesAPI(t *testing.T) {
 		modelconfig.WithMaxTokens(32),
 	)
 
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("Be concise"),
 		messages.Human("Say hello"),
 	})
@@ -111,7 +111,7 @@ func TestChatModelRequestMapping(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		modelconfig.WithHeader("X-Test-Header", "custom-value"),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{
+	_, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("first instruction"),
 		messages.System("second instruction"),
 		messages.Human("hello"),
@@ -157,7 +157,7 @@ func TestChatModelParsesMultipleResponseOutputs(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {
@@ -221,7 +221,7 @@ func TestChatModelBindTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind tools: %v", err)
 	}
-	_, err = bound.Invoke(context.Background(), []messages.Message{
+	_, err = bound.Invoke(t.Context(), []messages.Message{
 		messages.Human("use a tool"),
 	})
 	if err != nil {
@@ -257,7 +257,7 @@ func TestChatModelCallbacks(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -297,7 +297,7 @@ func TestChatModelParsesToolCalls(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("add two numbers"),
 	})
 	if err != nil {
@@ -336,7 +336,7 @@ func TestChatModelInvalidToolCallArguments(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("add two numbers"),
 	})
 	if err != nil {
@@ -381,7 +381,7 @@ func TestChatModelStructuredOutputRequest(t *testing.T) {
 		true,
 	)
 
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("extract person"),
 	})
 	if err != nil {
@@ -444,7 +444,7 @@ func TestChatModelTypedStructuredOutput(t *testing.T) {
 		t.Fatalf("bind json: %v", err)
 	}
 
-	response, err := runnable.Invoke(context.Background(), []messages.Message{
+	response, err := runnable.Invoke(t.Context(), []messages.Message{
 		messages.Human("extract person"),
 	})
 	if err != nil {
@@ -491,7 +491,7 @@ func TestChatModelStreamTextDeltas(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -502,7 +502,7 @@ func TestChatModelStreamTextDeltas(t *testing.T) {
 
 	var content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -546,7 +546,7 @@ func TestChatModelStreamEventNameFallbackAndCompletedOutput(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -555,7 +555,7 @@ func TestChatModelStreamEventNameFallbackAndCompletedOutput(t *testing.T) {
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil {
 		t.Fatalf("next delta: %v", err)
 	}
@@ -564,14 +564,14 @@ func TestChatModelStreamEventNameFallbackAndCompletedOutput(t *testing.T) {
 	}
 	// response.completed carries usage, so a final usage-only chunk must be
 	// yielded (Python's _stream_responses tail chunk) before the stream ends.
-	usageChunk, ok, err := stream.Next(context.Background())
+	usageChunk, ok, err := stream.Next(t.Context())
 	if err != nil {
 		t.Fatalf("next completed: %v", err)
 	}
 	if !ok || usageChunk.Content != "" || usageChunk.UsageMetadata.TotalTokens != 2 {
 		t.Fatalf("usage chunk: ok=%v chunk=%+v", ok, usageChunk)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream end after usage chunk, ok=%v err=%v", ok, err)
 	}
 
@@ -614,7 +614,7 @@ func TestChatModelStreamProtocolEvents(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -624,7 +624,7 @@ func TestChatModelStreamProtocolEvents(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -682,7 +682,7 @@ func TestChatModelStreamFunctionCallDeltas(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{
+	stream, err := model.Stream(t.Context(), []messages.Message{
 		messages.Human("add two numbers"),
 	})
 	if err != nil {
@@ -692,7 +692,7 @@ func TestChatModelStreamFunctionCallDeltas(t *testing.T) {
 
 	var chunks []messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -746,7 +746,7 @@ func TestChatModelStreamInvalidFunctionCallArguments(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{
+	stream, err := model.Stream(t.Context(), []messages.Message{
 		messages.Human("add two numbers"),
 	})
 	if err != nil {
@@ -756,7 +756,7 @@ func TestChatModelStreamInvalidFunctionCallArguments(t *testing.T) {
 
 	var last messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -807,7 +807,7 @@ func TestChatModelStreamAdditionalResponsesItemsProtocolEvents(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("use tools")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -817,7 +817,7 @@ func TestChatModelStreamAdditionalResponsesItemsProtocolEvents(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -874,7 +874,7 @@ func TestChatModelStreamReasoningFinishProtocolEvent(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("think")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -884,7 +884,7 @@ func TestChatModelStreamReasoningFinishProtocolEvent(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -923,7 +923,7 @@ func TestChatModelStreamErrorEvent(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -932,7 +932,7 @@ func TestChatModelStreamErrorEvent(t *testing.T) {
 	}
 	defer stream.Close()
 
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil {
 		t.Fatal("expected stream error")
 	}
@@ -996,7 +996,7 @@ func TestChatModelInvokeStructured(t *testing.T) {
 	}, "answer")
 	sch["title"] = "answer_schema"
 
-	response, err := model.InvokeStructured(context.Background(), []messages.Message{
+	response, err := model.InvokeStructured(t.Context(), []messages.Message{
 		messages.Human("answer yes"),
 	}, sch)
 	if err != nil {
@@ -1067,7 +1067,7 @@ func TestChatModelInvokeStructuredDefaultName(t *testing.T) {
 		"answer": schema.String("yes/no answer"),
 	}, "answer")
 
-	if _, err := model.InvokeStructured(context.Background(), []messages.Message{
+	if _, err := model.InvokeStructured(t.Context(), []messages.Message{
 		messages.Human("answer"),
 	}, sch); err != nil {
 		t.Fatalf("invoke structured: %v", err)

@@ -1,8 +1,9 @@
 package standardtests
 
 import (
+	"cmp"
 	"context"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -38,7 +39,7 @@ func RunDocumentIndexerConformance(t *testing.T, factory IndexerFactory) {
 		requireLen(t, "failed", resp.Failed, 0)
 		requireLen(t, "succeeded", resp.Succeeded, 2)
 		ids := append([]string(nil), resp.Succeeded...)
-		sort.Strings(ids)
+		slices.Sort(ids)
 
 		got, err := index.Get(ctx, ids)
 		requireNoErr(t, "get", err)
@@ -193,7 +194,7 @@ func RunDocumentIndexerConformance(t *testing.T, factory IndexerFactory) {
 		got, err := index.Get(ctx, []string{"1", "2", "3", "4"})
 		requireNoErr(t, "get", err)
 		requireLen(t, "documents", got, 2)
-		sort.Slice(got, func(i, j int) bool { return got[i].ID < got[j].ID })
+		slices.SortFunc(got, func(a, b documents.Document) int { return cmp.Compare(a.ID, b.ID) })
 		requireEqual(t, "first id", got[0].ID, "1")
 		requireEqual(t, "first page content", got[0].PageContent, "foo")
 		requireEqual(t, "first metadata id", got[0].Metadata["id"], 1)

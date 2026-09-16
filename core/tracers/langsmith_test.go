@@ -6,7 +6,6 @@
 package tracers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -130,11 +129,15 @@ func TestLangSmithBatchPayloadRootAndChild(t *testing.T) {
 	server := newLSServer("ok")
 	defer server.Close()
 	tracer := lsTracer(t, server.URL(), nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	rootID, childID := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
 	events := []callbacks.Event{
-		lsEvent(callbacks.EventChainStart, "chain", rootID, "", lsTS(30), func(e *callbacks.Event) { e.Input = "go"; e.Tags = []string{"team:x"}; e.Metadata = map[string]any{"uid": 7} }),
+		lsEvent(callbacks.EventChainStart, "chain", rootID, "", lsTS(30), func(e *callbacks.Event) {
+			e.Input = "go"
+			e.Tags = []string{"team:x"}
+			e.Metadata = map[string]any{"uid": 7}
+		}),
 		lsEvent(callbacks.EventChainStart, "step", childID, rootID, lsTS(31), func(e *callbacks.Event) { e.Input = "go" }),
 		lsEvent(callbacks.EventChainEnd, "step", childID, rootID, lsTS(32), func(e *callbacks.Event) { e.Output = "gogo" }),
 		lsEvent(callbacks.EventChainEnd, "chain", rootID, "", lsTS(33), func(e *callbacks.Event) { e.Output = "GOGO" }),
@@ -224,7 +227,7 @@ func TestLangSmithErrorRunAndRunTypes(t *testing.T) {
 	server := newLSServer("ok")
 	defer server.Close()
 	tracer := lsTracer(t, server.URL(), nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	toolID := "bbbbbbbb-0000-0000-0000-000000000001"
 	modelID := "bbbbbbbb-0000-0000-0000-000000000002"
@@ -261,7 +264,7 @@ func TestLangSmithStreamEventsCountOnly(t *testing.T) {
 	server := newLSServer("ok")
 	defer server.Close()
 	tracer := lsTracer(t, server.URL(), nil)
-	ctx := context.Background()
+	ctx := t.Context()
 	runID := "cccccccc-0000-0000-0000-000000000001"
 	_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "chain", runID, "", lsTS(30)))
 	_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStream, "chain", runID, "", lsTS(31), func(e *callbacks.Event) { e.Chunk = "tok" }))
@@ -315,10 +318,10 @@ func TestEnabledFromEnvCombinations(t *testing.T) {
 				t.Fatal("NewLangChainTracer returned a tracer while disabled")
 			}
 			// Nil-safety: calling any method on the disabled (nil) tracer is a no-op.
-			if err := tracer.HandleEvent(context.Background(), callbacks.Event{Kind: callbacks.EventChainStart}); err != nil {
+			if err := tracer.HandleEvent(t.Context(), callbacks.Event{Kind: callbacks.EventChainStart}); err != nil {
 				t.Fatalf("nil HandleEvent: %v", err)
 			}
-			if err := tracer.Flush(context.Background()); err != nil {
+			if err := tracer.Flush(t.Context()); err != nil {
 				t.Fatalf("nil Flush: %v", err)
 			}
 			if err := tracer.Close(); err != nil {
@@ -373,7 +376,7 @@ func TestLangSmithServer500BusinessNormalRetryOnceSilent(t *testing.T) {
 		defer errsMu.Unlock()
 		errs = append(errs, err)
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 	runID := "dddddddd-0000-0000-0000-000000000001"
 
 	start := lsEvent(callbacks.EventChainStart, "chain", runID, "", lsTS(30), func(e *callbacks.Event) { e.Input = "go" })
@@ -414,7 +417,7 @@ func TestLangSmithFlushDrainsAndIdleFlushIsQuiet(t *testing.T) {
 	server := newLSServer("ok")
 	defer server.Close()
 	tracer := lsTracer(t, server.URL(), nil)
-	ctx := context.Background()
+	ctx := t.Context()
 	runID := "eeeeeeee-0000-0000-0000-000000000001"
 	_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "chain", runID, "", lsTS(30)))
 	if server.count() != 0 {
@@ -440,7 +443,7 @@ func TestLangSmithCloseIsIdempotentAndStopsAccepting(t *testing.T) {
 	server := newLSServer("ok")
 	defer server.Close()
 	tracer := lsTracer(t, server.URL(), nil)
-	ctx := context.Background()
+	ctx := t.Context()
 	runID := "ffffffff-0000-0000-0000-000000000001"
 	_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "chain", runID, "", lsTS(30)))
 	if err := tracer.Close(); err != nil {
@@ -467,8 +470,8 @@ func TestLangSmithBatchSizeFlushThreshold(t *testing.T) {
 		BatchSize: 2, FlushEvery: time.Hour,
 	})
 	defer func() { _ = tracer.Close() }()
-	ctx := context.Background()
-	for i := 0; i < 2; i++ {
+	ctx := t.Context()
+	for i := range 2 {
 		_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "chain",
 			lsID(i), "", lsTS(30+i)))
 	}
@@ -504,7 +507,7 @@ func TestLangSmithSnapshotOwnsCallerPayloads(t *testing.T) {
 	server := newLSServer("ok")
 	defer server.Close()
 	tracer := lsTracer(t, server.URL(), nil)
-	ctx := context.Background()
+	ctx := t.Context()
 	runID := "12345678-0000-0000-0000-00000000000a"
 
 	input := map[string]any{"q": "original"}
@@ -562,10 +565,10 @@ func TestLangSmithQueueOverflowAggregatesOnError(t *testing.T) {
 	defer srv.Close()
 	var onErrorCount atomic.Int64
 	tracer := lsTracer(t, srv.URL, func(error) { onErrorCount.Add(1) })
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const flood = 600 // >> queue capacity (100) + one in-flight batch (64)
-	for i := 0; i < flood; i++ {
+	for i := range flood {
 		_ = tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "chain",
 			lsID(i%64)+fmt.Sprintf("-%04d", i), "", lsTS(30)))
 	}

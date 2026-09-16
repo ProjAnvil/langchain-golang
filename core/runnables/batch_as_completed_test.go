@@ -21,7 +21,7 @@ func TestBatchAsCompletedYieldsInCompletionOrder(t *testing.T) {
 
 	seen := map[int]BatchResult[int]{}
 	var order []int
-	for index, result := range BatchAsCompleted(context.Background(), runnable,
+	for index, result := range BatchAsCompleted(t.Context(), runnable,
 		[]int{0, 1, 2, 3, 4, 5}, WithMaxConcurrency(6)) {
 		seen[index] = result
 		order = append(order, index)
@@ -51,7 +51,7 @@ func TestBatchAsCompletedSequentialWithOneWorker(t *testing.T) {
 	}, schema.Integer(""), schema.Integer(""))
 
 	var order []int
-	for index, result := range BatchAsCompleted(context.Background(), runnable,
+	for index, result := range BatchAsCompleted(t.Context(), runnable,
 		[]int{0, 1, 2, 3, 4, 5}, WithMaxConcurrency(1)) {
 		if result.Err != nil {
 			t.Fatalf("result[%d].Err = %v", index, result.Err)
@@ -86,7 +86,7 @@ func TestBatchAsCompletedHonorsMaxConcurrency(t *testing.T) {
 		inputs[i] = i
 	}
 	count := 0
-	for index, result := range BatchAsCompleted(context.Background(), runnable, inputs, WithMaxConcurrency(3)) {
+	for index, result := range BatchAsCompleted(t.Context(), runnable, inputs, WithMaxConcurrency(3)) {
 		if result.Err != nil {
 			t.Fatalf("result[%d].Err = %v", index, result.Err)
 		}
@@ -109,7 +109,7 @@ func TestBatchAsCompletedYieldsErrorsPerInput(t *testing.T) {
 	}, schema.Integer(""), schema.Integer(""))
 
 	results := map[int]BatchResult[int]{}
-	for index, result := range BatchAsCompleted(context.Background(), runnable, []int{0, 1, 2, 3}) {
+	for index, result := range BatchAsCompleted(t.Context(), runnable, []int{0, 1, 2, 3}) {
 		results[index] = result
 	}
 	if len(results) != 4 {
@@ -132,7 +132,7 @@ func TestBatchAsCompletedEarlyBreakStopsYields(t *testing.T) {
 
 	inputs := []int{0, 1, 2, 3}
 	count := 0
-	for _, result := range BatchAsCompleted(context.Background(), runnable, inputs) {
+	for _, result := range BatchAsCompleted(t.Context(), runnable, inputs) {
 		if result.Err != nil {
 			t.Fatalf("result.Err = %v", result.Err)
 		}
@@ -145,7 +145,7 @@ func TestBatchAsCompletedEarlyBreakStopsYields(t *testing.T) {
 }
 
 func TestBatchAsCompletedCanceledContextYieldsEveryIndex(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	runnable := NewFunc(func(_ context.Context, i int, _ ...Option) (int, error) {
 		if i == 0 {
 			cancel()
@@ -170,7 +170,7 @@ func TestBatchAsCompletedEmptyInputs(t *testing.T) {
 		return i, nil
 	}, schema.Integer(""), schema.Integer(""))
 
-	for _, result := range BatchAsCompleted(context.Background(), runnable, nil) {
+	for _, result := range BatchAsCompleted(t.Context(), runnable, nil) {
 		t.Fatalf("unexpected yield: %#v", result)
 	}
 }

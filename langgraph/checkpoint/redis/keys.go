@@ -19,9 +19,9 @@ import (
 // into components, so the escaping below exists only to keep constructed keys
 // unambiguous and SCAN patterns literal.
 const (
-	checkpointPrefix     = "checkpoint:"
+	checkpointPrefix      = "checkpoint:"
 	checkpointWritePrefix = "checkpoint_write:"
-	checkpointZSetPrefix = "checkpoint_zset:"
+	checkpointZSetPrefix  = "checkpoint_zset:"
 )
 
 // keyEscaper escapes the two characters that would make a component

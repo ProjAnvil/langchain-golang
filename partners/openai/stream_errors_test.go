@@ -112,7 +112,7 @@ func TestResponseStreamEmitErrors(t *testing.T) {
 			)
 			handler := &failOnNthMatch{match: tc.match, n: tc.n}
 			stream, err := model.Stream(
-				context.Background(),
+				t.Context(),
 				[]messages.Message{messages.Human("hi")},
 				runnables.WithCallbacks(callbacks.NewManager(handler)),
 			)
@@ -122,8 +122,8 @@ func TestResponseStreamEmitErrors(t *testing.T) {
 			defer stream.Close()
 
 			var streamErr error
-			for i := 0; i < 20; i++ {
-				_, ok, err := stream.Next(context.Background())
+			for range 20 {
+				_, ok, err := stream.Next(t.Context())
 				if err != nil {
 					streamErr = err
 					break
@@ -149,7 +149,7 @@ func TestChatModelCallbackStartAndEndErrors(t *testing.T) {
 		model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
 		handler := &failOnNthMatch{match: onKind(callbacks.EventChatModelStart), n: 1}
 		_, err := model.Invoke(
-			context.Background(),
+			t.Context(),
 			[]messages.Message{messages.Human("hi")},
 			runnables.WithCallbacks(callbacks.NewManager(handler)),
 		)
@@ -162,7 +162,7 @@ func TestChatModelCallbackStartAndEndErrors(t *testing.T) {
 		model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
 		handler := &failOnNthMatch{match: onKind(callbacks.EventChatModelEnd), n: 1}
 		_, err := model.Invoke(
-			context.Background(),
+			t.Context(),
 			[]messages.Message{messages.Human("hi")},
 			runnables.WithCallbacks(callbacks.NewManager(handler)),
 		)
@@ -176,7 +176,7 @@ func TestChatModelCallbackStartAndEndErrors(t *testing.T) {
 		model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
 		handler := &failOnNthMatch{match: onKind(callbacks.EventChatModelStart), n: 1}
 		stream, err := model.Stream(
-			context.Background(),
+			t.Context(),
 			[]messages.Message{messages.Human("hi")},
 			runnables.WithCallbacks(callbacks.NewManager(handler)),
 		)
@@ -194,13 +194,13 @@ func TestChatModelCallbackStartAndEndErrors(t *testing.T) {
 func TestResponseStreamDoneMarkerAndBlankLines(t *testing.T) {
 	server := sseServer(t, "\n\ndata: [DONE]\n\n")
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected immediate stream end, ok=%v err=%v", ok, err)
 	}
 }
@@ -210,13 +210,13 @@ func TestResponseStreamDoneMarkerAndBlankLines(t *testing.T) {
 func TestResponseStreamTextDoneWithoutDelta(t *testing.T) {
 	server := sseServer(t, sseTextDone+sseCompleted)
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream end without chunks, ok=%v err=%v", ok, err)
 	}
 }
@@ -229,13 +229,13 @@ func TestResponseStreamOutputItemDoneNonProtocol(t *testing.T) {
 			sseCompleted,
 	)
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream end without chunks, ok=%v err=%v", ok, err)
 	}
 }
@@ -245,7 +245,7 @@ func TestResponseStreamBadBaseURL(t *testing.T) {
 		modelconfig.WithBaseURL("://bad-url"),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -259,7 +259,7 @@ func TestResponseStreamTransportError(t *testing.T) {
 		modelconfig.WithBaseURL("http://127.0.0.1:1"),
 		modelconfig.WithModel("gpt-test"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -296,13 +296,13 @@ func TestResponseStreamScannerError(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		func(c *modelconfig.Config) { c.HTTPClient = failingBodyHTTPClient() },
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "read boom") {
 		t.Fatalf("expected read boom, got %v", err)
 	}
@@ -314,13 +314,13 @@ func TestChatCompletionsStreamScannerError(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		func(c *modelconfig.Config) { c.HTTPClient = failingBodyHTTPClient() },
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "read boom") {
 		t.Fatalf("expected read boom, got %v", err)
 	}
@@ -331,7 +331,7 @@ func TestChatCompletionsStreamTransportError(t *testing.T) {
 		modelconfig.WithBaseURL("http://127.0.0.1:1"),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -360,7 +360,7 @@ func TestChatCompletionsStreamEmitErrors(t *testing.T) {
 			).WithChatCompletions()
 			handler := &failOnNthMatch{match: onKind(callbacks.EventChatModelStream), n: 1}
 			stream, err := model.Stream(
-				context.Background(),
+				t.Context(),
 				[]messages.Message{messages.Human("hi")},
 				runnables.WithCallbacks(callbacks.NewManager(handler)),
 			)
@@ -369,7 +369,7 @@ func TestChatCompletionsStreamEmitErrors(t *testing.T) {
 			}
 			defer stream.Close()
 
-			_, _, err = stream.Next(context.Background())
+			_, _, err = stream.Next(t.Context())
 			if err == nil || !strings.Contains(err.Error(), "callback boom") {
 				t.Fatalf("expected callback boom, got %v", err)
 			}
@@ -390,7 +390,7 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 			modelconfig.WithBaseURL(server.URL),
 			modelconfig.WithModel("gpt-test"),
 		).WithChatCompletions()
-		stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+		stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 		if err != nil {
 			t.Fatalf("Stream: %v", err)
 		}
@@ -399,7 +399,7 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 		// Index 1 never streamed: finalToolCallChunk iterates 0..len-1, so the
 		// missing slot is skipped — but the call at index 2 is also dropped
 		// (same lossy behavior locked by the second subtest).
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil || !ok {
 			t.Fatalf("Next: ok=%v err=%v", ok, err)
 		}
@@ -417,7 +417,7 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 			modelconfig.WithBaseURL(server.URL),
 			modelconfig.WithModel("gpt-test"),
 		).WithChatCompletions()
-		stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+		stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 		if err != nil {
 			t.Fatalf("Stream: %v", err)
 		}
@@ -427,7 +427,7 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 		// tool call at index 2 is never assembled — the stream ends without a
 		// final chunk. This locks the current (lossy) behavior; it looks like a
 		// production bug worth reporting rather than covering up.
-		if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+		if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 			t.Fatalf("expected stream end without chunk, ok=%v err=%v", ok, err)
 		}
 	})
@@ -452,7 +452,7 @@ func TestResponseStreamEndEmitErrors(t *testing.T) {
 			)
 			handler := &failOnNthMatch{match: onKind(callbacks.EventChatModelEnd), n: 1}
 			stream, err := model.Stream(
-				context.Background(),
+				t.Context(),
 				[]messages.Message{messages.Human("hi")},
 				runnables.WithCallbacks(callbacks.NewManager(handler)),
 			)
@@ -461,7 +461,7 @@ func TestResponseStreamEndEmitErrors(t *testing.T) {
 			}
 			defer stream.Close()
 
-			_, _, err = stream.Next(context.Background())
+			_, _, err = stream.Next(t.Context())
 			if err == nil || !strings.Contains(err.Error(), "callback boom") {
 				t.Fatalf("expected callback boom, got %v", err)
 			}

@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -20,7 +19,7 @@ func TestHumanInTheLoopMiddlewareProcessesDecisions(t *testing.T) {
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search", Args: map[string]any{"q": "old"}}, {ID: "2", Name: "calc"}}
 
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -59,7 +58,7 @@ func TestHumanInTheLoopMiddlewareDescriptionFunc(t *testing.T) {
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search", Args: map[string]any{"q": "old"}}}
 
-	if _, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}}); err != nil {
+	if _, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}}); err != nil {
 		t.Fatalf("after model: %v", err)
 	}
 	if captured.ToolCall.Name != "search" {
@@ -76,7 +75,7 @@ func TestHumanInTheLoopMiddlewareRejectCreatesToolMessage(t *testing.T) {
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "delete"}}
 
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -98,7 +97,7 @@ func TestHumanInTheLoopMiddlewareDecisionCountMismatch(t *testing.T) {
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}}
 
-	_, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	_, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("expected mismatch error, got %v", err)
 	}

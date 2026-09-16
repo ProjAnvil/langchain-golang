@@ -1,7 +1,6 @@
 package ollama
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +35,7 @@ func TestInvokeStructured_JsonSchema(t *testing.T) {
 	)
 
 	sch := schema.Object(map[string]schema.Schema{"answer": schema.String("answer")}, "answer")
-	resp, err := model.InvokeStructured(context.Background(), []messages.Message{messages.Human("hi")}, sch)
+	resp, err := model.InvokeStructured(t.Context(), []messages.Message{messages.Human("hi")}, sch)
 	if err != nil {
 		t.Fatalf("InvokeStructured: %v", err)
 	}

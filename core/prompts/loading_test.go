@@ -304,7 +304,7 @@ func TestLoadFewShotPromptExamplePromptErrors(t *testing.T) {
 
 	if _, err := LoadPromptFromConfig(fewShotConfig(map[string]any{
 		"example_prompt": map[string]any{
-			"_type":         "few_shot",
+			"_type":          "few_shot",
 			"example_prompt": map[string]any{"_type": "prompt", "template": "{{.q}}"},
 			"examples":       []any{map[string]any{"q": "1"}},
 		},

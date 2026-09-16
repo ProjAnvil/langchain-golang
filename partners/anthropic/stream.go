@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -151,12 +152,12 @@ func (s *messageStream) Next(ctx context.Context) (messages.Message, bool, error
 			}
 			continue
 		}
-		if strings.HasPrefix(line, "event:") {
-			s.eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		if rest, ok := strings.CutPrefix(line, "event:"); ok {
+			s.eventName = strings.TrimSpace(rest)
 			continue
 		}
-		if strings.HasPrefix(line, "data:") {
-			s.data = append(s.data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		if rest, ok := strings.CutPrefix(line, "data:"); ok {
+			s.data = append(s.data, strings.TrimSpace(rest))
 		}
 	}
 }
@@ -190,10 +191,7 @@ func (s *messageStream) consumeEvent(ctx context.Context) (messages.Message, boo
 		_ = s.emitError(ctx, err)
 		return messages.Message{}, false, err
 	}
-	eventType := event.Type
-	if eventType == "" {
-		eventType = s.eventName
-	}
+	eventType := cmp.Or(event.Type, s.eventName)
 
 	switch eventType {
 	case "message_start":

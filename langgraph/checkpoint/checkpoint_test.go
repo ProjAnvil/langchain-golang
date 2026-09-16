@@ -1,7 +1,6 @@
 package checkpoint
 
 import (
-	"context"
 	"maps"
 	"testing"
 	"time"
@@ -11,7 +10,7 @@ import (
 // the query_1..query_4 semantics of Python's `test_sync.py:214-260` with the
 // Go Metadata keys source/step.
 func TestListFilter(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	mds := []Metadata{
@@ -65,7 +64,7 @@ func TestListFilter(t *testing.T) {
 // TestPutWritesTaskPathRoundTrip verifies PutWrites stamps each write with
 // the given taskPath and that it round-trips through GetTuple.
 func TestPutWritesTaskPathRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	cp := Checkpoint{V: 1, ID: NewID(0), TS: time.Now()}
@@ -100,7 +99,7 @@ func TestPutWritesTaskPathRoundTrip(t *testing.T) {
 
 func TestNewIDMonotonic(t *testing.T) {
 	prev := ""
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		id := NewID(i)
 		if id <= prev {
 			t.Fatalf("NewID(%d) = %q not greater than previous %q", i, id, prev)
@@ -110,7 +109,7 @@ func TestNewIDMonotonic(t *testing.T) {
 }
 
 func TestCopyOnRead(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	cp := Checkpoint{
@@ -160,7 +159,7 @@ func TestCopyOnRead(t *testing.T) {
 }
 
 func TestMemorySaverZeroValue(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	var saver MemorySaver
 
 	if tup, err := saver.GetTuple(ctx, Config{ThreadID: "x"}); err != nil || tup != nil {
@@ -180,7 +179,7 @@ func TestMemorySaverZeroValue(t *testing.T) {
 }
 
 func TestNamespacesAreIndependent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	for i, ns := range []string{"", "sub"} {
@@ -204,7 +203,7 @@ func TestNamespacesAreIndependent(t *testing.T) {
 // checkpoint and everything newer (strictly-older semantics) and that
 // ListOptions.Limit truncates the newest-first result after filtering.
 func TestListBeforeAndLimit(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	ids := make([]string, 4)
@@ -251,7 +250,7 @@ func TestListBeforeAndLimit(t *testing.T) {
 // ChannelVersions, creating the map when the checkpoint has none and
 // merging into an existing one otherwise.
 func TestPutNewVersions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	// Checkpoint without ChannelVersions: newVersions creates the map.
@@ -287,7 +286,7 @@ func TestPutNewVersions(t *testing.T) {
 // TestPutWritesMissingCheckpoint verifies PutWrites against a checkpoint
 // that does not exist errors instead of silently dropping the writes.
 func TestPutWritesMissingCheckpoint(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	err := saver.PutWrites(ctx, Config{ThreadID: "nope", CheckpointID: "missing"}, []Write{{Channel: "c", Value: 1}}, "task", "")
@@ -300,7 +299,7 @@ func TestPutWritesMissingCheckpoint(t *testing.T) {
 // keeps the first write to an occupied (taskID, idx) slot, while a reserved
 // channel's fixed negative slot is replaced in place on rewrite.
 func TestPutWritesSlotRules(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := NewMemorySaver()
 
 	cp := Checkpoint{V: 1, ID: NewID(0), TS: time.Now()}

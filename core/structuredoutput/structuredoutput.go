@@ -143,15 +143,13 @@ func BindOptionsWithRaw[M JSONSchemaModel[M], T any](
 	return runnables.NewFunc(
 		func(ctx context.Context, input []messages.Message, runOpts ...runnables.Option) (StructuredResult[T], error) {
 			raw, parsed, err := structuredInvoke[M, T](model, opts, ctx, input, runOpts)
-			var pErr parseError
-			switch {
-			case err == nil:
+			if err == nil {
 				return StructuredResult[T]{Raw: raw, Parsed: parsed}, nil
-			case errors.As(err, &pErr):
-				return StructuredResult[T]{Raw: raw, ParsingError: pErr.err}, nil
-			default:
-				return StructuredResult[T]{}, err
 			}
+			if pErr, ok := errors.AsType[parseError](err); ok {
+				return StructuredResult[T]{Raw: raw, ParsingError: pErr.err}, nil
+			}
+			return StructuredResult[T]{}, err
 		},
 		model.InputSchema(),
 		opts.Schema,

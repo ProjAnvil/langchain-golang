@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -51,7 +50,7 @@ func TestPIIMiddlewareBeforeModelRedactsInputAndToolResults(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "lookup"}}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("email me at user@example.com"),
 		ai,
 		messages.Tool("1", "tool saw tool@example.com"),
@@ -75,7 +74,7 @@ func TestPIIMiddlewareAfterModelRedactsOutputAndToolArgs(t *testing.T) {
 	}
 	ai := messages.AI("send to bot@example.com")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "send", Args: map[string]any{"to": "user@example.com"}}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{messages.Human("hi"), ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{messages.Human("hi"), ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -93,9 +92,8 @@ func TestPIIMiddlewareBlockRaisesDetectionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pii middleware: %v", err)
 	}
-	_, err = middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{messages.Human("user@example.com")}})
-	var piiErr PIIDetectionError
-	if !errors.As(err, &piiErr) {
+	_, err = middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{messages.Human("user@example.com")}})
+	if _, ok := errors.AsType[PIIDetectionError](err); !ok {
 		t.Fatalf("expected PIIDetectionError, got %v", err)
 	}
 }

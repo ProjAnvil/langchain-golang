@@ -1,7 +1,6 @@
 package vectorstores
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -10,7 +9,7 @@ import (
 
 func TestInMemorySimilaritySearch(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(32))
-	ids, err := store.AddDocuments(context.Background(), []documents.Document{
+	ids, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", map[string]any{"rank": 1}),
 		documents.New("gamma delta", map[string]any{"rank": 2}),
 	})
@@ -21,7 +20,7 @@ func TestInMemorySimilaritySearch(t *testing.T) {
 		t.Fatalf("ids: got %d want 2", len(ids))
 	}
 
-	results, err := store.SimilaritySearchWithScore(context.Background(), "alpha", 1)
+	results, err := store.SimilaritySearchWithScore(t.Context(), "alpha", 1)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -38,7 +37,7 @@ func TestInMemorySimilaritySearch(t *testing.T) {
 
 func TestInMemoryGetAndDelete(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(16))
-	ids, err := store.AddDocuments(context.Background(), []documents.Document{
+	ids, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("keep", nil).WithID("keep"),
 		documents.New("delete", nil).WithID("delete"),
 	})
@@ -49,11 +48,11 @@ func TestInMemoryGetAndDelete(t *testing.T) {
 		t.Fatalf("ids: got %v", ids)
 	}
 
-	if err := store.Delete(context.Background(), []string{"delete"}); err != nil {
+	if err := store.Delete(t.Context(), []string{"delete"}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
-	docs, err := store.GetByIDs(context.Background(), []string{"keep", "delete"})
+	docs, err := store.GetByIDs(t.Context(), []string{"keep", "delete"})
 	if err != nil {
 		t.Fatalf("get by ids: %v", err)
 	}
@@ -69,7 +68,7 @@ func TestInMemoryAddTexts(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(16))
 	metadata := map[string]any{"source": "unit"}
 	ids, err := store.AddTexts(
-		context.Background(),
+		t.Context(),
 		[]string{"alpha beta", "gamma delta"},
 		[]map[string]any{metadata},
 		[]string{"alpha-id", "gamma-id"},
@@ -82,7 +81,7 @@ func TestInMemoryAddTexts(t *testing.T) {
 	}
 	metadata["source"] = "mutated"
 
-	docs, err := store.GetByIDs(context.Background(), ids)
+	docs, err := store.GetByIDs(t.Context(), ids)
 	if err != nil {
 		t.Fatalf("get by ids: %v", err)
 	}
@@ -102,14 +101,14 @@ func TestInMemoryAddTexts(t *testing.T) {
 
 func TestInMemoryFilterAndVectorSearch(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(32))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", map[string]any{"group": "a"}),
 		documents.New("alpha gamma", map[string]any{"group": "b"}),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := store.SimilaritySearchWithScoreFilter(context.Background(), "alpha", 2, func(doc documents.Document) bool {
+	results, err := store.SimilaritySearchWithScoreFilter(t.Context(), "alpha", 2, func(doc documents.Document) bool {
 		return doc.Metadata["group"] == "b"
 	})
 	if err != nil {
@@ -118,11 +117,11 @@ func TestInMemoryFilterAndVectorSearch(t *testing.T) {
 	if len(results) != 1 || results[0].Document.Metadata["group"] != "b" {
 		t.Fatalf("unexpected filtered results: %#v", results)
 	}
-	vector, err := embeddings.NewFake(32).EmbedQuery(context.Background(), "alpha")
+	vector, err := embeddings.NewFake(32).EmbedQuery(t.Context(), "alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	docs, err := store.SimilaritySearchByVector(context.Background(), vector, 1, nil)
+	docs, err := store.SimilaritySearchByVector(t.Context(), vector, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +144,7 @@ func TestMaximalMarginalRelevance(t *testing.T) {
 
 func TestInMemoryMaxMarginalRelevanceSearch(t *testing.T) {
 	store := NewInMemory(embeddings.NewFake(32))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 		documents.New("alpha gamma", nil),
 		documents.New("delta epsilon", nil),
@@ -153,7 +152,7 @@ func TestInMemoryMaxMarginalRelevanceSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	docs, err := store.MaxMarginalRelevanceSearch(context.Background(), "alpha", 2, 3, 0.5, nil)
+	docs, err := store.MaxMarginalRelevanceSearch(t.Context(), "alpha", 2, 3, 0.5, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

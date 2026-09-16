@@ -1,7 +1,6 @@
 package vectorstores
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -13,7 +12,7 @@ import (
 // Mirrors test_inmemory_dump_load (test_in_memory.py:86): search results are
 // identical before and after a dump/load round trip.
 func TestInMemoryDumpLoadRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	embedding := embeddings.NewDeterministicFake(6)
 	store, err := FromTexts(ctx, embedding, []string{"foo", "bar", "baz"})
 	if err != nil {
@@ -53,7 +52,7 @@ func TestInMemoryDumpLoadRoundTrip(t *testing.T) {
 // "metadata"}} (in_memory.py:214-219, 537-546). Metadata survives the round
 // trip, and Dump creates missing parent directories.
 func TestInMemoryDumpFormatAndMetadata(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	embedding := embeddings.NewDeterministicFake(6)
 	store, err := FromTexts(ctx, embedding, []string{"foo"},
 		WithIDs([]string{"doc-1"}), WithMetadatas([]map[string]any{{"source": "s3"}}))
@@ -124,7 +123,7 @@ func TestLoadInMemoryMalformedJSON(t *testing.T) {
 // (path is a directory), and parent-dir creation failure (a path component
 // is an existing file). Also covers the stale-idSequence skip branch.
 func TestInMemoryDumpErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, err := FromTexts(ctx, embeddings.NewFake(4), []string{"foo"},
 		WithMetadatas([]map[string]any{{"bad": func() {}}}))
 	if err != nil {

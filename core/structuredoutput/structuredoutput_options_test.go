@@ -1,7 +1,6 @@
 package structuredoutput
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -40,7 +39,7 @@ func TestBindOptionsFunctionCallingParsesToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	got, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -71,7 +70,7 @@ func TestBindOptionsFunctionCallingUsesSchemaTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	got, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -96,7 +95,7 @@ func TestBindOptionsFunctionCallingNoMatchingToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	_, err = runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	_, err = runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err == nil || !strings.Contains(err.Error(), `tool call named "person"`) {
 		t.Fatalf("expected missing-tool-call error, got %v", err)
 	}
@@ -145,7 +144,7 @@ func TestBindOptionsWithRawCapturesParseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	got, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -174,7 +173,7 @@ func TestBindOptionsWithRawSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	got, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -200,7 +199,7 @@ func TestBindOptionsWithRawFunctionCallingParseFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	got, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -228,7 +227,7 @@ func TestBindOptionsWithRawPropagatesModelError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	_, err = runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	_, err = runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if !errors.Is(err, invokeErr) {
 		t.Fatalf("expected invoke error, got %v", err)
 	}
@@ -248,7 +247,7 @@ func TestBindOptionsJSONSchemaRaisesParseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	if _, err = runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")}); err == nil {
+	if _, err = runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")}); err == nil {
 		t.Fatal("expected parse error")
 	}
 }
@@ -291,7 +290,7 @@ func TestBindOptionsFunctionCallingUnmarshalableArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	got, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -341,9 +340,9 @@ func TestBindOptionsParseErrorUnwraps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	_, err = runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
-	var pErr parseError
-	if !errors.As(err, &pErr) {
+	_, err = runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
+	pErr, ok := errors.AsType[parseError](err)
+	if !ok {
 		t.Fatalf("expected parseError, got %v", err)
 	}
 	if errors.Unwrap(pErr) == nil {
@@ -368,7 +367,7 @@ func TestBindOptionsFunctionCallingNilArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	got, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -407,7 +406,7 @@ func TestBindOptionsFunctionCallingBindToolsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	_, err = runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	_, err = runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if err == nil || !strings.Contains(err.Error(), "bind tools blew up") {
 		t.Fatalf("expected bind tools error, got %v", err)
 	}
@@ -429,7 +428,7 @@ func TestBindOptionsFunctionCallingInvokeError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	_, err = runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract person")})
+	_, err = runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract person")})
 	if !errors.Is(err, invokeErr) {
 		t.Fatalf("expected invoke error, got %v", err)
 	}

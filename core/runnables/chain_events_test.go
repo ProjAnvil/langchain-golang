@@ -86,7 +86,7 @@ func chainUpper() Func[string, string] {
 
 func TestNewRunIDFormatsUUIDv4(t *testing.T) {
 	seen := map[string]bool{}
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		id := NewRunID()
 		if len(id) != 36 {
 			t.Fatalf("id %q: length %d, want 36", id, len(id))
@@ -125,7 +125,7 @@ func TestFuncChainEventsInvoke(t *testing.T) {
 		},
 		schema.String(""), schema.String(""),
 	)
-	output, err := fn.Invoke(context.Background(), "go", withCallbacks)
+	output, err := fn.Invoke(t.Context(), "go", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestFuncChainEventsError(t *testing.T) {
 		},
 		schema.String(""), schema.String(""),
 	)
-	if _, err := fn.Invoke(context.Background(), "x", withCallbacks); !errors.Is(err, boom) {
+	if _, err := fn.Invoke(t.Context(), "x", withCallbacks); !errors.Is(err, boom) {
 		t.Fatalf("invoke err %v", err)
 	}
 	events := recorder.Events()
@@ -171,7 +171,7 @@ func TestFuncChainEventsError(t *testing.T) {
 
 func TestFuncChainEventsRespectUserRunID(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
-	_, err := chainUpper().Invoke(context.Background(), "x", withCallbacks, WithRunID("root"))
+	_, err := chainUpper().Invoke(t.Context(), "x", withCallbacks, WithRunID("root"))
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestFuncInstallsManagerInContext(t *testing.T) {
 		},
 		schema.String(""), schema.String(""),
 	)
-	if _, err := fn.Invoke(context.Background(), "x", withCallbacks); err != nil {
+	if _, err := fn.Invoke(t.Context(), "x", withCallbacks); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if !ok {
@@ -208,7 +208,7 @@ func TestFuncInstallsManagerInContext(t *testing.T) {
 		},
 		schema.String(""), schema.String(""),
 	)
-	if _, err := fn2.Invoke(context.Background(), "x"); err != nil {
+	if _, err := fn2.Invoke(t.Context(), "x"); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if ok {
@@ -221,7 +221,7 @@ func TestFuncInstallsManagerInContext(t *testing.T) {
 
 func TestFuncBatchMintsPerElementRuns(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
-	outputs, err := chainUpper().Batch(context.Background(), []string{"a", "b"}, withCallbacks)
+	outputs, err := chainUpper().Batch(t.Context(), []string{"a", "b"}, withCallbacks)
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestFuncInvokeForwardsChildConfigToFn(t *testing.T) {
 		},
 		schema.String(""), schema.String(""),
 	)
-	output, err := fn.Invoke(context.Background(), "go", withCallbacks)
+	output, err := fn.Invoke(t.Context(), "go", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestFuncInvokeFnConfigWithoutCallbacks(t *testing.T) {
 		},
 		schema.String(""), schema.String(""),
 	)
-	if _, err := fn.Invoke(context.Background(), "x", WithRunID("root"), WithTags("t"), WithMetadata("k", "v")); err != nil {
+	if _, err := fn.Invoke(t.Context(), "x", WithRunID("root"), WithTags("t"), WithMetadata("k", "v")); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if seen.RunID != "" {
@@ -355,7 +355,7 @@ func TestPipeChainEventsInvoke(t *testing.T) {
 		schema.String(""), schema.String(""),
 	)
 	chain := Pipe(double, chainUpper())
-	output, err := chain.Invoke(context.Background(), "go", withCallbacks)
+	output, err := chain.Invoke(t.Context(), "go", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestPipeChainEventsInvoke(t *testing.T) {
 func TestPipeChainEventsRespectUserRunID(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
 	chain := Pipe(chainUpper(), chainUpper())
-	if _, err := chain.Invoke(context.Background(), "x", withCallbacks, WithRunID("root")); err != nil {
+	if _, err := chain.Invoke(t.Context(), "x", withCallbacks, WithRunID("root")); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	events := recorder.Events()
@@ -437,14 +437,14 @@ func (r chainChunkSource) OutputSchema() schema.Schema { return schema.String(""
 func TestSeqStreamEmitsChainStreamChunks(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
 	chain := Pipe(chainChunkSource{chunks: []string{"a", "b"}}, chainUpper())
-	stream, err := chain.Stream(context.Background(), "ignored", withCallbacks)
+	stream, err := chain.Stream(t.Context(), "ignored", withCallbacks)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
 	var got []string
 	for {
-		value, ok, err := stream.Next(context.Background())
+		value, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -487,7 +487,7 @@ func TestEachChainEventsPairPerElement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new each: %v", err)
 	}
-	outputs, err := each.Invoke(context.Background(), []string{"a", "b", "c"}, withCallbacks)
+	outputs, err := each.Invoke(t.Context(), []string{"a", "b", "c"}, withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestRetryChainEventsSuccessAfterFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry: %v", err)
 	}
-	output, err := retryable.Invoke(context.Background(), "x", withCallbacks)
+	output, err := retryable.Invoke(t.Context(), "x", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestRetryChainEventsExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new retry: %v", err)
 	}
-	if _, err := retryable.Invoke(context.Background(), "x", withCallbacks); err == nil {
+	if _, err := retryable.Invoke(t.Context(), "x", withCallbacks); err == nil {
 		t.Fatal("invoke must fail")
 	}
 	events := recorder.Events()
@@ -613,7 +613,7 @@ func TestWithFallbacksChainEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new fallbacks: %v", err)
 	}
-	output, err := fb.Invoke(context.Background(), "x", withCallbacks)
+	output, err := fb.Invoke(t.Context(), "x", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestPickChainEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pick: %v", err)
 	}
-	output, err := pick.Invoke(context.Background(), "x", withCallbacks)
+	output, err := pick.Invoke(t.Context(), "x", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestRouterChainEvents(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
 	router := NewRouter(map[string]Runnable[string, string]{"a": chainUpper()})
 	output, err := router.Invoke(
-		context.Background(),
+		t.Context(),
 		RouterInput[string]{Key: "a", Input: "x"},
 		withCallbacks,
 	)
@@ -698,7 +698,7 @@ func TestRouterChainEventsUnknownKey(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
 	router := NewRouter(map[string]Runnable[string, string]{})
 	if _, err := router.Invoke(
-		context.Background(),
+		t.Context(),
 		RouterInput[string]{Key: "missing", Input: "x"},
 		withCallbacks,
 	); err == nil {
@@ -717,7 +717,7 @@ func TestBranchChainEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new branch: %v", err)
 	}
-	output, err := branch.Invoke(context.Background(), "x", withCallbacks)
+	output, err := branch.Invoke(t.Context(), "x", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -740,7 +740,7 @@ func TestBindEmitsNoSelfEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	output, err := bound.Invoke(context.Background(), "x")
+	output, err := bound.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -762,7 +762,7 @@ func TestAssignChainEvents(t *testing.T) {
 		),
 	})
 	output, err := assign.Invoke(
-		context.Background(),
+		t.Context(),
 		map[string]any{"x": 1},
 		withCallbacks,
 	)
@@ -788,7 +788,7 @@ func TestAssignChainEvents(t *testing.T) {
 func TestPassthroughChainEvents(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
 	pass := NewPassthrough[string](schema.String(""))
-	output, err := pass.Invoke(context.Background(), "through", withCallbacks)
+	output, err := pass.Invoke(t.Context(), "through", withCallbacks)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestNoCallbacksLeavesChildRunIDEmpty(t *testing.T) {
 	seen := []Config{}
 	capture := configCaptureRunnable[string, string]{output: "ok", seen: &seen}
 	chain := Pipe(capture, capture)
-	if _, err := chain.Invoke(context.Background(), "x", WithRunID("root")); err != nil {
+	if _, err := chain.Invoke(t.Context(), "x", WithRunID("root")); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	for i, cfg := range seen {
@@ -828,7 +828,7 @@ func TestChildRunIDMatchesChildEvents(t *testing.T) {
 		schema.String(""), schema.String(""),
 	)
 	chain := Pipe(first, chainUpper())
-	if _, err := chain.Invoke(context.Background(), "x", withCallbacks); err != nil {
+	if _, err := chain.Invoke(t.Context(), "x", withCallbacks); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	events := recorder.Events()

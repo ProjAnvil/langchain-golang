@@ -16,7 +16,7 @@ func TestLoad(t *testing.T) {
 		documents.New("a", nil),
 		documents.New("b", nil),
 	}}
-	got, err := Load(context.Background(), loader)
+	got, err := Load(t.Context(), loader)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestLoadAndSplit(t *testing.T) {
 	loader := fakeLoader{docs: []documents.Document{
 		documents.New("a b", map[string]any{"source": "unit"}),
 	}}
-	got, err := LoadAndSplit(context.Background(), loader, fakeSplitter{})
+	got, err := LoadAndSplit(t.Context(), loader, fakeSplitter{})
 	if err != nil {
 		t.Fatalf("load and split: %v", err)
 	}
@@ -43,14 +43,14 @@ func TestLoadAndSplitDefaultSplitterFactory(t *testing.T) {
 	t.Cleanup(func() { RegisterDefaultTextSplitterFactory(nil) })
 
 	loader := fakeLoader{docs: []documents.Document{documents.New("a b", map[string]any{"source": "unit"})}}
-	if _, err := LoadAndSplit(context.Background(), loader, nil); err == nil {
+	if _, err := LoadAndSplit(t.Context(), loader, nil); err == nil {
 		t.Fatal("expected missing splitter error")
 	}
 
 	RegisterDefaultTextSplitterFactory(func() (TextSplitter, error) {
 		return fakeSplitter{}, nil
 	})
-	got, err := LoadAndSplit(context.Background(), loader, nil)
+	got, err := LoadAndSplit(t.Context(), loader, nil)
 	if err != nil {
 		t.Fatalf("load and split with default: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestParseBlob(t *testing.T) {
 		t.Fatalf("blob data: %q", data)
 	}
 
-	got, err := Parse(context.Background(), fakeParser{}, blob)
+	got, err := Parse(t.Context(), fakeParser{}, blob)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -108,18 +108,18 @@ func TestBlobConstructorsAndSource(t *testing.T) {
 }
 
 func TestLoadErrors(t *testing.T) {
-	if _, err := Load(context.Background(), errLoader{err: errTest}); err == nil {
+	if _, err := Load(t.Context(), errLoader{err: errTest}); err == nil {
 		t.Fatal("expected lazy load error")
 	}
 
 	iter := &errIterator{nextErr: errTest}
-	if _, err := Load(context.Background(), fakeIterLoader{iter: iter}); err == nil {
+	if _, err := Load(t.Context(), fakeIterLoader{iter: iter}); err == nil {
 		t.Fatal("expected next error")
 	}
 }
 
 func TestLoadAndSplitLoadError(t *testing.T) {
-	if _, err := LoadAndSplit(context.Background(), errLoader{err: errTest}, fakeSplitter{}); err == nil {
+	if _, err := LoadAndSplit(t.Context(), errLoader{err: errTest}, fakeSplitter{}); err == nil {
 		t.Fatal("expected load error to propagate")
 	}
 }
@@ -133,25 +133,25 @@ func TestDefaultTextSplitterFactoryFailures(t *testing.T) {
 	RegisterDefaultTextSplitterFactory(func() (TextSplitter, error) {
 		return nil, errTest
 	})
-	if _, err := LoadAndSplit(context.Background(), loader, nil); err == nil {
+	if _, err := LoadAndSplit(t.Context(), loader, nil); err == nil {
 		t.Fatal("expected factory error")
 	}
 
 	RegisterDefaultTextSplitterFactory(func() (TextSplitter, error) {
 		return nil, nil
 	})
-	if _, err := LoadAndSplit(context.Background(), loader, nil); err == nil {
+	if _, err := LoadAndSplit(t.Context(), loader, nil); err == nil {
 		t.Fatal("expected nil splitter error")
 	}
 }
 
 func TestParseErrors(t *testing.T) {
-	if _, err := Parse(context.Background(), errParser{err: errTest}, Blob{}); err == nil {
+	if _, err := Parse(t.Context(), errParser{err: errTest}, Blob{}); err == nil {
 		t.Fatal("expected lazy parse error")
 	}
 
 	iter := &errIterator{nextErr: errTest}
-	if _, err := Parse(context.Background(), iterParser{iter: iter}, Blob{}); err == nil {
+	if _, err := Parse(t.Context(), iterParser{iter: iter}, Blob{}); err == nil {
 		t.Fatal("expected next error")
 	}
 }

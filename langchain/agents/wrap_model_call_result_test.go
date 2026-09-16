@@ -68,7 +68,7 @@ func TestWrapModelCallResultUppercaseShortForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Test")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Test")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestWrapModelCallResultPrefixShortForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Test")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Test")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestWrapModelCallResultMultiStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Test")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Test")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestWrapModelCallResultErrorToShortForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Test")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Test")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestWrapModelCallResultInvalidType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("Test")})
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("Test")})
 	if err == nil || !strings.Contains(err.Error(), "unsupported ModelCallResult type") {
 		t.Fatalf("expected normalization error, got %v", err)
 	}
@@ -189,7 +189,7 @@ func TestWrapModelCallResultPrecedenceOverPlainHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Test")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Test")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestFuncWrapModelCallResultAdapter(t *testing.T) {
 	hook := FuncWrapModelCallResult(func(ctx context.Context, request middleware.ModelRequest, handler middleware.ModelHandler) (middleware.ModelCallResult, error) {
 		return handler(ctx, request)
 	})
-	result, err := hook.WrapModelCallResult(context.Background(), middleware.ModelRequest{}, func(_ context.Context, _ middleware.ModelRequest) (middleware.ModelResponse, error) {
+	result, err := hook.WrapModelCallResult(t.Context(), middleware.ModelRequest{}, func(_ context.Context, _ middleware.ModelRequest) (middleware.ModelResponse, error) {
 		return middleware.ModelResponse{Result: []messages.Message{messages.AI("ok")}}, nil
 	})
 	if err != nil {

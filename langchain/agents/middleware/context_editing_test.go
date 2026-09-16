@@ -63,7 +63,7 @@ func TestContextEditingMiddlewareWrapModelCall(t *testing.T) {
 	middleware := NewContextEditingMiddleware(ClearToolUsesEdit{Trigger: 0, Keep: 0, Placeholder: "[x]"})
 	middleware.CountTokens = func([]messages.Message) int { return 10 }
 
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		if request.Messages[1].Content != "[x]" {
 			t.Fatalf("edited content mismatch: %#v", request.Messages)
 		}

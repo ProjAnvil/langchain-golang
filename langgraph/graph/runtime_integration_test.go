@@ -44,7 +44,7 @@ func TestBuildRuntimeContextSchemaValues(t *testing.T) {
 		t.Fatalf("Compile error: %v", err)
 	}
 
-	ctx := runtime.ContextWithValues(context.Background(), map[string]any{
+	ctx := runtime.ContextWithValues(t.Context(), map[string]any{
 		"user_id": "u123",
 		"tenant":  "acme",
 	})
@@ -101,7 +101,7 @@ func TestBuildRuntimeWithoutContextValues(t *testing.T) {
 		t.Fatalf("Compile error: %v", err)
 	}
 
-	if _, err := cg.Invoke(context.Background(), map[string]any{}); err != nil {
+	if _, err := cg.Invoke(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("Invoke error: %v", err)
 	}
 	if observedContext != nil {

@@ -1,7 +1,6 @@
 package caches
 
 import (
-	"context"
 	"reflect"
 	"testing"
 )
@@ -36,7 +35,7 @@ func TestInMemoryCacheInitialization(t *testing.T) {
 }
 
 func TestInMemoryCacheLookup(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache()
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -68,7 +67,7 @@ func TestInMemoryCacheLookup(t *testing.T) {
 }
 
 func TestInMemoryCacheUpdateWithNoMaxSize(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache()
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -89,7 +88,7 @@ func TestInMemoryCacheUpdateWithNoMaxSize(t *testing.T) {
 }
 
 func TestInMemoryCacheUpdateWithMaxSizeEvictsOldest(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache(WithMaxSize(2))
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -119,7 +118,7 @@ func TestInMemoryCacheUpdateWithMaxSizeEvictsOldest(t *testing.T) {
 }
 
 func TestInMemoryCacheClear(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache()
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -140,7 +139,7 @@ func TestInMemoryCacheClear(t *testing.T) {
 }
 
 func TestInMemoryCacheLookupReturnsCopy(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache()
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -172,7 +171,7 @@ func TestInMemoryCacheLookupReturnsCopy(t *testing.T) {
 }
 
 func TestInMemoryCacheUpdateWithEmptyGenerations(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache()
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -194,7 +193,7 @@ func TestInMemoryCacheUpdateWithEmptyGenerations(t *testing.T) {
 }
 
 func TestInMemoryCacheLookupClonesGenerationInfo(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache()
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -237,7 +236,7 @@ func TestInMemoryCacheLookupClonesGenerationInfo(t *testing.T) {
 }
 
 func TestInMemoryCacheEmptyGenerationInfoBecomesNil(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	cache, err := NewInMemoryCache()
 	if err != nil {
 		t.Fatalf("new cache: %v", err)
@@ -283,7 +282,7 @@ func TestCacheKeyString(t *testing.T) {
 
 func assertCacheHit(t *testing.T, cache *InMemoryCache, prompt string, llmString string, want []Generation) {
 	t.Helper()
-	got, ok, err := cache.Lookup(context.Background(), prompt, llmString)
+	got, ok, err := cache.Lookup(t.Context(), prompt, llmString)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}

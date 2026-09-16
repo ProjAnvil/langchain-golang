@@ -1,6 +1,9 @@
 package modelprofiles
 
-import "sort"
+import (
+	"maps"
+	"slices"
+)
 
 // Declared ModelProfile field names.
 //
@@ -82,12 +85,7 @@ var declaredProfileFields = map[string]struct{}{
 // declared by the schema. Unknown keys outside this set are still permitted on
 // a Profile (extra="allow" semantics) but can be surfaced via UnknownProfileKeys.
 func DeclaredProfileFields() []string {
-	fields := make([]string, 0, len(declaredProfileFields))
-	for field := range declaredProfileFields {
-		fields = append(fields, field)
-	}
-	sort.Strings(fields)
-	return fields
+	return slices.Sorted(maps.Keys(declaredProfileFields))
 }
 
 // IsDeclaredProfileField reports whether name is a declared ModelProfile field.
@@ -114,6 +112,6 @@ func UnknownProfileKeys(profile Profile) []string {
 			extra = append(extra, key)
 		}
 	}
-	sort.Strings(extra)
+	slices.Sort(extra)
 	return extra
 }

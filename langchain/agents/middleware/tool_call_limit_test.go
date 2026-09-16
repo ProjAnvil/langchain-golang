@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -18,7 +17,7 @@ func TestToolCallLimitMiddlewareAllowsAndCountsToolCalls(t *testing.T) {
 
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}, {ID: "2", Name: "calc"}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -38,7 +37,7 @@ func TestToolCallLimitMiddlewareContinueBlocksExceededCalls(t *testing.T) {
 
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}, {ID: "2", Name: "calc"}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -65,7 +64,7 @@ func TestToolCallLimitMiddlewareSpecificToolEnd(t *testing.T) {
 
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -90,7 +89,7 @@ func TestToolCallLimitMiddlewareEndRejectsOtherPendingTools(t *testing.T) {
 
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}, {ID: "2", Name: "calc"}}
-	_, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	_, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err == nil || !strings.Contains(err.Error(), "other tool calls pending") {
 		t.Fatalf("expected pending tools error, got %v", err)
 	}
@@ -105,9 +104,8 @@ func TestToolCallLimitMiddlewareErrorBehavior(t *testing.T) {
 
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}}
-	_, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
-	var limitErr ToolCallLimitExceededError
-	if !errors.As(err, &limitErr) {
+	_, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
+	if _, ok := errors.AsType[ToolCallLimitExceededError](err); !ok {
 		t.Fatalf("expected ToolCallLimitExceededError, got %v", err)
 	}
 }

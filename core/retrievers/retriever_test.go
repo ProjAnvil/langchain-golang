@@ -1,7 +1,6 @@
 package retrievers
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -11,7 +10,7 @@ import (
 
 func TestVectorStoreRetriever(t *testing.T) {
 	store := vectorstores.NewInMemory(embeddings.NewFake(32))
-	_, err := store.AddDocuments(context.Background(), []documents.Document{
+	_, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", nil),
 		documents.New("gamma delta", nil),
 	})
@@ -20,7 +19,7 @@ func TestVectorStoreRetriever(t *testing.T) {
 	}
 
 	retriever := NewVectorStoreRetriever(store, 1)
-	docs, err := retriever.GetRelevantDocuments(context.Background(), "alpha")
+	docs, err := retriever.GetRelevantDocuments(t.Context(), "alpha")
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}

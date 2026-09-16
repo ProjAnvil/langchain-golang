@@ -18,9 +18,7 @@ func DefaultParallelism() int {
 	if workers > 32 {
 		workers = 32
 	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers = max(workers, 1)
 	return workers
 }
 
@@ -73,7 +71,7 @@ func ParallelMap[I, O any](
 	indexes := make(chan int)
 	var wg sync.WaitGroup
 	wg.Add(limit)
-	for w := 0; w < limit; w++ {
+	for range limit {
 		go func() {
 			defer wg.Done()
 			for i := range indexes {

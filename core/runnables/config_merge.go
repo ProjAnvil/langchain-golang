@@ -1,6 +1,6 @@
 package runnables
 
-import "sort"
+import "slices"
 
 // MergeConfig merges multiple Config values into one using the same semantics
 // as Python's merge_configs:
@@ -31,7 +31,7 @@ func MergeConfig(configs ...Config) Config {
 			for t := range tagSet {
 				out.Tags = append(out.Tags, t)
 			}
-			sort.Strings(out.Tags)
+			slices.Sort(out.Tags)
 		}
 
 		// Metadata: last-writer-wins; lc_versions accumulates.

@@ -37,7 +37,7 @@ func TestMarkdownSyntaxSplitsByHeadersAndCodeFences(t *testing.T) {
 			"Header 2": "Header 2 Again",
 		}),
 		documents.New("```python\ndef func():\n   print(\"hi\")\n```\n", map[string]any{
-			"Code":    "python",
+			"Code":     "python",
 			"Header 1": "My Header 1",
 			"Header 2": "Header 2 Again",
 		}),
@@ -64,7 +64,7 @@ func TestMarkdownSyntaxStripHeadersFalse(t *testing.T) {
 			"Header 2": "Header 2 Again",
 		}),
 		documents.New("```python\ndef func():\n   print(\"hi\")\n```\n", map[string]any{
-			"Code":    "python",
+			"Code":     "python",
 			"Header 1": "My Header 1",
 			"Header 2": "Header 2 Again",
 		}),
@@ -81,7 +81,7 @@ func TestMarkdownSyntaxReturnEachLine(t *testing.T) {
 	docs := splitter.SplitText(markdownSyntaxFixture)
 
 	codeMeta := map[string]any{
-		"Code":    "python",
+		"Code":     "python",
 		"Header 1": "My Header 1",
 		"Header 2": "Header 2 Again",
 	}

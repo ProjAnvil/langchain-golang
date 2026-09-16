@@ -3,7 +3,8 @@ package streamevents
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -23,7 +24,7 @@ const (
 // Event is a provider-neutral chat streaming protocol event.
 type Event struct {
 	Event   EventName             `json:"event"`
-	Index   int                   `json:"index,omitempty"`
+	Index   int                   `json:"index,omitzero"`
 	Content messages.ContentBlock `json:"content,omitempty"`
 	Delta   messages.ContentBlock `json:"delta,omitempty"`
 	Output  messages.Message      `json:"output,omitempty"`
@@ -253,7 +254,7 @@ func (s *ChatModelStream) sweepToolChunks() {
 	for index := range s.toolChunks {
 		indexes = append(indexes, index)
 	}
-	sort.Ints(indexes)
+	slices.Sort(indexes)
 	for _, index := range indexes {
 		chunk := s.toolChunks[index]
 		call := messages.ToolCall{ID: chunk.ID, Name: chunk.Name}
@@ -288,7 +289,7 @@ func (s *ChatModelStream) orderedBlocks() []messages.ContentBlock {
 	for index := range s.blocks {
 		indexes = append(indexes, index)
 	}
-	sort.Ints(indexes)
+	slices.Sort(indexes)
 	blocks := make([]messages.ContentBlock, 0, len(indexes))
 	for _, index := range indexes {
 		blocks = append(blocks, messages.ParseContentBlock(cloneBlockMap(s.blocks[index])))
@@ -307,11 +308,7 @@ func toolCallFromMap(m map[string]any) messages.ToolCall {
 }
 
 func joinIndexedStrings(values map[int]string) string {
-	indexes := make([]int, 0, len(values))
-	for index := range values {
-		indexes = append(indexes, index)
-	}
-	sort.Ints(indexes)
+	indexes := slices.Sorted(maps.Keys(values))
 	var out string
 	for _, index := range indexes {
 		out += values[index]

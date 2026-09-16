@@ -236,7 +236,7 @@ func TestContextEditingMiddlewareEmptyMessagesPassThrough(t *testing.T) {
 	}
 	middleware := NewContextEditingMiddleware()
 	called := false
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		called = true
 		if len(req.Messages) != 0 {
 			t.Fatalf("expected no messages: %#v", req.Messages)
@@ -260,7 +260,7 @@ func TestContextEditingMiddlewareNilCounterUsesDefault(t *testing.T) {
 	}
 	middleware := NewContextEditingMiddleware(ClearToolUsesEdit{Trigger: 0, Keep: 0})
 	middleware.CountTokens = nil
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if req.Messages[1].Content != DefaultToolPlaceholder {
 			t.Fatalf("expected default placeholder: %#v", req.Messages[1])
 		}

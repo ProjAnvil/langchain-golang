@@ -1,7 +1,6 @@
 package openaicompat
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -155,7 +154,7 @@ func TestResolveAllProvidersOverWire(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve(%s): %v", tc.provider, err)
 			}
-			resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+			resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 			if err != nil {
 				t.Fatalf("Invoke(%s): %v", tc.provider, err)
 			}
@@ -236,7 +235,7 @@ func TestParseModelStringResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotBody["model"] != "llama-3.3-70b-versatile" {
@@ -295,7 +294,7 @@ func TestDefaultModelAppliedWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotBody["model"] != "openai/gpt-oss-20b" {
@@ -338,7 +337,7 @@ func TestCompatFactoryBranches(t *testing.T) {
 		if _, ok := model.(openaipartner.ChatModel); !ok {
 			t.Fatalf("factory returned %T, want openai.ChatModel", model)
 		}
-		if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 			t.Fatalf("Invoke against descriptor default base URL: %v", err)
 		}
 	})
@@ -376,7 +375,7 @@ func TestCompatFactoryBranches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("factory: %v", err)
 		}
-		if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 			t.Fatalf("Invoke: %v", err)
 		}
 		if gotAuth != "Bearer branch-key" {

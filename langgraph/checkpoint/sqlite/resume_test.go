@@ -1,7 +1,6 @@
 package sqlite_test
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"testing"
@@ -22,7 +21,7 @@ import (
 // checkpoint must carry the full ["a","b"] prefix so the chain completes in
 // order.
 func TestResumeChainedInterruptPrefixSurvivesSlotCollapse(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := newSaver(t, dbPath(t))
 
 	g := graph.NewStateGraph()

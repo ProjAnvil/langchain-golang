@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"maps"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -74,9 +75,7 @@ func CollectIterator[T any](ctx context.Context, iter Iterator[T]) ([]T, error) 
 // IteratorToChannel consumes an iterator in a goroutine and sends values on a
 // channel until the iterator ends, errors, or the context is canceled.
 func IteratorToChannel[T any](ctx context.Context, iter Iterator[T], buffer int) (<-chan T, <-chan error) {
-	if buffer < 0 {
-		buffer = 0
-	}
+	buffer = max(buffer, 0)
 	values := make(chan T, buffer)
 	errs := make(chan error, 1)
 	go func() {
@@ -357,12 +356,7 @@ func MustacheTemplateVariables(template string) []string {
 			variables[name] = struct{}{}
 		}
 	}
-	out := make([]string, 0, len(variables))
-	for variable := range variables {
-		out = append(out, variable)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(variables))
 }
 
 // RenderSimpleMustache renders variable substitutions for the Mustache subset

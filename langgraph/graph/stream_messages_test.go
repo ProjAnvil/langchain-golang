@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -61,7 +60,7 @@ func TestStreamMessagesChunksAndMetadata(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"in": 1}, StreamOptions{
 		Modes: []StreamMode{StreamMessages},
 	}))
 	if err != nil {
@@ -120,7 +119,7 @@ func TestStreamMessagesLLMStringChunk(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"in": 1}, StreamOptions{
 		Modes: []StreamMode{StreamMessages},
 	}))
 	if err != nil {
@@ -176,7 +175,7 @@ func TestStreamCustomMode(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"in": 1}, StreamOptions{
 		Modes:     []StreamMode{StreamCustom},
 		Subgraphs: true,
 	}))
@@ -215,7 +214,7 @@ func TestStreamMessagesCustomInert(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	if _, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+	if _, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"in": 1}, StreamOptions{
 		Modes: []StreamMode{StreamValues},
 	})); err != nil {
 		t.Fatalf("Stream(values) error = %v", err)
@@ -229,7 +228,7 @@ func TestStreamMessagesCustomInert(t *testing.T) {
 
 	managerOK = false
 	writer = nil
-	if _, err := cg.Invoke(context.Background(), map[string]any{"in": 1}); err != nil {
+	if _, err := cg.Invoke(t.Context(), map[string]any{"in": 1}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 	if managerOK {
@@ -296,7 +295,7 @@ func TestStreamSubgraphCarriersStripped(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"in": 1}, StreamOptions{
 		Modes:     []StreamMode{StreamMessages, StreamCustom},
 		Subgraphs: false,
 	}))
@@ -358,7 +357,7 @@ func TestStreamMessagesInSubgraph(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"in": 1}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"in": 1}, StreamOptions{
 		Modes:     []StreamMode{StreamMessages},
 		Subgraphs: true,
 	}))
@@ -439,7 +438,7 @@ func TestStreamMessagesUnsupportedChunkDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{}, StreamOptions{
 		Modes: []StreamMode{StreamMessages},
 	}))
 	if err != nil {
@@ -476,7 +475,7 @@ func TestStreamMessagesEmptyIDNeverDedupes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{}, StreamOptions{
 		Modes: []StreamMode{StreamMessages},
 	}))
 	if err != nil {

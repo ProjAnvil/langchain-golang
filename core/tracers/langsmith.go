@@ -567,7 +567,7 @@ type batchBody struct {
 func (t *LangChainTracer) post(payload []byte) error {
 	url := t.opts.Endpoint + "/runs/batch"
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for range 2 {
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(payload))
 		if err != nil {
 			return fmt.Errorf("langsmith: build /runs/batch request: %w", err)

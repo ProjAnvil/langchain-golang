@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunnableWithMessageHistoryListInput(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := map[string]*chathistory.InMemoryChatMessageHistory{
 		"abc": chathistory.NewInMemoryChatMessageHistory(messages.AI("hello")),
 	}
@@ -43,7 +43,7 @@ func TestRunnableWithMessageHistoryListInput(t *testing.T) {
 }
 
 func TestRunnableWithMessageHistorySeparateHistoryKey(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := map[string]*chathistory.InMemoryChatMessageHistory{
 		"thread": chathistory.NewInMemoryChatMessageHistory(messages.Human("old")),
 	}
@@ -79,7 +79,7 @@ func TestRunnableWithMessageHistorySeparateHistoryKey(t *testing.T) {
 }
 
 func TestRunnableWithMessageHistoryStreamUpdatesOnEOF(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := map[string]*chathistory.InMemoryChatMessageHistory{
 		"s": chathistory.NewInMemoryChatMessageHistory(),
 	}
@@ -118,7 +118,7 @@ func TestRunnableWithMessageHistoryMissingConfigurableKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new wrapper: %v", err)
 	}
-	_, err = wrapped.Invoke(context.Background(), "hello")
+	_, err = wrapped.Invoke(t.Context(), "hello")
 	if err == nil || !strings.Contains(err.Error(), "session_id") {
 		t.Fatalf("err: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestNewRunnableWithMessageHistoryErrors(t *testing.T) {
 }
 
 func TestRunnableWithMessageHistoryBatchAndSchemas(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := map[string]*chathistory.InMemoryChatMessageHistory{}
 	base := NewFunc(func(_ context.Context, input any, _ ...Option) (any, error) {
 		batch := input.([]messages.Message)
@@ -225,7 +225,7 @@ func TestRunnableWithMessageHistoryFactoryFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new wrapper: %v", err)
 	}
-	if _, err := failing.Invoke(context.Background(), "x", WithConfigurable("session_id", "s")); err != errTestSentinel {
+	if _, err := failing.Invoke(t.Context(), "x", WithConfigurable("session_id", "s")); err != errTestSentinel {
 		t.Fatalf("invoke err: got %v want %v", err, errTestSentinel)
 	}
 
@@ -235,13 +235,13 @@ func TestRunnableWithMessageHistoryFactoryFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new wrapper: %v", err)
 	}
-	if _, err := nilFactory.Invoke(context.Background(), "x", WithConfigurable("session_id", "s")); err == nil {
+	if _, err := nilFactory.Invoke(t.Context(), "x", WithConfigurable("session_id", "s")); err == nil {
 		t.Fatal("expected error for nil history from factory")
 	}
 }
 
 func TestRunnableWithMessageHistoryUsesProvidedHistory(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	history := chathistory.NewInMemoryChatMessageHistory()
 	base := NewFunc(func(_ context.Context, input any, _ ...Option) (any, error) {
 		return messages.AI("done"), nil
@@ -274,16 +274,16 @@ func TestRunnableWithMessageHistoryCustomFactoryKeys(t *testing.T) {
 		t.Fatalf("new wrapper: %v", err)
 	}
 
-	if _, err := wrapped.Invoke(context.Background(), "hi"); err == nil || !strings.Contains(err.Error(), "user_id") {
+	if _, err := wrapped.Invoke(t.Context(), "hi"); err == nil || !strings.Contains(err.Error(), "user_id") {
 		t.Fatalf("expected missing key error, got %v", err)
 	}
-	if _, err := wrapped.Invoke(context.Background(), "hi", WithConfigurable("user_id", "u1")); err != nil {
+	if _, err := wrapped.Invoke(t.Context(), "hi", WithConfigurable("user_id", "u1")); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 }
 
 func TestRunnableWithMessageHistoryPrepareInputErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	base := NewFunc(func(_ context.Context, input any, _ ...Option) (any, error) {
 		return messages.AI("ok"), nil
 	}, schema.Schema{}, schema.Schema{})
@@ -317,7 +317,7 @@ func TestRunnableWithMessageHistoryPrepareInputErrors(t *testing.T) {
 }
 
 func TestRunnableWithMessageHistoryMapInputKeySelection(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	var seenInput any
 	base := NewFunc(func(_ context.Context, input any, _ ...Option) (any, error) {
 		seenInput = input
@@ -357,7 +357,7 @@ func TestRunnableWithMessageHistoryMapInputKeySelection(t *testing.T) {
 }
 
 func TestInputMessageVariants(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	var seenInput any
 	base := NewFunc(func(_ context.Context, input any, _ ...Option) (any, error) {
 		seenInput = input
@@ -396,7 +396,7 @@ func TestInputMessageVariants(t *testing.T) {
 }
 
 func TestOutputMessageVariants(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	newWrapper := func(output any) RunnableWithMessageHistory {
 		base := NewFunc(func(_ context.Context, input any, _ ...Option) (any, error) {
 			return output, nil
@@ -449,7 +449,7 @@ func (errNextStreamRunnable) InputSchema() schema.Schema  { return schema.Schema
 func (errNextStreamRunnable) OutputSchema() schema.Schema { return schema.Schema{} }
 
 func TestRunnableWithMessageHistoryStreamErrorPassthrough(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := map[string]*chathistory.InMemoryChatMessageHistory{"s": chathistory.NewInMemoryChatMessageHistory()}
 	wrapped, err := NewRunnableWithMessageHistory(errNextStreamRunnable{}, historyFactory(store))
 	if err != nil {
@@ -470,7 +470,7 @@ func TestRunnableWithMessageHistoryStreamErrorPassthrough(t *testing.T) {
 }
 
 func TestRunnableWithMessageHistoryStreamFinalizationErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Output messages that cannot be converted fail the final Next call.
 	store := map[string]*chathistory.InMemoryChatMessageHistory{"s": chathistory.NewInMemoryChatMessageHistory()}
@@ -543,7 +543,7 @@ func TestStreamOutputValueCombinations(t *testing.T) {
 
 func mustMessages(t *testing.T, history chathistory.History) []messages.Message {
 	t.Helper()
-	got, err := history.Messages(context.Background())
+	got, err := history.Messages(t.Context())
 	if err != nil {
 		t.Fatalf("messages: %v", err)
 	}
@@ -551,7 +551,7 @@ func mustMessages(t *testing.T, history chathistory.History) []messages.Message 
 }
 
 func TestRunnableWithMessageHistoryStreamSetupErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := map[string]*chathistory.InMemoryChatMessageHistory{}
 
 	wrapped, err := NewRunnableWithMessageHistory(streamOnlyRunnable{stream: []any{"a"}}, historyFactory(store))
@@ -596,7 +596,7 @@ func (streamConstructErrRunnable) InputSchema() schema.Schema  { return schema.S
 func (streamConstructErrRunnable) OutputSchema() schema.Schema { return schema.Schema{} }
 
 func TestRunnableWithMessageHistoryAddMessagesError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	brokenHistory := &chathistory.BaseChatMessageHistory{
 		MessagesFunc: func(context.Context) ([]messages.Message, error) { return nil, nil },
 		AddMessagesFunc: func(context.Context, []messages.Message) error {
@@ -617,7 +617,7 @@ func TestRunnableWithMessageHistoryAddMessagesError(t *testing.T) {
 }
 
 func TestOutputMessageSingleAndAnySlice(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	newWrapper := func(output any) RunnableWithMessageHistory {
 		base := NewFunc(func(_ context.Context, input any, _ ...Option) (any, error) {
 			return output, nil

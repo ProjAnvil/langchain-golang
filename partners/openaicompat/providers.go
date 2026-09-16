@@ -24,8 +24,9 @@
 package openaicompat
 
 import (
+	"cmp"
 	"os"
-	"sort"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
@@ -236,9 +237,7 @@ func init() {
 // other partner factories.
 func compatFactory(p CompatProvider) chatmodels.ProviderFactory {
 	return func(model string, opts map[string]any) (language.ChatModel, error) {
-		if model == "" {
-			model = p.DefaultModel
-		}
+		model = cmp.Or(model, p.DefaultModel)
 		configOpts := []modelconfig.Option{
 			modelconfig.WithModel(model),
 			modelconfig.WithBaseURL(p.DefaultBaseURL),
@@ -267,7 +266,7 @@ func compatFactory(p CompatProvider) chatmodels.ProviderFactory {
 func Providers() []CompatProvider {
 	out := make([]CompatProvider, len(providers))
 	copy(out, providers)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b CompatProvider) int { return cmp.Compare(a.Name, b.Name) })
 	return out
 }
 

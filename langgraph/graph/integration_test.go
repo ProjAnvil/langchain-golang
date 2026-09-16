@@ -84,7 +84,7 @@ func TestAgentLoopWithRealToolNode(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	result, err := cg.Invoke(context.Background(), map[string]any{"messages": []messages.Message{}})
+	result, err := cg.Invoke(t.Context(), map[string]any{"messages": []messages.Message{}})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}

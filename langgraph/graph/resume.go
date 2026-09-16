@@ -3,7 +3,7 @@ package graph
 import (
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -129,7 +129,7 @@ func completedTaskWrites(update map[string]any, cmd *types.Command) ([]checkpoin
 	for k := range update {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	writes := make([]checkpoint.Write, 0, len(keys))
 	for _, k := range keys {
 		writes = append(writes, checkpoint.Write{Channel: k, Value: update[k]})

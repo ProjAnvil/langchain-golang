@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +18,7 @@ func TestInvokeRateLimitedIsTyped(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("claude-test"))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if !errors.Is(err, lcerrors.ErrRateLimited) {
 		t.Fatalf("invoke err not ErrRateLimited: %v", err)
 	}
@@ -36,7 +35,7 @@ func TestInvokeServerErrorIsTypedProvider(t *testing.T) {
 		modelconfig.WithModel("claude-test"),
 		modelconfig.WithMaxRetries(0),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if !errors.Is(err, lcerrors.ErrProvider) {
 		t.Fatalf("invoke err not ErrProvider: %v", err)
 	}
@@ -49,7 +48,7 @@ func TestStreamRateLimitedIsTyped(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("claude-test"))
-	_, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if !errors.Is(err, lcerrors.ErrRateLimited) {
 		t.Fatalf("stream err not ErrRateLimited: %v", err)
 	}

@@ -49,7 +49,7 @@ func TestChatModelInvokeMessagesAPI(t *testing.T) {
 		modelconfig.WithAPIKey("test-key"),
 		modelconfig.WithMaxTokens(17),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("be concise"),
 		messages.Human("hello"),
 	})
@@ -95,7 +95,7 @@ func TestChatModelInvokeToolUse(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("claude-test"),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("weather"),
 	})
 	if err != nil {
@@ -152,7 +152,7 @@ func TestChatModelBindToolsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind tools: %v", err)
 	}
-	_, err = bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestChatModelStreamTextProtocol(t *testing.T) {
 		modelconfig.WithModel("claude-test"),
 	)
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -199,7 +199,7 @@ func TestChatModelStreamTextProtocol(t *testing.T) {
 
 	var content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -242,7 +242,7 @@ func TestChatModelStreamEventsProjection(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("claude-test"),
 	)
-	stream, err := language.StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := language.StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {

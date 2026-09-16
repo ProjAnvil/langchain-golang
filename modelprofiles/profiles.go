@@ -1,9 +1,11 @@
 package modelprofiles
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -199,10 +201,7 @@ func RenderProviderSection(provider string, diff Diff) string {
 
 // DescribeFieldChange renders one field change phrase.
 func DescribeFieldChange(fieldName string, oldVal any, newVal any) string {
-	label := fieldLabels[fieldName]
-	if label == "" {
-		label = fieldName
-	}
+	label := cmp.Or(fieldLabels[fieldName], fieldName)
 	_, oldBool := oldVal.(bool)
 	newBool, newIsBool := newVal.(bool)
 	if oldBool || newIsBool {
@@ -252,19 +251,11 @@ func Truncate(rows []string) []string {
 }
 
 func keys(reg Registry) []string {
-	out := make([]string, 0, len(reg))
-	for key := range reg {
-		out = append(out, key)
-	}
-	return out
+	return slices.Collect(maps.Keys(reg))
 }
 
 func profileKeys(profile Profile) []string {
-	out := make([]string, 0, len(profile))
-	for key := range profile {
-		out = append(out, key)
-	}
-	return out
+	return slices.Collect(maps.Keys(profile))
 }
 
 func sortedDifference(left []string, right []string) []string {
@@ -278,7 +269,7 @@ func sortedDifference(left []string, right []string) []string {
 			out = append(out, value)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -293,7 +284,7 @@ func sortedIntersection(left []string, right []string) []string {
 			out = append(out, value)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -305,21 +296,11 @@ func sortedUnion(left []string, right []string) []string {
 	for _, value := range right {
 		set[value] = true
 	}
-	out := make([]string, 0, len(set))
-	for value := range set {
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(set))
 }
 
 func sortedMapKeys[V any](values map[string]V) []string {
-	out := make([]string, 0, len(values))
-	for key := range values {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(values))
 }
 
 func cloneProfile(profile Profile) Profile {

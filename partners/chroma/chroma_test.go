@@ -1,13 +1,13 @@
 package chroma
 
 import (
-	"context"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +26,7 @@ func TestStoreBasics(t *testing.T) {
 		t.Cleanup(server.Close)
 
 		store, err := New(
-			context.Background(),
+			t.Context(),
 			"langchain",
 			embeddings.NewFake(8),
 			WithBaseURL(server.URL),
@@ -44,7 +44,7 @@ func TestStoreRequestMapping(t *testing.T) {
 	defer server.Close()
 
 	store, err := New(
-		context.Background(),
+		t.Context(),
 		"custom",
 		embeddings.NewFake(4),
 		WithBaseURL(server.URL),
@@ -57,7 +57,7 @@ func TestStoreRequestMapping(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 
-	ids, err := store.AddDocuments(context.Background(), []documents.Document{
+	ids, err := store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha beta", map[string]any{"source": "unit"}).WithID("a"),
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestStoreFiltersUpdateVectorsAndMMR(t *testing.T) {
 	defer server.Close()
 
 	store, err := New(
-		context.Background(),
+		t.Context(),
 		"langchain",
 		embeddings.NewFake(16),
 		WithBaseURL(server.URL),
@@ -105,7 +105,7 @@ func TestStoreFiltersUpdateVectorsAndMMR(t *testing.T) {
 		t.Fatalf("collection metadata: got %#v", got)
 	}
 
-	_, err = store.AddDocuments(context.Background(), []documents.Document{
+	_, err = store.AddDocuments(t.Context(), []documents.Document{
 		documents.New("alpha red", map[string]any{"color": "red"}).WithID("red"),
 		documents.New("alpha blue", map[string]any{"color": "blue"}).WithID("blue"),
 		documents.New("gamma red", map[string]any{"color": "red"}).WithID("gamma"),
@@ -114,7 +114,7 @@ func TestStoreFiltersUpdateVectorsAndMMR(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
-	filtered, err := store.SimilaritySearchOptions(context.Background(), "alpha", QueryOptions{
+	filtered, err := store.SimilaritySearchOptions(t.Context(), "alpha", QueryOptions{
 		K:             2,
 		Where:         map[string]any{"color": "red"},
 		WhereDocument: map[string]any{"$contains": "alpha"},
@@ -126,11 +126,11 @@ func TestStoreFiltersUpdateVectorsAndMMR(t *testing.T) {
 		t.Fatalf("filtered docs: %#v", filtered)
 	}
 
-	err = store.UpdateDocument(context.Background(), "blue", documents.New("alpha green", map[string]any{"color": "green"}))
+	err = store.UpdateDocument(t.Context(), "blue", documents.New("alpha green", map[string]any{"color": "green"}))
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	got, err := store.Get(context.Background(), GetOptions{Where: map[string]any{"color": "green"}})
+	got, err := store.Get(t.Context(), GetOptions{Where: map[string]any{"color": "green"}})
 	if err != nil {
 		t.Fatalf("get with filter: %v", err)
 	}
@@ -138,11 +138,11 @@ func TestStoreFiltersUpdateVectorsAndMMR(t *testing.T) {
 		t.Fatalf("updated doc: %#v", got)
 	}
 
-	queryVector, err := embeddings.NewFake(16).EmbedQuery(context.Background(), "alpha")
+	queryVector, err := embeddings.NewFake(16).EmbedQuery(t.Context(), "alpha")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	withVectors, err := store.SimilaritySearchByVectorWithVectors(context.Background(), queryVector, QueryOptions{K: 2})
+	withVectors, err := store.SimilaritySearchByVectorWithVectors(t.Context(), queryVector, QueryOptions{K: 2})
 	if err != nil {
 		t.Fatalf("search with vectors: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestStoreFiltersUpdateVectorsAndMMR(t *testing.T) {
 		t.Fatalf("with vectors: %#v", withVectors)
 	}
 
-	mmr, err := store.MaxMarginalRelevanceSearch(context.Background(), "alpha", MMROptions{
+	mmr, err := store.MaxMarginalRelevanceSearch(t.Context(), "alpha", MMROptions{
 		K:          2,
 		FetchK:     3,
 		LambdaMult: 0.5,
@@ -168,7 +168,7 @@ func TestStoreResetAndFork(t *testing.T) {
 	defer server.Close()
 
 	store, err := New(
-		context.Background(),
+		t.Context(),
 		"langchain",
 		embeddings.NewFake(8),
 		WithBaseURL(server.URL),
@@ -178,7 +178,7 @@ func TestStoreResetAndFork(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 
-	fork, err := store.Fork(context.Background(), "forked")
+	fork, err := store.Fork(t.Context(), "forked")
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestStoreResetAndFork(t *testing.T) {
 		t.Fatalf("fork store: name=%q id=%q", fork.collectionName, fork.collectionID)
 	}
 
-	if err := store.ResetCollection(context.Background()); err != nil {
+	if err := store.ResetCollection(t.Context()); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	if got, want := server.deletedCollections(), []string{"collection-1"}; !equalStrings(got, want) {
@@ -201,7 +201,7 @@ func TestStoreErrorTranslation(t *testing.T) {
 	defer server.Close()
 
 	_, err := New(
-		context.Background(),
+		t.Context(),
 		"langchain",
 		embeddings.NewFake(4),
 		WithBaseURL(server.URL),
@@ -329,7 +329,7 @@ func (s *chromaServer) get(req getRequest) getResponse {
 		for id := range s.docs {
 			ids = append(ids, id)
 		}
-		sort.Strings(ids)
+		slices.Sort(ids)
 	}
 	if req.Offset != nil && *req.Offset < len(ids) {
 		ids = ids[*req.Offset:]
@@ -375,8 +375,8 @@ func (s *chromaServer) query(req queryRequest) queryResponse {
 			distance: 1 - cosine(query, vector),
 		})
 	}
-	sort.SliceStable(scoredDocs, func(i, j int) bool {
-		return scoredDocs[i].distance < scoredDocs[j].distance
+	slices.SortStableFunc(scoredDocs, func(a, b scored) int {
+		return cmp.Compare(a.distance, b.distance)
 	})
 	if req.NResults > 0 && len(scoredDocs) > req.NResults {
 		scoredDocs = scoredDocs[:req.NResults]

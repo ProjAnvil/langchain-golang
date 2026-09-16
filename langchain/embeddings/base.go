@@ -2,7 +2,8 @@ package embeddings
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -25,12 +26,7 @@ var BuiltinProviders = map[string]ProviderInfo{
 }
 
 func BuiltinProviderNames() []string {
-	names := make([]string, 0, len(BuiltinProviders))
-	for name := range BuiltinProviders {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(BuiltinProviders))
 }
 
 func NormalizeProvider(provider string) string {

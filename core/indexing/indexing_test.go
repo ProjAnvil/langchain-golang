@@ -12,7 +12,7 @@ import (
 )
 
 func TestIndexDocumentsAddsThenSkips(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{
@@ -57,7 +57,7 @@ func TestIndexDocumentsAddsThenSkips(t *testing.T) {
 }
 
 func TestIndexDocumentsForceUpdate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("alpha", nil)}
@@ -75,7 +75,7 @@ func TestIndexDocumentsForceUpdate(t *testing.T) {
 }
 
 func TestIndexDocumentsFullCleanupDeletesAllStaleRecords(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	original := []documents.Document{
@@ -115,7 +115,7 @@ func TestIndexDocumentsFullCleanupDeletesAllStaleRecords(t *testing.T) {
 }
 
 func TestIndexDocumentsScopedFullCleanupDeletesOnlySeenSources(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	original := []documents.Document{
@@ -155,7 +155,7 @@ func TestIndexDocumentsScopedFullCleanupDeletesOnlySeenSources(t *testing.T) {
 }
 
 func TestIndexDocumentsFullCleanupRefreshesSkippedRecords(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("alpha", map[string]any{"source": "a"})}
@@ -184,7 +184,7 @@ func TestIndexDocumentsFullCleanupRefreshesSkippedRecords(t *testing.T) {
 }
 
 func TestIndexDocumentsDeduplicatesWithinBatch(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	doc := documents.New("alpha", map[string]any{"source": "a"})
@@ -211,7 +211,7 @@ func TestIndexDocumentsDeduplicatesWithinBatch(t *testing.T) {
 }
 
 func TestIndexDocumentIteratorStreamsAndCloses(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	original := []documents.Document{
@@ -259,7 +259,7 @@ func TestIndexDocumentIteratorStreamsAndCloses(t *testing.T) {
 
 func TestIndexDocumentsIncrementalCleanupRequiresSourceIDKey(t *testing.T) {
 	_, err := IndexDocuments(
-		context.Background(),
+		t.Context(),
 		[]documents.Document{documents.New("alpha", nil)},
 		NewInMemoryRecordManager("unit"),
 		vectorstores.NewInMemory(embeddings.NewFake(8)),
@@ -272,7 +272,7 @@ func TestIndexDocumentsIncrementalCleanupRequiresSourceIDKey(t *testing.T) {
 
 func TestIndexDocumentsRejectsUnknownCleanupMode(t *testing.T) {
 	_, err := IndexDocuments(
-		context.Background(),
+		t.Context(),
 		[]documents.Document{documents.New("alpha", nil)},
 		NewInMemoryRecordManager("unit"),
 		vectorstores.NewInMemory(embeddings.NewFake(8)),
@@ -285,7 +285,7 @@ func TestIndexDocumentsRejectsUnknownCleanupMode(t *testing.T) {
 
 func TestIndexDocumentsScopedFullCleanupRequiresSourceIDKey(t *testing.T) {
 	_, err := IndexDocuments(
-		context.Background(),
+		t.Context(),
 		[]documents.Document{documents.New("alpha", nil)},
 		NewInMemoryRecordManager("unit"),
 		vectorstores.NewInMemory(embeddings.NewFake(8)),
@@ -298,7 +298,7 @@ func TestIndexDocumentsScopedFullCleanupRequiresSourceIDKey(t *testing.T) {
 
 func TestIndexDocumentsSourceIDKeyRequiresStringMetadata(t *testing.T) {
 	_, err := IndexDocuments(
-		context.Background(),
+		t.Context(),
 		[]documents.Document{documents.New("alpha", nil)},
 		NewInMemoryRecordManager("unit"),
 		vectorstores.NewInMemory(embeddings.NewFake(8)),
@@ -311,11 +311,11 @@ func TestIndexDocumentsSourceIDKeyRequiresStringMetadata(t *testing.T) {
 
 func TestInMemoryRecordManagerUpdateValidation(t *testing.T) {
 	manager := NewInMemoryRecordManager("unit")
-	err := manager.Update(context.Background(), []string{"a", "b"}, []string{"one"}, time.Time{})
+	err := manager.Update(t.Context(), []string{"a", "b"}, []string{"one"}, time.Time{})
 	if err == nil {
 		t.Fatal("expected group length error")
 	}
-	err = manager.Update(context.Background(), []string{"a"}, nil, time.Now().Add(time.Hour))
+	err = manager.Update(t.Context(), []string{"a"}, nil, time.Now().Add(time.Hour))
 	if err == nil {
 		t.Fatal("expected future time error")
 	}
@@ -445,7 +445,7 @@ func (i *errorIterator) Next(context.Context) (documents.Document, bool, error) 
 func (i *errorIterator) Close() error { return nil }
 
 func TestIndexDocumentsRequiresRecordManagerAndVectorStore(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("alpha", nil)}
@@ -463,7 +463,7 @@ func TestIndexDocumentsRequiresRecordManagerAndVectorStore(t *testing.T) {
 
 func TestIndexDocumentIteratorNilIterator(t *testing.T) {
 	_, err := IndexDocumentIterator(
-		context.Background(),
+		t.Context(),
 		nil,
 		NewInMemoryRecordManager("unit"),
 		vectorstores.NewInMemory(embeddings.NewFake(8)),
@@ -480,10 +480,10 @@ func TestIndexDocumentsGetTimeError(t *testing.T) {
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("alpha", nil)}
 
-	if _, err := IndexDocuments(context.Background(), docs, manager, store, Options{}); !errors.Is(err, errTest) {
+	if _, err := IndexDocuments(t.Context(), docs, manager, store, Options{}); !errors.Is(err, errTest) {
 		t.Fatalf("expected get time error, got %v", err)
 	}
-	if _, err := IndexDocumentIterator(context.Background(), &trackingIterator{docs: docs}, manager, store, Options{}); !errors.Is(err, errTest) {
+	if _, err := IndexDocumentIterator(t.Context(), &trackingIterator{docs: docs}, manager, store, Options{}); !errors.Is(err, errTest) {
 		t.Fatalf("expected get time error from iterator indexing, got %v", err)
 	}
 }
@@ -504,7 +504,7 @@ func TestIndexDocumentsCancelledContext(t *testing.T) {
 }
 
 func TestIndexDocumentsUnhashableDocument(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("alpha", map[string]any{"bad": func() {}})}
@@ -518,7 +518,7 @@ func TestIndexDocumentsUnhashableDocument(t *testing.T) {
 }
 
 func TestIndexDocumentsRecordManagerErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	docs := []documents.Document{documents.New("alpha", nil)}
 
 	t.Run("exists", func(t *testing.T) {
@@ -552,7 +552,7 @@ func TestIndexDocumentsRecordManagerErrors(t *testing.T) {
 }
 
 func TestIndexDocumentsIncrementalCleanupDeletesStaleRecords(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	original := []documents.Document{
@@ -602,7 +602,7 @@ func TestIndexDocumentsIncrementalCleanupListKeysError(t *testing.T) {
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("alpha", map[string]any{"source": "a"})}
 
-	_, err := IndexDocuments(context.Background(), docs, manager, store, Options{
+	_, err := IndexDocuments(t.Context(), docs, manager, store, Options{
 		SourceIDKey: "source",
 		Cleanup:     CleanupIncremental,
 	})
@@ -612,7 +612,7 @@ func TestIndexDocumentsIncrementalCleanupListKeysError(t *testing.T) {
 }
 
 func TestIndexDocumentsFullCleanupErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	original := []documents.Document{documents.New("old a", map[string]any{"source": "a"})}
 	replacement := []documents.Document{documents.New("new a", map[string]any{"source": "a"})}
 
@@ -668,7 +668,7 @@ func TestIndexDocumentsFullCleanupErrors(t *testing.T) {
 
 func TestIndexDocumentsScopedFullCleanupWithoutDocs(t *testing.T) {
 	got, err := IndexDocuments(
-		context.Background(),
+		t.Context(),
 		nil,
 		NewInMemoryRecordManager("unit"),
 		vectorstores.NewInMemory(embeddings.NewFake(8)),
@@ -686,14 +686,14 @@ func TestIndexDocumentIteratorNextError(t *testing.T) {
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 
-	_, err := IndexDocumentIterator(context.Background(), &errorIterator{err: errTest}, manager, store, Options{})
+	_, err := IndexDocumentIterator(t.Context(), &errorIterator{err: errTest}, manager, store, Options{})
 	if !errors.Is(err, errTest) {
 		t.Fatalf("expected iterator error, got %v", err)
 	}
 }
 
 func TestIndexDocumentIteratorBatchErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	unhashable := documents.New("alpha", map[string]any{"bad": func() {}})
 
 	t.Run("full batch", func(t *testing.T) {
@@ -732,7 +732,7 @@ func TestIndexDocumentIteratorBatchErrors(t *testing.T) {
 }
 
 func TestCleanupKeysDefaultsLimit(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	if err := manager.Update(ctx, []string{"stale"}, []string{"a"}, time.Time{}); err != nil {
@@ -756,7 +756,7 @@ func TestCleanupKeysDefaultsLimit(t *testing.T) {
 }
 
 func TestIndexDocumentIteratorTrailingPartialBatch(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	iter := &trackingIterator{docs: []documents.Document{
@@ -778,7 +778,7 @@ func TestIndexDocumentIteratorTrailingPartialBatch(t *testing.T) {
 }
 
 func TestInMemoryRecordManagerEmptyNamespace(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("")
 	if err := manager.Update(ctx, []string{"a", "b"}, nil, time.Time{}); err != nil {
 		t.Fatalf("update: %v", err)
@@ -815,7 +815,7 @@ func TestInMemoryRecordManagerEmptyNamespace(t *testing.T) {
 }
 
 func TestInMemoryRecordManagerListKeysFilters(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	if err := manager.Update(ctx, []string{"a", "b"}, []string{"g", "g"}, time.Time{}); err != nil {
 		t.Fatalf("update: %v", err)
@@ -847,7 +847,7 @@ func TestInMemoryRecordManagerListKeysFilters(t *testing.T) {
 }
 
 func TestInMemoryRecordManagerNamespaceRename(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("ab")
 	if err := manager.Update(ctx, []string{"k"}, nil, time.Time{}); err != nil {
 		t.Fatalf("update: %v", err)

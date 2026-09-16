@@ -1,9 +1,10 @@
 package textsplitters
 
 import (
+	"cmp"
 	"html"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -109,8 +110,8 @@ func newHTMLSemanticPreserving(headers []Header, semanticTags []string, cfg Conf
 
 func normalizeHTMLHeaders(headers []Header) ([]Header, map[string]string, map[string]int) {
 	copied := append([]Header(nil), headers...)
-	sort.SliceStable(copied, func(i, j int) bool {
-		return htmlHeaderLevel(copied[i].Marker) < htmlHeaderLevel(copied[j].Marker)
+	slices.SortStableFunc(copied, func(a, b Header) int {
+		return cmp.Compare(htmlHeaderLevel(a.Marker), htmlHeaderLevel(b.Marker))
 	})
 	nameByTag := make(map[string]string, len(copied))
 	levelByName := make(map[string]int, len(copied))
@@ -378,7 +379,7 @@ func (s *HTMLSemanticPreservingSplitter) semanticTagPattern() string {
 	for i := 1; i <= 6; i++ {
 		tags = append(tags, "h"+strconv.Itoa(i))
 	}
-	sort.Strings(tags)
+	slices.Sort(tags)
 	return strings.Join(tags, "|")
 }
 
@@ -449,7 +450,7 @@ func collectAllowedHTML(text string, tags []string) string {
 			parts = append(parts, indexedPart{index: match[0], text: text[match[0]:match[1]]})
 		}
 	}
-	sort.SliceStable(parts, func(i, j int) bool { return parts[i].index < parts[j].index })
+	slices.SortStableFunc(parts, func(a, b indexedPart) int { return cmp.Compare(a.index, b.index) })
 	out := make([]string, len(parts))
 	for i, part := range parts {
 		out[i] = part.text

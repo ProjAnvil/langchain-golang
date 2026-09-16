@@ -95,7 +95,7 @@ func newIndexedTestStore(t *testing.T) (*InMemoryStore, *fakeEmbedder) {
 // with a Query ranks candidates by cosine similarity descending (with
 // limit/offset slicing the ranked list), mirroring Python's _batch_search.
 func TestIndexedSearchRanksBySimilarity(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newIndexedTestStore(t)
 	for key, text := range map[string]string{"k1": "aaa", "k2": "bbb", "k3": "aab"} {
 		if err := s.Put(ctx, []string{"docs"}, key, map[string]any{"text": text}, nil); err != nil {
@@ -140,7 +140,7 @@ func TestIndexedSearchRanksBySimilarity(t *testing.T) {
 // first; cosine ranking orders what survives, mirroring Python's _filter_items
 // followed by _batch_search.
 func TestIndexedSearchFilterCombinesWithQuery(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newIndexedTestStore(t)
 	puts := []struct {
 		key  string
@@ -184,7 +184,7 @@ func TestIndexedSearchFilterCombinesWithQuery(t *testing.T) {
 // key) order with zero scores. Python parity: InMemoryStore(index=None) drops
 // the query in _batch_search's else branch rather than raising.
 func TestQueryIgnoredWithoutIndex(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	for _, key := range []string{"b", "a", "c"} {
 		if err := s.Put(ctx, []string{"ns"}, key, map[string]any{"text": key}, nil); err != nil {
@@ -209,7 +209,7 @@ func TestQueryIgnoredWithoutIndex(t *testing.T) {
 // indexed fields, replacing the old vectors (the previous text no longer
 // ranks).
 func TestIndexedPutUpdateRecomputesVectors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newIndexedTestStore(t)
 	ns := []string{"docs"}
 
@@ -248,7 +248,7 @@ func TestIndexedPutUpdateRecomputesVectors(t *testing.T) {
 // and only when the ranked window is shorter than Limit — mirroring Python's
 // _batch_search corner case.
 func TestIndexedSearchScorelessFill(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newIndexedTestStore(t)
 	if err := s.Put(ctx, []string{"docs"}, "k1", map[string]any{"text": "aaa"}, nil); err != nil {
 		t.Fatalf("Put k1: %v", err)
@@ -286,7 +286,7 @@ func TestIndexedSearchScorelessFill(t *testing.T) {
 // count mismatch) fails the Put and leaves the item UNSTORED — mirroring
 // Python's batch, which embeds before applying put ops.
 func TestIndexedPutEmbedErrorPropagates(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, e := newIndexedTestStore(t)
 
 	e.docErr = errors.New("embed boom")
@@ -312,7 +312,7 @@ func TestIndexedPutEmbedErrorPropagates(t *testing.T) {
 // Search (Python raises through the embed futures); without a Query the
 // embedder is not consulted at all.
 func TestIndexedSearchEmbedErrorPropagates(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, e := newIndexedTestStore(t)
 	if err := s.Put(ctx, []string{"docs"}, "k", map[string]any{"text": "aaa"}, nil); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -341,7 +341,7 @@ func TestIndexedSearchEmbedErrorPropagates(t *testing.T) {
 // those fields, and an empty non-nil slice embeds nothing (standing in for
 // Python's put(..., index=False)).
 func TestIndexedPutIndexOverride(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, e := newIndexedTestStore(t)
 
 	if err := s.Put(ctx, []string{"docs"}, "k1", map[string]any{"text": "aaa", "title": "hhh"}, nil); err != nil {
@@ -381,7 +381,7 @@ func TestIndexedPutIndexOverride(t *testing.T) {
 // the sorted-key JSON of the whole value, mirroring Python's default
 // fields=["$"] → json.dumps(value, sort_keys=True).
 func TestIndexedDefaultFieldIsWholeValue(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	e := &fakeEmbedder{dims: 8}
 	s := NewInMemoryStoreWithIndex(IndexConfig{Embed: e})
 	if err := s.Put(ctx, []string{"docs"}, "k", map[string]any{"text": "aaa"}, nil); err != nil {
@@ -416,7 +416,7 @@ func TestNewInMemoryStoreWithIndexRequiresEmbed(t *testing.T) {
 // plain Store contract too — in particular a query-less Search keeps the
 // deterministic (namespace, key) order.
 func TestIndexedStoreStillPassesBaseContract(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newIndexedTestStore(t)
 	for _, key := range []string{"b", "a"} {
 		if err := s.Put(ctx, []string{"ns"}, key, map[string]any{"text": key + key + key}, nil); err != nil {

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
@@ -496,7 +497,7 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 }
 
 func processHumanDecision(decision Decision, call messages.ToolCall, config InterruptConfig) (*messages.ToolCall, *messages.Message, error) {
-	if !decisionAllowed(decision.Type, config.AllowedDecisions) {
+	if !slices.Contains(config.AllowedDecisions, decision.Type) {
 		return nil, nil, fmt.Errorf("unexpected human decision: %s is not allowed for tool %q", decision.Type, call.Name)
 	}
 	switch decision.Type {
@@ -522,13 +523,4 @@ func processHumanDecision(decision Decision, call messages.ToolCall, config Inte
 	default:
 		return nil, nil, fmt.Errorf("unexpected human decision: %s", decision.Type)
 	}
-}
-
-func decisionAllowed(decision DecisionType, allowed []DecisionType) bool {
-	for _, value := range allowed {
-		if value == decision {
-			return true
-		}
-	}
-	return false
 }

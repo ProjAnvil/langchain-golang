@@ -38,7 +38,7 @@ func TestTimeoutPolicyRunTimeout(t *testing.T) {
 	}, NodePolicies{Timeout: &TimeoutPolicy{RunTimeout: 50 * time.Millisecond}})
 
 	start := time.Now()
-	_, err := cg.Invoke(context.Background(), nil)
+	_, err := cg.Invoke(t.Context(), nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got %v", err)
 	}
@@ -60,7 +60,7 @@ func TestTimeoutPolicyIdleTimeout(t *testing.T) {
 	}, NodePolicies{Timeout: &TimeoutPolicy{IdleTimeout: 50 * time.Millisecond, RefreshOn: "heartbeat"}})
 
 	start := time.Now()
-	_, err := cg.Invoke(context.Background(), nil)
+	_, err := cg.Invoke(t.Context(), nil)
 	if err == nil {
 		t.Fatal("expected cancellation from idle timeout, got nil")
 	}
@@ -88,7 +88,7 @@ func TestTimeoutPolicyHeartbeatRefreshesIdle(t *testing.T) {
 		}
 	}, NodePolicies{Timeout: &TimeoutPolicy{IdleTimeout: 50 * time.Millisecond, RefreshOn: "heartbeat"}})
 
-	result, err := cg.Invoke(context.Background(), nil)
+	result, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("expected node to complete via heartbeats, got err=%v", err)
 	}

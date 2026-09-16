@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -170,8 +171,8 @@ func (m *FilesystemFileSearchMiddleware) GlobSearch(pattern string, path string)
 	if len(matches) == 0 {
 		return "No files found"
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].modTime.After(matches[j].modTime)
+	slices.SortFunc(matches, func(a, b match) int {
+		return b.modTime.Compare(a.modTime)
 	})
 	out := make([]string, len(matches))
 	for i, match := range matches {
@@ -231,8 +232,7 @@ func (m *FilesystemFileSearchMiddleware) ripgrepSearch(pattern string, basePath 
 	cmd := exec.Command(rgPath, args...)
 	output, err := cmd.Output()
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == 1 {
 			// Exit code 1 means "ran fine, no matches" for ripgrep.
 			return map[string][]grepMatch{}, true
 		}
@@ -240,7 +240,7 @@ func (m *FilesystemFileSearchMiddleware) ripgrepSearch(pattern string, basePath 
 	}
 
 	results := map[string][]grepMatch{}
-	for _, line := range strings.Split(string(output), "\n") {
+	for line := range strings.SplitSeq(string(output), "\n") {
 		if line == "" {
 			continue
 		}
@@ -358,11 +358,7 @@ type grepMatch struct {
 }
 
 func formatGrepResults(results map[string][]grepMatch, outputMode GrepOutputMode) string {
-	paths := make([]string, 0, len(results))
-	for path := range results {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
+	paths := slices.Sorted(maps.Keys(results))
 	lines := []string{}
 	switch outputMode {
 	case GrepContent:
@@ -386,7 +382,7 @@ func invalidGlobPattern(pattern string) bool {
 }
 
 func pathHasParentSegment(path string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+	for part := range strings.SplitSeq(filepath.ToSlash(path), "/") {
 		if part == ".." {
 			return true
 		}
@@ -438,7 +434,7 @@ func expandIncludePatterns(pattern string) []string {
 		return nil
 	}
 	out := []string{}
-	for _, option := range strings.Split(inner, ",") {
+	for option := range strings.SplitSeq(inner, ",") {
 		for _, expanded := range expandIncludePatterns(pattern[:start] + option + pattern[end+1:]) {
 			out = append(out, expanded)
 		}

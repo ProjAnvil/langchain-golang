@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math/rand"
 	"reflect"
+	"slices"
 	"time"
 )
 
@@ -26,10 +27,8 @@ func RetryOnErrorTypes(targets ...error) RetryPredicate {
 	return func(err error) bool {
 		for err != nil {
 			errType := reflect.TypeOf(err)
-			for _, t := range targetTypes {
-				if errType == t {
-					return true
-				}
+			if slices.Contains(targetTypes, errType) {
+				return true
 			}
 			err = errors.Unwrap(err)
 		}
@@ -74,7 +73,7 @@ func calculateRetryDelay(retryNumber int, backoffFactor float64, initialDelay, m
 
 func pow(base float64, exp int) float64 {
 	out := 1.0
-	for i := 0; i < exp; i++ {
+	for range exp {
 		out *= base
 	}
 	return out

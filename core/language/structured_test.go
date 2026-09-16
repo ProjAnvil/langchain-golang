@@ -28,7 +28,7 @@ func TestInvokeStructuredValidJSON(t *testing.T) {
 	))
 
 	msg, err := InvokeStructured(
-		context.Background(),
+		t.Context(),
 		model,
 		[]messages.Message{messages.Human("describe Ada")},
 		personSchema(),
@@ -51,7 +51,7 @@ func TestInvokeStructuredInvalidJSON(t *testing.T) {
 	))
 
 	_, err := InvokeStructured(
-		context.Background(),
+		t.Context(),
 		model,
 		[]messages.Message{messages.Human("describe Ada")},
 		personSchema(),
@@ -68,7 +68,7 @@ func TestInvokeStructuredMissingRequiredKey(t *testing.T) {
 	))
 
 	_, err := InvokeStructured(
-		context.Background(),
+		t.Context(),
 		model,
 		[]messages.Message{messages.Human("describe Ada")},
 		personSchema(),
@@ -85,7 +85,7 @@ func TestInvokeStructuredOptionalMissingKeySucceeds(t *testing.T) {
 	))
 
 	msg, err := InvokeStructured(
-		context.Background(),
+		t.Context(),
 		model,
 		[]messages.Message{messages.Human("describe Ada")},
 		personSchema(),
@@ -133,7 +133,7 @@ func TestInvokeStructuredPrefersNativePath(t *testing.T) {
 	wrapped := &nativeStructuredChatModel{FakeChatModel: NewFakeChatModel()}
 
 	msg, err := InvokeStructured(
-		context.Background(),
+		t.Context(),
 		wrapped,
 		[]messages.Message{messages.Human("describe Ada")},
 		personSchema(),
@@ -158,7 +158,7 @@ func TestInvokeStructuredModelError(t *testing.T) {
 	model := NewFakeChatModel(WithRateLimiter(&recordingLimiter{err: wantErr}))
 
 	_, err := InvokeStructured(
-		context.Background(),
+		t.Context(),
 		model,
 		[]messages.Message{messages.Human("describe Ada")},
 		personSchema(),

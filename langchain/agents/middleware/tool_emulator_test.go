@@ -16,7 +16,7 @@ func TestLLMToolEmulatorEmulatesSelectedTool(t *testing.T) {
 		}
 		return "emulated result", nil
 	}))
-	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{
+	response, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{
 		ToolCall: ToolCall{Name: "search", ID: "1", Args: map[string]any{"q": "test"}},
 		Tool:     mustTool(t, "search"),
 	}, func(context.Context, ToolCallRequest) (messages.Message, error) {
@@ -32,7 +32,7 @@ func TestLLMToolEmulatorEmulatesSelectedTool(t *testing.T) {
 
 func TestLLMToolEmulatorPassesThroughUnselectedTool(t *testing.T) {
 	emulator := NewLLMToolEmulator([]string{"search"})
-	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "calc", ID: "2"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	response, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "calc", ID: "2"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Tool("2", "real result"), nil
 	})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestLLMToolEmulatorUsesStructuredOutput(t *testing.T) {
 		// and the callback (when set) is ignored.
 	)
 
-	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{
+	response, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{
 		ToolCall: ToolCall{Name: "search", ID: "1", Args: map[string]any{"q": "test"}},
 		Tool:     mustTool(t, "search"),
 	}, func(context.Context, ToolCallRequest) (messages.Message, error) {
@@ -96,7 +96,7 @@ func TestLLMToolEmulatorStructuredBeatsCallback(t *testing.T) {
 		}),
 	)
 
-	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{
+	response, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{
 		ToolCall: ToolCall{Name: "search", ID: "1", Args: map[string]any{"q": "test"}},
 		Tool:     mustTool(t, "search"),
 	}, func(context.Context, ToolCallRequest) (messages.Message, error) {

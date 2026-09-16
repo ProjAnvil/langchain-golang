@@ -1,7 +1,8 @@
 package textsplitters
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -24,8 +25,8 @@ type MarkdownHeaderTextSplitter struct {
 // NewMarkdownHeader creates a MarkdownHeaderTextSplitter.
 func NewMarkdownHeader(headers []Header, returnEachLine bool, stripHeaders bool) *MarkdownHeaderTextSplitter {
 	copied := append([]Header(nil), headers...)
-	sort.SliceStable(copied, func(i, j int) bool {
-		return len(copied[i].Marker) > len(copied[j].Marker)
+	slices.SortStableFunc(copied, func(a, b Header) int {
+		return cmp.Compare(len(b.Marker), len(a.Marker))
 	})
 	return &MarkdownHeaderTextSplitter{
 		headers:        copied,

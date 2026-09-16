@@ -42,7 +42,7 @@ func (e stubEmbedder) EmbedQuery(_ context.Context, _ string) ([]float64, error)
 func newTestStore(t *testing.T, baseURL string, embedder embeddings.Embeddings, opts ...Option) *Store {
 	t.Helper()
 	opts = append([]Option{WithBaseURL(baseURL), WithMaxRetries(0)}, opts...)
-	store, err := New(context.Background(), "langchain", embedder, opts...)
+	store, err := New(t.Context(), "langchain", embedder, opts...)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -68,10 +68,10 @@ func TestNewValidationErrors(t *testing.T) {
 	server := newChromaServer(t)
 	defer server.Close()
 
-	if _, err := New(context.Background(), "  ", embeddings.NewFake(4), WithBaseURL(server.URL)); err == nil {
+	if _, err := New(t.Context(), "  ", embeddings.NewFake(4), WithBaseURL(server.URL)); err == nil {
 		t.Fatal("expected error for blank collection name")
 	}
-	if _, err := New(context.Background(), "langchain", nil, WithBaseURL(server.URL)); err == nil {
+	if _, err := New(t.Context(), "langchain", nil, WithBaseURL(server.URL)); err == nil {
 		t.Fatal("expected error for nil embedder")
 	}
 }
@@ -81,7 +81,7 @@ func TestNewOptionFallbacks(t *testing.T) {
 	defer server.Close()
 
 	store, err := New(
-		context.Background(),
+		t.Context(),
 		"langchain",
 		embeddings.NewFake(4),
 		WithBaseURL(server.URL),
@@ -123,20 +123,20 @@ func TestUpsertDocumentsEdgeCases(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(4))
-	ids, err := store.UpsertDocuments(context.Background(), nil)
+	ids, err := store.UpsertDocuments(t.Context(), nil)
 	if err != nil || ids != nil {
 		t.Fatalf("empty upsert: ids=%v err=%v", ids, err)
 	}
 
 	failing := newTestStore(t, server.URL, stubEmbedder{docErr: errStubEmbed})
-	if _, err := failing.UpsertDocuments(context.Background(), []documents.Document{
+	if _, err := failing.UpsertDocuments(t.Context(), []documents.Document{
 		documents.New("alpha", nil),
 	}); !errors.Is(err, errStubEmbed) {
 		t.Fatalf("embed error: got %v", err)
 	}
 
 	mismatch := newTestStore(t, server.URL, stubEmbedder{docVectors: [][]float64{{1, 0}}})
-	_, err = mismatch.UpsertDocuments(context.Background(), []documents.Document{
+	_, err = mismatch.UpsertDocuments(t.Context(), []documents.Document{
 		documents.New("alpha", nil),
 		documents.New("beta", nil),
 	})
@@ -151,21 +151,21 @@ func TestUpdateDocumentsEdgeCases(t *testing.T) {
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(4))
 
-	err := store.UpdateDocuments(context.Background(), []string{"a"}, nil)
+	err := store.UpdateDocuments(t.Context(), []string{"a"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "length mismatch") {
 		t.Fatalf("length mismatch: got %v", err)
 	}
-	if err := store.UpdateDocuments(context.Background(), nil, nil); err != nil {
+	if err := store.UpdateDocuments(t.Context(), nil, nil); err != nil {
 		t.Fatalf("empty update: %v", err)
 	}
 
 	failing := newTestStore(t, server.URL, stubEmbedder{docErr: errStubEmbed})
-	if err := failing.UpdateDocument(context.Background(), "a", documents.New("alpha", nil)); !errors.Is(err, errStubEmbed) {
+	if err := failing.UpdateDocument(t.Context(), "a", documents.New("alpha", nil)); !errors.Is(err, errStubEmbed) {
 		t.Fatalf("embed error: got %v", err)
 	}
 
 	mismatch := newTestStore(t, server.URL, stubEmbedder{docVectors: [][]float64{{1, 0}}})
-	err = mismatch.UpdateDocuments(context.Background(), []string{"a", "b"}, []documents.Document{
+	err = mismatch.UpdateDocuments(t.Context(), []string{"a", "b"}, []documents.Document{
 		documents.New("alpha", nil),
 		documents.New("beta", nil),
 	})
@@ -179,13 +179,13 @@ func TestDeleteEdgeCases(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(4))
-	if err := store.Delete(context.Background(), nil); err != nil {
+	if err := store.Delete(t.Context(), nil); err != nil {
 		t.Fatalf("empty delete: %v", err)
 	}
 
 	failServer := newFailAfterCreateServer(t)
 	failStore := newTestStore(t, failServer.URL, embeddings.NewFake(4))
-	if err := failStore.Delete(context.Background(), []string{"a"}); err == nil {
+	if err := failStore.Delete(t.Context(), []string{"a"}); err == nil {
 		t.Fatal("expected delete error")
 	}
 }
@@ -195,19 +195,19 @@ func TestGetEdgeCases(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(4))
-	docs, err := store.GetByIDs(context.Background(), nil)
+	docs, err := store.GetByIDs(t.Context(), nil)
 	if err != nil || docs != nil {
 		t.Fatalf("empty get: docs=%v err=%v", docs, err)
 	}
 
 	failServer := newFailAfterCreateServer(t)
 	failStore := newTestStore(t, failServer.URL, embeddings.NewFake(4))
-	if _, err := failStore.GetByIDs(context.Background(), []string{"a"}); err == nil {
+	if _, err := failStore.GetByIDs(t.Context(), []string{"a"}); err == nil {
 		t.Fatal("expected get error")
 	}
 
 	// An unmarshalable filter value must surface the JSON marshal error.
-	if _, err := store.Get(context.Background(), GetOptions{
+	if _, err := store.Get(t.Context(), GetOptions{
 		Where: map[string]any{"bad": make(chan int)},
 	}); err == nil {
 		t.Fatal("expected marshal error")
@@ -219,7 +219,7 @@ func TestSimilaritySearchEmbedderErrors(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t, server.URL, stubEmbedder{queryErr: errStubEmbed})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := store.SimilaritySearch(ctx, "alpha", 2); !errors.Is(err, errStubEmbed) {
 		t.Fatalf("similarity search: got %v", err)
@@ -238,7 +238,7 @@ func TestSimilaritySearchEmbedderErrors(t *testing.T) {
 func TestSimilaritySearchServerErrors(t *testing.T) {
 	failServer := newFailAfterCreateServer(t)
 	store := newTestStore(t, failServer.URL, embeddings.NewFake(4))
-	ctx := context.Background()
+	ctx := t.Context()
 	vector := []float64{1, 0, 0, 0}
 
 	if _, err := store.SimilaritySearchByVector(ctx, vector, QueryOptions{K: 2}); err == nil {
@@ -260,7 +260,7 @@ func TestSimilaritySearchByVectorDefaults(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(8))
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err := store.AddDocuments(ctx, []documents.Document{
 		documents.New("alpha red", map[string]any{"color": "red"}).WithID("red"),
 		documents.New("alpha blue", nil).WithID("blue"),
@@ -297,7 +297,7 @@ func TestSimilaritySearchEmptyResults(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(4))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Querying an empty collection yields no scored documents.
 	results, err := store.SimilaritySearchByVectorWithScore(ctx, []float64{1, 0, 0, 0}, QueryOptions{K: 2})
@@ -341,7 +341,7 @@ func TestMMRDefaultsAndDegenerateVectors(t *testing.T) {
 		docVectors:  [][]float64{{0, 0, 0, 0}, {0, 0, 0, 0}},
 		queryVector: []float64{1, 0, 0, 0},
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err := store.AddDocuments(ctx, []documents.Document{
 		documents.New("alpha", nil).WithID("a"),
 		documents.New("beta", nil).WithID("b"),
@@ -376,7 +376,7 @@ func TestMMREmptyCollection(t *testing.T) {
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(4))
 	docs, err := store.MaxMarginalRelevanceSearchByVector(
-		context.Background(),
+		t.Context(),
 		[]float64{1, 0, 0, 0},
 		MMROptions{K: 2, FetchK: 5, LambdaMult: 0.5},
 	)
@@ -390,7 +390,7 @@ func TestMMREmptyCollection(t *testing.T) {
 
 func TestCollectionLifecycleErrors(t *testing.T) {
 	failServer := newFailAfterCreateServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	store := newTestStore(t, failServer.URL, embeddings.NewFake(4))
 	if err := store.DeleteCollection(ctx); err == nil {
@@ -441,7 +441,7 @@ func TestForkIDFallback(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t, server.URL, embeddings.NewFake(4))
-	fork, err := store.Fork(context.Background(), "forked")
+	fork, err := store.Fork(t.Context(), "forked")
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestForkIDFallback(t *testing.T) {
 func TestDoJSONRequestBuildError(t *testing.T) {
 	// A base URL that fails to parse surfaces the request construction error.
 	_, err := New(
-		context.Background(),
+		t.Context(),
 		"langchain",
 		embeddings.NewFake(4),
 		WithBaseURL("http://invalid host"),
@@ -470,7 +470,7 @@ func TestDoJSONTransportError(t *testing.T) {
 	server.Close()
 
 	_, err := New(
-		context.Background(),
+		t.Context(),
 		"langchain",
 		embeddings.NewFake(4),
 		WithBaseURL(url),
@@ -493,7 +493,7 @@ func TestDoJSONDecodeAndEmptyBody(t *testing.T) {
 	defer badJSON.Close()
 
 	store := newTestStore(t, badJSON.URL, embeddings.NewFake(4))
-	_, err := store.Get(context.Background(), GetOptions{})
+	_, err := store.Get(t.Context(), GetOptions{})
 	if err == nil || !strings.Contains(err.Error(), "decode chroma") {
 		t.Fatalf("decode error: got %v", err)
 	}
@@ -508,7 +508,7 @@ func TestDoJSONDecodeAndEmptyBody(t *testing.T) {
 	defer emptyBody.Close()
 
 	emptyStore := newTestStore(t, emptyBody.URL, embeddings.NewFake(4))
-	docs, err := emptyStore.Get(context.Background(), GetOptions{})
+	docs, err := emptyStore.Get(t.Context(), GetOptions{})
 	if err != nil {
 		t.Fatalf("empty body get: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestDoJSONRetriesTransientFailures(t *testing.T) {
 	defer server.Close()
 
 	store, err := New(
-		context.Background(),
+		t.Context(),
 		"langchain",
 		embeddings.NewFake(4),
 		WithBaseURL(server.URL),

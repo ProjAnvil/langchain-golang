@@ -93,8 +93,7 @@ func TestLastValue(t *testing.T) {
 	t.Run("multiple writes in one step error", func(t *testing.T) {
 		ch := NewLastValue()
 		_, err := ch.Update([]any{"a", "b"})
-		var iuErr *InvalidUpdateError
-		if !errors.As(err, &iuErr) {
+		if _, ok := errors.AsType[*InvalidUpdateError](err); !ok {
 			t.Fatalf("Update() error = %v, want *InvalidUpdateError", err)
 		}
 	})
@@ -268,8 +267,7 @@ func TestEphemeral(t *testing.T) {
 	t.Run("guard=true errors on multiple writes", func(t *testing.T) {
 		ch := NewEphemeral(true)
 		_, err := ch.Update([]any{"a", "b"})
-		var iuErr *InvalidUpdateError
-		if !errors.As(err, &iuErr) {
+		if _, ok := errors.AsType[*InvalidUpdateError](err); !ok {
 			t.Fatalf("Update() error = %v, want *InvalidUpdateError", err)
 		}
 	})

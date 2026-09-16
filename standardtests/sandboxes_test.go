@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -57,8 +58,7 @@ func (l *localSandbox) Execute(ctx context.Context, command string) SandboxExecu
 	cmd.Stderr = &buf
 	result := SandboxExecuteResponse{}
 	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
 			result.ExitCode = 1
@@ -467,9 +467,7 @@ func TestRunSandboxConformanceFailures(t *testing.T) {
 		RunSandboxConformance(t, factory(func(s *stubSandbox) {
 			s.upload = func(ctx context.Context, files []SandboxFileUpload) []SandboxUploadResponse {
 				responses := s.inner.UploadFiles(ctx, files)
-				for i, j := 0, len(responses)-1; i < j; i, j = i+1, j-1 {
-					responses[i], responses[j] = responses[j], responses[i]
-				}
+				slices.Reverse(responses)
 				return responses
 			}
 		}))

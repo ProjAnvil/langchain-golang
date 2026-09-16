@@ -1,7 +1,6 @@
 package moderation
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +28,7 @@ func TestModerateFlagged(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("omni-moderation-latest"))
-	res, err := c.Moderate(context.Background(), "bad text")
+	res, err := c.Moderate(t.Context(), "bad text")
 	if err != nil {
 		t.Fatalf("Moderate: %v", err)
 	}
@@ -43,7 +42,7 @@ func TestModerateClean(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(modelconfig.WithBaseURL(server.URL))
-	res, err := c.Moderate(context.Background(), "hello")
+	res, err := c.Moderate(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("Moderate: %v", err)
 	}
@@ -62,9 +61,9 @@ func TestBeforeModelErrorBehavior(t *testing.T) {
 	m.ExitBehavior = ExitError
 	state := map[string]any{"messages": []messages.Message{messages.Human("flagged")}}
 
-	_, err := m.BeforeModel(context.Background(), state)
-	var ve *ViolationError
-	if !errors.As(err, &ve) {
+	_, err := m.BeforeModel(t.Context(), state)
+	ve, ok := errors.AsType[*ViolationError](err)
+	if !ok {
 		t.Fatalf("expected ViolationError, got %v", err)
 	}
 	if ve.Stage != "input" || len(ve.Categories) == 0 {
@@ -81,7 +80,7 @@ func TestBeforeModelEndBehavior(t *testing.T) {
 	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL)))
 	state := map[string]any{"messages": []messages.Message{messages.Human("flagged")}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
@@ -107,7 +106,7 @@ func TestBeforeModelReplaceBehavior(t *testing.T) {
 		messages.Human("flagged"),
 	}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
@@ -128,7 +127,7 @@ func TestCustomViolationMessage(t *testing.T) {
 	m.ViolationMessage = "Policy block: {categories}"
 	state := map[string]any{"messages": []messages.Message{messages.Human("flagged")}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestToolMessagesModeratedWhenEnabled(t *testing.T) {
 		messages.Tool("tool-1", "dangerous"),
 	}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
@@ -180,7 +179,7 @@ func TestAfterModelReplacesFlaggedMessage(t *testing.T) {
 	ai.ID = "ai-1"
 	state := map[string]any{"messages": []messages.Message{ai}}
 
-	out, err := m.AfterModel(context.Background(), state)
+	out, err := m.AfterModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("AfterModel: %v", err)
 	}
@@ -198,7 +197,7 @@ func TestBeforeModelCleanPasses(t *testing.T) {
 
 	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL)))
 	state := map[string]any{"messages": []messages.Message{messages.Human("clean")}}
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
@@ -220,7 +219,7 @@ func TestToolMessagesSkippedByDefault(t *testing.T) {
 		messages.AI("assistant"),
 		messages.Tool("call-1", "tool output"),
 	}}
-	if _, err := m.BeforeModel(context.Background(), state); err != nil {
+	if _, err := m.BeforeModel(t.Context(), state); err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
 	if calls != 0 {
@@ -250,7 +249,7 @@ func TestModerateEmptyResults(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(modelconfig.WithBaseURL(server.URL))
-	_, err := c.Moderate(context.Background(), "text")
+	_, err := c.Moderate(t.Context(), "text")
 	if err == nil || !strings.Contains(err.Error(), "empty results") {
 		t.Fatalf("err = %v, want empty results error", err)
 	}
@@ -264,7 +263,7 @@ func TestModerateServerError(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(modelconfig.WithBaseURL(server.URL), modelconfig.WithMaxRetries(0))
-	_, err := c.Moderate(context.Background(), "text")
+	_, err := c.Moderate(t.Context(), "text")
 	if err == nil {
 		t.Fatalf("expected error for 500 response")
 	}
@@ -290,7 +289,7 @@ func TestModerateSendsAuthAndCustomHeaders(t *testing.T) {
 		modelconfig.WithAPIKey("test-key"),
 		modelconfig.WithHeader("X-Custom", "custom-value"),
 	)
-	if _, err := c.Moderate(context.Background(), "text"); err != nil {
+	if _, err := c.Moderate(t.Context(), "text"); err != nil {
 		t.Fatalf("Moderate: %v", err)
 	}
 }
@@ -313,17 +312,17 @@ func TestViolationErrorMessage(t *testing.T) {
 func TestBeforeModelNoMessages(t *testing.T) {
 	m := NewMiddleware(NewClient())
 
-	out, err := m.BeforeModel(context.Background(), map[string]any{})
+	out, err := m.BeforeModel(t.Context(), map[string]any{})
 	if err != nil || out != nil {
 		t.Fatalf("missing messages: out=%#v err=%v", out, err)
 	}
 
-	out, err = m.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{}})
+	out, err = m.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{}})
 	if err != nil || out != nil {
 		t.Fatalf("empty messages: out=%#v err=%v", out, err)
 	}
 
-	out, err = m.BeforeModel(context.Background(), map[string]any{"messages": "not-messages"})
+	out, err = m.BeforeModel(t.Context(), map[string]any{"messages": "not-messages"})
 	if err != nil || out != nil {
 		t.Fatalf("wrong messages type: out=%#v err=%v", out, err)
 	}
@@ -340,7 +339,7 @@ func TestBeforeModelSkipsEmptyContent(t *testing.T) {
 	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL)))
 	state := map[string]any{"messages": []messages.Message{messages.Human("")}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil || out != nil {
 		t.Fatalf("out=%#v err=%v", out, err)
 	}
@@ -358,7 +357,7 @@ func TestBeforeModelModerationErrorPropagates(t *testing.T) {
 	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL), modelconfig.WithMaxRetries(0)))
 	state := map[string]any{"messages": []messages.Message{messages.Human("text")}}
 
-	_, err := m.BeforeModel(context.Background(), state)
+	_, err := m.BeforeModel(t.Context(), state)
 	if err == nil {
 		t.Fatalf("expected moderation error to propagate")
 	}
@@ -372,9 +371,8 @@ func TestBeforeModelUnknownExitBehavior(t *testing.T) {
 	m.ExitBehavior = ExitBehavior("bogus")
 	state := map[string]any{"messages": []messages.Message{messages.Human("flagged")}}
 
-	_, err := m.BeforeModel(context.Background(), state)
-	var ve *ViolationError
-	if !errors.As(err, &ve) {
+	_, err := m.BeforeModel(t.Context(), state)
+	if _, ok := errors.AsType[*ViolationError](err); !ok {
 		t.Fatalf("expected ViolationError for unknown exit behavior, got %v", err)
 	}
 }
@@ -391,7 +389,7 @@ func TestAfterModelCheckOutputDisabled(t *testing.T) {
 	m.CheckOutput = false
 	state := map[string]any{"messages": []messages.Message{messages.AI("flagged")}}
 
-	out, err := m.AfterModel(context.Background(), state)
+	out, err := m.AfterModel(t.Context(), state)
 	if err != nil || out != nil {
 		t.Fatalf("out=%#v err=%v", out, err)
 	}
@@ -403,13 +401,13 @@ func TestAfterModelCheckOutputDisabled(t *testing.T) {
 func TestAfterModelNoMessagesOrNoAI(t *testing.T) {
 	m := NewMiddleware(NewClient())
 
-	out, err := m.AfterModel(context.Background(), map[string]any{})
+	out, err := m.AfterModel(t.Context(), map[string]any{})
 	if err != nil || out != nil {
 		t.Fatalf("missing messages: out=%#v err=%v", out, err)
 	}
 
 	state := map[string]any{"messages": []messages.Message{messages.Human("only human")}}
-	out, err = m.AfterModel(context.Background(), state)
+	out, err = m.AfterModel(t.Context(), state)
 	if err != nil || out != nil {
 		t.Fatalf("no AI message: out=%#v err=%v", out, err)
 	}
@@ -426,9 +424,9 @@ func TestAfterModelErrorBehavior(t *testing.T) {
 		messages.AI("unsafe answer"),
 	}}
 
-	_, err := m.AfterModel(context.Background(), state)
-	var ve *ViolationError
-	if !errors.As(err, &ve) {
+	_, err := m.AfterModel(t.Context(), state)
+	ve, ok := errors.AsType[*ViolationError](err)
+	if !ok {
 		t.Fatalf("expected ViolationError, got %v", err)
 	}
 	if ve.Stage != "output" {
@@ -443,7 +441,7 @@ func TestAfterModelCleanPasses(t *testing.T) {
 	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL)))
 	state := map[string]any{"messages": []messages.Message{messages.AI("safe answer")}}
 
-	out, err := m.AfterModel(context.Background(), state)
+	out, err := m.AfterModel(t.Context(), state)
 	if err != nil || out != nil {
 		t.Fatalf("out=%#v err=%v", out, err)
 	}
@@ -467,7 +465,7 @@ func TestToolMessagesNoAIMessage(t *testing.T) {
 		messages.Tool("call-1", "tool output"),
 	}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil || out != nil {
 		t.Fatalf("out=%#v err=%v", out, err)
 	}
@@ -492,7 +490,7 @@ func TestToolMessageEmptyContentSkipped(t *testing.T) {
 		messages.Tool("call-1", ""),
 	}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil || out != nil {
 		t.Fatalf("out=%#v err=%v", out, err)
 	}
@@ -515,7 +513,7 @@ func TestToolMessagesCleanPassThrough(t *testing.T) {
 		messages.Tool("call-1", "harmless output"),
 	}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil || out != nil {
 		t.Fatalf("out=%#v err=%v", out, err)
 	}
@@ -533,7 +531,7 @@ func TestViolationMessageScoresAndOriginalContent(t *testing.T) {
 	m.ViolationMessage = "blocked [{categories}] scores={category_scores} original={original_content}"
 	state := map[string]any{"messages": []messages.Message{messages.Human("bad stuff")}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}
@@ -553,7 +551,7 @@ func TestViolationMessageNoCategoriesFallback(t *testing.T) {
 	m := NewMiddleware(NewClient(modelconfig.WithBaseURL(server.URL)))
 	state := map[string]any{"messages": []messages.Message{messages.Human("flagged")}}
 
-	out, err := m.BeforeModel(context.Background(), state)
+	out, err := m.BeforeModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("BeforeModel: %v", err)
 	}

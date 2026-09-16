@@ -20,10 +20,10 @@ func (fakeNetConnRefused) Temporary() bool { return false }
 
 func TestNewProviderErrorClassification(t *testing.T) {
 	tests := []struct {
-		name       string
-		status     int
-		wantSent   error
-		retryable  bool
+		name      string
+		status    int
+		wantSent  error
+		retryable bool
 	}{
 		{"rate limited", 429, ErrRateLimited, true},
 		{"request timeout", 408, ErrTimeout, true},
@@ -39,8 +39,8 @@ func TestNewProviderErrorClassification(t *testing.T) {
 			if !errors.Is(err, tc.wantSent) {
 				t.Fatalf("errors.Is(%d, %v) = false, want true", tc.status, tc.wantSent)
 			}
-			var pe *ProviderError
-			if !errors.As(err, &pe) {
+			pe, ok := errors.AsType[*ProviderError](err)
+			if !ok {
 				t.Fatalf("errors.As into *ProviderError = false")
 			}
 			if pe.StatusCode != tc.status {
@@ -70,8 +70,8 @@ func TestProviderErrorUnwrapChainsToExactlyOneSentinel(t *testing.T) {
 	if errors.Is(err, ErrTimeout) {
 		t.Fatal("429 must not also match ErrTimeout")
 	}
-	var pe *ProviderError
-	if !errors.As(err, &pe) || pe.RetryAfter != 5*time.Second {
+	pe, ok := errors.AsType[*ProviderError](err)
+	if !ok || pe.RetryAfter != 5*time.Second {
 		t.Fatalf("RetryAfter = %v, want 5s", pe.RetryAfter)
 	}
 }

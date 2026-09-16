@@ -38,7 +38,7 @@ func TestLLMToolSelectorMiddlewareUsesStructuredOutput(t *testing.T) {
 	}
 
 	var seenTools []any
-	_, err = selector.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		seenTools = request.Tools
 		return ModelResponse{}, nil
 	})
@@ -110,7 +110,7 @@ func TestLLMToolSelectorMiddlewareFiltersTools(t *testing.T) {
 	}
 
 	var seenTools []any
-	_, err = selector.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		seenTools = request.Tools
 		return ModelResponse{}, nil
 	})
@@ -142,7 +142,7 @@ func TestLLMToolSelectorMiddlewareNoToolsCallsHandler(t *testing.T) {
 	}
 
 	called := false
-	_, err = selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		called = true
 		return ModelResponse{}, nil
 	})
@@ -170,7 +170,7 @@ func TestLLMToolSelectorMiddlewareMissingAlwaysInclude(t *testing.T) {
 		t.Fatalf("new model request: %v", err)
 	}
 
-	_, err = selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "always_include") {
@@ -193,7 +193,7 @@ func TestLLMToolSelectorMiddlewareInvalidSelection(t *testing.T) {
 		t.Fatalf("new model request: %v", err)
 	}
 
-	_, err = selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "invalid tools") {
@@ -216,7 +216,7 @@ func TestLLMToolSelectorMiddlewareRequiresHumanMessage(t *testing.T) {
 		t.Fatalf("new model request: %v", err)
 	}
 
-	_, err = selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "no user message") {
@@ -251,7 +251,7 @@ func TestLLMToolSelectorMiddlewareStructuredBeatsCallback(t *testing.T) {
 		t.Fatalf("new model request: %v", err)
 	}
 
-	_, err = selector.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err != nil {

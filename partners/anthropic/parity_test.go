@@ -39,7 +39,7 @@ func invokeWithBlocks(t *testing.T, model ChatModel, blocks []messages.ContentBl
 	t.Helper()
 	msg := messages.Human("")
 	msg.ContentBlocks = blocks
-	if _, err := model.Invoke(context.Background(), []messages.Message{msg}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{msg}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	return map[string]any{}
@@ -173,7 +173,7 @@ func TestParityThinkingRequestParam(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	model = model.WithThinking(map[string]any{"type": "enabled", "budget_tokens": 1024})
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("think")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -197,7 +197,7 @@ func TestParityTopPTopKRequestParams(t *testing.T) {
 		WithTopP(0.75),
 		WithTopK(64),
 	)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("sample")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("sample")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestParityThinkingEnforcesSamplingConstraints(t *testing.T) {
 		WithTopP(0.75),
 		WithTopK(64),
 	).WithThinking(map[string]any{"type": "enabled", "budget_tokens": 1024})
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("think")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestParityContextManagementRequestParam(t *testing.T) {
 	).WithContextManagement(map[string]any{
 		"edits": []any{map[string]any{"type": "clear_tool_uses_20250919"}},
 	})
-	if _, err := model.Invoke(context.Background(), []messages.Message{
+	if _, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("Search for recent developments in AI"),
 	}); err != nil {
 		t.Fatalf("invoke: %v", err)
@@ -276,7 +276,7 @@ func TestParityInferenceGeoRequestParam(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("m"),
 	).WithInferenceGeo("us")
-	if _, err := model.Invoke(context.Background(), []messages.Message{
+	if _, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("Hello, world!"),
 	}); err != nil {
 		t.Fatalf("invoke: %v", err)
@@ -318,7 +318,7 @@ func TestParityStrictToolUsePayload(t *testing.T) {
 			if err != nil {
 				t.Fatalf("bind tools strict: %v", err)
 			}
-			if _, err := modelWithTools.Invoke(context.Background(), []messages.Message{
+			if _, err := modelWithTools.Invoke(t.Context(), []messages.Message{
 				messages.Human("What's the weather?"),
 			}); err != nil {
 				t.Fatalf("invoke: %v", err)
@@ -346,7 +346,7 @@ func TestParityInvokeThinkingResponseBlock(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("q")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("q")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestParityInvokeRedactedThinkingResponseBlock(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("q")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("q")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestParityStreamThinkingBlock(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("q")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -422,7 +422,7 @@ func TestParityStreamThinkingBlock(t *testing.T) {
 	}
 	defer stream.Close()
 	for {
-		if _, ok, err := stream.Next(context.Background()); err != nil {
+		if _, ok, err := stream.Next(t.Context()); err != nil {
 			t.Fatalf("next: %v", err)
 		} else if !ok {
 			break
@@ -465,7 +465,7 @@ func TestParitySystemCacheControl(t *testing.T) {
 	sys.ContentBlocks = []messages.ContentBlock{
 		messages.ParseContentBlock(map[string]any{"type": "text", "text": "you are helpful", "cache_control": map[string]any{"type": "ephemeral"}}),
 	}
-	if _, err := model.Invoke(context.Background(), []messages.Message{sys, messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{sys, messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -510,7 +510,7 @@ func TestParityToolResultContentBlockCacheControlHoisted(t *testing.T) {
 	toolResult.ContentBlocks = []messages.ContentBlock{
 		messages.ParseContentBlock(map[string]any{"type": "text", "text": "cached result", "cache_control": map[string]any{"type": "ephemeral"}}),
 	}
-	if _, err := model.Invoke(context.Background(), []messages.Message{toolResult}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{toolResult}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -545,7 +545,7 @@ func TestParityToolChoiceRequestParam(t *testing.T) {
 
 	base := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	model := base.WithToolChoice(map[string]any{"type": "any", "disable_parallel_tool_use": true})
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -571,7 +571,7 @@ func TestParityBetaHeaders(t *testing.T) {
 		modelconfig.WithModel("m"),
 		WithBetaHeaders("interleaved-thinking-2025-05-14", "prompt-caching-2024-07-31"),
 	)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if betaHeader != "interleaved-thinking-2025-05-14,prompt-caching-2024-07-31" {

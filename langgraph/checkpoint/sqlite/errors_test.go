@@ -1,7 +1,6 @@
 package sqlite_test
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -58,7 +57,7 @@ func TestNewErrors(t *testing.T) {
 // empty-CheckpointID branch: the writes attach to the thread's LATEST
 // checkpoint, and an empty thread is an error (matching MemorySaver).
 func TestPutWritesResolvesLatestCheckpoint(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newSaver(t, dbPath(t))
 
 	thread := checkpoint.Config{ThreadID: "t1"}
@@ -100,7 +99,7 @@ func TestPutWritesResolvesLatestCheckpoint(t *testing.T) {
 // checkpoint has no ChannelVersions map but newVersions must be recorded: a
 // fresh map is allocated and merged.
 func TestPutMergesNewVersionsIntoNilChannelVersions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newSaver(t, dbPath(t))
 
 	cp := checkpoint.Checkpoint{V: 1, ID: checkpoint.NewID(1)}
@@ -122,7 +121,7 @@ func TestPutMergesNewVersionsIntoNilChannelVersions(t *testing.T) {
 // error — from a channel value and from a planned task's arg alike — instead
 // of being persisted lossily.
 func TestPutEncodeErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newSaver(t, dbPath(t))
 
 	cp := sampleCheckpoint(checkpoint.NewID(1))
@@ -145,7 +144,7 @@ func TestPutEncodeErrors(t *testing.T) {
 // TestPutWritesEncodeError verifies an unserializable write value fails
 // PutWrites with a wrapped error naming the channel.
 func TestPutWritesEncodeError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newSaver(t, dbPath(t))
 
 	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)
@@ -164,7 +163,7 @@ func TestPutWritesEncodeError(t *testing.T) {
 // TestClosedSaverErrors verifies every Saver method reports the closed
 // database instead of panicking or silently succeeding.
 func TestClosedSaverErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, err := sqlite.New(":memory:", serde.NewJSONSerializer())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -208,7 +207,7 @@ func TestClosedSaverErrors(t *testing.T) {
 // out from under an open Saver — the same technique as
 // TestDeleteThreadDroppedTables.
 func TestManagementDroppedTables(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// DeleteForRuns's first statement (the writes DELETE) selects from
 	// checkpoints, so dropping either table fails it; a delete-rejecting
@@ -288,7 +287,7 @@ func TestManagementDroppedTables(t *testing.T) {
 // TestDeleteThreadDroppedTables forces the two DELETE statements to fail
 // independently by dropping each table out from under an open Saver.
 func TestDeleteThreadDroppedTables(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("checkpoints dropped", func(t *testing.T) {
 		path := dbPath(t)
@@ -313,7 +312,7 @@ func TestDeleteThreadDroppedTables(t *testing.T) {
 // write (foreign blob types, malformed JSON, unknown serde tags) and verifies
 // reads fail with descriptive errors rather than returning corrupted state.
 func TestCorruptCheckpointRows(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	insert := `INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES ('t1', '', 'c1', NULL, ?, ?, ?)`
 
 	tests := []struct {
@@ -378,7 +377,7 @@ func TestCorruptCheckpointRows(t *testing.T) {
 // metadata blob decodes as zero Metadata (databases written before metadata
 // existed), while a NULL blob type is a scan error.
 func TestNullMetadataAndTypeColumns(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	insert := `INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES ('t1', '', 'c1', NULL, ?, ?, ?)`
 
 	t.Run("null metadata decodes as zero", func(t *testing.T) {
@@ -410,7 +409,7 @@ func TestNullMetadataAndTypeColumns(t *testing.T) {
 // verifies reads fail descriptively. A dropped writes table exercises the
 // loadWrites query error path.
 func TestCorruptWriteRows(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	insertWrite := `INSERT INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value, task_path) VALUES ('t1', '', ?, 'task-1', 0, 'c', ?, ?, '')`
 
 	setup := func(t *testing.T) (*sqlite.Saver, string, checkpoint.Config) {
@@ -478,7 +477,7 @@ func TestCorruptWriteRows(t *testing.T) {
 // TestListFilterWithLimit covers the in-process LIMIT break: with a Filter,
 // the SQL query has no LIMIT, so filtering and capping happen row by row.
 func TestListFilterWithLimit(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newSaver(t, dbPath(t))
 
 	cfg := checkpoint.Config{ThreadID: "t1"}

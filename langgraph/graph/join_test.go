@@ -1,11 +1,10 @@
 package graph
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -130,7 +129,7 @@ func TestJoinBasicTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), nil)
+	res, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -158,7 +157,7 @@ func sortedAddReducer(existing, update any) (any, error) {
 		return nil, err
 	}
 	s, _ := out.([]string)
-	sort.Strings(s)
+	slices.Sort(s)
 	return s, nil
 }
 
@@ -236,7 +235,7 @@ func TestJoinExactlyOnceAcrossSupersteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"my_key": "hello"})
+	res, err := cg.Invoke(t.Context(), map[string]any{"my_key": "hello"})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -260,7 +259,7 @@ func TestJoinFanOutWaitingEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"query": "what is weather in sf"})
+	res, err := cg.Invoke(t.Context(), map[string]any{"query": "what is weather in sf"})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -274,7 +273,7 @@ func TestJoinFanOutWaitingEdge(t *testing.T) {
 	// updates chunks in Go's deterministic task order (documented M3
 	// divergence from Python's as-they-finish timing).
 	var updates []any
-	for c, err := range cg.Stream(context.Background(), map[string]any{"query": "what is weather in sf"},
+	for c, err := range cg.Stream(t.Context(), map[string]any{"query": "what is weather in sf"},
 		StreamOptions{Modes: []StreamMode{StreamUpdates}}) {
 		if err != nil {
 			t.Fatalf("Stream() error = %v", err)
@@ -300,7 +299,7 @@ func TestJoinFanOutWaitingEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	paused, err := cg2.InvokeWithOptions(ctx, map[string]any{"query": "what is weather in sf"}, Options{ThreadID: "1"})
 	if err != nil {
 		t.Fatalf("run1 error = %v", err)
@@ -346,7 +345,7 @@ func TestJoinWaitingEdgePlusRegularEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"query": "what is weather in sf"})
+	res, err := cg.Invoke(t.Context(), map[string]any{"query": "what is weather in sf"})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -426,8 +425,8 @@ func TestJoinLoopReset(t *testing.T) {
 			}
 			// Two full runs, mirroring Python's invoke+stream count
 			// assertions (rewrite_query_count == 4 uncached, 2 cached).
-			for run := 0; run < 2; run++ {
-				res, err := cg.Invoke(context.Background(), map[string]any{"query": "what is weather in sf"})
+			for run := range 2 {
+				res, err := cg.Invoke(t.Context(), map[string]any{"query": "what is weather in sf"})
 				if err != nil {
 					t.Fatalf("run %d Invoke() error = %v", run, err)
 				}
@@ -479,7 +478,7 @@ func TestJoinSendBypassesBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), nil)
+	res, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -522,7 +521,7 @@ func TestJoinThreeParents(t *testing.T) {
 	if _, ok := cg.channelProtos["join:a+b+c:d"].(*channels.Barrier); !ok {
 		t.Fatal("join:a+b+c:d barrier not registered")
 	}
-	if _, err := cg.Invoke(context.Background(), nil); err != nil {
+	if _, err := cg.Invoke(t.Context(), nil); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 	if dCalls != 1 {
@@ -563,7 +562,7 @@ func TestJoinParentInterruptResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	paused, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t"})
 	if err != nil {
 		t.Fatalf("run1 error = %v", err)
@@ -640,7 +639,7 @@ func TestJoinCheckpointPartialArrival(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t"}); err != nil {
 		t.Fatalf("run1 error = %v", err)
 	}
@@ -723,7 +722,7 @@ func TestJoinKeyNotLeaked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	for c, err := range cg.Stream(ctx, map[string]any{"query": "q"},
 		StreamOptions{
 			Options: Options{ThreadID: "t"},

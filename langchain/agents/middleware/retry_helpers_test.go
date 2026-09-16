@@ -51,7 +51,7 @@ func TestCalculateRetryDelay(t *testing.T) {
 		t.Fatalf("max delay cap mismatch: %v", got)
 	}
 	// Jitter stays within ±25% of the base delay.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		got := calculateRetryDelay(0, 0, 100*time.Millisecond, time.Minute, true)
 		if got < 75*time.Millisecond || got > 125*time.Millisecond {
 			t.Fatalf("jittered delay out of range: %v", got)

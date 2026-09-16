@@ -74,7 +74,7 @@ func TestToolRetryMiddlewareUsesToolInstanceName(t *testing.T) {
 		ToolCall: ToolCall{Name: "renamed", ID: "call_1"},
 		Tool:     searchTool,
 	}
-	_, err = retry.WrapToolCall(context.Background(), request, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err = retry.WrapToolCall(t.Context(), request, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		calls++
 		return messages.Message{}, errors.New("down")
 	})
@@ -94,7 +94,7 @@ func TestToolRetryMiddlewareFailureFormatter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	response, err := retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	response, err := retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, errors.New("down")
 	})
 	if err != nil {
@@ -113,7 +113,7 @@ func TestToolRetryMiddlewareDefaultFailureMessagePlural(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	response, err := retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	response, err := retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, errors.New("down")
 	})
 	if err != nil {
@@ -136,7 +136,7 @@ func TestToolRetryMiddlewareRetryOnPredicateStopsRetries(t *testing.T) {
 		t.Fatalf("new middleware: %v", err)
 	}
 	calls := 0
-	_, err = retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err = retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		calls++
 		return messages.Message{}, permanent
 	})
@@ -158,7 +158,7 @@ func TestToolRetryMiddlewareSleepNotCalledForZeroDelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	_, _ = retry.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, _ = retry.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "call_1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, errors.New("down")
 	})
 	if slept != 0 {

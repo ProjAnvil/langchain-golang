@@ -66,18 +66,18 @@ func TestTypeAliasesAreIdentical(t *testing.T) {
 }
 
 // TestGraphInterrupt verifies the GraphInterrupt alias keeps its error
-// behavior: it must format the interrupt value and ID, and errors.As must
+// behavior: it must format the interrupt value and ID, and errors.AsType must
 // match it through both the shim and the langgraph/types spelling.
 func TestGraphInterrupt(t *testing.T) {
 	err := error(&GraphInterrupt{Interrupt: Interrupt{Value: "question", ID: "int-7"}})
 
-	var shimGI *GraphInterrupt
-	if !errors.As(err, &shimGI) {
-		t.Fatal("errors.As did not match *agentruntime.GraphInterrupt")
+	shimGI, ok := errors.AsType[*GraphInterrupt](err)
+	if !ok {
+		t.Fatal("errors.AsType did not match *agentruntime.GraphInterrupt")
 	}
-	var langgraphGI *types.GraphInterrupt
-	if !errors.As(err, &langgraphGI) {
-		t.Fatal("errors.As did not match *types.GraphInterrupt")
+	langgraphGI, ok := errors.AsType[*types.GraphInterrupt](err)
+	if !ok {
+		t.Fatal("errors.AsType did not match *types.GraphInterrupt")
 	}
 	if shimGI != (*GraphInterrupt)(langgraphGI) {
 		t.Error("shim and langgraph/types GraphInterrupt matches are not the same value")
@@ -89,7 +89,7 @@ func TestGraphInterrupt(t *testing.T) {
 	}
 
 	// A non-GraphInterrupt error must not match.
-	if errors.As(errors.New("boom"), &shimGI) {
-		t.Error("errors.As matched an unrelated error")
+	if _, ok := errors.AsType[*GraphInterrupt](errors.New("boom")); ok {
+		t.Error("errors.AsType matched an unrelated error")
 	}
 }

@@ -3,7 +3,7 @@ package channels
 import (
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 )
 
 // Barrier mirrors Python's `NamedBarrierValue` channel
@@ -41,7 +41,7 @@ func (c *Barrier) Names() []string {
 	for name := range c.names {
 		out = append(out, name)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -96,7 +96,7 @@ func (c *Barrier) Checkpoint() (any, bool) {
 	for name := range c.seen {
 		out = append(out, name)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out, true
 }
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -56,7 +56,7 @@ func TestSubgraphNodeSharesState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"value": 1})
+	res, err := cg.Invoke(t.Context(), map[string]any{"value": 1})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -117,7 +117,7 @@ func TestSubgraphParentCommandAppliesAtParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), nil)
+	res, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -173,7 +173,7 @@ func TestSubgraphGrandchildCommandAppliesAtChildLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("top Compile() error = %v", err)
 	}
-	res, err := topCG.Invoke(context.Background(), nil)
+	res, err := topCG.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v (grandchild command must apply at the child level)", err)
 	}
@@ -212,7 +212,7 @@ func TestSubgraphChildCommandReachesTopGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("top Compile() error = %v", err)
 	}
-	res, err := topCG.Invoke(context.Background(), nil)
+	res, err := topCG.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -230,7 +230,7 @@ func TestSubgraphChildCommandReachesTopGraph(t *testing.T) {
 // and "sub:<tid>/grand:<tid>" here; see taskCheckpointNS), while the parent's
 // own checkpoints stay in the root namespace.
 func TestSubgraphCheckpointsNamespaced(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	grand := compileChild(t, "grand_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"grand_ran": true}, nil
@@ -313,7 +313,7 @@ func TestSubgraphWithoutParentCheckpointer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), nil)
+	res, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -335,7 +335,7 @@ func TestCommandGraphUnsupportedValueErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), nil)
+	_, err = cg.Invoke(t.Context(), nil)
 	if err == nil {
 		t.Fatal("Invoke() error = nil, want an error for Command.Graph \"bogus\"")
 	}
@@ -364,15 +364,15 @@ func TestTopLevelParentCommandDescriptiveError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), nil)
+	_, err = cg.Invoke(t.Context(), nil)
 	if err == nil {
 		t.Fatal("Invoke() error = nil, want a descriptive error for a top-level parent-targeted command")
 	}
 	if !strings.Contains(err.Error(), "parent") {
 		t.Fatalf("error = %v, want a message describing the missing parent graph", err)
 	}
-	var pce *ParentCommandError
-	if !errors.As(err, &pce) {
+	pce, ok := errors.AsType[*ParentCommandError](err)
+	if !ok {
 		t.Fatalf("error = %v, want it to unwrap to *ParentCommandError", err)
 	}
 	if pce.Command != cmd {
@@ -391,7 +391,7 @@ func TestTopLevelParentCommandDescriptiveError(t *testing.T) {
 // recorded pin does not apply), with the child state flowing through the
 // parent checkpoint it resumes from.
 func TestSubgraphParentsPinTimeTravel(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		n, _ := state["child_n"].(int)
@@ -517,7 +517,7 @@ func TestSubgraphParentsPinTimeTravel(t *testing.T) {
 // update. This replaces the old shared-namespace behavior where the second
 // execution forked a new turn off the first's child checkpoint.
 func TestSubgraphRepeatedExecutionDistinctNamespaces(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	var childRuns int32
 	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
@@ -626,13 +626,13 @@ func TestSubgraphRepeatedExecutionDistinctNamespaces(t *testing.T) {
 // A completed sibling of the same superstep persists its writes as usual, the
 // shape resume replays.
 func TestSubgraphInterruptPausesParent(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
-	var askRuns, preRuns, sibRuns int32
+	var askRuns, preRuns, sibRuns atomic.Int32
 	var resumedWith any
 	child := NewStateGraph()
 	child.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&askRuns, 1)
+		askRuns.Add(1)
 		v := Interrupt(rt, "pause-inside-child")
 		resumedWith = v
 		return map[string]any{"answer": v}, nil
@@ -647,12 +647,12 @@ func TestSubgraphInterruptPausesParent(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	top := NewStateGraph()
 	top.AddNode("pre", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&preRuns, 1)
+		preRuns.Add(1)
 		return nil, nil
 	})
 	top.AddSubgraph("sub", childCG)
 	top.AddNode("sib", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&sibRuns, 1)
+		sibRuns.Add(1)
 		return map[string]any{"sib": true}, nil
 	})
 	top.AddEdge(types.START, "pre")
@@ -688,8 +688,8 @@ func TestSubgraphInterruptPausesParent(t *testing.T) {
 	if want := "ask:"; !strings.HasPrefix(askSeg, want) || !perTaskNSPattern.MatchString(askSeg) {
 		t.Fatalf("interrupt NS = %q, want the ask task segment <ask>:<taskID>", intr.NS)
 	}
-	if askRuns != 1 || preRuns != 1 || sibRuns != 1 {
-		t.Fatalf("runs at pause: ask=%d pre=%d sib=%d, want 1 each", askRuns, preRuns, sibRuns)
+	if askRuns.Load() != 1 || preRuns.Load() != 1 || sibRuns.Load() != 1 {
+		t.Fatalf("runs at pause: ask=%d pre=%d sib=%d, want 1 each", askRuns.Load(), preRuns.Load(), sibRuns.Load())
 	}
 
 	// The child namespace holds its own pause checkpoint (loop source), and the
@@ -779,11 +779,11 @@ func TestSubgraphInterruptPausesParent(t *testing.T) {
 	if got := res2.Values["sib"]; got != true {
 		t.Fatalf("resumed Values[sib] = %v, want true (replayed sibling write)", got)
 	}
-	if askRuns != 2 {
-		t.Fatalf("ask runs after resume = %d, want 2 (re-executed once to consume the resume value)", askRuns)
+	if askRuns.Load() != 2 {
+		t.Fatalf("ask runs after resume = %d, want 2 (re-executed once to consume the resume value)", askRuns.Load())
 	}
-	if preRuns != 1 || sibRuns != 1 {
-		t.Fatalf("runs after resume: pre=%d sib=%d, want 1 each (completed work replays, never re-runs)", preRuns, sibRuns)
+	if preRuns.Load() != 1 || sibRuns.Load() != 1 {
+		t.Fatalf("runs after resume: pre=%d sib=%d, want 1 each (completed work replays, never re-runs)", preRuns.Load(), sibRuns.Load())
 	}
 }
 
@@ -821,7 +821,7 @@ func interruptingSubgraphFixture(t *testing.T) (*CompiledGraph, func(res any) (R
 		t.Fatalf("Compile() error = %v", err)
 	}
 	return cg, func(resume any) (Result, error) {
-		return cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: resume})
+		return cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t1", Resume: resume})
 	}
 }
 
@@ -846,7 +846,7 @@ func answeredSet(t *testing.T, res Result) map[string]any {
 // levels — each wrapper forwards the payload one level down until it reaches
 // the interrupting task, with no map needed at any level.
 func TestSubgraphNestedInterruptResumeScalar(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	ask := NewStateGraph()
 	ask.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
@@ -915,7 +915,7 @@ func TestSubgraphNestedInterruptResumeScalar(t *testing.T) {
 // other remaining.
 func TestSubgraphParallelInterruptsMapResume(t *testing.T) {
 	cg, resume := interruptingSubgraphFixture(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
@@ -964,7 +964,7 @@ func TestSubgraphParallelInterruptsMapResume(t *testing.T) {
 // leaving the unaddressed one paused.
 func TestSubgraphResumeGraphAddressing(t *testing.T) {
 	cg, resume := interruptingSubgraphFixture(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
@@ -1021,7 +1021,7 @@ func TestSubgraphResumeGraphAddressing(t *testing.T) {
 // forwarded verbatim lets the CHILD's planResume dispatch each value to its
 // own inner task by NS.
 func TestSubgraphChildMultiInterruptMapDispatch(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := NewStateGraph()
 	child.AddNode("ask", func(rt runtime.Runtime, state map[string]any) (any, error) {
@@ -1118,7 +1118,7 @@ func TestSubgraphChildMultiInterruptMapDispatch(t *testing.T) {
 // foreign boundary interrupt (interruptOwnedBy): the parent pauses at its
 // own gate on the following superstep, and a second resume finishes.
 func TestSubgraphBoundaryInterruptBeforePropagates(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := NewStateGraph()
 	child.AddNode("gate", func(_ runtime.Runtime, _ map[string]any) (any, error) {
@@ -1197,7 +1197,7 @@ func TestSubgraphBoundaryInterruptBeforePropagates(t *testing.T) {
 // child never ran). The forwarded forceResume must degrade to a fresh-input
 // child run instead of erroring "no checkpoint found".
 func TestSubgraphParentInterruptBeforeSubgraphNodeResume(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := NewStateGraph()
 	child.AddNode("work", func(_ runtime.Runtime, _ map[string]any) (any, error) {
@@ -1245,7 +1245,7 @@ func TestSubgraphParentInterruptBeforeSubgraphNodeResume(t *testing.T) {
 // committed into the pause checkpoint), so the child completes and the parent
 // finishes with the child's values merged.
 func TestSubgraphBoundaryInterruptAfterResumes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := NewStateGraph()
 	child.AddNode("gate", func(_ runtime.Runtime, _ map[string]any) (any, error) {
@@ -1308,7 +1308,7 @@ func TestSubgraphChildRunErrorWraps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), map[string]any{})
+	_, err = cg.Invoke(t.Context(), map[string]any{})
 	if !errors.Is(err, want) || !strings.Contains(err.Error(), `subgraph "sub"`) {
 		t.Fatalf("Invoke() error = %v, want it to wrap %v naming subgraph %q", err, want, "sub")
 	}
@@ -1324,7 +1324,7 @@ var perTaskNSPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*:[0-9a-f]{16}$
 // included), skipping the empty parent-namespace entry.
 func rootChildNamespaces(t *testing.T, saver *checkpoint.MemorySaver, threadID string) []string {
 	t.Helper()
-	tups, err := saver.List(context.Background(), checkpoint.Config{ThreadID: threadID}, checkpoint.ListOptions{})
+	tups, err := saver.List(t.Context(), checkpoint.Config{ThreadID: threadID}, checkpoint.ListOptions{})
 	if err != nil {
 		t.Fatalf("List(root) error = %v", err)
 	}
@@ -1343,7 +1343,7 @@ func rootChildNamespaces(t *testing.T, saver *checkpoint.MemorySaver, threadID s
 	for ns := range union {
 		out = append(out, ns)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -1352,7 +1352,7 @@ func rootChildNamespaces(t *testing.T, saver *checkpoint.MemorySaver, threadID s
 // namespace per subgraph TASK, not per node), and a grandchild under
 // <childNS>/<grandnode>:<taskID>. The root namespace stays clean.
 func TestSubgraphCheckpointsPerTaskNamespace(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	grand := compileChild(t, "grand_step", func(_ runtime.Runtime, _ map[string]any) (any, error) {
 		return map[string]any{"grand_ran": true}, nil
@@ -1450,7 +1450,7 @@ func TestSubgraphCheckpointsPerTaskNamespace(t *testing.T) {
 // gives every subgraph task its own ns). Under node-only namespacing both
 // tasks share one ns, interleaving their checkpoint histories.
 func TestSubgraphParallelSendDistinctNamespaces(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// collectReducer appends each update to a []any so two Send tasks can
 	// both write the same key in one superstep. The first write seeds a
@@ -1565,7 +1565,7 @@ func TestSubgraphParallelSendDistinctNamespaces(t *testing.T) {
 // the resumed run WRITES its new checkpoints under the new per-task
 // namespace. Legacy data is not migrated.
 func TestSubgraphResumeLegacyNamespacePin(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := compileChild(t, "child_step", func(_ runtime.Runtime, state map[string]any) (any, error) {
 		n, _ := state["child_n"].(int)
@@ -1711,7 +1711,7 @@ func TestSubgraphChildCheckpointLookupError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"})
+	_, err = cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"})
 	if !errors.Is(err, errSaverBoom) || !strings.Contains(err.Error(), `subgraph "sub"`) {
 		t.Fatalf("InvokeWithOptions() error = %v, want it to wrap %v naming subgraph %q", err, errSaverBoom, "sub")
 	}

@@ -27,8 +27,8 @@ func TestUntrackedValue(t *testing.T) {
 	t.Run("guard=true errors on multiple writes", func(t *testing.T) {
 		ch := NewUntrackedValue(true)
 		_, err := ch.Update([]any{"a", "b"})
-		var iuErr *InvalidUpdateError
-		if !errors.As(err, &iuErr) {
+		iuErr, ok := errors.AsType[*InvalidUpdateError](err)
+		if !ok {
 			t.Fatalf("Update() error = %v, want *InvalidUpdateError", err)
 		}
 		if iuErr.Channel != "UntrackedValue" {
@@ -74,8 +74,7 @@ func TestUntrackedValue(t *testing.T) {
 
 		// The guard setting must survive a FromCheckpoint round-trip.
 		_, err := restored.Update([]any{"x", "y"})
-		var iuErr *InvalidUpdateError
-		if !errors.As(err, &iuErr) {
+		if _, ok := errors.AsType[*InvalidUpdateError](err); !ok {
 			t.Fatalf("restored guard lost: Update() error = %v, want *InvalidUpdateError", err)
 		}
 

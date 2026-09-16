@@ -167,9 +167,9 @@ func TestNormalizeArgumentMapKeepsMismatchedFunctionName(t *testing.T) {
 func TestTryParseJSONValue(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name  string
-		value string
-		want  any
+		name   string
+		value  string
+		want   any
 		wantOK bool
 	}{
 		{"empty", "", "", false},

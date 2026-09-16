@@ -1,7 +1,6 @@
 package indexing
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -13,7 +12,7 @@ import (
 // Mirrors test_hashed_document.py::test_hashing_custom_key_encoder: the
 // callable encoder's return value becomes the document's dedup key.
 func TestIndexDocumentsCustomKeyEncoderFunc(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{
@@ -59,7 +58,7 @@ func TestIndexDocumentsCustomKeyEncoderFunc(t *testing.T) {
 
 // KeyEncoderFunc errors propagate.
 func TestIndexDocumentsKeyEncoderFuncError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	errTest := errors.New("encoder blew up")
@@ -74,7 +73,7 @@ func TestIndexDocumentsKeyEncoderFuncError(t *testing.T) {
 // KeyEncoderFunc overrides KeyEncoder when both are set (Python's callable
 // branch short-circuits the algorithm path, indexing/api.py:208-210).
 func TestKeyEncoderFuncOverridesAlgorithm(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("alpha", nil)}

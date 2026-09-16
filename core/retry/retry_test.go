@@ -12,7 +12,7 @@ var errPermanent = errors.New("permanent")
 
 func TestDoRetriesUntilSuccess(t *testing.T) {
 	attempts := 0
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		MaxAttempts: 3,
 		ShouldRetry: func(err error) bool {
 			return errors.Is(err, errTransient)
@@ -34,7 +34,7 @@ func TestDoRetriesUntilSuccess(t *testing.T) {
 
 func TestDoStopsOnPermanentError(t *testing.T) {
 	attempts := 0
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		MaxAttempts: 3,
 		ShouldRetry: func(err error) bool {
 			return errors.Is(err, errTransient)
@@ -52,7 +52,7 @@ func TestDoStopsOnPermanentError(t *testing.T) {
 }
 
 func TestDoRespectsContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	err := Do(ctx, Policy{MaxAttempts: 3}, func() error {
@@ -67,7 +67,7 @@ func TestDoRespectsContext(t *testing.T) {
 func TestDoUsesExponentialBackoff(t *testing.T) {
 	attempts := 0
 	var delays []time.Duration
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		MaxAttempts:       4,
 		Delay:             10 * time.Millisecond,
 		BackoffMultiplier: 2,
@@ -106,7 +106,7 @@ func TestDoUsesExponentialBackoff(t *testing.T) {
 
 func TestDoReturnsLastErrorWhenAttemptsExhausted(t *testing.T) {
 	attempts := 0
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		MaxAttempts: 3,
 		ShouldRetry: func(err error) bool {
 			return errors.Is(err, errTransient)
@@ -125,7 +125,7 @@ func TestDoReturnsLastErrorWhenAttemptsExhausted(t *testing.T) {
 
 func TestDoNilShouldRetryDoesNotRetry(t *testing.T) {
 	attempts := 0
-	err := Do(context.Background(), Policy{MaxAttempts: 3}, func() error {
+	err := Do(t.Context(), Policy{MaxAttempts: 3}, func() error {
 		attempts++
 		return errTransient
 	})
@@ -139,7 +139,7 @@ func TestDoNilShouldRetryDoesNotRetry(t *testing.T) {
 
 func TestDoDefaultsToSingleAttempt(t *testing.T) {
 	attempts := 0
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		ShouldRetry: func(err error) bool { return true },
 	}, func() error {
 		attempts++
@@ -156,7 +156,7 @@ func TestDoDefaultsToSingleAttempt(t *testing.T) {
 func TestDoDefaultSleepWaits(t *testing.T) {
 	attempts := 0
 	start := time.Now()
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		MaxAttempts: 2,
 		Delay:       20 * time.Millisecond,
 		ShouldRetry: func(err error) bool {
@@ -178,7 +178,7 @@ func TestDoDefaultSleepWaits(t *testing.T) {
 }
 
 func TestDoDefaultSleepReturnsContextErrorWhenCanceled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		cancel()
@@ -200,7 +200,7 @@ func TestDoDefaultSleepReturnsContextErrorWhenCanceled(t *testing.T) {
 
 func TestDoSkipsSleepWhenDelayNotPositive(t *testing.T) {
 	sleepCalls := 0
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		MaxAttempts: 2,
 		Delay:       -time.Second,
 		ShouldRetry: func(err error) bool {
@@ -222,7 +222,7 @@ func TestDoSkipsSleepWhenDelayNotPositive(t *testing.T) {
 }
 
 func TestDoStopsWhenSleepReturnsContextError(t *testing.T) {
-	err := Do(context.Background(), Policy{
+	err := Do(t.Context(), Policy{
 		MaxAttempts: 3,
 		Delay:       time.Second,
 		ShouldRetry: func(err error) bool {

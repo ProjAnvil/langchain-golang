@@ -3,6 +3,7 @@ package storetest_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -405,9 +406,7 @@ func TestListNamespacesFailures(t *testing.T) {
 	expectConformanceFailure(t, "list namespaces returns the wrong order", runAgainstSuite(fakeStoreFactory(func(f *fakeStore) {
 		f.listFn = func(ctx context.Context, opts store.ListNamespacesOptions) ([][]string, error) {
 			results, err := f.inner.ListNamespaces(ctx, opts)
-			for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
-				results[i], results[j] = results[j], results[i]
-			}
+			slices.Reverse(results)
 			return results, err
 		}
 	})))

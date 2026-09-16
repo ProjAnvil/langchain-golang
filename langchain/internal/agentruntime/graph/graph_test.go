@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"sync"
 	"testing"
 
@@ -90,7 +89,7 @@ func TestLinearGraphThroughShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"count": 2})
+	res, err := cg.Invoke(t.Context(), map[string]any{"count": 2})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -124,7 +123,7 @@ func TestConditionalEdgeThroughShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{})
+	res, err := cg.Invoke(t.Context(), map[string]any{})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -151,7 +150,7 @@ func TestInterruptAndResumeThroughShim(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	first, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
 	}
@@ -162,7 +161,7 @@ func TestInterruptAndResumeThroughShim(t *testing.T) {
 	// Interrupt alias too.
 	var _ agentruntime.Interrupt = first.Interrupts[0]
 
-	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "Ada"})
+	second, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t1", Resume: "Ada"})
 	if err != nil {
 		t.Fatalf("resume Invoke() error = %v", err)
 	}
@@ -194,7 +193,7 @@ func TestInterruptBeforeThroughShim(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	first, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
 	}
@@ -205,7 +204,7 @@ func TestInterruptBeforeThroughShim(t *testing.T) {
 		t.Errorf("ran = %v, want a executed and b not yet run", ran)
 	}
 
-	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: nil})
+	second, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t1", Resume: nil})
 	if err != nil {
 		t.Fatalf("resume Invoke() error = %v", err)
 	}
@@ -237,7 +236,7 @@ func TestInterruptAfterThroughShim(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	first, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
 	}
@@ -248,7 +247,7 @@ func TestInterruptAfterThroughShim(t *testing.T) {
 		t.Errorf("ran = %v, want a executed and b not yet run", ran)
 	}
 
-	if _, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: nil}); err != nil {
+	if _, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t1", Resume: nil}); err != nil {
 		t.Fatalf("resume Invoke() error = %v", err)
 	}
 	if !ran["b"] {
@@ -273,7 +272,7 @@ func TestRecursionLimitThroughShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.Invoke(context.Background(), map[string]any{"n": 0}); err == nil {
+	if _, err := cg.Invoke(t.Context(), map[string]any{"n": 0}); err == nil {
 		t.Error("expected a recursion-limit error from an unbounded loop")
 	}
 }
@@ -293,12 +292,12 @@ func (s *recordingSink) EmitRawEvent(ev RawEvent) {
 // and that InvokeStream emits balanced node_start/node_end events through
 // the shim's sink and event types.
 func TestEventSinkThroughShim(t *testing.T) {
-	if EventSinkFromContext(context.Background()) != nil {
+	if EventSinkFromContext(t.Context()) != nil {
 		t.Error("EventSinkFromContext(background) != nil, want nil")
 	}
 
 	sink := &recordingSink{}
-	ctx := ContextWithEventSink(context.Background(), sink)
+	ctx := ContextWithEventSink(t.Context(), sink)
 	if EventSinkFromContext(ctx) != NodeEventSink(sink) {
 		t.Error("EventSinkFromContext did not return the installed sink")
 	}
@@ -318,7 +317,7 @@ func TestEventSinkThroughShim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.InvokeStream(context.Background(), map[string]any{}, Options{}, sink); err != nil {
+	if _, err := cg.InvokeStream(t.Context(), map[string]any{}, Options{}, sink); err != nil {
 		t.Fatalf("InvokeStream() error = %v", err)
 	}
 

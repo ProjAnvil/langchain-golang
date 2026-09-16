@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +44,7 @@ func TestSummarizationMiddlewareDefaultKeepBelowRetention(t *testing.T) {
 	})
 	middleware.Trigger = []TriggerClause{{Messages: 1}}
 	middleware.Keep = KeepPolicy{} // no policy: DefaultMessagesToKeep fallback
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		messages.Human("one"), messages.Human("two"),
 	}})
 	if err != nil || update != nil {
@@ -61,7 +60,7 @@ func TestToolCallLimitMiddlewareNoMatchingCalls(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "calc"}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update when no calls match: %#v %v", update, err)
 	}
@@ -73,7 +72,7 @@ func TestToolCallLimitMiddlewareMissingMessagesKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new middleware: %v", err)
 	}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"other": 1})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"other": 1})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without messages key: %#v %v", update, err)
 	}
@@ -109,7 +108,7 @@ func TestPIIMiddlewareBeforeModelSkipsEmptyToolContent(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "lookup"}}
-	update, err := middleware.BeforeModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
 		ai,
 		messages.Tool("1", ""),
 	}})
@@ -129,7 +128,7 @@ func TestPIIMiddlewareAfterModelBlockErrorOnInvalidToolCallArgs(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.InvalidToolCalls = []messages.ToolCall{{ID: "1", Name: "send", Args: map[string]any{"to": "user@example.com"}}}
-	if _, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}}); err == nil {
+	if _, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}}); err == nil {
 		t.Fatal("expected PIIDetectionError from invalid tool call args")
 	}
 }
@@ -139,7 +138,7 @@ func TestShellExecutionPolicyRunnerOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "printf ok", false)
+	result, err := middleware.Run(t.Context(), "printf ok", false)
 	if err != nil || result.Output != "ok" {
 		t.Fatalf("run mismatch: %#v %v", result, err)
 	}
@@ -156,7 +155,7 @@ func TestShellRunWithStateRestartSpawnError(t *testing.T) {
 	}
 	state := map[string]any{}
 	state[ShellSessionResourcesKey] = &ShellSessionResources{WorkspaceRoot: middleware.WorkspaceRoot}
-	if _, err := middleware.RunWithState(context.Background(), state, "", true); err == nil ||
+	if _, err := middleware.RunWithState(t.Context(), state, "", true); err == nil ||
 		!strings.Contains(err.Error(), "startup command") {
 		t.Fatalf("expected restart spawn error, got %v", err)
 	}
@@ -171,7 +170,7 @@ func TestShellPersistentSessionStartFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	if _, err := middleware.Run(context.Background(), "printf hi", false); err == nil ||
+	if _, err := middleware.Run(t.Context(), "printf hi", false); err == nil ||
 		!strings.Contains(err.Error(), "start persistent shell") {
 		t.Fatalf("expected persistent start error, got %v", err)
 	}
@@ -190,7 +189,7 @@ func TestShellPersistentSessionRedactionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	if _, err := middleware.Run(context.Background(), "echo user@example.com", false); err == nil {
+	if _, err := middleware.Run(t.Context(), "echo user@example.com", false); err == nil {
 		t.Fatal("expected persistent redaction block error")
 	}
 	middleware.stopPersistentSession(5 * time.Second)
@@ -199,7 +198,7 @@ func TestShellPersistentSessionRedactionError(t *testing.T) {
 func TestShellSessionExecuteDefaultTimeout(t *testing.T) {
 	s := newStartedSession(t)
 	// A non-positive timeout falls back to the 30s default.
-	r, err := s.Execute(context.Background(), "echo ok", 0)
+	r, err := s.Execute(t.Context(), "echo ok", 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -212,7 +211,7 @@ func TestShellSessionExecuteOutputBeforeEOF(t *testing.T) {
 	s := newStartedSession(t)
 	// The shell prints output and then exits without a done marker; the
 	// buffered output is still returned.
-	r, err := s.Execute(context.Background(), "echo partial; exit", 10*time.Second)
+	r, err := s.Execute(t.Context(), "echo partial; exit", 10*time.Second)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +58,7 @@ func TestInvokeStructured_FunctionCalling(t *testing.T) {
 	}, "temperature", "condition")
 	sch["title"] = "weather_schema"
 
-	resp, err := model.InvokeStructured(context.Background(), []messages.Message{messages.Human("weather?")}, sch)
+	resp, err := model.InvokeStructured(t.Context(), []messages.Message{messages.Human("weather?")}, sch)
 	if err != nil {
 		t.Fatalf("InvokeStructured: %v", err)
 	}

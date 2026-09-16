@@ -1,12 +1,13 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -339,10 +340,7 @@ func (s *InMemoryStore) Search(ctx context.Context, namespacePrefix []string, op
 	if limit <= 0 {
 		limit = 10
 	}
-	offset := opts.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(opts.Offset, 0)
 
 	// Python embeds every search query up front (_embed_search_queries),
 	// before filtering and even when no item ends up matching, so an embedder
@@ -401,12 +399,11 @@ type searchCandidate struct {
 // random, so this port pins a stable, testable ordering), then offset/limit
 // pagination. All scores are zero.
 func searchUnranked(picks []searchCandidate, offset, limit int) []SearchItem {
-	sort.Slice(picks, func(i, j int) bool {
-		a, b := picks[i].item, picks[j].item
-		if c := strings.Compare(joinNS(a.Namespace), joinNS(b.Namespace)); c != 0 {
-			return c < 0
-		}
-		return a.Key < b.Key
+	slices.SortFunc(picks, func(a, b searchCandidate) int {
+		return cmp.Or(
+			strings.Compare(joinNS(a.item.Namespace), joinNS(b.item.Namespace)),
+			cmp.Compare(a.item.Key, b.item.Key),
+		)
 	})
 	if offset >= len(picks) {
 		return []SearchItem{}
@@ -451,15 +448,12 @@ func searchRanked(picks []searchCandidate, queryVec []float64, offset, limit int
 		}
 		ranked = append(ranked, scored{score: best, item: p.item})
 	}
-	sort.Slice(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
-		}
-		a, b := ranked[i].item, ranked[j].item
-		if c := strings.Compare(joinNS(a.Namespace), joinNS(b.Namespace)); c != 0 {
-			return c < 0
-		}
-		return a.Key < b.Key
+	slices.SortFunc(ranked, func(a, b scored) int {
+		return cmp.Or(
+			cmp.Compare(b.score, a.score),
+			strings.Compare(joinNS(a.item.Namespace), joinNS(b.item.Namespace)),
+			cmp.Compare(a.item.Key, b.item.Key),
+		)
 	})
 
 	var kept []scored
@@ -471,12 +465,11 @@ func searchRanked(picks []searchCandidate, queryVec []float64, offset, limit int
 		kept = append(kept, window...)
 	}
 	if len(kept) < limit && len(scoreless) > 0 {
-		sort.Slice(scoreless, func(i, j int) bool {
-			a, b := scoreless[i], scoreless[j]
-			if c := strings.Compare(joinNS(a.Namespace), joinNS(b.Namespace)); c != 0 {
-				return c < 0
-			}
-			return a.Key < b.Key
+		slices.SortFunc(scoreless, func(a, b *Item) int {
+			return cmp.Or(
+				strings.Compare(joinNS(a.Namespace), joinNS(b.Namespace)),
+				cmp.Compare(a.Key, b.Key),
+			)
 		})
 		n := limit - len(kept)
 		if n > len(scoreless) {
@@ -516,7 +509,7 @@ func cosineSimilarity(a, b []float64) float64 {
 		n = len(b)
 	}
 	var dot, normA, normB float64
-	for i := 0; i < n; i++ {
+	for i := range n {
 		dot += a[i] * b[i]
 	}
 	for _, x := range a {
@@ -543,10 +536,7 @@ func (s *InMemoryStore) ListNamespaces(_ context.Context, opts ListNamespacesOpt
 	if limit <= 0 {
 		limit = 100
 	}
-	offset := opts.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(opts.Offset, 0)
 
 	s.mu.RLock()
 	// Collect distinct namespaces (one per non-empty data bucket) and apply
@@ -564,10 +554,7 @@ func (s *InMemoryStore) ListNamespaces(_ context.Context, opts ListNamespacesOpt
 		}
 		key := ns
 		if opts.MaxDepth != nil {
-			d := *opts.MaxDepth
-			if d < 0 {
-				d = 0
-			}
+			d := max(*opts.MaxDepth, 0)
 			if d < len(ns) {
 				key = ns[:d]
 			}
@@ -582,8 +569,8 @@ func (s *InMemoryStore) ListNamespaces(_ context.Context, opts ListNamespacesOpt
 	}
 	// Deterministic order: Python sorts the (truncated) namespace tuples
 	// lexicographically; joinNS comparison reproduces that element-wise.
-	sort.Slice(namespaces, func(i, j int) bool {
-		return strings.Compare(joinNS(namespaces[i]), joinNS(namespaces[j])) < 0
+	slices.SortFunc(namespaces, func(a, b []string) int {
+		return strings.Compare(joinNS(a), joinNS(b))
 	})
 
 	if offset >= len(namespaces) {

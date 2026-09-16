@@ -30,7 +30,7 @@ func TestEntrypointCachePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	v, err := e.Invoke(ctx, 5, graph.Options{})
 	if err != nil || v != 10 {
@@ -73,8 +73,8 @@ func TestEntrypointCachePolicyWithoutBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
-	for i := 0; i < 2; i++ {
-		if _, err := e.Invoke(context.Background(), 5, graph.Options{}); err != nil {
+	for i := range 2 {
+		if _, err := e.Invoke(t.Context(), 5, graph.Options{}); err != nil {
 			t.Fatalf("Invoke %d: %v", i, err)
 		}
 	}
@@ -103,7 +103,7 @@ func TestEntrypointTimeout(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 	start := time.Now()
-	_, err = e.Invoke(context.Background(), 1, graph.Options{})
+	_, err = e.Invoke(t.Context(), 1, graph.Options{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Invoke error = %v, want context.DeadlineExceeded", err)
 	}
@@ -146,14 +146,14 @@ func TestEntrypointContextSchema(t *testing.T) {
 
 	// No context attached → rt.Context is nil → the nil-tolerant schema sees
 	// an empty map and fails with the missing-key error.
-	_, err = e.Invoke(context.Background(), 1, graph.Options{})
+	_, err = e.Invoke(t.Context(), 1, graph.Options{})
 	if err == nil || !strings.Contains(err.Error(), `missing required key "model"`) {
 		t.Fatalf("Invoke without context: error = %v, want context_schema validation failure", err)
 	}
 
 	// Valid context attached via runtime.ContextWithValues → runs, rt.Context
 	// carries the values (buildRuntime surfaces them, graph.go:1777-1779).
-	ctx := runtime.ContextWithValues(context.Background(), map[string]any{"model": "m1"})
+	ctx := runtime.ContextWithValues(t.Context(), map[string]any{"model": "m1"})
 	v, err := e.Invoke(ctx, 3, graph.Options{})
 	if err != nil || v != 3 {
 		t.Fatalf("Invoke with valid context = (%v, %v), want (3, nil)", v, err)
@@ -173,7 +173,7 @@ func TestEntrypointContextSchemaNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
-	if v, err := e.Invoke(context.Background(), 9, graph.Options{}); err != nil || v != 9 {
+	if v, err := e.Invoke(t.Context(), 9, graph.Options{}); err != nil || v != 9 {
 		t.Fatalf("Invoke = (%v, %v), want (9, nil)", v, err)
 	}
 }
@@ -203,10 +203,10 @@ func TestEntrypointFinalOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
-	if _, err := e.Invoke(context.Background(), "abc", graph.Options{}); err == nil {
+	if _, err := e.Invoke(t.Context(), "abc", graph.Options{}); err == nil {
 		t.Fatal("Invoke without context: error = nil, want context_schema failure")
 	}
-	ctx := runtime.ContextWithValues(context.Background(), map[string]any{"k": "v"})
+	ctx := runtime.ContextWithValues(t.Context(), map[string]any{"k": "v"})
 	v, err := e.Invoke(ctx, "abc", graph.Options{})
 	if err != nil || v != 3 {
 		t.Fatalf("Invoke = (%v, %v), want (3, nil)", v, err)
@@ -247,7 +247,7 @@ func TestEntrypointRetryDefaultsToTasks(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	v, err := e.Invoke(context.Background(), 5, graph.Options{})
+	v, err := e.Invoke(t.Context(), 5, graph.Options{})
 	if err != nil || v != 10 {
 		t.Fatalf("Invoke = (%v, %v), want (10, nil)", v, err)
 	}
@@ -282,7 +282,7 @@ func TestTaskRetryOverridesEntrypointDefault(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.Invoke(context.Background(), 5, graph.Options{})
+	_, err = e.Invoke(t.Context(), 5, graph.Options{})
 	if err == nil {
 		t.Fatal("Invoke error = nil, want the task's error")
 	}
@@ -309,7 +309,7 @@ func TestEntrypointRetriesEntrypointFunction(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	v, err := e.Invoke(context.Background(), 5, graph.Options{})
+	v, err := e.Invoke(t.Context(), 5, graph.Options{})
 	if err != nil || v != 10 {
 		t.Fatalf("Invoke = (%v, %v), want (10, nil)", v, err)
 	}

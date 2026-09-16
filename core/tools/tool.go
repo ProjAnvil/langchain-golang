@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -297,10 +298,7 @@ func CreateRetrieverTool(
 	if retriever == nil {
 		return Func{}, fmt.Errorf("retriever is required")
 	}
-	separator := opts.DocumentSeparator
-	if separator == "" {
-		separator = "\n\n"
-	}
+	separator := cmp.Or(opts.DocumentSeparator, "\n\n")
 	formatDocument := opts.FormatDocument
 	if formatDocument == nil {
 		formatDocument = func(doc documents.Document) string { return doc.PageContent }

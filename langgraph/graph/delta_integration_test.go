@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -54,7 +53,7 @@ func deltaGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
 // only the keys that changed.
 func TestStreamDeltaMode(t *testing.T) {
 	cg := deltaGraph(t)
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{},
 		StreamOptions{Modes: []StreamMode{StreamDelta}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -88,7 +87,7 @@ func TestStreamDeltaMode(t *testing.T) {
 // together; each emits independently.
 func TestStreamDeltaValuesCoexist(t *testing.T) {
 	cg := deltaGraph(t)
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{},
 		StreamOptions{Modes: []StreamMode{StreamValues, StreamDelta}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -116,7 +115,7 @@ func TestStreamDeltaValuesCoexist(t *testing.T) {
 func TestDeltaChannelSnapshotReconstruction(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraph(t, WithCheckpointer(saver))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	result, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
@@ -149,7 +148,7 @@ func TestDeltaChannelSnapshotReconstruction(t *testing.T) {
 func TestDeltaChannelGetStateHistory(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraph(t, WithCheckpointer(saver))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -177,7 +176,7 @@ func TestDeltaChannelGetStateHistory(t *testing.T) {
 func TestDeltaChannelUpdateState(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraph(t, WithCheckpointer(saver))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -209,7 +208,7 @@ func TestDeltaChannelUpdateState(t *testing.T) {
 func TestDeltaChannelSnapshotUnwrapping(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraph(t, WithCheckpointer(saver))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)

@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +22,7 @@ func TestAzureEmbeddingsEmbedDocuments(t *testing.T) {
 	e := NewAzureEmbeddings(server.URL, "emb-dep", "2024-01-01", "az-key",
 		modelconfig.WithModel("text-embedding-3-small"),
 	)
-	vectors, err := e.EmbedDocuments(context.Background(), []string{"hello"})
+	vectors, err := e.EmbedDocuments(t.Context(), []string{"hello"})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -49,7 +48,7 @@ func TestAzureTextModelInvoke(t *testing.T) {
 	m := NewAzureTextModel(server.URL, "txt-dep", "2024-01-01", "az-key",
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	out, err := m.Invoke(context.Background(), "prompt")
+	out, err := m.Invoke(t.Context(), "prompt")
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -72,7 +71,7 @@ func TestAzureChatModelStream(t *testing.T) {
 	defer server.Close()
 
 	m := NewAzureChatModel(server.URL, "dep", "2024-01-01", "az-key")
-	stream, err := m.Stream(context.Background(), []messages.Message{messages.Human("x")})
+	stream, err := m.Stream(t.Context(), []messages.Message{messages.Human("x")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -80,7 +79,7 @@ func TestAzureChatModelStream(t *testing.T) {
 
 	var got []string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -104,7 +103,7 @@ func TestAzureChatModelADTokenAuth(t *testing.T) {
 	defer server.Close()
 
 	m := NewAzureChatModelWithADToken(server.URL, "dep", "2024-01-01", "ad-token-123")
-	if _, err := m.Invoke(context.Background(), []messages.Message{messages.Human("x")}); err != nil {
+	if _, err := m.Invoke(t.Context(), []messages.Message{messages.Human("x")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotAuth != "Bearer ad-token-123" {
@@ -129,7 +128,7 @@ func TestAzureEmbeddingsADTokenAuth(t *testing.T) {
 	e := NewAzureEmbeddingsWithADToken(server.URL, "emb-dep", "2024-01-01", "ad-token-123",
 		modelconfig.WithModel("text-embedding-3-small"),
 	)
-	if _, err := e.EmbedDocuments(context.Background(), []string{"hello"}); err != nil {
+	if _, err := e.EmbedDocuments(t.Context(), []string{"hello"}); err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
 	if gotAuth != "Bearer ad-token-123" {
@@ -152,7 +151,7 @@ func TestAzureEmbeddingsADTokenFromEnv(t *testing.T) {
 	defer server.Close()
 
 	e := NewAzureEmbeddingsWithADToken(server.URL, "emb-dep", "2024-01-01", "")
-	if _, err := e.EmbedDocuments(context.Background(), []string{"hello"}); err != nil {
+	if _, err := e.EmbedDocuments(t.Context(), []string{"hello"}); err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
 	if gotAuth != "Bearer env-ad-token" {
@@ -174,7 +173,7 @@ func TestAzureTextModelADTokenAuth(t *testing.T) {
 	m := NewAzureTextModelWithADToken(server.URL, "txt-dep", "2024-01-01", "ad-token-123",
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	if _, err := m.Invoke(context.Background(), "prompt"); err != nil {
+	if _, err := m.Invoke(t.Context(), "prompt"); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotAuth != "Bearer ad-token-123" {

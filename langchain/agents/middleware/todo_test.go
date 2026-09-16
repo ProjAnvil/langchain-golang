@@ -17,7 +17,7 @@ func TestTodoListMiddlewareWrapModelCallAddsSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		if request.SystemMessage == nil || len(request.SystemMessage.ContentBlocks) != 1 {
 			t.Fatalf("system message mismatch: %#v", request.SystemMessage)
 		}
@@ -38,7 +38,7 @@ func TestTodoListMiddlewareRejectsParallelWriteTodos(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: WriteTodosToolName}, {ID: "2", Name: WriteTodosToolName}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}

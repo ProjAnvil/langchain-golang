@@ -77,7 +77,7 @@ func TestChatModelStreamRequestMarshalError(t *testing.T) {
 		modelconfig.WithBaseURL("http://localhost:1"),
 		modelconfig.WithExtra(topKKey, make(chan int)),
 	)
-	_, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected marshal error")
 	}
@@ -85,7 +85,7 @@ func TestChatModelStreamRequestMarshalError(t *testing.T) {
 
 func TestChatModelStreamInvalidBaseURL(t *testing.T) {
 	model := NewChatModel(modelconfig.WithBaseURL("http://invalid host"))
-	_, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected request construction error")
 	}
@@ -97,7 +97,7 @@ func TestChatModelStreamTransportError(t *testing.T) {
 	server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(url))
-	_, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected transport error")
 	}
@@ -113,7 +113,7 @@ func TestChatModelStreamEndsWithoutDoneChunk(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -124,7 +124,7 @@ func TestChatModelStreamEndsWithoutDoneChunk(t *testing.T) {
 
 	var content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -149,7 +149,7 @@ func TestChatModelStreamEndsWithoutDoneChunk(t *testing.T) {
 	}
 
 	// Next after the stream is done keeps reporting completion.
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("next after done: ok=%v err=%v", ok, err)
 	}
 }
@@ -163,7 +163,7 @@ func TestChatModelStreamNextWithCanceledContext(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -195,7 +195,7 @@ func TestChatModelStreamScannerError(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -224,7 +224,7 @@ func TestChatModelStreamReasoningLevelString(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		WithReasoning("low"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestChatModelStreamReasoningLevelString(t *testing.T) {
 
 	var reasoning string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -261,7 +261,7 @@ func TestChatModelStreamReasoningFalseStringDisablesThinking(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		WithReasoning("false"),
 	)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestChatModelStreamReasoningFalseStringDisablesThinking(t *testing.T) {
 	var reasoning string
 	var content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -337,7 +337,7 @@ func TestChatModelStreamProtocolEmitFailures(t *testing.T) {
 			}
 			model := NewChatModel(opts...)
 			stream, err := model.Stream(
-				context.Background(),
+				t.Context(),
 				[]messages.Message{messages.Human("hi")},
 				runnables.WithCallbacks(callbacks.NewManager(tc.handler)),
 			)
@@ -382,7 +382,7 @@ func TestChatModelStreamChunkEmitFailures(t *testing.T) {
 			}
 			model := NewChatModel(opts...)
 			stream, err := model.Stream(
-				context.Background(),
+				t.Context(),
 				[]messages.Message{messages.Human("hi")},
 				runnables.WithCallbacks(callbacks.NewManager(
 					failOnKindHandler{kind: callbacks.EventChatModelStream},
@@ -410,7 +410,7 @@ func TestChatModelStreamFinalizeErrorAtEOF(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(
 			failOnProtocolHandler{event: streamevents.EventContentBlockFinish, index: textBlockIndex},

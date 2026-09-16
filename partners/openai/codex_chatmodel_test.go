@@ -37,7 +37,7 @@ func TestCodexChatModelBatch(t *testing.T) {
 	defer server.Close()
 
 	model := codexTestModel(server, freshCodexProvider())
-	outputs, err := model.Batch(context.Background(), [][]messages.Message{
+	outputs, err := model.Batch(t.Context(), [][]messages.Message{
 		{messages.Human("one")},
 		{messages.Human("two")},
 	})
@@ -51,12 +51,12 @@ func TestCodexChatModelBatch(t *testing.T) {
 
 func TestCodexChatModelStreamIsEmpty(t *testing.T) {
 	model := NewCodexChatModel("acct-123", freshCodexProvider(), modelconfig.WithModel("gpt-test"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected empty stream, ok=%v err=%v", ok, err)
 	}
 }
@@ -93,7 +93,7 @@ func TestCodexChatModelBindTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BindTools: %v", err)
 	}
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	toolsList, ok := gotBody["tools"].([]any)
@@ -116,7 +116,7 @@ func TestCodexChatModelNilProviderSendsNoAuthHeader(t *testing.T) {
 	defer server.Close()
 
 	model := codexTestModel(server, nil)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotAuth != "" {
@@ -137,7 +137,7 @@ func TestCodexChatModelTokenRefreshError(t *testing.T) {
 	}, refreshServer.URL, "client-1")
 
 	model := NewCodexChatModel("acct-123", provider, modelconfig.WithModel("gpt-test"))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil || !strings.Contains(err.Error(), "oauth refresh") {
 		t.Fatalf("expected refresh error, got %v", err)
 	}

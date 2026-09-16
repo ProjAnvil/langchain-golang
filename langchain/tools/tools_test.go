@@ -14,7 +14,7 @@ func TestV1ToolsExportCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := tool.Invoke(context.Background(), map[string]any{"x": "ok"})
+	got, err := tool.Invoke(t.Context(), map[string]any{"x": "ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestV1ToolsExportSimpleAndStructured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := structured.Invoke(context.Background(), map[string]any{})
+	got, err := structured.Invoke(t.Context(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}

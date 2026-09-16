@@ -17,7 +17,7 @@ func TestTodoListMiddlewareToolInvocation(t *testing.T) {
 	if len(middleware.Tools) != 1 || middleware.Tools[0].Name() != WriteTodosToolName {
 		t.Fatalf("tools mismatch: %#v", middleware.Tools)
 	}
-	result, err := middleware.Tools[0].Invoke(context.Background(), map[string]any{
+	result, err := middleware.Tools[0].Invoke(t.Context(), map[string]any{
 		"todos": []any{map[string]any{"content": "task", "status": "pending"}},
 	})
 	if err != nil {
@@ -39,7 +39,7 @@ func TestWriteTodosToolReturnsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new write_todos tool: %v", err)
 	}
-	result, err := tool.Invoke(context.Background(), map[string]any{
+	result, err := tool.Invoke(t.Context(), map[string]any{
 		"todos": []any{
 			map[string]any{"content": "step one", "status": "completed"},
 			map[string]any{"content": "step two", "status": "in_progress"},
@@ -76,7 +76,7 @@ func TestTodoListMiddlewareWrapModelCallWithoutSystemMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if req.SystemMessage == nil {
 			t.Fatal("expected system message to be created")
 		}
@@ -99,7 +99,7 @@ func TestTodoListMiddlewareWrapModelCallAppendsToExistingSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if req.SystemMessage == nil || req.SystemMessage.Content != "base instructions" {
 			t.Fatalf("base system content should be preserved: %#v", req.SystemMessage)
 		}
@@ -126,7 +126,7 @@ func TestTodoListMiddlewareWrapModelCallDefaultPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if got := req.SystemPromptText(); !strings.Contains(got, "write_todos") {
 			t.Fatalf("default prompt mismatch: %q", got)
 		}
@@ -144,13 +144,13 @@ func TestTodoListMiddlewareAfterModel(t *testing.T) {
 	}
 
 	// No messages: nil update.
-	update, err := middleware.AfterModel(context.Background(), map[string]any{})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without messages: %#v %v", update, err)
 	}
 
 	// AI message without tool calls: nil update.
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{messages.AI("hi")}})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{messages.AI("hi")}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without tool calls: %#v %v", update, err)
 	}
@@ -158,7 +158,7 @@ func TestTodoListMiddlewareAfterModel(t *testing.T) {
 	// A single write_todos call is fine.
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: WriteTodosToolName}}
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update for a single call: %#v %v", update, err)
 	}
@@ -169,7 +169,7 @@ func TestTodoListMiddlewareAfterModel(t *testing.T) {
 		{ID: "2", Name: WriteTodosToolName},
 		{ID: "3", Name: "search"},
 	}
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}

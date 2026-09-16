@@ -49,7 +49,7 @@ func TestWrapModelCallCommandUpdateAppliedToState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestWrapModelCallCommandRoutingNotSupported(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: create agent: %v", tc.name, err)
 		}
-		_, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+		_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 		if err == nil || !strings.Contains(err.Error(), tc.wantSub) ||
 			!strings.Contains(err.Error(), "wrap_model_call") {
 			t.Fatalf("%s: expected unsupported-command error containing %q, got %v", tc.name, tc.wantSub, err)
@@ -105,7 +105,7 @@ func TestWrapModelCallCommandMessagesUpdateFollowsPythonOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestWrapModelCallCommandUpdateAppliedStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	stream, err := agent.StreamEvents(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream events: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestWrapModelCallCommandMultiLayerOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestWrapModelCallCommandAppliedOnStructuredOutputPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("weather in Tokyo?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

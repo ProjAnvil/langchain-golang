@@ -98,7 +98,7 @@ func TestStaticGetRelevantDocuments(t *testing.T) {
 		documents.New("two", nil),
 	}}
 
-	docs, err := r.GetRelevantDocuments(context.Background(), "ignored")
+	docs, err := r.GetRelevantDocuments(t.Context(), "ignored")
 	if err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestStaticGetRelevantDocuments(t *testing.T) {
 
 	// Returned documents must be defensive copies.
 	docs[0].PageContent = "mutated"
-	again, err := r.GetRelevantDocuments(context.Background(), "ignored")
+	again, err := r.GetRelevantDocuments(t.Context(), "ignored")
 	if err != nil {
 		t.Fatalf("retrieve again: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestStaticGetRelevantDocuments(t *testing.T) {
 	}
 
 	empty := Static{}
-	docs, err = empty.GetRelevantDocuments(context.Background(), "q")
+	docs, err = empty.GetRelevantDocuments(t.Context(), "q")
 	if err != nil {
 		t.Fatalf("empty retrieve: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestStaticGetRelevantDocuments(t *testing.T) {
 		t.Fatalf("empty docs: got %d want 0", len(docs))
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := r.GetRelevantDocuments(ctx, "q"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled ctx: got %v want context.Canceled", err)
@@ -135,7 +135,7 @@ func TestStaticGetRelevantDocuments(t *testing.T) {
 func TestNewVectorStoreRetrieverDefaultK(t *testing.T) {
 	store := &fakeStore{}
 	r := NewVectorStoreRetriever(store, 0)
-	if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+	if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
 	if store.simK != 4 {
@@ -143,7 +143,7 @@ func TestNewVectorStoreRetrieverDefaultK(t *testing.T) {
 	}
 
 	r = NewVectorStoreRetriever(store, -3)
-	if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+	if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
 	if store.simK != 4 {
@@ -155,20 +155,20 @@ func TestVectorStoreRetrieverGetRelevantDocumentsErrors(t *testing.T) {
 	store := &fakeStore{}
 	r := NewVectorStoreRetriever(store, 2)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := r.GetRelevantDocuments(ctx, "q"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled ctx: got %v want context.Canceled", err)
 	}
 
 	nilStore := NewVectorStoreRetriever(nil, 2)
-	if _, err := nilStore.GetRelevantDocuments(context.Background(), "q"); err == nil ||
+	if _, err := nilStore.GetRelevantDocuments(t.Context(), "q"); err == nil ||
 		!strings.Contains(err.Error(), "vector store is required") {
 		t.Fatalf("nil store: got %v", err)
 	}
 
 	bogus := VectorStoreRetriever{store: store, searchType: "bogus"}
-	_, err := bogus.GetRelevantDocuments(context.Background(), "q")
+	_, err := bogus.GetRelevantDocuments(t.Context(), "q")
 	if err == nil || !strings.Contains(err.Error(), `search_type of bogus not allowed`) {
 		t.Fatalf("bogus search type: got %v", err)
 	}
@@ -176,7 +176,7 @@ func TestVectorStoreRetrieverGetRelevantDocumentsErrors(t *testing.T) {
 	wantErr := errors.New("boom")
 	failStore := &fakeStore{simErr: wantErr}
 	r = NewVectorStoreRetriever(failStore, 1)
-	if _, err := r.GetRelevantDocuments(context.Background(), "q"); !errors.Is(err, wantErr) {
+	if _, err := r.GetRelevantDocuments(t.Context(), "q"); !errors.Is(err, wantErr) {
 		t.Fatalf("store error: got %v want %v", err, wantErr)
 	}
 }
@@ -189,7 +189,7 @@ func TestNewVectorStoreRetrieverWithOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+		if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
 		if store.simK != 2 {
@@ -202,7 +202,7 @@ func TestNewVectorStoreRetrieverWithOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+		if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
 		if store.simK != 3 {
@@ -218,7 +218,7 @@ func TestNewVectorStoreRetrieverWithOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+		if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
 		if store.simK != 5 {
@@ -278,7 +278,7 @@ func TestAsRetriever(t *testing.T) {
 	if err != nil {
 		t.Fatalf("as retriever: %v", err)
 	}
-	if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+	if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 		t.Fatalf("retrieve: %v", err)
 	}
 	if store.simK != 4 {
@@ -305,7 +305,7 @@ func TestVectorStoreRetrieverMMR(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		docs, err := r.GetRelevantDocuments(context.Background(), "q")
+		docs, err := r.GetRelevantDocuments(t.Context(), "q")
 		if err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
@@ -329,7 +329,7 @@ func TestVectorStoreRetrieverMMR(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+		if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
 		if store.mmrK != 2 || store.mmrFetchK != 20 || store.mmrLambdaMult != 0.5 {
@@ -344,7 +344,7 @@ func TestVectorStoreRetrieverMMR(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		_, err = r.GetRelevantDocuments(context.Background(), "q")
+		_, err = r.GetRelevantDocuments(t.Context(), "q")
 		if err == nil || !strings.Contains(err.Error(), "does not support mmr search") {
 			t.Fatalf("got %v", err)
 		}
@@ -357,14 +357,14 @@ func TestVectorStoreRetrieverMMR(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		if _, err := r.GetRelevantDocuments(context.Background(), "q"); !errors.Is(err, wantErr) {
+		if _, err := r.GetRelevantDocuments(t.Context(), "q"); !errors.Is(err, wantErr) {
 			t.Fatalf("got %v want %v", err, wantErr)
 		}
 	})
 
 	t.Run("in-memory store", func(t *testing.T) {
 		store := vectorstores.NewInMemory(embeddings.NewFake(32))
-		_, err := store.AddDocuments(context.Background(), []documents.Document{
+		_, err := store.AddDocuments(t.Context(), []documents.Document{
 			documents.New("alpha beta", nil),
 			documents.New("alpha gamma", nil),
 			documents.New("delta epsilon", nil),
@@ -376,7 +376,7 @@ func TestVectorStoreRetrieverMMR(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		docs, err := r.GetRelevantDocuments(context.Background(), "alpha")
+		docs, err := r.GetRelevantDocuments(t.Context(), "alpha")
 		if err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
@@ -399,7 +399,7 @@ func TestVectorStoreRetrieverSimilarityScoreThreshold(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		docs, err := r.GetRelevantDocuments(context.Background(), "q")
+		docs, err := r.GetRelevantDocuments(t.Context(), "q")
 		if err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
@@ -423,7 +423,7 @@ func TestVectorStoreRetrieverSimilarityScoreThreshold(t *testing.T) {
 			k:          2,
 			searchType: searchTypeSimilarityThreshold,
 		}
-		if _, err := r.GetRelevantDocuments(context.Background(), "q"); err != nil {
+		if _, err := r.GetRelevantDocuments(t.Context(), "q"); err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}
 		if store.gotThreshold != nil {
@@ -441,7 +441,7 @@ func TestVectorStoreRetrieverSimilarityScoreThreshold(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		_, err = r.GetRelevantDocuments(context.Background(), "q")
+		_, err = r.GetRelevantDocuments(t.Context(), "q")
 		if err == nil ||
 			!strings.Contains(err.Error(), "does not support similarity_score_threshold search") {
 			t.Fatalf("got %v", err)
@@ -459,14 +459,14 @@ func TestVectorStoreRetrieverSimilarityScoreThreshold(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		if _, err := r.GetRelevantDocuments(context.Background(), "q"); !errors.Is(err, wantErr) {
+		if _, err := r.GetRelevantDocuments(t.Context(), "q"); !errors.Is(err, wantErr) {
 			t.Fatalf("got %v want %v", err, wantErr)
 		}
 	})
 
 	t.Run("in-memory store filters by threshold", func(t *testing.T) {
 		store := vectorstores.NewInMemory(embeddings.NewFake(32))
-		_, err := store.AddDocuments(context.Background(), []documents.Document{
+		_, err := store.AddDocuments(t.Context(), []documents.Document{
 			documents.New("alpha beta", nil),
 			documents.New("gamma delta", nil),
 		})
@@ -481,7 +481,7 @@ func TestVectorStoreRetrieverSimilarityScoreThreshold(t *testing.T) {
 		if err != nil {
 			t.Fatalf("options: %v", err)
 		}
-		docs, err := r.GetRelevantDocuments(context.Background(), "alpha")
+		docs, err := r.GetRelevantDocuments(t.Context(), "alpha")
 		if err != nil {
 			t.Fatalf("retrieve: %v", err)
 		}

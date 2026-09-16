@@ -56,9 +56,7 @@ func MaximalMarginalRelevance(query []float64, embeddings [][]float64, lambdaMul
 	if k <= 0 || len(embeddings) == 0 {
 		return nil
 	}
-	if lambdaMult < 0 {
-		lambdaMult = 0
-	}
+	lambdaMult = max(lambdaMult, 0)
 	if lambdaMult > 1 {
 		lambdaMult = 1
 	}

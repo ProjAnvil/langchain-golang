@@ -33,7 +33,7 @@ func TestCompressorPipelineTransformsAndCompresses(t *testing.T) {
 		New("alpha", map[string]any{"source": "unit"}),
 		New("beta", map[string]any{"source": "unit"}),
 	}
-	got, err := pipeline.CompressDocuments(context.Background(), input, "keep")
+	got, err := pipeline.CompressDocuments(t.Context(), input, "keep")
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestCompressorPipelineTransformDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pipeline: %v", err)
 	}
-	got, err := pipeline.TransformDocuments(context.Background(), []Document{New("base", nil)})
+	got, err := pipeline.TransformDocuments(t.Context(), []Document{New("base", nil)})
 	if err != nil {
 		t.Fatalf("transform: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestCompressorPipelinePropagatesErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pipeline: %v", err)
 	}
-	_, err = pipeline.CompressDocuments(context.Background(), []Document{New("x", nil)}, "q")
+	_, err = pipeline.CompressDocuments(t.Context(), []Document{New("x", nil)}, "q")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err got %v want %v", err, wantErr)
 	}
@@ -95,7 +95,7 @@ func TestCompressorPipelinePropagatesTransformerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pipeline: %v", err)
 	}
-	_, err = pipeline.CompressDocuments(context.Background(), []Document{New("x", nil)}, "q")
+	_, err = pipeline.CompressDocuments(t.Context(), []Document{New("x", nil)}, "q")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err got %v want %v", err, wantErr)
 	}
@@ -110,7 +110,7 @@ func TestCompressorPipelineCancelledContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pipeline: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err = pipeline.CompressDocuments(ctx, []Document{New("x", nil)}, "q")
 	if !errors.Is(err, context.Canceled) {
@@ -123,7 +123,7 @@ func TestCompressorPipelineCancelledContext(t *testing.T) {
 
 func TestCompressorPipelineRejectsInvalidStepAtRuntime(t *testing.T) {
 	pipeline := CompressorPipeline{Steps: []any{"bad"}}
-	_, err := pipeline.CompressDocuments(context.Background(), []Document{New("x", nil)}, "q")
+	_, err := pipeline.CompressDocuments(t.Context(), []Document{New("x", nil)}, "q")
 	if err == nil || !strings.Contains(err.Error(), "unexpected document pipeline step") {
 		t.Fatalf("expected unexpected step error, got %v", err)
 	}

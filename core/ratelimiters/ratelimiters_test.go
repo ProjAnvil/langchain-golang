@@ -8,7 +8,7 @@ import (
 
 func TestInMemoryRateLimiterNonBlockingStartsEmpty(t *testing.T) {
 	limiter := NewInMemory(1000, time.Millisecond, 1)
-	ok, err := limiter.Acquire(context.Background(), false)
+	ok, err := limiter.Acquire(t.Context(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +16,7 @@ func TestInMemoryRateLimiterNonBlockingStartsEmpty(t *testing.T) {
 		t.Fatal("first non-blocking acquire should not burst")
 	}
 	time.Sleep(2 * time.Millisecond)
-	ok, err = limiter.Acquire(context.Background(), false)
+	ok, err = limiter.Acquire(t.Context(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestNewInMemoryDefaults(t *testing.T) {
 
 func TestInMemoryRateLimiterNonBlockingCanceledContext(t *testing.T) {
 	limiter := NewInMemory(1000, time.Millisecond, 1)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	ok, err := limiter.Acquire(ctx, false)
 	if err == nil {
@@ -70,11 +70,11 @@ func TestInMemoryRateLimiterNonBlockingCanceledContext(t *testing.T) {
 func TestInMemoryRateLimiterBlockingRefill(t *testing.T) {
 	limiter := NewInMemory(50, time.Millisecond, 1)
 	// First call initializes the bucket without a token.
-	if ok, err := limiter.Acquire(context.Background(), false); err != nil || ok {
+	if ok, err := limiter.Acquire(t.Context(), false); err != nil || ok {
 		t.Fatalf("Acquire = %v, %v; want false, nil", ok, err)
 	}
 	// Blocking acquire should wait for the ticker/refill and succeed.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	ok, err := limiter.Acquire(ctx, true)
 	if err != nil || !ok {
@@ -85,10 +85,10 @@ func TestInMemoryRateLimiterBlockingRefill(t *testing.T) {
 func TestInMemoryRateLimiterBlockingCancelWhileWaiting(t *testing.T) {
 	limiter := NewInMemory(0.01, 5*time.Millisecond, 1)
 	// Consume the initial state so the blocking loop must wait.
-	if ok, err := limiter.Acquire(context.Background(), false); err != nil || ok {
+	if ok, err := limiter.Acquire(t.Context(), false); err != nil || ok {
 		t.Fatalf("Acquire = %v, %v; want false, nil", ok, err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
@@ -102,23 +102,23 @@ func TestInMemoryRateLimiterBlockingCancelWhileWaiting(t *testing.T) {
 func TestInMemoryRateLimiterBucketCap(t *testing.T) {
 	limiter := NewInMemory(1000, time.Millisecond, 1)
 	// Initialize the bucket.
-	if ok, err := limiter.Acquire(context.Background(), false); err != nil || ok {
+	if ok, err := limiter.Acquire(t.Context(), false); err != nil || ok {
 		t.Fatalf("Acquire = %v, %v; want false, nil", ok, err)
 	}
 	// Let enough time pass to accumulate far more tokens than the bucket holds.
 	time.Sleep(10 * time.Millisecond)
-	if ok, err := limiter.Acquire(context.Background(), false); err != nil || !ok {
+	if ok, err := limiter.Acquire(t.Context(), false); err != nil || !ok {
 		t.Fatalf("expected capped token, got %v, %v", ok, err)
 	}
 	// The bucket must have been capped at MaxBucketSize=1, so no second token.
-	if ok, err := limiter.Acquire(context.Background(), false); err != nil || ok {
+	if ok, err := limiter.Acquire(t.Context(), false); err != nil || ok {
 		t.Fatalf("bucket should be capped at MaxBucketSize, got %v, %v", ok, err)
 	}
 }
 
 func TestInMemoryRateLimiterContextCancel(t *testing.T) {
 	limiter := NewInMemory(0.01, time.Millisecond, 1)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	ok, err := limiter.Acquire(ctx, true)
 	if err == nil || ok {

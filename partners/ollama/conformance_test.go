@@ -41,10 +41,10 @@ func TestStandardChatModelBasics(t *testing.T) {
 			return model
 		},
 		standardtests.ChatModelCapabilities{
-			ToolCalling:    true,
-			UsageMetadata:  true,
-			Streaming:      true,
-			ImageInputs:    true,
+			ToolCalling:      true,
+			UsageMetadata:    true,
+			Streaming:        true,
+			ImageInputs:      true,
 			StructuredOutput: true,
 		},
 	)
@@ -173,10 +173,10 @@ func writeConformanceChatLine(
 		message[key] = value
 	}
 	line := map[string]any{
-		"model":     "llama3",
+		"model":      "llama3",
 		"created_at": "t1",
-		"message":   message,
-		"done":      done,
+		"message":    message,
+		"done":       done,
 	}
 	if done {
 		line["done_reason"] = "stop"

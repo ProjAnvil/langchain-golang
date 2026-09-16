@@ -11,7 +11,7 @@ import (
 
 func TestResolvedFutureValue(t *testing.T) {
 	f := resolvedFuture(42, nil, nil)
-	v, err := f.Get(context.Background())
+	v, err := f.Get(t.Context())
 	if err != nil {
 		t.Fatalf("Get error = %v, want nil", err)
 	}
@@ -23,7 +23,7 @@ func TestResolvedFutureValue(t *testing.T) {
 func TestResolvedFutureError(t *testing.T) {
 	boom := errors.New("boom")
 	f := resolvedFuture(0, boom, nil)
-	v, err := f.Get(context.Background())
+	v, err := f.Get(t.Context())
 	if !errors.Is(err, boom) {
 		t.Fatalf("Get error = %v, want boom", err)
 	}
@@ -48,14 +48,14 @@ func TestFutureGetPanicsGraphInterrupt(t *testing.T) {
 			t.Fatalf("panic value = %p, want the same pointer %p", got, gi)
 		}
 	}()
-	_, _ = f.Get(context.Background())
+	_, _ = f.Get(t.Context())
 }
 
 func TestFutureGetBlocksUntilDone(t *testing.T) {
 	f := &Future[int]{done: make(chan struct{})}
 	got := make(chan int, 1)
 	go func() {
-		v, err := f.Get(context.Background())
+		v, err := f.Get(t.Context())
 		if err != nil {
 			t.Errorf("Get error = %v, want nil", err)
 		}
@@ -94,7 +94,7 @@ func TestAwaitAllInOrder(t *testing.T) {
 	f1 := resolvedFuture(1, nil, nil)
 	f2 := resolvedFuture(2, nil, nil)
 	f3 := resolvedFuture(3, nil, nil)
-	vs, err := AwaitAll(context.Background(), f1, f2, f3)
+	vs, err := AwaitAll(t.Context(), f1, f2, f3)
 	if err != nil {
 		t.Fatalf("AwaitAll error = %v, want nil", err)
 	}
@@ -108,7 +108,7 @@ func TestAwaitAllError(t *testing.T) {
 	f1 := resolvedFuture(1, nil, nil)
 	f2 := resolvedFuture(0, boom, nil)
 	f3 := resolvedFuture(3, nil, nil)
-	if _, err := AwaitAll(context.Background(), f1, f2, f3); !errors.Is(err, boom) {
+	if _, err := AwaitAll(t.Context(), f1, f2, f3); !errors.Is(err, boom) {
 		t.Fatalf("AwaitAll error = %v, want boom", err)
 	}
 }

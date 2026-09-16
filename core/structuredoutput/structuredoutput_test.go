@@ -49,7 +49,7 @@ func TestBindJSONParsesTypedOutput(t *testing.T) {
 		t.Fatalf("bind json: %v", err)
 	}
 
-	got, err := runnable.Invoke(context.Background(), []messages.Message{
+	got, err := runnable.Invoke(t.Context(), []messages.Message{
 		messages.Human("extract person"),
 	})
 	if err != nil {
@@ -98,7 +98,7 @@ func TestBindJSONPropagatesModelError(t *testing.T) {
 		t.Fatalf("bind json: %v", err)
 	}
 
-	_, err = runnable.Invoke(context.Background(), []messages.Message{
+	_, err = runnable.Invoke(t.Context(), []messages.Message{
 		messages.Human("extract person"),
 	})
 	if !errors.Is(err, invokeErr) {
@@ -126,7 +126,7 @@ func TestBindJSONReturnsParseErrorForMalformedOutput(t *testing.T) {
 		t.Fatalf("bind json: %v", err)
 	}
 
-	_, err = runnable.Invoke(context.Background(), []messages.Message{
+	_, err = runnable.Invoke(t.Context(), []messages.Message{
 		messages.Human("extract person"),
 	})
 	if err == nil {
@@ -158,7 +158,7 @@ func TestBindJSONConfiguresModelWithArguments(t *testing.T) {
 		t.Fatalf("bind json: %v", err)
 	}
 
-	if _, err := runnable.Invoke(context.Background(), []messages.Message{
+	if _, err := runnable.Invoke(t.Context(), []messages.Message{
 		messages.Human("extract person"),
 	}); err != nil {
 		t.Fatalf("invoke: %v", err)

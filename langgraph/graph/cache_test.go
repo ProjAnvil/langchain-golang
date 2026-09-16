@@ -83,7 +83,7 @@ func TestCacheHitSkipsExecutionButAppliesWrites(t *testing.T) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := cg.Invoke(ctx, map[string]any{"x": 1})
 	if err != nil {
@@ -110,7 +110,7 @@ func TestCacheMissOnDifferentInput(t *testing.T) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.Invoke(ctx, map[string]any{"x": 1}); err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
@@ -133,7 +133,7 @@ func TestCacheTTLExpiryReexecutes(t *testing.T) {
 		runs.Add(1)
 		return map[string]any{"done": true}, nil
 	}, &CachePolicy{TTL: 20 * time.Millisecond}, checkpoint.NewInMemoryCache())
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.Invoke(ctx, map[string]any{"x": 1}); err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
@@ -153,7 +153,7 @@ func TestClearCacheForcesReexecution(t *testing.T) {
 		runs.Add(1)
 		return map[string]any{"done": true}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.Invoke(ctx, map[string]any{"x": 1}); err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
@@ -204,7 +204,7 @@ func TestCacheKeyNamespaceAndTTLUsed(t *testing.T) {
 			return types.CacheKey{Namespace: []string{"x"}, Key: "k", TTL: 2 * time.Hour}, nil
 		},
 	}, rec)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.Invoke(ctx, map[string]any{"q": 1}); err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
@@ -279,7 +279,7 @@ func TestCacheSendArgsKeyOnArg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := cg.Invoke(ctx, map[string]any{"go": true})
 	if err != nil {
@@ -330,7 +330,7 @@ func TestCacheCompletedSiblingReplayBypassesCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	res, err := cg.InvokeWithOptions(ctx, map[string]any{"q": "v"}, Options{ThreadID: "t"})
 	if err != nil {
@@ -393,7 +393,7 @@ func TestCacheInterruptResumeBypassesCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Thread "human" pauses on the in-node interrupt.
 	res, err := cg.InvokeWithOptions(ctx, map[string]any{"x": 1, "mode": "human"}, Options{ThreadID: "human"})
@@ -441,7 +441,7 @@ func TestCacheKeyErrorFailsTask(t *testing.T) {
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
 
 	// A func in state is not JSON-representable, so DefaultCacheKey fails.
-	_, err := cg.Invoke(context.Background(), map[string]any{"bad": func() {}})
+	_, err := cg.Invoke(t.Context(), map[string]any{"bad": func() {}})
 	if err == nil {
 		t.Fatalf("Invoke() error = nil, want a wrapped key-computation error")
 	}
@@ -470,7 +470,7 @@ func TestCacheCommandGotoCachedAndReplayed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := cg.Invoke(ctx, map[string]any{"x": 1})
 	if err != nil {
@@ -502,7 +502,7 @@ func TestCacheCommandGotoCachedAndReplayed(t *testing.T) {
 // and returns its chunks, failing on any run error.
 func mustStream(t *testing.T, cg *CompiledGraph, input map[string]any, modes ...StreamMode) []StreamChunk {
 	t.Helper()
-	chunks, err := collectStream(t, cg.Stream(context.Background(), input, StreamOptions{Modes: modes}))
+	chunks, err := collectStream(t, cg.Stream(t.Context(), input, StreamOptions{Modes: modes}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
@@ -566,7 +566,7 @@ func TestCacheHitEmitsNoNodeStartEnd(t *testing.T) {
 		runs.Add(1)
 		return map[string]any{"echo": state["x"]}, nil
 	}, &CachePolicy{}, checkpoint.NewInMemoryCache())
-	ctx := context.Background()
+	ctx := t.Context()
 	input := map[string]any{"x": 1}
 
 	sink := &retryRecordingSink{}
@@ -605,7 +605,7 @@ func TestCachePolicyWithoutCacheBackendUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.Invoke(ctx, map[string]any{"x": 1}); err != nil {
 		t.Fatalf("first Invoke() error = %v", err)

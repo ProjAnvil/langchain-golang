@@ -1,10 +1,12 @@
 package runnables
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/chathistory"
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -132,11 +134,7 @@ func (r RunnableWithMessageHistory) ConfigSchema() schema.Schema {
 		props[key] = schema.String("message history factory key")
 		requiredSet[key] = true
 	}
-	required := make([]string, 0, len(requiredSet))
-	for key := range requiredSet {
-		required = append(required, key)
-	}
-	sort.Strings(required)
+	required := slices.Sorted(maps.Keys(requiredSet))
 	return configurableConfigSchema(props, required...)
 }
 
@@ -202,10 +200,7 @@ func (r RunnableWithMessageHistory) prepareInput(
 func (r RunnableWithMessageHistory) inputMessages(input any) ([]messages.Message, error) {
 	value := input
 	if inputMap, ok := input.(map[string]any); ok {
-		key := r.InputMessagesKey
-		if key == "" {
-			key = mapMessageKey(inputMap, "input")
-		}
+		key := cmp.Or(r.InputMessagesKey, mapMessageKey(inputMap, "input"))
 		value = inputMap[key]
 	}
 	return asInputMessages(value)
@@ -214,10 +209,7 @@ func (r RunnableWithMessageHistory) inputMessages(input any) ([]messages.Message
 func (r RunnableWithMessageHistory) outputMessages(output any) ([]messages.Message, error) {
 	value := output
 	if outputMap, ok := output.(map[string]any); ok {
-		key := r.OutputMessagesKey
-		if key == "" {
-			key = mapMessageKey(outputMap, "output")
-		}
+		key := cmp.Or(r.OutputMessagesKey, mapMessageKey(outputMap, "output"))
 		value = outputMap[key]
 	}
 	return asOutputMessages(value)

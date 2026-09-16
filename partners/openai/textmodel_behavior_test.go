@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +26,7 @@ func TestTextModelBatch(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	outputs, err := model.Batch(context.Background(), []string{"one", "two"})
+	outputs, err := model.Batch(t.Context(), []string{"one", "two"})
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -43,17 +42,17 @@ func TestTextModelStream(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	stream, err := model.Stream(context.Background(), "prompt")
+	stream, err := model.Stream(t.Context(), "prompt")
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != "streamed" {
 		t.Fatalf("chunk = %q ok=%v err=%v", chunk, ok, err)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream end, ok=%v err=%v", ok, err)
 	}
 }
@@ -83,7 +82,7 @@ func TestTextModelRequestIncludesSamplingParams(t *testing.T) {
 		modelconfig.WithMaxTokens(16),
 		modelconfig.WithTemperature(0.3),
 	)
-	if _, err := model.Invoke(context.Background(), "prompt"); err != nil {
+	if _, err := model.Invoke(t.Context(), "prompt"); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotBody["max_tokens"] != float64(16) {
@@ -101,7 +100,7 @@ func TestTextModelNoChoicesError(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	_, err := model.Invoke(context.Background(), "prompt")
+	_, err := model.Invoke(t.Context(), "prompt")
 	if err == nil || !strings.Contains(err.Error(), "no choices") {
 		t.Fatalf("expected no choices error, got %v", err)
 	}
@@ -116,7 +115,7 @@ func TestTextModelUsesDefaultModel(t *testing.T) {
 	defer server.Close()
 
 	model := NewTextModel(modelconfig.WithBaseURL(server.URL))
-	if _, err := model.Invoke(context.Background(), "prompt"); err != nil {
+	if _, err := model.Invoke(t.Context(), "prompt"); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotBody["model"] != "gpt-3.5-turbo-instruct" {

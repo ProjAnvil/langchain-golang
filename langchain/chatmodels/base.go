@@ -1,8 +1,10 @@
 package chatmodels
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -41,12 +43,7 @@ var BuiltinProviders = map[string]ProviderInfo{
 }
 
 func BuiltinProviderNames() []string {
-	names := make([]string, 0, len(BuiltinProviders))
-	for name := range BuiltinProviders {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(BuiltinProviders))
 }
 
 func NormalizeProvider(provider string) string {
@@ -116,9 +113,7 @@ func parseModel(model string, modelProvider string) (string, string, error) {
 		}
 	}
 
-	if modelProvider == "" {
-		modelProvider = attemptInferModelProvider(model)
-	}
+	modelProvider = cmp.Or(modelProvider, attemptInferModelProvider(model))
 	if modelProvider == "" {
 		return "", "", fmt.Errorf(
 			"Unable to infer model provider for model=%q. Please specify 'model_provider' directly.\n\nSupported providers: %s",

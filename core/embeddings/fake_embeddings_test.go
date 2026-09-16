@@ -27,7 +27,7 @@ func TestFakeEmbeddingsDefaultsAndDimensions(t *testing.T) {
 func TestFakeEmbeddingsEmbedDocuments(t *testing.T) {
 	model := NewFake(8)
 
-	docs, err := model.EmbedDocuments(context.Background(), []string{"alpha beta", "alpha"})
+	docs, err := model.EmbedDocuments(t.Context(), []string{"alpha beta", "alpha"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestFakeEmbeddingsEmbedDocuments(t *testing.T) {
 		}
 	}
 	// Deterministic: same token set must produce the same vector.
-	again, err := model.EmbedDocuments(context.Background(), []string{"alpha beta"})
+	again, err := model.EmbedDocuments(t.Context(), []string{"alpha beta"})
 	if err != nil {
 		t.Fatalf("embed documents again: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestFakeEmbeddingsEmbedDocuments(t *testing.T) {
 	}
 
 	// Empty input yields an empty (but non-nil) result without error.
-	empty, err := model.EmbedDocuments(context.Background(), nil)
+	empty, err := model.EmbedDocuments(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("embed empty: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestFakeEmbeddingsContextCancellation(t *testing.T) {
 
 func TestDeterministicFakeDefaultsAndDocuments(t *testing.T) {
 	defaulted := NewDeterministicFake(0)
-	vec, err := defaulted.EmbedQuery(context.Background(), "x")
+	vec, err := defaulted.EmbedQuery(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestDeterministicFakeDefaultsAndDocuments(t *testing.T) {
 	}
 
 	model := NewDeterministicFake(6)
-	docs, err := model.EmbedDocuments(context.Background(), []string{"one", "two", "one"})
+	docs, err := model.EmbedDocuments(t.Context(), []string{"one", "two", "one"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestDeterministicFakeDefaultsAndDocuments(t *testing.T) {
 
 func TestRandomFakeDefaultsAndCancellation(t *testing.T) {
 	model := NewRandomFake(0)
-	vec, err := model.EmbedQuery(context.Background(), "x")
+	vec, err := model.EmbedQuery(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestRandomFakeDefaultsAndCancellation(t *testing.T) {
 
 func TestRandomFakeZeroValueLazilyInitializes(t *testing.T) {
 	var model RandomFakeEmbedding
-	vec, err := model.EmbedQuery(context.Background(), "x")
+	vec, err := model.EmbedQuery(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestRandomFakeZeroValueLazilyInitializes(t *testing.T) {
 	}
 
 	var sized = RandomFakeEmbedding{size: 3}
-	docs, err := sized.EmbedDocuments(context.Background(), []string{"a", "b"})
+	docs, err := sized.EmbedDocuments(t.Context(), []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestStaticEmbeddingsShortVectorListAndCancellation(t *testing.T) {
 	}
 
 	// More texts than configured vectors: extra slots stay nil.
-	docs, err := model.EmbedDocuments(context.Background(), []string{"a", "b", "c"})
+	docs, err := model.EmbedDocuments(t.Context(), []string{"a", "b", "c"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestStaticEmbeddingsShortVectorListAndCancellation(t *testing.T) {
 func TestFakeEmbeddingsNormalizeEmptyText(t *testing.T) {
 	model := NewFake(8)
 	// Text with no tokens keeps the zero vector (normalize's sum == 0 branch).
-	vec, err := model.EmbedQuery(context.Background(), "   ")
+	vec, err := model.EmbedQuery(t.Context(), "   ")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}

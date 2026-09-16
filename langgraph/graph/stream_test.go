@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"errors"
 	"iter"
 	"reflect"
@@ -55,7 +54,7 @@ func streamLinearGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
 
 func TestStreamValuesLinear(t *testing.T) {
 	cg := streamLinearGraph(t)
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Modes: []StreamMode{StreamValues}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -79,7 +78,7 @@ func TestStreamValuesLinear(t *testing.T) {
 
 func TestStreamUpdatesLinear(t *testing.T) {
 	cg := streamLinearGraph(t)
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Modes: []StreamMode{StreamUpdates}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -141,7 +140,7 @@ func projectDebug(t *testing.T, chunks []StreamChunk) []debugSeq {
 
 func TestStreamDebugLinear(t *testing.T) {
 	cg := streamLinearGraph(t, WithCheckpointer(checkpoint.NewMemorySaver()))
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Options: Options{ThreadID: "t"}, Modes: []StreamMode{StreamDebug}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -210,7 +209,7 @@ func modeSeq(chunks []StreamChunk) []string {
 
 func TestStreamMultiMode(t *testing.T) {
 	cg := streamLinearGraph(t, WithCheckpointer(checkpoint.NewMemorySaver()))
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Options: Options{ThreadID: "t"}, Modes: []StreamMode{StreamDebug, StreamValues, StreamUpdates}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -259,7 +258,7 @@ func streamFanoutInterruptGraph(t *testing.T) *CompiledGraph {
 
 func TestStreamPauseInterruptChunks(t *testing.T) {
 	cg := streamFanoutInterruptGraph(t)
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Options: Options{ThreadID: "t"}, Modes: []StreamMode{StreamUpdates, StreamValues}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -295,7 +294,7 @@ func TestStreamPauseInterruptChunks(t *testing.T) {
 
 func TestStreamResumeReplaysUpdates(t *testing.T) {
 	cg := streamFanoutInterruptGraph(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := collectStream(t, cg.Stream(ctx, map[string]any{"v": 0},
 		StreamOptions{Options: Options{ThreadID: "t"}, Modes: []StreamMode{StreamUpdates}})); err != nil {
 		t.Fatalf("initial Stream() error = %v", err)
@@ -369,7 +368,7 @@ func streamSubgraphParent(t *testing.T, opts ...CompileOption) *CompiledGraph {
 
 func TestStreamSubgraphsDroppedByDefault(t *testing.T) {
 	cg := streamSubgraphParent(t)
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Modes: []StreamMode{StreamUpdates, StreamValues}}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -386,7 +385,7 @@ func TestStreamSubgraphsDroppedByDefault(t *testing.T) {
 
 func testStreamSubgraphNamespaces(t *testing.T, cg *CompiledGraph, opts Options) {
 	t.Helper()
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Options: opts, Modes: []StreamMode{StreamUpdates, StreamValues}, Subgraphs: true}))
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
@@ -443,7 +442,7 @@ func TestStreamEarlyBreakCancels(t *testing.T) {
 	go func() {
 		defer close(done)
 		count := 0
-		for _, err := range cg.Stream(context.Background(), map[string]any{"n": int64(0)},
+		for _, err := range cg.Stream(t.Context(), map[string]any{"n": int64(0)},
 			StreamOptions{Modes: []StreamMode{StreamValues}}) {
 			if err != nil {
 				return
@@ -470,7 +469,7 @@ func TestStreamEarlyBreakCancels(t *testing.T) {
 
 func TestStreamEmptyModes(t *testing.T) {
 	cg := streamLinearGraph(t)
-	_, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0}, StreamOptions{}))
+	_, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0}, StreamOptions{}))
 	if err == nil {
 		t.Fatal("expected error for empty Modes")
 	}
@@ -478,7 +477,7 @@ func TestStreamEmptyModes(t *testing.T) {
 
 func TestStreamUnknownMode(t *testing.T) {
 	cg := streamLinearGraph(t)
-	_, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	_, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Modes: []StreamMode{StreamValues, "bogus"}}))
 	if err == nil {
 		t.Fatal("expected error for unknown StreamMode")
@@ -501,7 +500,7 @@ func TestStreamWriterAfterRunEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := collectStream(t, cg.Stream(context.Background(), map[string]any{},
+	if _, err := collectStream(t, cg.Stream(t.Context(), map[string]any{},
 		StreamOptions{Modes: []StreamMode{StreamCustom}})); err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
@@ -523,7 +522,7 @@ func TestStreamNodeError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	_, err = collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 0},
+	_, err = collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 0},
 		StreamOptions{Modes: []StreamMode{StreamValues}}))
 	if !errors.Is(err, want) {
 		t.Fatalf("Stream() error = %v, want %v", err, want)
@@ -588,7 +587,7 @@ func TestStreamTasksSendTaskInput(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{"v": 1}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{"v": 1}, StreamOptions{
 		Modes: []StreamMode{StreamTasks},
 	}))
 	if err != nil {
@@ -625,7 +624,7 @@ func TestStreamTasksNodeErrorResult(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{}, StreamOptions{
 		Modes: []StreamMode{StreamTasks, StreamDebug},
 	}))
 	if !errors.Is(err, want) {
@@ -679,7 +678,7 @@ func TestStreamTasksInterruptResult(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	chunks, err := collectStream(t, cg.Stream(context.Background(), map[string]any{}, StreamOptions{
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{}, StreamOptions{
 		Modes: []StreamMode{StreamTasks, StreamDebug},
 	}))
 	if err != nil {

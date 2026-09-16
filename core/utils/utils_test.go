@@ -22,7 +22,7 @@ func TestMergeMapsRecursive(t *testing.T) {
 
 func TestIteratorHelpers(t *testing.T) {
 	iter := NewSliceIterator([]string{"a", "b"})
-	values, err := CollectIterator(context.Background(), iter)
+	values, err := CollectIterator(t.Context(), iter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestIteratorHelpers(t *testing.T) {
 	}
 
 	values[0] = "changed"
-	again, err := CollectIterator(context.Background(), NewSliceIterator([]string{"a"}))
+	again, err := CollectIterator(t.Context(), NewSliceIterator([]string{"a"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestIteratorHelpers(t *testing.T) {
 }
 
 func TestIteratorHelpersRespectContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := CollectIterator(ctx, NewSliceIterator([]int{1}))
 	if err == nil {
@@ -50,7 +50,7 @@ func TestIteratorHelpersRespectContext(t *testing.T) {
 }
 
 func TestIteratorToChannel(t *testing.T) {
-	values, errs := IteratorToChannel(context.Background(), NewSliceIterator([]int{1, 2}), 1)
+	values, errs := IteratorToChannel(t.Context(), NewSliceIterator([]int{1, 2}), 1)
 	got := []int{}
 	for value := range values {
 		got = append(got, value)
@@ -62,13 +62,13 @@ func TestIteratorToChannel(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	_, nilErrs := IteratorToChannel[int](context.Background(), nil, 0)
+	_, nilErrs := IteratorToChannel[int](t.Context(), nil, 0)
 	if err := <-nilErrs; err == nil {
 		t.Fatal("expected nil iterator error")
 	}
 
 	// A negative buffer is normalized to unbuffered and still delivers values.
-	negValues, negErrs := IteratorToChannel(context.Background(), NewSliceIterator([]int{7}), -1)
+	negValues, negErrs := IteratorToChannel(t.Context(), NewSliceIterator([]int{7}), -1)
 	if got := <-negValues; got != 7 {
 		t.Fatalf("negative buffer values: %#v", got)
 	}
@@ -221,17 +221,17 @@ type stringerValue struct{ text string }
 func (s stringerValue) String() string { return s.text }
 
 func TestCollectIteratorNilAndError(t *testing.T) {
-	if _, err := CollectIterator[int](context.Background(), nil); err == nil {
+	if _, err := CollectIterator[int](t.Context(), nil); err == nil {
 		t.Fatal("expected nil iterator error")
 	}
 	wantErr := errIterator{err: context.DeadlineExceeded}
-	if _, err := CollectIterator(context.Background(), &wantErr); err != context.DeadlineExceeded {
+	if _, err := CollectIterator(t.Context(), &wantErr); err != context.DeadlineExceeded {
 		t.Fatalf("expected Next error to propagate, got %v", err)
 	}
 }
 
 func TestIteratorToChannelContextCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	// Unbuffered channel with no reader: the goroutine blocks on send until
 	// the context is canceled.
 	values, errs := IteratorToChannel(ctx, NewSliceIterator([]int{1, 2, 3}), 0)
@@ -246,7 +246,7 @@ func TestIteratorToChannelContextCancel(t *testing.T) {
 
 func TestIteratorToChannelNextError(t *testing.T) {
 	iter := &errIterator{err: context.DeadlineExceeded}
-	values, errs := IteratorToChannel(context.Background(), iter, 1)
+	values, errs := IteratorToChannel(t.Context(), iter, 1)
 	if err := <-errs; err != context.DeadlineExceeded {
 		t.Fatalf("expected Next error, got %v", err)
 	}

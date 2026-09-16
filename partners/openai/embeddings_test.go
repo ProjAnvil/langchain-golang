@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +43,7 @@ func TestEmbeddingsEmbedDocuments(t *testing.T) {
 		modelconfig.WithAPIKey("test-key"),
 		modelconfig.WithModel("text-embedding-3-small"),
 	)
-	vectors, err := model.EmbedDocuments(context.Background(), []string{"first", "second"})
+	vectors, err := model.EmbedDocuments(t.Context(), []string{"first", "second"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -79,7 +78,7 @@ func TestEmbeddingsUsesDefaultModel(t *testing.T) {
 	defer server.Close()
 
 	model := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	_, err := model.EmbedDocuments(context.Background(), []string{"hello"})
+	_, err := model.EmbedDocuments(t.Context(), []string{"hello"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -108,7 +107,7 @@ func TestEmbeddingsOptionalRequestParameters(t *testing.T) {
 		WithEmbeddingDimensions(256),
 		WithEmbeddingEncodingFormat("float"),
 	)
-	_, err := model.EmbedDocuments(context.Background(), []string{"hello"})
+	_, err := model.EmbedDocuments(t.Context(), []string{"hello"})
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -130,7 +129,7 @@ func TestEmbeddingsEmptyDocumentsDoesNotCallAPI(t *testing.T) {
 	defer server.Close()
 
 	model := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	vectors, err := model.EmbedDocuments(context.Background(), nil)
+	vectors, err := model.EmbedDocuments(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("embed documents: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestEmbeddingsResponseCountMismatch(t *testing.T) {
 	defer server.Close()
 
 	model := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	_, err := model.EmbedDocuments(context.Background(), []string{"first", "second"})
+	_, err := model.EmbedDocuments(t.Context(), []string{"first", "second"})
 	if err == nil {
 		t.Fatal("expected count mismatch error")
 	}
@@ -175,7 +174,7 @@ func TestEmbeddingsResponseIndexOutOfRange(t *testing.T) {
 	defer server.Close()
 
 	model := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	_, err := model.EmbedDocuments(context.Background(), []string{"only"})
+	_, err := model.EmbedDocuments(t.Context(), []string{"only"})
 	if err == nil {
 		t.Fatal("expected index error")
 	}
@@ -196,7 +195,7 @@ func TestEmbeddingsEmbedQuery(t *testing.T) {
 	defer server.Close()
 
 	model := NewEmbeddings(modelconfig.WithBaseURL(server.URL))
-	vector, err := model.EmbedQuery(context.Background(), "query")
+	vector, err := model.EmbedQuery(t.Context(), "query")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}

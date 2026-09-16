@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -483,11 +485,7 @@ func uniqueStrings(values []string) []string {
 }
 
 func mapKeys(values map[string]bool) []string {
-	out := make([]string, 0, len(values))
-	for value := range values {
-		out = append(out, value)
-	}
-	return out
+	return slices.Collect(maps.Keys(values))
 }
 
 // HashDocument returns a stable SHA-256 hash for page content and metadata.

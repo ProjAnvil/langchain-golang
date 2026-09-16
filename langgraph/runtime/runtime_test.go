@@ -35,7 +35,7 @@ func TestNewRuntimeDelegation(t *testing.T) {
 	})
 	t.Run("Value delegates", func(t *testing.T) {
 		type k struct{}
-		ctx := context.WithValue(context.Background(), k{}, "hello")
+		ctx := context.WithValue(t.Context(), k{}, "hello")
 		rt := NewRuntime(ctx)
 		if got := rt.Value(k{}); got != "hello" {
 			t.Errorf("Value() = %v, want %q", got, "hello")
@@ -46,7 +46,7 @@ func TestNewRuntimeDelegation(t *testing.T) {
 		}
 	})
 	t.Run("Cancelled", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		rt := NewRuntime(ctx)
 		cancel()
 		select {
@@ -59,7 +59,7 @@ func TestNewRuntimeDelegation(t *testing.T) {
 		}
 	})
 	t.Run("Deadline", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
 		defer cancel()
 		rt := NewRuntime(ctx)
 		dl, ok := rt.Deadline()
@@ -85,7 +85,7 @@ func TestNewRuntimeDelegation(t *testing.T) {
 // TestNewRuntimeDefaults verifies the nil defaults for StreamWriter/Heartbeat
 // and the zero values for the remaining fields.
 func TestNewRuntimeDefaults(t *testing.T) {
-	rt := NewRuntime(context.Background())
+	rt := NewRuntime(t.Context())
 	if rt.StreamWriter != nil {
 		t.Errorf("NewRuntime StreamWriter is non-nil, want nil (unset sentinel)")
 	}
@@ -111,8 +111,8 @@ func TestNewRuntimeDefaults(t *testing.T) {
 func TestMerge(t *testing.T) {
 	t.Run("OtherWinsWhenSet", func(t *testing.T) {
 		type k struct{}
-		selfCtx := context.WithValue(context.Background(), k{}, "self")
-		otherCtx := context.WithValue(context.Background(), k{}, "other")
+		selfCtx := context.WithValue(t.Context(), k{}, "self")
+		otherCtx := context.WithValue(t.Context(), k{}, "other")
 		self := NewRuntime(selfCtx).
 			Override(
 				WithRuntimeContext("self-ctx"),
@@ -140,13 +140,13 @@ func TestMerge(t *testing.T) {
 		}
 	})
 	t.Run("SelfKeepsWhenOtherUnset", func(t *testing.T) {
-		self := NewRuntime(context.Background()).
+		self := NewRuntime(t.Context()).
 			Override(
 				WithRuntimeContext("self-ctx"),
 				WithRuntimePrevious("self-prev"),
 			)
 		// other has zero-value Context/Previous and no-op writer.
-		other := NewRuntime(context.Background())
+		other := NewRuntime(t.Context())
 		merged := self.Merge(other)
 		if merged.Context != "self-ctx" {
 			t.Errorf("Context = %v, want self-ctx (other was nil)", merged.Context)
@@ -157,8 +157,8 @@ func TestMerge(t *testing.T) {
 	})
 	t.Run("NilPreviousIsKept", func(t *testing.T) {
 		// Python: previous=self.previous if other.previous is None else other.previous.
-		self := NewRuntime(context.Background()).Override(WithRuntimePrevious("self-prev"))
-		other := NewRuntime(context.Background()) // Previous nil
+		self := NewRuntime(t.Context()).Override(WithRuntimePrevious("self-prev"))
+		other := NewRuntime(t.Context()) // Previous nil
 		merged := self.Merge(other)
 		if merged.Previous != "self-prev" {
 			t.Errorf("Previous = %v, want self-prev when other's is nil", merged.Previous)
@@ -168,7 +168,7 @@ func TestMerge(t *testing.T) {
 
 // TestOverride replaces fields unconditionally.
 func TestOverride(t *testing.T) {
-	rt := NewRuntime(context.Background()).
+	rt := NewRuntime(t.Context()).
 		Override(
 			WithRuntimeContext(42),
 			WithRuntimePrevious("prev"),
@@ -189,7 +189,7 @@ func TestOverride(t *testing.T) {
 // nil-error case.
 func TestPatchExecutionInfo(t *testing.T) {
 	t.Run("NilReturnsError", func(t *testing.T) {
-		rt := NewRuntime(context.Background())
+		rt := NewRuntime(t.Context())
 		if _, err := rt.PatchExecutionInfo(WithNodeAttempt(2)); err == nil {
 			t.Fatalf("PatchExecutionInfo on nil ExecutionInfo: want error, got nil")
 		}
@@ -202,7 +202,7 @@ func TestPatchExecutionInfo(t *testing.T) {
 			NodeAttempt:          1,
 			NodeFirstAttemptTime: &first,
 		}
-		rt := NewRuntime(context.Background()).Override(WithRuntimeExecutionInfo(info))
+		rt := NewRuntime(t.Context()).Override(WithRuntimeExecutionInfo(info))
 		patched, err := rt.PatchExecutionInfo(WithNodeAttempt(2), WithCheckpointID("cp-2"))
 		if err != nil {
 			t.Fatalf("PatchExecutionInfo error: %v", err)
@@ -310,14 +310,14 @@ func TestMergeRemainingFields(t *testing.T) {
 	otherHeartbeat := func() {}
 
 	t.Run("OtherWinsWhenSet", func(t *testing.T) {
-		self := NewRuntime(context.Background()).Override(
+		self := NewRuntime(t.Context()).Override(
 			WithRuntimeStore(selfStore),
 			WithRuntimeHeartbeat(selfHeartbeat),
 			WithRuntimeExecutionInfo(selfInfo),
 			WithRuntimeServerInfo(selfServer),
 			WithRuntimeControl(selfControl),
 		)
-		other := NewRuntime(context.Background()).Override(
+		other := NewRuntime(t.Context()).Override(
 			WithRuntimeStore(otherStore),
 			WithRuntimeHeartbeat(otherHeartbeat),
 			WithRuntimeExecutionInfo(otherInfo),
@@ -342,14 +342,14 @@ func TestMergeRemainingFields(t *testing.T) {
 		}
 	})
 	t.Run("SelfKeepsWhenOtherUnset", func(t *testing.T) {
-		self := NewRuntime(context.Background()).Override(
+		self := NewRuntime(t.Context()).Override(
 			WithRuntimeStore(selfStore),
 			WithRuntimeHeartbeat(selfHeartbeat),
 			WithRuntimeExecutionInfo(selfInfo),
 			WithRuntimeServerInfo(selfServer),
 			WithRuntimeControl(selfControl),
 		)
-		other := NewRuntime(context.Background()) // all fields nil
+		other := NewRuntime(t.Context()) // all fields nil
 		merged := self.Merge(other)
 		if merged.Store != Store(selfStore) {
 			t.Errorf("Store: want self's store (other was nil)")
@@ -373,8 +373,8 @@ func TestMergeRemainingFields(t *testing.T) {
 // and ignores a nil replacement.
 func TestWithRuntimeCtx(t *testing.T) {
 	type k struct{}
-	rt := NewRuntime(context.Background()).Override(WithRuntimeContext("static"))
-	derived := context.WithValue(context.Background(), k{}, "derived")
+	rt := NewRuntime(t.Context()).Override(WithRuntimeContext("static"))
+	derived := context.WithValue(t.Context(), k{}, "derived")
 	swapped := rt.Override(WithRuntimeCtx(derived))
 	if got := swapped.Value(k{}); got != "derived" {
 		t.Errorf("Value after WithRuntimeCtx = %v, want %q", got, "derived")
@@ -388,7 +388,7 @@ func TestWithRuntimeCtx(t *testing.T) {
 		t.Errorf("original Value = %v, want nil (original ctx unchanged)", got)
 	}
 	// A nil ctx is ignored: the previous backing ctx survives.
-	ctx2, cancel := context.WithCancel(context.Background())
+	ctx2, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	rt2 := NewRuntime(ctx2).Override(WithRuntimeCtx(nil))
 	cancel()
@@ -403,14 +403,14 @@ func TestWithRuntimeCtx(t *testing.T) {
 func TestContextSchemaValues(t *testing.T) {
 	t.Run("RoundTrip", func(t *testing.T) {
 		values := map[string]any{"user_id": "u-1", "db_conn": "conn"}
-		ctx := ContextWithValues(context.Background(), values)
+		ctx := ContextWithValues(t.Context(), values)
 		got := ValuesFromContext(ctx)
 		if got["user_id"] != "u-1" || got["db_conn"] != "conn" {
 			t.Errorf("ValuesFromContext = %v, want %v", got, values)
 		}
 	})
 	t.Run("NoValuesAttached", func(t *testing.T) {
-		if got := ValuesFromContext(context.Background()); got != nil {
+		if got := ValuesFromContext(t.Context()); got != nil {
 			t.Errorf("ValuesFromContext on bare ctx = %v, want nil", got)
 		}
 	})
@@ -421,7 +421,7 @@ func TestContextSchemaValues(t *testing.T) {
 		}
 	})
 	t.Run("ValueFromRuntime", func(t *testing.T) {
-		rt := NewRuntime(context.Background()).Override(
+		rt := NewRuntime(t.Context()).Override(
 			WithRuntimeContext(map[string]any{"user_id": "u-1"}),
 		)
 		if v, ok := ValueFromRuntime(rt, "user_id"); !ok || v != "u-1" {
@@ -433,10 +433,10 @@ func TestContextSchemaValues(t *testing.T) {
 	})
 	t.Run("ValueFromRuntimeNonMapContext", func(t *testing.T) {
 		// A non-map Context (including nil) yields (nil, false).
-		if v, ok := ValueFromRuntime(NewRuntime(context.Background()), "k"); ok || v != nil {
+		if v, ok := ValueFromRuntime(NewRuntime(t.Context()), "k"); ok || v != nil {
 			t.Errorf("ValueFromRuntime with nil Context = (%v, %v), want (nil, false)", v, ok)
 		}
-		rt := NewRuntime(context.Background()).Override(WithRuntimeContext("not-a-map"))
+		rt := NewRuntime(t.Context()).Override(WithRuntimeContext("not-a-map"))
 		if v, ok := ValueFromRuntime(rt, "k"); ok || v != nil {
 			t.Errorf("ValueFromRuntime with string Context = (%v, %v), want (nil, false)", v, ok)
 		}
@@ -448,7 +448,7 @@ func TestContextSchemaValues(t *testing.T) {
 func TestOverrideStoreAndServerInfo(t *testing.T) {
 	st := store.NewInMemoryStore()
 	si := &ServerInfo{AssistantID: "asst-1", GraphID: "graph-1", User: "user-1"}
-	rt := NewRuntime(context.Background()).Override(
+	rt := NewRuntime(t.Context()).Override(
 		WithRuntimeStore(st),
 		WithRuntimeServerInfo(si),
 	)
@@ -530,7 +530,7 @@ func TestRunControl(t *testing.T) {
 // TestRuntimeDrainDelegates verifies Runtime.DrainRequested/DrainReason
 // delegate to Control and tolerate a nil Control.
 func TestRuntimeDrainDelegates(t *testing.T) {
-	rt := NewRuntime(context.Background())
+	rt := NewRuntime(t.Context())
 	if rt.DrainRequested() {
 		t.Errorf("DrainRequested = true without Control")
 	}

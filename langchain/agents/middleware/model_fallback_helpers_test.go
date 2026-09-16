@@ -17,7 +17,7 @@ func TestModelFallbackMiddlewareUnresolvableStringSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new model request: %v", err)
 	}
-	_, err = fallback.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = fallback.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, errors.New("primary failed")
 	})
 	if err == nil || strings.Contains(err.Error(), "primary failed") {

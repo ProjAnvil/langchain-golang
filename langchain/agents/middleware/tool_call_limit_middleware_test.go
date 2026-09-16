@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -50,17 +49,17 @@ func TestToolCallLimitMiddlewareAfterModelEdgeCases(t *testing.T) {
 	}
 
 	// Nil state: no AI message.
-	update, err := middleware.AfterModel(context.Background(), nil)
+	update, err := middleware.AfterModel(t.Context(), nil)
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update for nil state: %#v %v", update, err)
 	}
 	// Messages of the wrong type.
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": "nope"})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": "nope"})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update for wrong message type: %#v %v", update, err)
 	}
 	// No AI message.
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{messages.Human("hi")}})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{messages.Human("hi")}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without AI message: %#v %v", update, err)
 	}
@@ -78,7 +77,7 @@ func TestToolCallLimitMiddlewareSpecificToolFiltering(t *testing.T) {
 		{ID: "2", Name: "calc"},
 		{ID: "3", Name: "search"},
 	}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -103,7 +102,7 @@ func TestToolCallLimitMiddlewareAllAllowedNoMessages(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -123,7 +122,7 @@ func TestToolCallLimitMiddlewareRunLimitEndMessage(t *testing.T) {
 	}
 	ai := messages.AI("")
 	ai.ToolCalls = []messages.ToolCall{{ID: "1", Name: "search"}}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}
@@ -153,7 +152,7 @@ func TestToolCallLimitMiddlewareCountsFromAnyMap(t *testing.T) {
 		},
 		RunToolCallCountKey: map[string]int{allToolsCountKey: 1},
 	}
-	update, err := middleware.AfterModel(context.Background(), state)
+	update, err := middleware.AfterModel(t.Context(), state)
 	if err != nil {
 		t.Fatalf("after model: %v", err)
 	}

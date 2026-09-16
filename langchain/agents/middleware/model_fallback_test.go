@@ -17,7 +17,7 @@ func TestModelFallbackMiddlewareTriesPrimaryThenFallbacks(t *testing.T) {
 	}
 
 	var seen []any
-	response, err := fallback.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	response, err := fallback.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		seen = append(seen, request.Model)
 		if request.Model != "fallback-b" {
 			return ModelResponse{}, errors.New("failed")
@@ -47,7 +47,7 @@ func TestModelFallbackMiddlewareReturnsPrimarySuccess(t *testing.T) {
 	}
 
 	calls := 0
-	response, err := fallback.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	response, err := fallback.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		calls++
 		return ModelResponse{Result: []messages.Message{messages.AI(request.Model.(string))}}, nil
 	})
@@ -70,7 +70,7 @@ func TestModelFallbackMiddlewareReturnsLastError(t *testing.T) {
 		t.Fatalf("new model request: %v", err)
 	}
 
-	_, err = fallback.WrapModelCall(context.Background(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
+	_, err = fallback.WrapModelCall(t.Context(), request, func(ctx context.Context, request ModelRequest) (ModelResponse, error) {
 		if request.Model == "fallback" {
 			return ModelResponse{}, lastErr
 		}

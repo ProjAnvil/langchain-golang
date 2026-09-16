@@ -50,7 +50,7 @@ func TestTodoListMiddlewarePersistsTodosToState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("plan this")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("plan this")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestCreateAgentAutoCollectsMiddlewareTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("plan this")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("plan this")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestCreateAgentAutoCollectsMiddlewareToolsOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent should not fail on a user/middleware tool name conflict: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestCreateAgentAutoCollectsFilesystemFileSearchTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestCreateAgentAutoCollectsFilesystemFileSearchTools(t *testing.T) {
 // contributingStateMiddleware declares two state fields: "hits" with an
 // appending reducer and "shadowed" with an appending reducer the caller is
 // about to override.
-type contributingStateMiddleware struct{ writes *int32 }
+type contributingStateMiddleware struct{ writes *atomic.Int32 }
 
 func (m contributingStateMiddleware) StateSchema() []middleware.StateField {
 	concat := func(existing any, update any) (any, error) {
@@ -195,7 +195,7 @@ func (m contributingStateMiddleware) StateSchema() []middleware.StateField {
 
 func (m contributingStateMiddleware) AfterModel(ctx context.Context, state map[string]any) (map[string]any, error) {
 	return map[string]any{
-		"hits":     []string{"h" + strconv.Itoa(int(atomic.AddInt32(m.writes, 1)))},
+		"hits":     []string{"h" + strconv.Itoa(int(m.writes.Add(1)))},
 		"shadowed": []string{"mw"},
 	}, nil
 }
@@ -206,7 +206,7 @@ func (m contributingStateMiddleware) AfterModel(ctx context.Context, state map[s
 // conflict (base_state merges last) — "shadowed" keeps last-write-wins while
 // "hits" appends across two model calls.
 func TestCreateAgentMergesMiddlewareStateSchema(t *testing.T) {
-	var writes int32
+	var writes atomic.Int32
 	// One tool-calling pass then a terminal answer: two model calls, so the
 	// AfterModel-driven "hits" writes append twice under the middleware's
 	// custom reducer while "shadowed" (overridden by the caller's
@@ -224,7 +224,7 @@ func TestCreateAgentMergesMiddlewareStateSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

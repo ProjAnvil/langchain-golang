@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -193,13 +194,8 @@ func (m *LLMToolSelectorMiddleware) prepareSelectionRequest(request ModelRequest
 			}
 		}
 		if len(missing) > 0 {
-			sort.Strings(missing)
-			names := make([]string, 0, len(availableNames))
-			for name := range availableNames {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			return nil, fmt.Errorf("tools in always_include not found in request: %v. Available tools: %v", missing, names)
+			slices.Sort(missing)
+			return nil, fmt.Errorf("tools in always_include not found in request: %v. Available tools: %v", missing, slices.Sorted(maps.Keys(availableNames)))
 		}
 	}
 

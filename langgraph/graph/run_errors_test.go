@@ -236,7 +236,7 @@ func TestNodeUnsupportedResultTypeErrors(t *testing.T) {
 	cg := compileLinear(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return "not a map", nil
 	})
-	if _, err := cg.Invoke(context.Background(), map[string]any{}); err == nil ||
+	if _, err := cg.Invoke(t.Context(), map[string]any{}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("Invoke() error = %v, want an unsupported-node-result error", err)
 	}
@@ -246,7 +246,7 @@ func TestCommandInvalidGotoDestinationErrors(t *testing.T) {
 	cg := compileLinear(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return &types.Command{Goto: []any{42}}, nil
 	})
-	if _, err := cg.Invoke(context.Background(), map[string]any{}); err == nil ||
+	if _, err := cg.Invoke(t.Context(), map[string]any{}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported routing destination") {
 		t.Fatalf("Invoke() error = %v, want an unsupported routing destination error", err)
 	}
@@ -262,7 +262,7 @@ func TestRouterErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.Invoke(context.Background(), map[string]any{}); !errors.Is(err, want) {
+	if _, err := cg.Invoke(t.Context(), map[string]any{}); !errors.Is(err, want) {
 		t.Fatalf("Invoke() error = %v, want %v", err, want)
 	}
 }
@@ -272,7 +272,7 @@ func TestInvokeStreamSurfacesRunError(t *testing.T) {
 	cg := compileLinear(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return nil, want
 	})
-	if _, err := cg.InvokeStream(context.Background(), map[string]any{}, Options{}, nil); !errors.Is(err, want) {
+	if _, err := cg.InvokeStream(t.Context(), map[string]any{}, Options{}, nil); !errors.Is(err, want) {
 		t.Fatalf("InvokeStream() error = %v, want %v", err, want)
 	}
 }
@@ -282,14 +282,14 @@ func TestInvokeStreamSurfacesRunError(t *testing.T) {
 func TestCheckpointIDOptionErrors(t *testing.T) {
 	t.Run("requires a checkpointer", func(t *testing.T) {
 		cg := compileLinear(t, noopNode)
-		if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{CheckpointID: "cp"}); err == nil ||
+		if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{CheckpointID: "cp"}); err == nil ||
 			!strings.Contains(err.Error(), "requires a checkpointer") {
 			t.Fatalf("InvokeWithOptions() error = %v, want a checkpointer requirement error", err)
 		}
 	})
 	t.Run("requires ThreadID", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(checkpoint.NewMemorySaver()))
-		if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{CheckpointID: "cp"}); err == nil ||
+		if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{CheckpointID: "cp"}); err == nil ||
 			!strings.Contains(err.Error(), "requires ThreadID") {
 			t.Fatalf("InvokeWithOptions() error = %v, want a ThreadID requirement error", err)
 		}
@@ -299,14 +299,14 @@ func TestCheckpointIDOptionErrors(t *testing.T) {
 func TestResumeOptionErrors(t *testing.T) {
 	t.Run("requires ThreadID", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(checkpoint.NewMemorySaver()))
-		if _, err := cg.InvokeWithOptions(context.Background(), nil, Options{Resume: "v"}); err == nil ||
+		if _, err := cg.InvokeWithOptions(t.Context(), nil, Options{Resume: "v"}); err == nil ||
 			!strings.Contains(err.Error(), "requires ThreadID") {
 			t.Fatalf("InvokeWithOptions() error = %v, want a ThreadID requirement error", err)
 		}
 	})
 	t.Run("no checkpoint for thread", func(t *testing.T) {
 		cg := compileLinear(t, noopNode, WithCheckpointer(checkpoint.NewMemorySaver()))
-		if _, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t", Resume: "v"}); err == nil ||
+		if _, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t", Resume: "v"}); err == nil ||
 			!strings.Contains(err.Error(), "no checkpoint found") {
 			t.Fatalf("InvokeWithOptions() error = %v, want a no-checkpoint error", err)
 		}
@@ -333,14 +333,14 @@ func TestResumeOptionErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Compile() error = %v", err)
 		}
-		res, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"})
+		res, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"})
 		if err != nil {
 			t.Fatalf("InvokeWithOptions() error = %v", err)
 		}
 		if len(res.Interrupts) != 2 {
 			t.Fatalf("Interrupts = %+v, want 2 pending interrupts", res.Interrupts)
 		}
-		if _, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t", Resume: "scalar"}); err == nil ||
+		if _, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t", Resume: "scalar"}); err == nil ||
 			!strings.Contains(err.Error(), "map[string]any") {
 			t.Fatalf("resume error = %v, want the scalar-resume-with-multiple-interrupts error", err)
 		}
@@ -349,7 +349,7 @@ func TestResumeOptionErrors(t *testing.T) {
 
 func TestRunCheckpointLoadError(t *testing.T) {
 	cg := compileLinear(t, noopNode, WithCheckpointer(&getTupleErrSaver{Saver: checkpoint.NewMemorySaver()}))
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -358,7 +358,7 @@ func TestRunCheckpointLoadError(t *testing.T) {
 
 func TestRunInputCheckpointSaveError(t *testing.T) {
 	cg := compileLinear(t, noopNode, WithCheckpointer(&putErrSaver{Saver: checkpoint.NewMemorySaver()}))
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 1}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -369,7 +369,7 @@ func TestRunLoopCheckpointSaveError(t *testing.T) {
 	cg := compileLinear(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return map[string]any{"x": 1}, nil
 	}, WithCheckpointer(saver))
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -378,7 +378,7 @@ func TestRunTaskWritesPersistError(t *testing.T) {
 	cg := compileLinear(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return map[string]any{"x": 1}, nil
 	}, WithCheckpointer(&putWritesErrSaver{Saver: checkpoint.NewMemorySaver()}))
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -389,7 +389,7 @@ func TestRunAsyncFlushErrorSurfaces(t *testing.T) {
 	cg := compileLinear(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return map[string]any{"x": 1}, nil
 	}, WithCheckpointer(&putErrSaver{Saver: checkpoint.NewMemorySaver()}), WithDurability(DurabilityAsync))
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -413,7 +413,7 @@ func newDeltaItemsGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
 func TestRunDeltaInputWritesPersistError(t *testing.T) {
 	t.Run("fresh turn", func(t *testing.T) {
 		cg := newDeltaItemsGraph(t, &putWritesErrSaver{Saver: checkpoint.NewMemorySaver()})
-		_, err := cg.InvokeWithOptions(context.Background(), map[string]any{"items": []int{1}}, Options{ThreadID: "t"})
+		_, err := cg.InvokeWithOptions(t.Context(), map[string]any{"items": []int{1}}, Options{ThreadID: "t"})
 		if !errors.Is(err, errSaverBoom) {
 			t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 		}
@@ -421,10 +421,10 @@ func TestRunDeltaInputWritesPersistError(t *testing.T) {
 	t.Run("new turn on existing checkpoint", func(t *testing.T) {
 		saver := &failNthPutWritesSaver{Saver: checkpoint.NewMemorySaver(), n: 1}
 		cg := newDeltaItemsGraph(t, saver)
-		if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
+		if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
 			t.Fatalf("first InvokeWithOptions() error = %v", err)
 		}
-		_, err := cg.InvokeWithOptions(context.Background(), map[string]any{"items": []int{2}}, Options{ThreadID: "t"})
+		_, err := cg.InvokeWithOptions(t.Context(), map[string]any{"items": []int{2}}, Options{ThreadID: "t"})
 		if !errors.Is(err, errSaverBoom) {
 			t.Fatalf("second InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 		}
@@ -456,16 +456,16 @@ func newErrUpdateChannelGraph(t *testing.T, saver checkpoint.Saver) *CompiledGra
 func TestRunInputApplyWritesError(t *testing.T) {
 	t.Run("fresh turn", func(t *testing.T) {
 		cg := newErrUpdateChannelGraph(t, nil)
-		if _, err := cg.Invoke(context.Background(), map[string]any{"bad": 1}); !errors.Is(err, errSaverBoom) {
+		if _, err := cg.Invoke(t.Context(), map[string]any{"bad": 1}); !errors.Is(err, errSaverBoom) {
 			t.Fatalf("Invoke() error = %v, want %v", err, errSaverBoom)
 		}
 	})
 	t.Run("new turn on existing checkpoint", func(t *testing.T) {
 		cg := newErrUpdateChannelGraph(t, checkpoint.NewMemorySaver())
-		if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
+		if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
 			t.Fatalf("first InvokeWithOptions() error = %v", err)
 		}
-		if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"bad": 1}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+		if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"bad": 1}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 			t.Fatalf("second InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 		}
 	})
@@ -500,7 +500,7 @@ func TestInterruptBeforeSaveError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -514,7 +514,7 @@ func TestInterruptBeforePersistInterruptsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -529,7 +529,7 @@ func TestInterruptAfterSaveError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -543,7 +543,7 @@ func TestInterruptAfterPersistInterruptsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -551,14 +551,14 @@ func TestInterruptAfterPersistInterruptsError(t *testing.T) {
 func TestInNodeInterruptPauseSaveError(t *testing.T) {
 	saver := &failNthPutSaver{Saver: checkpoint.NewMemorySaver(), n: 2}
 	cg := compileInterruptGraph(t, saver)
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
 
 func TestInNodeInterruptPersistError(t *testing.T) {
 	cg := compileInterruptGraph(t, &putWritesErrSaver{Saver: checkpoint.NewMemorySaver()})
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -591,7 +591,7 @@ func TestPauseCompletedSiblingBadGotoErrors(t *testing.T) {
 	cg := compileSiblingInterruptGraph(t, checkpoint.NewMemorySaver(), func(runtime.Runtime, map[string]any) (any, error) {
 		return &types.Command{Goto: []any{42}}, nil
 	})
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); err == nil ||
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported routing destination") {
 		t.Fatalf("InvokeWithOptions() error = %v, want an unsupported routing destination error", err)
 	}
@@ -601,7 +601,7 @@ func TestPauseCompletedSiblingWritesPersistError(t *testing.T) {
 	cg := compileSiblingInterruptGraph(t, &putWritesErrSaver{Saver: checkpoint.NewMemorySaver()}, func(runtime.Runtime, map[string]any) (any, error) {
 		return map[string]any{"x": 1}, nil
 	})
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -631,7 +631,7 @@ func TestResumeReplayWritesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"})
+	res, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"})
 	if err != nil {
 		t.Fatalf("InvokeWithOptions() error = %v", err)
 	}
@@ -640,7 +640,7 @@ func TestResumeReplayWritesError(t *testing.T) {
 	}
 	// Nil-input resume: replaying the sibling's "bad" write hits the failing
 	// reducer inside resumeFromTuple.
-	if _, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t", Resume: "go"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t", Resume: "go"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("resume error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -662,7 +662,7 @@ func compileCachePolicyGraph(t *testing.T, fn NodeFunc, cache checkpoint.Cache) 
 
 func TestCacheGetErrorFailsTask(t *testing.T) {
 	cg := compileCachePolicyGraph(t, noopNode, &cacheErrCache{getErr: errSaverBoom})
-	if _, err := cg.Invoke(context.Background(), map[string]any{"x": 1}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.Invoke(t.Context(), map[string]any{"x": 1}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -671,7 +671,7 @@ func TestCacheSetErrorFailsRun(t *testing.T) {
 	cg := compileCachePolicyGraph(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return map[string]any{"x": 1}, nil
 	}, &cacheErrCache{setErr: errSaverBoom})
-	if _, err := cg.Invoke(context.Background(), map[string]any{"x": 1}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.Invoke(t.Context(), map[string]any{"x": 1}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -680,7 +680,7 @@ func TestCacheStoreBadGotoErrors(t *testing.T) {
 	cg := compileCachePolicyGraph(t, func(runtime.Runtime, map[string]any) (any, error) {
 		return &types.Command{Goto: []any{42}}, nil
 	}, &cacheErrCache{})
-	if _, err := cg.Invoke(context.Background(), map[string]any{"x": 1}); err == nil ||
+	if _, err := cg.Invoke(t.Context(), map[string]any{"x": 1}); err == nil ||
 		!strings.Contains(err.Error(), "cache writes") {
 		t.Fatalf("Invoke() error = %v, want a cache writes error", err)
 	}
@@ -703,14 +703,14 @@ func TestDeltaOverwriteForcesSnapshotOnSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	res, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"})
+	res, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"})
 	if err != nil {
 		t.Fatalf("InvokeWithOptions() error = %v", err)
 	}
 	if got := res.Values["items"]; !reflect.DeepEqual(got, []int{9}) {
 		t.Fatalf("items = %v, want [9] (overwrite must win over the reducer)", got)
 	}
-	snap, err := cg.GetState(context.Background(), checkpoint.Config{ThreadID: "t"})
+	snap, err := cg.GetState(t.Context(), checkpoint.Config{ThreadID: "t"})
 	if err != nil {
 		t.Fatalf("GetState() error = %v", err)
 	}
@@ -723,7 +723,7 @@ func TestDeltaOverwriteForcesSnapshotOnSave(t *testing.T) {
 
 func TestRunNodeUnknownNode(t *testing.T) {
 	cg := compileLinear(t, noopNode)
-	_, _, _, err := cg.runNode(context.Background(), task{node: "ghost"}, nil, nil, 1)
+	_, _, _, err := cg.runNode(t.Context(), task{node: "ghost"}, nil, nil, 1)
 	if err == nil || !strings.Contains(err.Error(), `unknown node "ghost"`) {
 		t.Fatalf("runNode() error = %v, want an unknown node error", err)
 	}
@@ -745,17 +745,17 @@ func TestRunNodeNonInterruptPanicRepanics(t *testing.T) {
 			t.Fatalf("recover() = %v, want the node's non-interrupt panic to propagate", r)
 		}
 	}()
-	_, _, _, _ = cg.runNode(context.Background(), task{node: "panic"}, nil, nil, 1)
+	_, _, _, _ = cg.runNode(t.Context(), task{node: "panic"}, nil, nil, 1)
 }
 
 // --- interrupt consumption accounting ---------------------------------------
 
 func TestInterruptConsumeCountOutsideNode(t *testing.T) {
-	if got := InterruptConsumeCount(context.Background()); got != 0 {
+	if got := InterruptConsumeCount(t.Context()); got != 0 {
 		t.Fatalf("InterruptConsumeCount() = %d, want 0 outside a node execution", got)
 	}
 	// ReplayInterruptConsumption is a no-op without interrupt state.
-	ReplayInterruptConsumption(context.Background(), 3)
+	ReplayInterruptConsumption(t.Context(), 3)
 }
 
 // TestInterruptConsumeCountAndReplay exercises the fn-package-facing
@@ -765,7 +765,7 @@ func TestInterruptConsumeCountOutsideNode(t *testing.T) {
 // generated interrupt IDs stay aligned with a full re-execution.
 func TestInterruptConsumeCountAndReplay(t *testing.T) {
 	st := &taskInterruptState{resumeQueue: []any{"a", "b", "c"}, nodeName: "n"}
-	ctx := context.WithValue(context.Background(), interruptCtxKey{}, st)
+	ctx := context.WithValue(t.Context(), interruptCtxKey{}, st)
 
 	if got := InterruptConsumeCount(ctx); got != 0 {
 		t.Fatalf("InterruptConsumeCount() = %d, want 0 before any consumption", got)
@@ -825,7 +825,7 @@ func TestStepBoundaryUpdateError(t *testing.T) {
 	}
 	// "bad" is seeded by the input batch; the node's superstep leaves it
 	// untouched, so it receives the step-boundary update, which errors.
-	if _, err := cg.Invoke(context.Background(), map[string]any{"bad": 1, "x": 1}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.Invoke(t.Context(), map[string]any{"bad": 1, "x": 1}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("Invoke() error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -855,12 +855,12 @@ func TestNilInputResumeReplayWritesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t"}); err != nil {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t"}); err != nil {
 		t.Fatalf("InvokeWithOptions() error = %v", err)
 	}
 	// Nil input, no explicit Resume: the resumeFromTuple call on the
 	// boundary-resume branch replays the sibling's "bad" write and fails.
-	if _, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("resume error = %v, want %v", err, errSaverBoom)
 	}
 }
@@ -873,10 +873,10 @@ func TestNewTurnInputCheckpointSaveError(t *testing.T) {
 	// the third.
 	saver := &failNthPutSaver{Saver: checkpoint.NewMemorySaver(), n: 3}
 	cg := compileLinear(t, noopNode, WithCheckpointer(saver))
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 1}, Options{ThreadID: "t"}); err != nil {
 		t.Fatalf("first InvokeWithOptions() error = %v", err)
 	}
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"x": 2}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"x": 2}, Options{ThreadID: "t"}); !errors.Is(err, errSaverBoom) {
 		t.Fatalf("second InvokeWithOptions() error = %v, want %v", err, errSaverBoom)
 	}
 }

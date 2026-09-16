@@ -54,7 +54,7 @@ func TestFromFunc_StructArgs(t *testing.T) {
 	if !containsString(required, "query") || !containsString(required, "limit") {
 		t.Errorf("required = %v, want [query limit]", required)
 	}
-	res, err := tool.Invoke(context.Background(), map[string]any{"query": "hi", "limit": 3})
+	res, err := tool.Invoke(t.Context(), map[string]any{"query": "hi", "limit": 3})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestFromFunc_AnyReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromFunc: %v", err)
 	}
-	res, err := tool.Invoke(context.Background(), map[string]any{"query": "hello"})
+	res, err := tool.Invoke(t.Context(), map[string]any{"query": "hello"})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestFromFunc_NoArg(t *testing.T) {
 	if len(props) != 0 {
 		t.Errorf("expected empty properties, got %v", props)
 	}
-	res, err := tool.Invoke(context.Background(), map[string]any{})
+	res, err := tool.Invoke(t.Context(), map[string]any{})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestFromFunc_NoArgAnyReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromFunc: %v", err)
 	}
-	res, err := tool.Invoke(context.Background(), nil)
+	res, err := tool.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestFromFunc_AnyReturnScalar(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FromFunc: %v", err)
 			}
-			res, err := tool.Invoke(context.Background(), nil)
+			res, err := tool.Invoke(t.Context(), nil)
 			if err != nil {
 				t.Fatalf("Invoke: %v", err)
 			}
@@ -258,7 +258,7 @@ func TestFromFunc_MapArgs(t *testing.T) {
 	if s["type"] != "object" {
 		t.Errorf("schema type = %v, want object", s["type"])
 	}
-	res, err := tool.Invoke(context.Background(), map[string]any{"anything": 1})
+	res, err := tool.Invoke(t.Context(), map[string]any{"anything": 1})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestFromFunc_NestedStructAndSlice(t *testing.T) {
 	if innerProp["type"] != "object" {
 		t.Errorf("inner type = %v, want object", innerProp["type"])
 	}
-	res, err := tool.Invoke(context.Background(), map[string]any{
+	res, err := tool.Invoke(t.Context(), map[string]any{
 		"tags":   []any{"a", "b"},
 		"inner":  map[string]any{"label": "deep"},
 		"counts": []any{1, 2, 3},
@@ -330,7 +330,7 @@ func TestFromFunc_InvokeMarshalsArgs(t *testing.T) {
 	}
 	// Input map values are typed like JSON-decoded maps (e.g. float64 for numbers).
 	// reflect-driven JSON round-trip must coerce them into int.
-	res, err := tool.Invoke(context.Background(), map[string]any{
+	res, err := tool.Invoke(t.Context(), map[string]any{
 		"query": "hi",
 		"limit": float64(7),
 	})
@@ -391,7 +391,7 @@ func TestFromFunc_UntaggedFieldUsesGoName(t *testing.T) {
 		t.Errorf("OptsOnly (omitempty) should not be required, got %v", required)
 	}
 	// Round-trip: invoking with the Go field names must populate the fields.
-	res, err := tool.Invoke(context.Background(), map[string]any{
+	res, err := tool.Invoke(t.Context(), map[string]any{
 		"query":    "q",
 		"Untagged": "u",
 		"OptsOnly": "o",
@@ -448,7 +448,7 @@ func TestFromFunc_PointerArg(t *testing.T) {
 	if s["type"] != "object" {
 		t.Errorf("schema type = %v, want object", s["type"])
 	}
-	res, err := tool.Invoke(context.Background(), map[string]any{"query": "hi", "limit": 1})
+	res, err := tool.Invoke(t.Context(), map[string]any{"query": "hi", "limit": 1})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestFromFunc_InvokeFuncError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromFunc: %v", err)
 	}
-	if _, err := tool.Invoke(context.Background(), map[string]any{"query": "q", "limit": 1}); !errors.Is(err, want) {
+	if _, err := tool.Invoke(t.Context(), map[string]any{"query": "q", "limit": 1}); !errors.Is(err, want) {
 		t.Fatalf("expected fn error to propagate, got %v", err)
 	}
 }
@@ -655,13 +655,13 @@ func TestFromFunc_InvokeArgErrors(t *testing.T) {
 		t.Fatalf("FromFunc: %v", err)
 	}
 	// Unmarshal failure: query is a string field but receives a JSON object.
-	if _, err := tool.Invoke(context.Background(), map[string]any{
+	if _, err := tool.Invoke(t.Context(), map[string]any{
 		"query": map[string]any{"nested": true},
 	}); err == nil {
 		t.Fatal("expected unmarshal error for mismatched field type")
 	}
 	// Marshal failure: input contains a value encoding/json cannot represent.
-	if _, err := tool.Invoke(context.Background(), map[string]any{
+	if _, err := tool.Invoke(t.Context(), map[string]any{
 		"query": make(chan int),
 	}); err == nil {
 		t.Fatal("expected marshal error for unrepresentable input value")
@@ -693,7 +693,7 @@ func TestFromFunc_AnyReturnBytesNilAndResult(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FromFunc: %v", err)
 			}
-			res, err := tool.Invoke(context.Background(), nil)
+			res, err := tool.Invoke(t.Context(), nil)
 			if c.wantErr {
 				if err == nil {
 					t.Fatal("expected coercion error")
@@ -722,7 +722,7 @@ func TestFromFunc_AnyReturnStructRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromFunc: %v", err)
 	}
-	res, err := tool.Invoke(context.Background(), nil)
+	res, err := tool.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

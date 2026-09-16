@@ -1,14 +1,13 @@
 package stores
 
 import (
-	"context"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 )
 
 func TestInMemoryByteStoreMDelete(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryByteStore()
 
 	if err := store.MSet(ctx, []KeyValue[[]byte]{
@@ -38,7 +37,7 @@ func TestInMemoryByteStoreMDelete(t *testing.T) {
 }
 
 func TestInMemoryByteStoreYieldKeys(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryByteStore()
 
 	if err := store.MSet(ctx, []KeyValue[[]byte]{
@@ -53,7 +52,7 @@ func TestInMemoryByteStoreYieldKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("yield keys: %v", err)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	if !reflect.DeepEqual(keys, []string{"key1", "key2", "other"}) {
 		t.Fatalf("keys mismatch: got %#v", keys)
 	}
@@ -62,7 +61,7 @@ func TestInMemoryByteStoreYieldKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("yield keys with prefix: %v", err)
 	}
-	sort.Strings(keysWithPrefix)
+	slices.Sort(keysWithPrefix)
 	if !reflect.DeepEqual(keysWithPrefix, []string{"key1", "key2"}) {
 		t.Fatalf("keys with prefix mismatch: got %#v", keysWithPrefix)
 	}
@@ -77,7 +76,7 @@ func TestInMemoryByteStoreYieldKeys(t *testing.T) {
 }
 
 func TestInMemoryByteStoreEmptyValues(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryByteStore()
 
 	if err := store.MSet(ctx, []KeyValue[[]byte]{
@@ -113,7 +112,7 @@ func TestInMemoryByteStoreEmptyValues(t *testing.T) {
 }
 
 func TestInMemoryByteStoreSetCopiesInput(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryByteStore()
 
 	input := []byte("value1")

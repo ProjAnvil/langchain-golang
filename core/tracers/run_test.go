@@ -105,9 +105,9 @@ func TestRunJSONShape(t *testing.T) {
 	run := &Run{
 		ID: "id-1", Name: "n", RunType: RunTypeChatModel,
 		TraceID: "id-1", DottedOrder: "20260912T102030000000Zid-1",
-		Tags:     []string{"a"},
-		Metadata: map[string]any{"m": 1},
-		Inputs:   "in",
+		Tags:      []string{"a"},
+		Metadata:  map[string]any{"m": 1},
+		Inputs:    "in",
 		StartTime: time.Date(2026, 9, 12, 10, 20, 30, 0, time.UTC),
 		Extra:     map[string]any{"metadata": map[string]any{"m": 1}},
 		SessionID: "id-1", SessionName: "proj",

@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -25,7 +24,7 @@ func TestDeltaChannelPerTaskWritesReconstruction(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	// freq=10: cadence never fires across the two supersteps (n1, n2).
 	cg := deltaGraphFreq(t, 10, WithCheckpointer(saver))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
@@ -97,7 +96,7 @@ func TestDeltaChannelInputWritesReconstruction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Turn 1 (fresh): input writes items=[1]; n1 appends [10] -> [1,10].
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"items": []int{1}}, Options{ThreadID: "t2"}); err != nil {

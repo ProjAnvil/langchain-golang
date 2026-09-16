@@ -39,8 +39,11 @@ func TestStreamChunkTimeoutErrorAttributes(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatal("StreamChunkTimeoutError must match deadline-exceeded sentinels")
 	}
-	var timeout interface{ Timeout() bool }
-	if !errors.As(err, &timeout) || !timeout.Timeout() {
+	timeout, ok := errors.AsType[interface {
+		error
+		Timeout() bool
+	}](err)
+	if !ok || !timeout.Timeout() {
 		t.Fatal("StreamChunkTimeoutError must satisfy the Timeout() bool convention")
 	}
 }
@@ -56,14 +59,14 @@ func TestStreamChunkTimeoutPassesThrough(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithStreamChunkTimeout(5 * time.Second)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 	var got []string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -94,14 +97,14 @@ func TestStreamChunkTimeoutDisabledPassesThrough(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithStreamChunkTimeout(0)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 	var got []string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -144,19 +147,19 @@ func TestStreamChunkTimeoutFires(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-5.5"),
 	).WithStreamChunkTimeout(50 * time.Millisecond)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk.Content != "hi" {
 		t.Fatalf("first Next = (%q, %v, %v), want (\"hi\", true, nil)", chunk.Content, ok, err)
 	}
-	_, _, err = stream.Next(context.Background())
-	var timeoutErr *StreamChunkTimeoutError
-	if !errors.As(err, &timeoutErr) {
+	_, _, err = stream.Next(t.Context())
+	timeoutErr, ok := errors.AsType[*StreamChunkTimeoutError](err)
+	if !ok {
 		t.Fatalf("second Next err = %v, want StreamChunkTimeoutError", err)
 	}
 	if timeoutErr.Model != "gpt-5.5" || timeoutErr.ChunksReceived != 1 || timeoutErr.TimeoutS != 0.05 {
@@ -171,7 +174,7 @@ func TestStreamChunkTimeoutFires(t *testing.T) {
 		t.Fatalf("warning log = %q, want source=stream_chunk_timeout", buf.String())
 	}
 	// After a timeout the stream is done.
-	if _, ok, err := stream.Next(context.Background()); ok || err != nil {
+	if _, ok, err := stream.Next(t.Context()); ok || err != nil {
 		t.Fatalf("post-timeout Next = (%v, %v), want (false, nil)", ok, err)
 	}
 }
@@ -183,16 +186,16 @@ func TestStreamChunkTimeoutFiresChatCompletions(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions().WithStreamChunkTimeout(50 * time.Millisecond)
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
-	if _, ok, err := stream.Next(context.Background()); !ok || err != nil {
+	if _, ok, err := stream.Next(t.Context()); !ok || err != nil {
 		t.Fatalf("first Next = (%v, %v), want (true, nil)", ok, err)
 	}
-	var timeoutErr *StreamChunkTimeoutError
-	if _, _, err := stream.Next(context.Background()); !errors.As(err, &timeoutErr) {
+	_, _, err = stream.Next(t.Context())
+	if _, ok := errors.AsType[*StreamChunkTimeoutError](err); !ok {
 		t.Fatalf("second Next err = %v, want StreamChunkTimeoutError", err)
 	}
 }

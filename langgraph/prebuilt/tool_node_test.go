@@ -80,7 +80,7 @@ func TestToolNodeExecutesPendingToolCalls(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	res, err := compiled.Invoke(context.Background(), map[string]any{
+	res, err := compiled.Invoke(t.Context(), map[string]any{
 		"messages": []messages.Message{messages.Human("run the tools")},
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestToolNodeWithMessagesKey(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	res, err := compiled.Invoke(context.Background(), map[string]any{
+	res, err := compiled.Invoke(t.Context(), map[string]any{
 		"chat_history": []messages.Message{messages.Human("hi")},
 	})
 	if err != nil {
@@ -169,7 +169,7 @@ func TestToolNodeToolErrorBecomesErrorMessage(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	res, err := compiled.Invoke(context.Background(), nil)
+	res, err := compiled.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -241,7 +241,7 @@ func TestToolNodeCommandPassthrough(t *testing.T) {
 		messages.ToolCall{ID: "call-1", Name: "navigate", Args: map[string]any{}},
 	))
 
-	res, err := compiled.Invoke(context.Background(), nil)
+	res, err := compiled.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -294,7 +294,7 @@ func TestToolNodeMergesMultipleCommands(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	res, err := compiled.Invoke(context.Background(), nil)
+	res, err := compiled.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -333,7 +333,7 @@ func TestToolNodeCommandWithHandledErrorInBatch(t *testing.T) {
 		messages.ToolCall{ID: "call-2", Name: "navigate", Args: map[string]any{}},
 	))
 
-	res, err := compiled.Invoke(context.Background(), nil)
+	res, err := compiled.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -372,7 +372,7 @@ func TestToolNodeMissingMessagesKey(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	_, err = compiled.Invoke(context.Background(), nil)
+	_, err = compiled.Invoke(t.Context(), nil)
 	if err == nil || !strings.Contains(err.Error(), `"messages"`) {
 		t.Fatalf("Invoke() error = %v, want a descriptive error naming the missing %q key", err, "messages")
 	}
@@ -398,7 +398,7 @@ func TestToolNodeWrongTypeMessagesKey(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	_, err = compiled.Invoke(context.Background(), map[string]any{"messages": "not-a-message-list"})
+	_, err = compiled.Invoke(t.Context(), map[string]any{"messages": "not-a-message-list"})
 	if err == nil || !strings.Contains(err.Error(), "[]messages.Message") {
 		t.Fatalf("Invoke() error = %v, want a descriptive error naming the expected type", err)
 	}
@@ -417,7 +417,7 @@ func TestToolNodeNoToolCalls(t *testing.T) {
 
 	node := ToolNode(toolNode)
 	state := map[string]any{"messages": []messages.Message{messages.AI("no calls here")}}
-	update, err := node(runtime.NewRuntime(context.Background()), state)
+	update, err := node(runtime.NewRuntime(t.Context()), state)
 	if err != nil {
 		t.Fatalf("ToolNode() error = %v", err)
 	}
@@ -457,7 +457,7 @@ func TestToolNodeWithCheckpointerInterruptBefore(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	res, err := compiled.InvokeWithOptions(context.Background(), nil, graph.Options{ThreadID: "t1"})
+	res, err := compiled.InvokeWithOptions(t.Context(), nil, graph.Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -468,7 +468,7 @@ func TestToolNodeWithCheckpointerInterruptBefore(t *testing.T) {
 		t.Fatalf("tool ran %d times before the interrupt, want 0", toolRuns)
 	}
 
-	res, err = compiled.InvokeWithOptions(context.Background(), nil, graph.Options{ThreadID: "t1"})
+	res, err = compiled.InvokeWithOptions(t.Context(), nil, graph.Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("resume Invoke() error = %v", err)
 	}
@@ -543,7 +543,7 @@ func TestToolNodeUnhandledToolErrorPropagates(t *testing.T) {
 	state := map[string]any{"messages": []messages.Message{aiWithCalls(
 		messages.ToolCall{ID: "call-1", Name: "failing", Args: map[string]any{}},
 	)}}
-	update, err := node(runtime.NewRuntime(context.Background()), state)
+	update, err := node(runtime.NewRuntime(t.Context()), state)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("ToolNode() error = %v, want the unhandled tool error propagated", err)
 	}
@@ -584,7 +584,7 @@ func TestToolNodeCommandConflictLastWins(t *testing.T) {
 		messages.ToolCall{ID: "call-1", Name: "first", Args: map[string]any{}},
 		messages.ToolCall{ID: "call-2", Name: "second", Args: map[string]any{}},
 	)}}
-	out, err := node(runtime.NewRuntime(context.Background()), state)
+	out, err := node(runtime.NewRuntime(t.Context()), state)
 	if err != nil {
 		t.Fatalf("ToolNode() error = %v", err)
 	}

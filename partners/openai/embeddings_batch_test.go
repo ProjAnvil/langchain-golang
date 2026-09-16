@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -60,7 +59,7 @@ func TestEmbeddingsChunkSizeSplitsRequests(t *testing.T) {
 		WithEmbeddingChunkSize(2),
 	)
 	texts := []string{"a", "b", "c", "d", "e"}
-	vectors, err := model.EmbedDocuments(context.Background(), texts)
+	vectors, err := model.EmbedDocuments(t.Context(), texts)
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -96,7 +95,7 @@ func TestEmbeddingsChunkSizeDefault1000(t *testing.T) {
 	for i := range texts {
 		texts[i] = fmt.Sprintf("doc-%d", i)
 	}
-	vectors, err := model.EmbedDocuments(context.Background(), texts)
+	vectors, err := model.EmbedDocuments(t.Context(), texts)
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -119,7 +118,7 @@ func TestEmbeddingsChunkSizeZeroOrNegativeFallsBackTo1000(t *testing.T) {
 	for i := range texts {
 		texts[i] = fmt.Sprintf("doc-%d", i)
 	}
-	if _, err := model.EmbedDocuments(context.Background(), texts); err != nil {
+	if _, err := model.EmbedDocuments(t.Context(), texts); err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
 	if got := snapshot(); len(got) != 1 || len(got[0]) != 3 {
@@ -133,7 +132,7 @@ func TestAzureEmbeddingsChunkSizeSplitsRequests(t *testing.T) {
 		modelconfig.WithModel("text-embedding-3-small"),
 		WithEmbeddingChunkSize(1),
 	)
-	vectors, err := model.EmbedDocuments(context.Background(), []string{"a", "b"})
+	vectors, err := model.EmbedDocuments(t.Context(), []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}

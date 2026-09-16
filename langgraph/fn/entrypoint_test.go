@@ -34,8 +34,8 @@ func TestEntrypointWithoutCheckpointer(t *testing.T) {
 
 	opts := graph.Options{ThreadID: "1"}
 	want := map[string]any{"previous": nil, "current": map[string]any{"a": "1"}}
-	for i := 0; i < 2; i++ {
-		out, err := e.Invoke(context.Background(), map[string]any{"a": "1"}, opts)
+	for range 2 {
+		out, err := e.Invoke(t.Context(), map[string]any{"a": "1"}, opts)
 		if err != nil {
 			t.Fatalf("Invoke() error = %v", err)
 		}
@@ -72,7 +72,7 @@ func TestEntrypointStateful(t *testing.T) {
 	opts := graph.Options{ThreadID: "1"}
 	var outs []map[string]any
 	for _, a := range []string{"1", "2", "3"} {
-		out, err := e.Invoke(context.Background(), map[string]any{"a": a}, opts)
+		out, err := e.Invoke(t.Context(), map[string]any{"a": a}, opts)
 		if err != nil {
 			t.Fatalf("Invoke() error = %v", err)
 		}
@@ -112,7 +112,7 @@ func TestEntrypointFinalValueSave(t *testing.T) {
 	opts := graph.Options{ThreadID: "1"}
 	var outs []int
 	for _, msg := range []string{"hello", "goodbye", "definitely"} {
-		out, err := e.Invoke(context.Background(), msg, opts)
+		out, err := e.Invoke(t.Context(), msg, opts)
 		if err != nil {
 			t.Fatalf("Invoke() error = %v", err)
 		}
@@ -142,7 +142,7 @@ func TestEntrypointStream(t *testing.T) {
 	}
 
 	var chunks []graph.StreamChunk
-	for chunk, err := range e.Stream(context.Background(), "in", graph.Options{ThreadID: "1"}) {
+	for chunk, err := range e.Stream(t.Context(), "in", graph.Options{ThreadID: "1"}) {
 		if err != nil {
 			t.Fatalf("Stream() error = %v", err)
 		}
@@ -180,10 +180,10 @@ func TestEntrypointInterruptResume(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, map[string]any{"a": ""}, graph.Options{ThreadID: "1"})
-	var ierr *InterruptError
-	if !errors.As(err, &ierr) {
+	ierr, ok := errors.AsType[*InterruptError](err)
+	if !ok {
 		t.Fatalf("Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 	if len(ierr.Interrupts) != 1 || ierr.Interrupts[0].Value != "Provide value" {
@@ -211,12 +211,11 @@ func TestEntrypointErrorPropagation(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) {
 		t.Fatalf("Invoke() error = %v, want boom", err)
 	}
-	var ierr *InterruptError
-	if errors.As(err, &ierr) {
+	if _, ok := errors.AsType[*InterruptError](err); ok {
 		t.Fatalf("Invoke() error = %v, must not be *InterruptError", err)
 	}
 }
@@ -262,12 +261,12 @@ func TestEntrypointInputContractViolations(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.graph.InvokeWithOptions(context.Background(), map[string]any{}, graph.Options{})
+	_, err = e.graph.InvokeWithOptions(t.Context(), map[string]any{}, graph.Options{})
 	if err == nil || !strings.Contains(err.Error(), `missing the "__start__" channel`) {
 		t.Fatalf("InvokeWithOptions() error = %v, want a missing-channel error", err)
 	}
 
-	_, err = e.graph.InvokeWithOptions(context.Background(), map[string]any{channelStart: 42}, graph.Options{})
+	_, err = e.graph.InvokeWithOptions(t.Context(), map[string]any{channelStart: 42}, graph.Options{})
 	if err == nil || !strings.Contains(err.Error(), "entrypoint input has type int") {
 		t.Fatalf("InvokeWithOptions() error = %v, want an input-type error", err)
 	}
@@ -280,7 +279,7 @@ func TestEntrypointInputContractViolations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
-	_, err = ef.graph.InvokeWithOptions(context.Background(), map[string]any{channelStart: 42}, graph.Options{})
+	_, err = ef.graph.InvokeWithOptions(t.Context(), map[string]any{channelStart: 42}, graph.Options{})
 	if err == nil || !strings.Contains(err.Error(), "entrypoint input has type int") {
 		t.Fatalf("InvokeWithOptions() error = %v, want an input-type error", err)
 	}
@@ -299,10 +298,10 @@ func TestEntrypointPreviousTypeMismatch(t *testing.T) {
 	}
 
 	opts := graph.Options{ThreadID: "1"}
-	if _, err := e.Invoke(context.Background(), "a", opts); err != nil {
+	if _, err := e.Invoke(t.Context(), "a", opts); err != nil {
 		t.Fatalf("first Invoke() error = %v, want nil", err)
 	}
-	_, err = e.Invoke(context.Background(), "b", opts)
+	_, err = e.Invoke(t.Context(), "b", opts)
 	if err == nil || !strings.Contains(err.Error(), "previous value has type string, want the declared save type") {
 		t.Fatalf("second Invoke() error = %v, want a previous-type mismatch error", err)
 	}
@@ -319,7 +318,7 @@ func TestEntrypointFinalErrorPropagation(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) {
 		t.Fatalf("Invoke() error = %v, want boom", err)
 	}
@@ -344,7 +343,7 @@ func TestEntrypointOutputTypeMismatch(t *testing.T) {
 	}
 	e := &Entrypoint[string, int, any]{graph: cg}
 
-	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 	if err == nil || !strings.Contains(err.Error(), "entrypoint returned a value of type string, want the declared output type") {
 		t.Fatalf("Invoke() error = %v, want an output-type mismatch error", err)
 	}
@@ -378,7 +377,7 @@ func TestEntrypointPrepareCheckpointLoadError(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "fn: entrypoint checkpoint load") {
 		t.Fatalf("Invoke() error = %v, want the wrapped checkpoint-load error", err)
 	}
@@ -396,7 +395,7 @@ func TestEntrypointStreamPrepareError(t *testing.T) {
 
 	var gotErr error
 	chunks := 0
-	for _, err := range e.Stream(context.Background(), "in", graph.Options{ThreadID: "1"}) {
+	for _, err := range e.Stream(t.Context(), "in", graph.Options{ThreadID: "1"}) {
 		chunks++
 		gotErr = err
 	}
@@ -448,7 +447,7 @@ func TestEntrypointPersistResultsLoadError(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "fn: persisting task results") {
 		t.Fatalf("Invoke() error = %v, want the wrapped persist error", err)
 	}
@@ -473,7 +472,7 @@ func TestEntrypointPersistResultsNoCheckpoint(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	out, err := e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	out, err := e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 	if err != nil || out != "v" {
 		t.Fatalf("Invoke() = %q, %v; want %q, nil", out, err, "v")
 	}
@@ -512,7 +511,7 @@ func TestEntrypointPersistResultsWriteError(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, err = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "fn: persisting task results") {
 		t.Fatalf("Invoke() error = %v, want the wrapped persist error", err)
 	}
@@ -529,7 +528,7 @@ func TestEntrypointStreamRunError(t *testing.T) {
 	}
 
 	var gotErr error
-	for _, err := range e.Stream(context.Background(), "in", graph.Options{ThreadID: "1"}) {
+	for _, err := range e.Stream(t.Context(), "in", graph.Options{ThreadID: "1"}) {
 		gotErr = err
 	}
 	if !errors.Is(gotErr, boom) {
@@ -547,7 +546,7 @@ func TestEntrypointStreamEarlyBreak(t *testing.T) {
 	}
 
 	chunks := 0
-	for range e.Stream(context.Background(), "in", graph.Options{ThreadID: "1"}) {
+	for range e.Stream(t.Context(), "in", graph.Options{ThreadID: "1"}) {
 		chunks++
 		break
 	}
@@ -582,5 +581,5 @@ func TestEntrypointInvokePanicTeardown(t *testing.T) {
 			t.Fatalf("recover = %v, want the original saver panic to propagate", r)
 		}
 	}()
-	_, _ = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
+	_, _ = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
 }

@@ -2,7 +2,8 @@ package runnables
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -277,7 +278,7 @@ func commonIDPrefix(source, target string) string {
 	tgtParts := strings.Split(target, ":")
 	n := min(len(srcParts), len(tgtParts))
 	common := []string{}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if srcParts[i] != tgtParts[i] {
 			break
 		}
@@ -323,11 +324,7 @@ func frontmatterYAML(config map[string]any) string {
 }
 
 func emitYAMLMap(b *strings.Builder, values map[string]any, indent int) {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(values))
 	pad := strings.Repeat(" ", indent)
 	for _, key := range keys {
 		switch value := values[key].(type) {

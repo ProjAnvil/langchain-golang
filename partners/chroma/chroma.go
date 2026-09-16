@@ -3,6 +3,7 @@ package chroma
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -207,10 +209,7 @@ func (s *Store) UpsertDocuments(ctx context.Context, docs []documents.Document) 
 	ids := make([]string, len(docs))
 	metadatas := make([]map[string]any, len(docs))
 	for i, doc := range docs {
-		id := doc.ID
-		if id == "" {
-			id = newID()
-		}
+		id := cmp.Or(doc.ID, newID())
 		ids[i] = id
 		metadatas[i] = cloneMetadata(doc.Metadata)
 	}
@@ -806,7 +805,7 @@ func maximalMarginalRelevance(
 		nextIndex := -1
 		nextScore := math.Inf(-1)
 		for i := range embeddings {
-			if containsInt(selected, i) {
+			if slices.Contains(selected, i) {
 				continue
 			}
 			var redundantScore float64
@@ -865,15 +864,6 @@ func newID() string {
 		return fmt.Sprintf("doc-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
-}
-
-func containsInt(values []int, needle int) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
 }
 
 func minInt(a, b int) int {

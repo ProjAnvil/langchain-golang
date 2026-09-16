@@ -29,7 +29,7 @@ func TestDynamicPromptStringPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewModelRequest: %v", err)
 	}
-	resp, err := hook.WrapModelCall(context.Background(), req, echoSystemPromptHandler)
+	resp, err := hook.WrapModelCall(t.Context(), req, echoSystemPromptHandler)
 	if err != nil {
 		t.Fatalf("WrapModelCall: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestDynamicPromptUsesState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewModelRequest: %v", err)
 	}
-	resp, err := hook.WrapModelCall(context.Background(), req, echoSystemPromptHandler)
+	resp, err := hook.WrapModelCall(t.Context(), req, echoSystemPromptHandler)
 	if err != nil {
 		t.Fatalf("WrapModelCall: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestDynamicPromptSystemMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewModelRequest: %v", err)
 	}
-	resp, err := hook.WrapModelCall(context.Background(), req, func(_ context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
+	resp, err := hook.WrapModelCall(t.Context(), req, func(_ context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
 		if r.SystemMessage == nil || r.SystemMessage.Content != "full system message" {
 			t.Fatalf("system message mismatch: %#v", r.SystemMessage)
 		}
@@ -102,7 +102,7 @@ func TestDynamicPromptSystemMessagePointer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewModelRequest: %v", err)
 	}
-	resp, err := hook.WrapModelCall(context.Background(), req, func(_ context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
+	resp, err := hook.WrapModelCall(t.Context(), req, func(_ context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
 		if r.SystemMessage == nil || r.SystemMessage.Content != "pointer system message" {
 			t.Fatalf("system message mismatch: %#v", r.SystemMessage)
 		}
@@ -126,7 +126,7 @@ func TestDynamicPromptNilPromptLeavesRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewModelRequest: %v", err)
 	}
-	resp, err := hook.WrapModelCall(context.Background(), req, echoSystemPromptHandler)
+	resp, err := hook.WrapModelCall(t.Context(), req, echoSystemPromptHandler)
 	if err != nil || resp.Result[0].Content != "Original" {
 		t.Fatalf("WrapModelCall: err=%v resp=%#v", err, resp)
 	}
@@ -138,7 +138,7 @@ func TestDynamicPromptInvalidReturn(t *testing.T) {
 		return 42, nil
 	})
 	handlerCalled := false
-	_, err := hook.WrapModelCall(context.Background(), middleware.ModelRequest{}, func(_ context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
+	_, err := hook.WrapModelCall(t.Context(), middleware.ModelRequest{}, func(_ context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
 		handlerCalled = true
 		return middleware.ModelResponse{}, nil
 	})
@@ -155,7 +155,7 @@ func TestDynamicPromptFuncErrorPropagates(t *testing.T) {
 	hook := DynamicPrompt(func(_ context.Context, _ middleware.ModelRequest) (any, error) {
 		return nil, fmt.Errorf("prompt boom")
 	})
-	_, err := hook.WrapModelCall(context.Background(), middleware.ModelRequest{}, echoSystemPromptHandler)
+	_, err := hook.WrapModelCall(t.Context(), middleware.ModelRequest{}, echoSystemPromptHandler)
 	if err == nil || !strings.Contains(err.Error(), "prompt boom") {
 		t.Fatalf("expected fn error, got %v", err)
 	}
@@ -174,7 +174,7 @@ func TestDynamicPromptIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Hello")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Hello")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestDynamicPromptOverwritesSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Hello")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Hello")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	invoked := model.invocations[0]
@@ -230,7 +230,7 @@ func TestDynamicPromptLastInChainWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("Hello")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("Hello")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	invoked := model.invocations[0]

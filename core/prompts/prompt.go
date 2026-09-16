@@ -3,8 +3,9 @@ package prompts
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"regexp"
-	"sort"
+	"slices"
 	"text/template"
 
 	"github.com/projanvil/langchain-golang/core/chathistory"
@@ -103,9 +104,9 @@ func (p PromptTemplate) Partial(values map[string]any) (PromptTemplate, error) {
 // partial variables are applied.
 func (p PromptTemplate) Validate(expected []string) error {
 	got := p.InputVariables()
-	sort.Strings(got)
+	slices.Sort(got)
 	want := append([]string(nil), expected...)
-	sort.Strings(want)
+	slices.Sort(want)
 	if len(got) != len(want) {
 		return fmt.Errorf("prompt variables mismatch: got %v want %v", got, want)
 	}
@@ -286,7 +287,7 @@ func (t ImagePromptTemplate) InputVariables() []string {
 	for variable := range seen {
 		out = append(out, variable)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -329,12 +330,7 @@ func NewDictContentTemplate(template map[string]any) DictContentTemplate {
 func (t DictContentTemplate) InputVariables() []string {
 	seen := map[string]bool{}
 	collectTemplateVariables(t.Prompt.Template, seen)
-	out := make([]string, 0, len(seen))
-	for variable := range seen {
-		out = append(out, variable)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func (t DictContentTemplate) FormatContentBlock(values map[string]any) (messages.ContentBlock, bool, error) {
@@ -513,12 +509,7 @@ func (p ChatPromptTemplate) InputVariables() []string {
 	for key := range p.partials {
 		delete(seen, key)
 	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // FormatMessages renders all messages in order.
@@ -611,12 +602,7 @@ func templateVariables(templateText string, partials map[string]any) []string {
 		}
 		seen[name] = true
 	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func collectTemplateVariables(value any, seen map[string]bool) {

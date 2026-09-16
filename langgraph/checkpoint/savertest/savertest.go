@@ -539,13 +539,11 @@ func testConcurrentPut(t *testing.T, newSaver func(t *testing.T) checkpoint.Save
 	const putsPerGoroutine = 5
 	errs := make(chan error, goroutines*putsPerGoroutine)
 	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
+	for g := range goroutines {
+		wg.Go(func() {
 			threadID := fmt.Sprintf("thread-%d", g)
 			cfg := checkpoint.Config{ThreadID: threadID}
-			for i := 0; i < putsPerGoroutine; i++ {
+			for i := range putsPerGoroutine {
 				cp := sampleCheckpoint(checkpoint.NewID(g*putsPerGoroutine + i + 1))
 				next, err := s.Put(ctx, cfg, cp, checkpoint.Metadata{Source: "loop", Step: i}, nil)
 				if err != nil {
@@ -558,7 +556,7 @@ func testConcurrentPut(t *testing.T, newSaver func(t *testing.T) checkpoint.Save
 				}
 				cfg = next
 			}
-		}(g)
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -568,7 +566,7 @@ func testConcurrentPut(t *testing.T, newSaver func(t *testing.T) checkpoint.Save
 	if t.Failed() {
 		return
 	}
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		list, err := s.List(ctx, checkpoint.Config{ThreadID: fmt.Sprintf("thread-%d", g)}, checkpoint.ListOptions{})
 		if err != nil {
 			t.Fatalf("List thread-%d: %v", g, err)

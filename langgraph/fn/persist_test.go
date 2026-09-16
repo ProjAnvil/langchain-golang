@@ -1,7 +1,6 @@
 package fn
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -62,10 +61,9 @@ func TestPersistReplaySkipsReexecution(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, []int{0, 1}, graph.Options{ThreadID: "1"})
-	var ierr *InterruptError
-	if !errors.As(err, &ierr) {
+	if _, ok := errors.AsType[*InterruptError](err); !ok {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 	if got := calls.Load(); got != 2 {
@@ -108,10 +106,9 @@ func TestPersistReplayFalsyResult(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
-	var ierr *InterruptError
-	if !errors.As(err, &ierr) {
+	if _, ok := errors.AsType[*InterruptError](err); !ok {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 
@@ -150,7 +147,7 @@ func TestPersistErrorRethrow(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, "in1", graph.Options{ThreadID: "t"})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("first Invoke() error = %v, want one containing %q", err, "boom")
@@ -225,7 +222,7 @@ func TestPersistChainedPauseRestamp(t *testing.T) {
 				return nil, err
 			}
 			answers := make([]string, 0, n)
-			for i := 0; i < n; i++ {
+			for i := range n {
 				a, _ := graph.Interrupt(ctx, fmt.Sprintf("q%d", i)).(string)
 				answers = append(answers, a)
 			}
@@ -235,15 +232,15 @@ func TestPersistChainedPauseRestamp(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
-	var ierr *InterruptError
-	if !errors.As(err, &ierr) {
+	ierr, ok := errors.AsType[*InterruptError](err)
+	if !ok {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 
 	_, err = e.Invoke(ctx, "ignored", graph.Options{ThreadID: "1", Resume: "answer1"})
-	if !errors.As(err, &ierr) {
+	if ierr, ok = errors.AsType[*InterruptError](err); !ok {
 		t.Fatalf("second Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 	if len(ierr.Interrupts) != 1 || ierr.Interrupts[0].Value != "q1" {
@@ -332,10 +329,9 @@ func TestPersistInterruptKeepsBufferedResults(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = e.Invoke(ctx, "in", graph.Options{ThreadID: "1"})
-	var ierr *InterruptError
-	if !errors.As(err, &ierr) {
+	if _, ok := errors.AsType[*InterruptError](err); !ok {
 		t.Fatalf("first Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 	if got := aCalls.Load(); got != 1 {
@@ -400,9 +396,8 @@ func TestPersistDisabledWithoutCheckpointer(t *testing.T) {
 		t.Fatalf("NewEntrypoint: %v", err)
 	}
 
-	_, err = e.Invoke(context.Background(), "in", graph.Options{ThreadID: "1"})
-	var ierr *InterruptError
-	if !errors.As(err, &ierr) {
+	_, err = e.Invoke(t.Context(), "in", graph.Options{ThreadID: "1"})
+	if _, ok := errors.AsType[*InterruptError](err); !ok {
 		t.Fatalf("Invoke() error = %v (%T), want *InterruptError", err, err)
 	}
 	if got := calls.Load(); got != 1 {

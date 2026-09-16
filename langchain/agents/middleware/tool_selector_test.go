@@ -47,7 +47,7 @@ func TestToolSelectorSystemPromptOption(t *testing.T) {
 		}),
 	)
 	request := selectorRequest(t, "model", mustTool(t, "search"))
-	_, err := selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestToolSelectorCallbackErrorPropagates(t *testing.T) {
 		return nil, wantErr
 	}))
 	request := selectorRequest(t, "model", mustTool(t, "search"))
-	_, err := selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if !errors.Is(err, wantErr) {
@@ -72,7 +72,7 @@ func TestToolSelectorCallbackErrorPropagates(t *testing.T) {
 func TestToolSelectorRequiresSelectionFunc(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware()
 	request := selectorRequest(t, "model", mustTool(t, "search"))
-	_, err := selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires a selection function") {
@@ -84,7 +84,7 @@ func TestToolSelectorStructuredErrorPropagates(t *testing.T) {
 	fake := &failingStructuredChatModel{FakeChatModel: language.NewFakeChatModel(), err: errors.New("structured down")}
 	selector := NewLLMToolSelectorMiddleware(WithToolSelectorModel(fake))
 	request := selectorRequest(t, "model", mustTool(t, "search"))
-	_, err := selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "structured output") {
@@ -108,7 +108,7 @@ func TestToolSelectorStructuredParseFailures(t *testing.T) {
 			fake := newStructuredFakeChatModel(tt.response)
 			selector := NewLLMToolSelectorMiddleware(WithToolSelectorModel(fake))
 			request := selectorRequest(t, "model", mustTool(t, "search"))
-			_, err := selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+			_, err := selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 				return ModelResponse{}, nil
 			})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -130,7 +130,7 @@ func TestToolSelectorAllToolsAlwaysIncludedPassesThrough(t *testing.T) {
 	)
 	request := selectorRequest(t, "model", mustTool(t, "search"))
 	called := false
-	_, err := selector.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		called = true
 		if len(req.Tools) != 1 {
 			t.Fatalf("request should pass through unchanged: %#v", req.Tools)
@@ -147,7 +147,7 @@ func TestToolSelectorDeduplicatesSelection(t *testing.T) {
 		return []string{"search", "search"}, nil
 	}))
 	request := selectorRequest(t, "model", mustTool(t, "search"), mustTool(t, "calc"))
-	_, err := selector.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if len(req.Tools) != 1 {
 			t.Fatalf("duplicate selection should yield one tool: %#v", req.Tools)
 		}
@@ -169,7 +169,7 @@ func TestToolSelectorMaxToolsTruncates(t *testing.T) {
 		}),
 	)
 	request := selectorRequest(t, "model", mustTool(t, "search"), mustTool(t, "calc"))
-	_, err := selector.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if len(req.Tools) != 1 || req.Tools[0].(interface{ Name() string }).Name() != "search" {
 			t.Fatalf("max tools truncation mismatch: %#v", req.Tools)
 		}
@@ -186,7 +186,7 @@ func TestToolSelectorAlwaysIncludeMissingTool(t *testing.T) {
 		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) { return nil, nil }),
 	)
 	request := selectorRequest(t, "model", mustTool(t, "search"))
-	_, err := selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err := selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "always_include") {
@@ -206,7 +206,7 @@ func TestToolSelectorNoUserMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new model request: %v", err)
 	}
-	_, err = selector.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "no user message") {

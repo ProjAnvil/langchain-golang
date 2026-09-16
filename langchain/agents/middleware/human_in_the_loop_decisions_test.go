@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -36,23 +35,23 @@ func TestHumanInTheLoopMiddlewareNoMessagesOrCalls(t *testing.T) {
 		return nil, nil
 	})
 
-	update, err := middleware.AfterModel(context.Background(), map[string]any{})
+	update, err := middleware.AfterModel(t.Context(), map[string]any{})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without messages: %#v %v", update, err)
 	}
 
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{messages.Human("hi")}})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{messages.Human("hi")}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without AI message: %#v %v", update, err)
 	}
 
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{messages.AI("no calls")}})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{messages.AI("no calls")}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without tool calls: %#v %v", update, err)
 	}
 
 	// Tool call not present in InterruptOn: nothing to review.
-	update, err = middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{aiWithCalls(messages.ToolCall{ID: "1", Name: "other"})}})
+	update, err = middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{aiWithCalls(messages.ToolCall{ID: "1", Name: "other"})}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update for unconfigured tool: %#v %v", update, err)
 	}
@@ -71,7 +70,7 @@ func TestHumanInTheLoopMiddlewareWhenPredicate(t *testing.T) {
 		return nil, nil
 	})
 
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "1", Name: "search", Args: map[string]any{"q": "skip"}}),
 	}})
 	if err != nil || update != nil {
@@ -90,7 +89,7 @@ func TestHumanInTheLoopMiddlewareDefaultDescription(t *testing.T) {
 	// An empty prefix falls back to the standard one.
 	middleware.DescriptionPrefix = ""
 
-	_, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "1", Name: "search", Args: map[string]any{"q": "x"}}),
 	}})
 	if err != nil {
@@ -115,7 +114,7 @@ func TestHumanInTheLoopMiddlewareNilDecideIsInterruptMode(t *testing.T) {
 	if !middleware.HitlInterruptEnabled() {
 		t.Fatal("nil Decide must enable interrupt mode")
 	}
-	update, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	update, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "1", Name: "search"}),
 	}})
 	if err != nil || update != nil {
@@ -128,7 +127,7 @@ func TestHumanInTheLoopMiddlewareDecideErrorPropagates(t *testing.T) {
 	middleware := NewHumanInTheLoopMiddleware(map[string]InterruptConfig{
 		"search": {AllowedDecisions: []DecisionType{DecisionApprove}},
 	}, func(HITLRequest) ([]Decision, error) { return nil, wantErr })
-	_, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "1", Name: "search"}),
 	}})
 	if !errors.Is(err, wantErr) {
@@ -183,7 +182,7 @@ func TestHumanInTheLoopMiddlewareDecisionErrorPropagates(t *testing.T) {
 	}, func(HITLRequest) ([]Decision, error) {
 		return []Decision{{Type: DecisionReject}}, nil // not allowed for this config
 	})
-	_, err := middleware.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{
+	_, err := middleware.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{
 		aiWithCalls(messages.ToolCall{ID: "1", Name: "search"}),
 	}})
 	if err == nil || !strings.Contains(err.Error(), "is not allowed") {

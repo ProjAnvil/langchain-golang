@@ -3,6 +3,7 @@ package openai
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -146,12 +147,12 @@ func (s *responseStream) next(ctx context.Context) (messages.Message, bool, erro
 			}
 			continue
 		}
-		if strings.HasPrefix(line, "event:") {
-			s.eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		if rest, ok := strings.CutPrefix(line, "event:"); ok {
+			s.eventName = strings.TrimSpace(rest)
 			continue
 		}
-		if strings.HasPrefix(line, "data:") {
-			s.data = append(s.data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		if rest, ok := strings.CutPrefix(line, "data:"); ok {
+			s.data = append(s.data, strings.TrimSpace(rest))
 		}
 	}
 }
@@ -185,10 +186,7 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		_ = s.emitError(ctx, err)
 		return messages.Message{}, false, err
 	}
-	eventType := event.Type
-	if eventType == "" {
-		eventType = s.eventName
-	}
+	eventType := cmp.Or(event.Type, s.eventName)
 
 	switch eventType {
 	case "response.output_text.delta":

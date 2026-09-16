@@ -1,6 +1,7 @@
 package textsplitters
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 
@@ -35,12 +36,8 @@ func NewSentence(tokenizer SentenceTokenizer, separator string, language string,
 	if tokenizer == nil {
 		return nil, fmt.Errorf("sentence tokenizer is required")
 	}
-	if separator == "" {
-		separator = "\n\n"
-	}
-	if language == "" {
-		language = "english"
-	}
+	separator = cmp.Or(separator, "\n\n")
+	language = cmp.Or(language, "english")
 	if cfg.ChunkSize == 0 && cfg.ChunkOverlap == 0 && cfg.LengthFunc == nil {
 		cfg.StripWhitespace = true
 	}
@@ -63,9 +60,7 @@ func NewSentenceSpans(tokenizer SentenceSpanTokenizer, language string, cfg Conf
 	if tokenizer == nil {
 		return nil, fmt.Errorf("sentence span tokenizer is required")
 	}
-	if language == "" {
-		language = "english"
-	}
+	language = cmp.Or(language, "english")
 	if cfg.ChunkSize == 0 && cfg.ChunkOverlap == 0 && cfg.LengthFunc == nil {
 		cfg.StripWhitespace = true
 	}
@@ -112,10 +107,7 @@ func (s *SentenceTextSplitter) CreateDocuments(texts []string, metadatas []map[s
 		for _, chunk := range chunks {
 			chunkMetadata := cloneMetadata(metadata)
 			if s.cfg.AddStartIndex {
-				offset := index + previousChunkLen - s.cfg.ChunkOverlap
-				if offset < 0 {
-					offset = 0
-				}
+				offset := max(index+previousChunkLen-s.cfg.ChunkOverlap, 0)
 				found := strings.Index(text[offset:], chunk)
 				if found >= 0 {
 					index = offset + found

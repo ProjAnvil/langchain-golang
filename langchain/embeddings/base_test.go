@@ -2,7 +2,7 @@ package embeddings
 
 import (
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -202,7 +202,7 @@ func TestSupportedProvidersPackageNames(t *testing.T) {
 func TestBuiltinProvidersSorted(t *testing.T) {
 	names := BuiltinProviderNames()
 	sorted := append([]string(nil), names...)
-	sort.Strings(sorted)
+	slices.Sort(sorted)
 	if !reflect.DeepEqual(names, sorted) {
 		t.Fatalf("providers are not sorted: got %#v want %#v", names, sorted)
 	}

@@ -63,7 +63,7 @@ func TestStreamEventsAutoAttachesLangSmithTracer(t *testing.T) {
 	)
 	var sawEvents int
 	for event, err := range runnables.StreamEvents(
-		context.Background(), chain, "go", runnables.StreamEventOptions{},
+		t.Context(), chain, "go", runnables.StreamEventOptions{},
 	) {
 		if err != nil {
 			t.Fatalf("stream event error: %v", err)

@@ -10,7 +10,7 @@ import (
 )
 
 func TestAddMessageImplementationOnlySupportsBulkAdd(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := []messages.Message{}
 	history := &BaseChatMessageHistory{
 		AddMessageFunc: func(_ context.Context, message messages.Message) error {
@@ -45,7 +45,7 @@ func TestAddMessageImplementationOnlySupportsBulkAdd(t *testing.T) {
 }
 
 func TestBulkMessageImplementationOnlySupportsSingleAdd(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := []messages.Message{}
 	history := &BaseChatMessageHistory{
 		AddMessagesFunc: func(_ context.Context, batch []messages.Message) error {
@@ -80,7 +80,7 @@ func TestBulkMessageImplementationOnlySupportsSingleAdd(t *testing.T) {
 }
 
 func TestInMemoryChatMessageHistory(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	history := NewInMemoryChatMessageHistory()
 
 	if err := history.AddMessages(ctx, []messages.Message{
@@ -128,7 +128,7 @@ func TestInMemoryChatMessageHistory(t *testing.T) {
 }
 
 func TestBaseChatMessageHistoryMessages(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	want := []messages.Message{messages.Human("hi")}
 
 	history := &BaseChatMessageHistory{
@@ -151,7 +151,7 @@ func TestBaseChatMessageHistoryMessages(t *testing.T) {
 }
 
 func TestBaseChatMessageHistoryUnimplemented(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	history := &BaseChatMessageHistory{}
 
 	if err := history.AddMessage(ctx, messages.Human("hi")); !errors.Is(err, ErrNotImplemented) {
@@ -178,7 +178,7 @@ func TestBaseChatMessageHistoryUnimplemented(t *testing.T) {
 }
 
 func TestBaseChatMessageHistoryAddMessagesPropagatesError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	boom := errors.New("boom")
 	history := &BaseChatMessageHistory{
 		AddMessageFunc: func(_ context.Context, message messages.Message) error {
@@ -200,7 +200,7 @@ func TestBaseChatMessageHistoryAddMessagesPropagatesError(t *testing.T) {
 }
 
 func TestBaseChatMessageHistoryAddUserAndAIMessage(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := []messages.Message{}
 	history := &BaseChatMessageHistory{
 		AddMessageFunc: func(_ context.Context, message messages.Message) error {
@@ -254,7 +254,7 @@ func TestBaseChatMessageHistoryString(t *testing.T) {
 }
 
 func TestInMemoryChatMessageHistoryConvenienceMethods(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	history := NewInMemoryChatMessageHistory(messages.System("be nice"))
 
 	if err := history.AddUserMessage(ctx, "hello"); err != nil {
@@ -287,7 +287,7 @@ func TestInMemoryChatMessageHistoryClonesInitialMessages(t *testing.T) {
 	history := NewInMemoryChatMessageHistory(initial...)
 
 	initial[0] = messages.Human("mutated")
-	got, err := history.Messages(context.Background())
+	got, err := history.Messages(t.Context())
 	if err != nil {
 		t.Fatalf("messages: %v", err)
 	}

@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -36,7 +35,7 @@ func TestChatModelRetriesRateLimit(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		modelconfig.WithMaxRetries(1),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {
@@ -63,7 +62,7 @@ func TestChatModelDoesNotRetryBadRequest(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 		modelconfig.WithMaxRetries(2),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{
+	_, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("hello"),
 	})
 	if err == nil {

@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -18,7 +17,7 @@ import (
 func TestJSONModeResponsesAPIRequest(t *testing.T) {
 	server, got := toolChoiceServer(t, toolChoiceResponsesBody)
 	model := toolChoiceBoundModel(t, server.URL, false).WithJSONMode()
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	text, ok := (*got)["text"].(map[string]any)
@@ -37,7 +36,7 @@ func TestJSONModeResponsesAPIRequest(t *testing.T) {
 func TestJSONModeChatCompletionsRequest(t *testing.T) {
 	server, got := toolChoiceServer(t, toolChoiceChatBody)
 	model := toolChoiceBoundModel(t, server.URL, true).WithJSONMode()
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	format, ok := (*got)["response_format"].(map[string]any)
@@ -57,7 +56,7 @@ func TestResponseFormatRawPassthroughChatCompletions(t *testing.T) {
 	}
 	server, got := toolChoiceServer(t, toolChoiceChatBody)
 	model := toolChoiceBoundModel(t, server.URL, true).WithResponseFormat(raw)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	format, ok := (*got)["response_format"].(map[string]any)
@@ -83,7 +82,7 @@ func TestResponseFormatJSONSchemaResponsesAPIFlattens(t *testing.T) {
 	}
 	server, got := toolChoiceServer(t, toolChoiceResponsesBody)
 	model := toolChoiceBoundModel(t, server.URL, false).WithResponseFormat(raw)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	text, ok := (*got)["text"].(map[string]any)
@@ -104,7 +103,7 @@ func TestStructuredOutputWinsOverResponseFormat(t *testing.T) {
 	model := toolChoiceBoundModel(t, server.URL, false).
 		WithJSONMode().
 		WithStructuredOutput("joke", map[string]any{"type": "object"}, true)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	text, ok := (*got)["text"].(map[string]any)
@@ -128,7 +127,7 @@ func TestStructuredOutputChatCompletionsRequest(t *testing.T) {
 	server, got := toolChoiceServer(t, toolChoiceChatBody)
 	model := toolChoiceBoundModel(t, server.URL, true).
 		WithStructuredOutput("joke", map[string]any{"type": "object"}, true)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	format, ok := (*got)["response_format"].(map[string]any)
@@ -198,7 +197,7 @@ func TestInvokeStructuredChatCompletionsRequest(t *testing.T) {
 	}, "answer")
 	sch["title"] = "answer_schema"
 
-	if _, err := model.InvokeStructured(context.Background(), []messages.Message{
+	if _, err := model.InvokeStructured(t.Context(), []messages.Message{
 		messages.Human("answer yes"),
 	}, sch); err != nil {
 		t.Fatalf("InvokeStructured: %v", err)

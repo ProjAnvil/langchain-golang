@@ -1,7 +1,6 @@
 package checkpoint
 
 import (
-	"context"
 	"testing"
 )
 
@@ -9,7 +8,7 @@ import (
 // BaseCheckpointSaver.get (base/__init__.py:227-238): the checkpoint value
 // without metadata/parent/writes, nil when no checkpoint exists.
 func TestGet(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewMemorySaver()
 
 	if got, err := Get(ctx, s, Config{ThreadID: "no-such-thread"}); err != nil || got != nil {

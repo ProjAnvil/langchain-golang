@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +64,7 @@ func TestShellToolMiddlewareToolInvocation(t *testing.T) {
 		t.Fatalf("tools mismatch: %#v", middleware.Tools)
 	}
 
-	result, err := middleware.Tools[0].Invoke(context.Background(), map[string]any{"command": "printf hi"})
+	result, err := middleware.Tools[0].Invoke(t.Context(), map[string]any{"command": "printf hi"})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -77,12 +76,12 @@ func TestShellToolMiddlewareToolInvocation(t *testing.T) {
 	}
 
 	// A failing run surfaces the error.
-	if _, err := middleware.Tools[0].Invoke(context.Background(), map[string]any{}); err == nil {
+	if _, err := middleware.Tools[0].Invoke(t.Context(), map[string]any{}); err == nil {
 		t.Fatal("expected error for empty command")
 	}
 
 	// Restart via the tool.
-	result, err = middleware.Tools[0].Invoke(context.Background(), map[string]any{"restart": true})
+	result, err = middleware.Tools[0].Invoke(t.Context(), map[string]any{"restart": true})
 	if err != nil || !strings.Contains(result.Content, "restarted") {
 		t.Fatalf("restart result mismatch: %#v %v", result, err)
 	}
@@ -97,7 +96,7 @@ func TestShellToolMiddlewareEnvAndSingleArgShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "printf %s \"$LG_TEST_VAR\"", false)
+	result, err := middleware.Run(t.Context(), "printf %s \"$LG_TEST_VAR\"", false)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -113,7 +112,7 @@ func TestShellToolMiddlewareZeroTimeoutDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "printf ok", false)
+	result, err := middleware.Run(t.Context(), "printf ok", false)
 	if err != nil || result.Output != "ok" {
 		t.Fatalf("run mismatch: %#v %v", result, err)
 	}
@@ -124,7 +123,7 @@ func TestShellToolMiddlewareMissingShellBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	if _, err := middleware.Run(context.Background(), "printf hi", false); err == nil {
+	if _, err := middleware.Run(t.Context(), "printf hi", false); err == nil {
 		t.Fatal("expected spawn error for missing shell binary")
 	}
 }
@@ -134,7 +133,7 @@ func TestShellToolMiddlewareMergesStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "printf out; printf err >&2", false)
+	result, err := middleware.Run(t.Context(), "printf out; printf err >&2", false)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -148,7 +147,7 @@ func TestShellToolMiddlewareEmptyOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "true", false)
+	result, err := middleware.Run(t.Context(), "true", false)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
@@ -166,7 +165,7 @@ func TestShellToolMiddlewareRedactionBlockError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	if _, err := middleware.Run(context.Background(), "printf user@example.com", false); err == nil {
+	if _, err := middleware.Run(t.Context(), "printf user@example.com", false); err == nil {
 		t.Fatal("expected redaction block error")
 	}
 }
@@ -177,10 +176,10 @@ func TestShellAfterAgentWithoutResources(t *testing.T) {
 		t.Fatalf("new shell middleware: %v", err)
 	}
 	// No resources in state (and nil state): AfterAgent is a no-op.
-	if err := middleware.AfterAgent(context.Background(), nil); err != nil {
+	if err := middleware.AfterAgent(t.Context(), nil); err != nil {
 		t.Fatalf("after agent: %v", err)
 	}
-	if err := middleware.AfterAgent(context.Background(), map[string]any{}); err != nil {
+	if err := middleware.AfterAgent(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("after agent: %v", err)
 	}
 }
@@ -194,13 +193,13 @@ func TestShellStartupCommandSpawnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	_, err = middleware.BeforeAgent(context.Background(), map[string]any{})
+	_, err = middleware.BeforeAgent(t.Context(), map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "startup command") {
 		t.Fatalf("expected startup spawn error, got %v", err)
 	}
 
 	// RunWithState surfaces the same resource-creation failure.
-	if _, err := middleware.RunWithState(context.Background(), map[string]any{}, "printf hi", false); err == nil {
+	if _, err := middleware.RunWithState(t.Context(), map[string]any{}, "printf hi", false); err == nil {
 		t.Fatal("expected RunWithState to fail when resources cannot be created")
 	}
 }
@@ -214,7 +213,7 @@ func TestShellRunWithStateRestartFailure(t *testing.T) {
 	state := map[string]any{}
 	// Seed resources manually so the restart path runs its startup commands.
 	state[ShellSessionResourcesKey] = &ShellSessionResources{WorkspaceRoot: middleware.WorkspaceRoot}
-	if _, err := middleware.RunWithState(context.Background(), state, "", true); err == nil ||
+	if _, err := middleware.RunWithState(t.Context(), state, "", true); err == nil ||
 		!strings.Contains(err.Error(), "exit code 3") {
 		t.Fatalf("expected restart startup failure, got %v", err)
 	}
@@ -232,10 +231,10 @@ func TestShellPersistentSessionLifecycle(t *testing.T) {
 	}
 
 	// cwd persists across commands in the persistent session.
-	if _, err := middleware.Run(context.Background(), "cd /tmp", false); err != nil {
+	if _, err := middleware.Run(t.Context(), "cd /tmp", false); err != nil {
 		t.Fatalf("run cd: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "pwd", false)
+	result, err := middleware.Run(t.Context(), "pwd", false)
 	if err != nil {
 		t.Fatalf("run pwd: %v", err)
 	}
@@ -245,10 +244,10 @@ func TestShellPersistentSessionLifecycle(t *testing.T) {
 
 	// AfterAgent stops the persistent session.
 	state := map[string]any{}
-	if _, err := middleware.BeforeAgent(context.Background(), state); err != nil {
+	if _, err := middleware.BeforeAgent(t.Context(), state); err != nil {
 		t.Fatalf("before agent: %v", err)
 	}
-	if err := middleware.AfterAgent(context.Background(), state); err != nil {
+	if err := middleware.AfterAgent(t.Context(), state); err != nil {
 		t.Fatalf("after agent: %v", err)
 	}
 	middleware.sessionMu.Lock()
@@ -265,7 +264,7 @@ func TestShellPersistentSessionShellExitError(t *testing.T) {
 		t.Fatalf("new shell middleware: %v", err)
 	}
 	// "exit" terminates the persistent shell; reading its output fails.
-	if _, err := middleware.Run(context.Background(), "exit", false); err == nil {
+	if _, err := middleware.Run(t.Context(), "exit", false); err == nil {
 		t.Fatal("expected error after the persistent shell exits")
 	}
 	middleware.stopPersistentSession(time.Second)
@@ -278,7 +277,7 @@ func TestShellPersistentSessionTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new shell middleware: %v", err)
 	}
-	result, err := middleware.Run(context.Background(), "sleep 2", false)
+	result, err := middleware.Run(t.Context(), "sleep 2", false)
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}

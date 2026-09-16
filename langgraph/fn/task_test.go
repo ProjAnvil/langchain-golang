@@ -47,12 +47,12 @@ func TestCallOutsideEntrypointPanics(t *testing.T) {
 			t.Fatalf("panic = %q, want a message mentioning Entrypoint", msg)
 		}
 	}()
-	task.Call(context.Background(), 1)
+	task.Call(t.Context(), 1)
 }
 
 func TestCallStartsImmediately(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	started := make(chan struct{})
 	task := NewTask[int, int]("double", func(_ runtime.Runtime, in int) (int, error) {
 		close(started)
@@ -73,7 +73,7 @@ func TestCallStartsImmediately(t *testing.T) {
 
 func TestConcurrentFutures(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	task := NewTask[int, int]("sleep", func(_ runtime.Runtime, in int) (int, error) {
 		// Later calls sleep less: an in-order result under a serial
 		// execution would take 20*(5+4+3+2+1) = 300ms.
@@ -103,10 +103,10 @@ func TestConcurrentFutures(t *testing.T) {
 
 func TestCallCounterDeterministic(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	task := NewTask[int, int]("id", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if v, err := task.Call(ctx, i).Get(ctx); err != nil || v != i {
 			t.Fatalf("call %d: Get = (%v, %v), want (%d, nil)", i, v, err, i)
 		}
@@ -127,7 +127,7 @@ func TestCallCounterDeterministic(t *testing.T) {
 
 func TestNestedTask(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	var aPath, bPath string
 	b := NewTask[int, int]("b", func(ctx runtime.Runtime, in int) (int, error) {
 		bPath, _ = ctx.Value(callPathKey{}).(string)
@@ -164,7 +164,7 @@ func TestNestedTask(t *testing.T) {
 
 func TestRetrySucceedsAfterFailures(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	var calls atomic.Int32
 	task := NewTask[int, int]("flaky", func(_ runtime.Runtime, in int) (int, error) {
 		if calls.Add(1) < 3 {
@@ -184,7 +184,7 @@ func TestRetrySucceedsAfterFailures(t *testing.T) {
 
 func TestRetryExhaustedReturnsLastError(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	var calls atomic.Int32
 	task := NewTask[int, int]("always", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
@@ -192,8 +192,7 @@ func TestRetryExhaustedReturnsLastError(t *testing.T) {
 	}, TaskOpts{Retry: &graph.RetryPolicy{MaxAttempts: 2, InitialInterval: time.Millisecond, NoJitter: true}})
 
 	_, err := task.Call(ctx, 1).Get(ctx)
-	var dnsErr *net.DNSError
-	if !errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); !ok {
 		t.Fatalf("Get error = %v, want the last *net.DNSError", err)
 	}
 	if got := calls.Load(); got != 2 {
@@ -207,7 +206,7 @@ func TestRetryExhaustedReturnsLastError(t *testing.T) {
 
 func TestRetryOnFalseNeverRetries(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	var calls atomic.Int32
 	task := NewTask[int, int]("once", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
@@ -231,7 +230,7 @@ func TestRetryPlainErrorUnderRelaxedDefaultRetryOn(t *testing.T) {
 	// change retries PLAIN errors (not just net.Error/DeadlineExceeded/5xx):
 	// a task failing with a plain error exhausts MaxAttempts.
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	var calls atomic.Int32
 	task := NewTask[int, int]("plain", func(_ runtime.Runtime, in int) (int, error) {
 		calls.Add(1)
@@ -251,7 +250,7 @@ func TestRetryNonRetryableErrorNeverRetries(t *testing.T) {
 	// graph.NonRetryable opts an error out of the relaxed default: a task
 	// wrapping its error is executed exactly once.
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	var calls atomic.Int32
 	sentinel := errors.New("permanent")
 	task := NewTask[int, int]("perm", func(_ runtime.Runtime, in int) (int, error) {
@@ -277,7 +276,7 @@ func TestTaskCache(t *testing.T) {
 	}, TaskOpts{Cache: &graph.CachePolicy{}})
 
 	call := func(d *dispatcher) (int, error) {
-		return task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+		return task.Call(contextWithDispatcher(t.Context(), d), 5).Get(t.Context())
 	}
 
 	v, err := call(newDispatcher(cache))
@@ -301,7 +300,7 @@ func TestTaskCache(t *testing.T) {
 		t.Fatalf("cache-hit results = %+v, want the hit re-recorded", got)
 	}
 
-	if err := task.ClearCache(context.Background(), cache); err != nil {
+	if err := task.ClearCache(t.Context(), cache); err != nil {
 		t.Fatalf("ClearCache error = %v, want nil", err)
 	}
 	if _, err := call(newDispatcher(cache)); err != nil {
@@ -323,7 +322,7 @@ func TestCacheKeyFuncReceivesInputMap(t *testing.T) {
 	}}})
 
 	d := newDispatcher(cache)
-	if _, err := task.Call(contextWithDispatcher(context.Background(), d), 7).Get(context.Background()); err != nil {
+	if _, err := task.Call(contextWithDispatcher(t.Context(), d), 7).Get(t.Context()); err != nil {
 		t.Fatalf("Get error = %v, want nil", err)
 	}
 	if want := (map[string]any{"input": 7}); !reflect.DeepEqual(got, want) {
@@ -341,7 +340,7 @@ func TestCacheKeyFuncErrorFailsTask(t *testing.T) {
 	}}})
 
 	d := newDispatcher(cache)
-	_, err := task.Call(contextWithDispatcher(context.Background(), d), 7).Get(context.Background())
+	_, err := task.Call(contextWithDispatcher(t.Context(), d), 7).Get(t.Context())
 	if !errors.Is(err, keyErr) || !strings.Contains(err.Error(), `task "k" cache key`) {
 		t.Fatalf("Get error = %v, want the wrapped key error", err)
 	}
@@ -352,7 +351,7 @@ func TestCacheKeyFuncErrorFailsTask(t *testing.T) {
 
 func TestTaskTimeout(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	finished := make(chan struct{})
 	task := NewTask[int, int]("slow", func(_ runtime.Runtime, in int) (int, error) {
 		time.Sleep(500 * time.Millisecond) // does not honor ctx
@@ -378,7 +377,7 @@ func TestTaskTimeout(t *testing.T) {
 
 func TestTaskPanicBecomesError(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	task := NewTask[int, int]("x", func(runtime.Runtime, int) (int, error) {
 		panic("boom")
 	}, TaskOpts{})
@@ -394,7 +393,7 @@ func TestTaskPanicBecomesError(t *testing.T) {
 
 func TestTaskGraphInterruptPassthrough(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	gi := &types.GraphInterrupt{Interrupt: types.Interrupt{Value: "q", ID: "n-1"}}
 	task := NewTask[int, int]("intr", func(runtime.Runtime, int) (int, error) {
 		panic(gi)
@@ -413,7 +412,7 @@ func TestTaskGraphInterruptPassthrough(t *testing.T) {
 			t.Fatalf("snapshotResults = %+v, want empty (interrupts are not recorded)", got)
 		}
 	}()
-	_, _ = fut.Get(context.Background())
+	_, _ = fut.Get(t.Context())
 }
 
 func TestRunCancelNotRecorded(t *testing.T) {
@@ -437,7 +436,7 @@ func TestRunCancelNotRecorded(t *testing.T) {
 
 func TestSealDropsLateResult(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	task := NewTask[int, int]("slow", func(_ runtime.Runtime, in int) (int, error) {
 		time.Sleep(100 * time.Millisecond) // does not honor ctx
 		return 7, nil
@@ -484,7 +483,7 @@ func TestCallReplayReturn(t *testing.T) {
 		return in * 2, nil
 	}, TaskOpts{})
 
-	v, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+	v, err := task.Call(contextWithDispatcher(t.Context(), d), 5).Get(t.Context())
 	if err != nil || v != 21 {
 		t.Fatalf("Get = (%v, %v), want (21, nil) from the replayed write", v, err)
 	}
@@ -508,7 +507,7 @@ func TestCallReplayError(t *testing.T) {
 		return in, nil
 	}, TaskOpts{})
 
-	_, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+	_, err := task.Call(contextWithDispatcher(t.Context(), d), 5).Get(t.Context())
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("Get error = %v, want boom", err)
 	}
@@ -526,7 +525,7 @@ func TestCallReplayTypeMismatch(t *testing.T) {
 	d := replayDispatcher(t, checkpoint.Write{TaskID: id, Channel: checkpoint.ReservedReturn, Value: "oops"})
 	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
 
-	_, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+	_, err := task.Call(contextWithDispatcher(t.Context(), d), 5).Get(t.Context())
 	if err == nil || !strings.Contains(err.Error(), `replayed result of task "a" has type string`) {
 		t.Fatalf("Get error = %v, want a descriptive type-mismatch error", err)
 	}
@@ -538,7 +537,7 @@ func TestCallReplayTypeMismatch(t *testing.T) {
 func TestCallReplayConcurrent(t *testing.T) {
 	const n = 20
 	writes := make([]checkpoint.Write, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		writes[i] = checkpoint.Write{
 			TaskID:  graph.FnTaskID("cp1", "", 3, "a", "", i),
 			Channel: checkpoint.ReservedReturn,
@@ -551,11 +550,11 @@ func TestCallReplayConcurrent(t *testing.T) {
 		calls.Add(1)
 		return in, nil
 	}, TaskOpts{})
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 
 	out := make(chan int, n)
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
 			v, err := task.Call(ctx, 0).Get(ctx)
 			if err != nil {
@@ -566,7 +565,7 @@ func TestCallReplayConcurrent(t *testing.T) {
 		}()
 	}
 	seen := make(map[int]bool, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		select {
 		case err := <-errs:
 			t.Fatalf("Get error = %v, want nil", err)
@@ -590,7 +589,7 @@ func TestCallReplayConcurrent(t *testing.T) {
 // every done channel is closed exactly once (verify with -race).
 func TestTaskConcurrentStress(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	task := NewTask[int, int]("work", func(_ runtime.Runtime, in int) (int, error) {
 		time.Sleep(time.Millisecond)
 		return in * 2, nil
@@ -598,9 +597,9 @@ func TestTaskConcurrentStress(t *testing.T) {
 
 	const n = 50
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
-			for j := 0; j < 4; j++ {
+			for j := range 4 {
 				v, err := task.Call(ctx, j).Get(ctx)
 				if err != nil || v != j*2 {
 					errs <- fmt.Errorf("Get = (%v, %v), want (%d, nil)", v, err, j*2)
@@ -610,7 +609,7 @@ func TestTaskConcurrentStress(t *testing.T) {
 			errs <- nil
 		}()
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		if err := <-errs; err != nil {
 			t.Fatal(err)
 		}
@@ -627,7 +626,7 @@ func TestTaskConcurrentStress(t *testing.T) {
 // backend is never touched), mirroring Python's `_TaskFunction.clear_cache`.
 func TestClearCacheNoPolicy(t *testing.T) {
 	task := NewTask[int, int]("plain", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
-	if err := task.ClearCache(context.Background(), checkpoint.NewInMemoryCache()); err != nil {
+	if err := task.ClearCache(t.Context(), checkpoint.NewInMemoryCache()); err != nil {
 		t.Fatalf("ClearCache error = %v, want nil for a cache-less task", err)
 	}
 }
@@ -640,7 +639,7 @@ func TestCallReplayErrorNonStringValue(t *testing.T) {
 	d := replayDispatcher(t, checkpoint.Write{TaskID: id, Channel: checkpoint.ReservedError, Value: 42})
 	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
 
-	_, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+	_, err := task.Call(contextWithDispatcher(t.Context(), d), 5).Get(t.Context())
 	if err == nil || err.Error() != "42" {
 		t.Fatalf("Get error = %v, want %q (fmt.Sprint of the non-string value)", err, "42")
 	}
@@ -660,7 +659,7 @@ func TestCallReplayUnexpectedChannel(t *testing.T) {
 	d.cpID, d.ns, d.step = "cp1", "", 3
 	task := NewTask[int, int]("a", func(_ runtime.Runtime, in int) (int, error) { return in, nil }, TaskOpts{})
 
-	_, err := task.Call(contextWithDispatcher(context.Background(), d), 5).Get(context.Background())
+	_, err := task.Call(contextWithDispatcher(t.Context(), d), 5).Get(t.Context())
 	if err == nil || !strings.Contains(err.Error(), `replayed write of task "a" has unexpected channel "__other__"`) {
 		t.Fatalf("Get error = %v, want an unexpected-channel error", err)
 	}
@@ -680,25 +679,25 @@ func TestCacheNamespaceAndTTLOverride(t *testing.T) {
 	}}})
 
 	d := newDispatcher(cache)
-	v, err := task.Call(contextWithDispatcher(context.Background(), d), 3).Get(context.Background())
+	v, err := task.Call(contextWithDispatcher(t.Context(), d), 3).Get(t.Context())
 	if err != nil || v != 6 {
 		t.Fatalf("first call: Get = (%v, %v), want (6, nil)", v, err)
 	}
 	// The result is stored under the KeyFunc namespace, not __fn_writes/ns.
-	writes, ok, err := cache.Get(context.Background(), "custom/ns", "k")
+	writes, ok, err := cache.Get(t.Context(), "custom/ns", "k")
 	if err != nil || !ok {
 		t.Fatalf("cache.Get(custom/ns, k) = (%v, %v, %v), want a hit", writes, ok, err)
 	}
 	if len(writes) != 1 || writes[0].Channel != checkpoint.ReservedReturn || writes[0].Value != 6 {
 		t.Fatalf("cached writes = %+v, want one __return__ write with value 6", writes)
 	}
-	if _, ok, err := cache.Get(context.Background(), fnCacheNS("ns"), "k"); err != nil || ok {
+	if _, ok, err := cache.Get(t.Context(), fnCacheNS("ns"), "k"); err != nil || ok {
 		t.Fatalf("cache.Get(%q, k) ok = %v, want a miss (namespace overridden)", fnCacheNS("ns"), ok)
 	}
 
 	// The next turn's lookup uses the same override and hits the cache.
 	d2 := newDispatcher(cache)
-	v, err = task.Call(contextWithDispatcher(context.Background(), d2), 3).Get(context.Background())
+	v, err = task.Call(contextWithDispatcher(t.Context(), d2), 3).Get(t.Context())
 	if err != nil || v != 6 {
 		t.Fatalf("cached call: Get = (%v, %v), want (6, nil)", v, err)
 	}
@@ -738,7 +737,7 @@ func TestCacheGetErrorFailsTask(t *testing.T) {
 	}, TaskOpts{Cache: &graph.CachePolicy{}})
 
 	d := newDispatcher(&errCache{getErr: boom})
-	_, err := task.Call(contextWithDispatcher(context.Background(), d), 7).Get(context.Background())
+	_, err := task.Call(contextWithDispatcher(t.Context(), d), 7).Get(t.Context())
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), `task "g" cache get`) {
 		t.Fatalf("Get error = %v, want the wrapped cache-get error", err)
 	}
@@ -758,7 +757,7 @@ func TestCacheSetErrorFailsTask(t *testing.T) {
 		TaskOpts{Cache: &graph.CachePolicy{}})
 
 	d := newDispatcher(&errCache{setErr: boom})
-	_, err := task.Call(contextWithDispatcher(context.Background(), d), 7).Get(context.Background())
+	_, err := task.Call(contextWithDispatcher(t.Context(), d), 7).Get(t.Context())
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), `task "s" cache set`) {
 		t.Fatalf("Get error = %v, want the wrapped cache-set error", err)
 	}
@@ -772,7 +771,7 @@ func TestCacheSetErrorFailsTask(t *testing.T) {
 // zero-value downgrade.
 func TestCachedResultTypeMismatch(t *testing.T) {
 	cache := checkpoint.NewInMemoryCache()
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := cache.Set(ctx, fnCacheNS("m"), "k1",
 		[]checkpoint.Write{{Channel: checkpoint.ReservedReturn, Value: "oops"}}, 0); err != nil {
 		t.Fatalf("cache.Set error = %v, want nil", err)
@@ -834,7 +833,7 @@ func TestRetryBackoffCanceled(t *testing.T) {
 // attempt-outcome branch of the timeout select).
 func TestTaskTimeoutFastSuccess(t *testing.T) {
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	task := NewTask[int, int]("fast", func(_ runtime.Runtime, in int) (int, error) {
 		return in * 2, nil
 	}, TaskOpts{Timeout: time.Minute})

@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"net/http/httptest"
 	"testing"
 
@@ -89,7 +88,7 @@ func TestStreamUsageChunkDisabled(t *testing.T) {
 		modelconfig.WithModel("m"),
 		WithStreamUsage(false),
 	)
-	stream, err := model.Stream(context.Background(),
+	stream, err := model.Stream(t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(callbacks.NewRecorder())),
 	)

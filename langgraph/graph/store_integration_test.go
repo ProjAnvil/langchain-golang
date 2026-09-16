@@ -8,7 +8,6 @@ package graph
 // BaseStore, mirroring Python's Runtime.store / create_agent(store=...)).
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/runtime"
@@ -55,7 +54,7 @@ func TestStoreRuntimeWiringWithinRun(t *testing.T) {
 		t.Fatalf("Compile: %v", err)
 	}
 
-	if _, err := cg.Invoke(context.Background(), map[string]any{}); err != nil {
+	if _, err := cg.Invoke(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 
@@ -90,7 +89,7 @@ func TestStoreSharedAcrossInvocations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile writer: %v", err)
 	}
-	if _, err := writeCG.Invoke(context.Background(), map[string]any{}); err != nil {
+	if _, err := writeCG.Invoke(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("Invoke writer: %v", err)
 	}
 
@@ -109,7 +108,7 @@ func TestStoreSharedAcrossInvocations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile reader: %v", err)
 	}
-	if _, err := readCG.Invoke(context.Background(), map[string]any{}); err != nil {
+	if _, err := readCG.Invoke(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("Invoke reader: %v", err)
 	}
 
@@ -122,7 +121,7 @@ func TestStoreSharedAcrossInvocations(t *testing.T) {
 
 	// Also confirm the store is reachable directly (the source of truth),
 	// independent of any graph runtime.
-	direct, err := mem.Get(context.Background(), []string{"memories", "user42"}, "note")
+	direct, err := mem.Get(t.Context(), []string{"memories", "user42"}, "note")
 	if err != nil || direct == nil {
 		t.Fatalf("direct store Get after run: item=%v err=%v", direct, err)
 	}
@@ -144,7 +143,7 @@ func TestStoreNilWhenNotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	if _, err := cg.Invoke(context.Background(), map[string]any{}); err != nil {
+	if _, err := cg.Invoke(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if observed != nil {

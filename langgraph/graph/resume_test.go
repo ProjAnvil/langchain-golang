@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -21,19 +20,19 @@ import (
 func TestResumeReplaysGotoOnlySibling(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	var aRuns, bRuns, cRuns int32
+	var aRuns, bRuns, cRuns atomic.Int32
 	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&aRuns, 1)
+		aRuns.Add(1)
 		return &types.Command{Goto: To("c")}, nil // routing only, no update
 	})
 	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&bRuns, 1)
+		bRuns.Add(1)
 		Interrupt(ctx, "pause-b")
 		return nil, nil
 	})
 	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&cRuns, 1)
+		cRuns.Add(1)
 		return map[string]any{"c_ran": true}, nil
 	})
 	g.AddEdge(types.START, "start")
@@ -46,7 +45,7 @@ func TestResumeReplaysGotoOnlySibling(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	first, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
 	}
@@ -56,7 +55,7 @@ func TestResumeReplaysGotoOnlySibling(t *testing.T) {
 
 	// The goto-only sibling's persisted pending writes are ONLY the
 	// ReservedTasks send: no plain channel writes (the empty-update-map shape).
-	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	tup, err := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if err != nil || tup == nil {
 		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
 	}
@@ -83,21 +82,21 @@ func TestResumeReplaysGotoOnlySibling(t *testing.T) {
 		t.Fatal("goto-only sibling persisted no ReservedTasks send")
 	}
 
-	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "go"})
+	second, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t1", Resume: "go"})
 	if err != nil {
 		t.Fatalf("resume Invoke() error = %v", err)
 	}
 	if len(second.Interrupts) != 0 {
 		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
 	}
-	if aRuns != 1 {
-		t.Fatalf("goto-only sibling a must NOT re-run on resume, ran %d times", aRuns)
+	if aRuns.Load() != 1 {
+		t.Fatalf("goto-only sibling a must NOT re-run on resume, ran %d times", aRuns.Load())
 	}
-	if bRuns != 2 {
-		t.Fatalf("interrupted sibling b must re-run exactly once, ran %d times", bRuns)
+	if bRuns.Load() != 2 {
+		t.Fatalf("interrupted sibling b must re-run exactly once, ran %d times", bRuns.Load())
 	}
-	if cRuns != 1 {
-		t.Fatalf("a's replayed send must dispatch c exactly once, ran %d times", cRuns)
+	if cRuns.Load() != 1 {
+		t.Fatalf("a's replayed send must dispatch c exactly once, ran %d times", cRuns.Load())
 	}
 	if second.Values["c_ran"] != true {
 		t.Fatalf("c_ran = %v, want true", second.Values["c_ran"])
@@ -112,23 +111,23 @@ func TestResumeReplaysGotoOnlySibling(t *testing.T) {
 func TestResumeMultiDestinationGotoAllSurvive(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	var aRuns, bRuns, cRuns, dRuns int32
+	var aRuns, bRuns, cRuns, dRuns atomic.Int32
 	g.AddNode("start", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
 	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&aRuns, 1)
+		aRuns.Add(1)
 		return &types.Command{Goto: To("c", "d")}, nil // routing only, no update
 	})
 	g.AddNode("b", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&bRuns, 1)
+		bRuns.Add(1)
 		Interrupt(ctx, "pause-b")
 		return nil, nil
 	})
 	g.AddNode("c", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&cRuns, 1)
+		cRuns.Add(1)
 		return map[string]any{"c_ran": true}, nil
 	})
 	g.AddNode("d", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&dRuns, 1)
+		dRuns.Add(1)
 		return map[string]any{"d_ran": true}, nil
 	})
 	g.AddEdge(types.START, "start")
@@ -142,7 +141,7 @@ func TestResumeMultiDestinationGotoAllSurvive(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	first, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	first, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
 	}
@@ -151,7 +150,7 @@ func TestResumeMultiDestinationGotoAllSurvive(t *testing.T) {
 	}
 
 	// The pause checkpoint must carry BOTH of a's ReservedTasks sends.
-	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	tup, err := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if err != nil || tup == nil {
 		t.Fatalf("expected pause checkpoint, got tup=%+v err=%v", tup, err)
 	}
@@ -182,21 +181,21 @@ func TestResumeMultiDestinationGotoAllSurvive(t *testing.T) {
 		t.Fatalf("multi-destination goto persisted %d ReservedTasks writes, want 2 (both must survive): %+v", len(sends), sends)
 	}
 
-	second, err := cg.InvokeWithOptions(context.Background(), nil, Options{ThreadID: "t1", Resume: "go"})
+	second, err := cg.InvokeWithOptions(t.Context(), nil, Options{ThreadID: "t1", Resume: "go"})
 	if err != nil {
 		t.Fatalf("resume Invoke() error = %v", err)
 	}
 	if len(second.Interrupts) != 0 {
 		t.Fatalf("expected no interrupts after resume, got %+v", second.Interrupts)
 	}
-	if aRuns != 1 {
-		t.Fatalf("goto-only sibling a must NOT re-run on resume, ran %d times", aRuns)
+	if aRuns.Load() != 1 {
+		t.Fatalf("goto-only sibling a must NOT re-run on resume, ran %d times", aRuns.Load())
 	}
-	if bRuns != 2 {
-		t.Fatalf("interrupted sibling b must re-run exactly once, ran %d times", bRuns)
+	if bRuns.Load() != 2 {
+		t.Fatalf("interrupted sibling b must re-run exactly once, ran %d times", bRuns.Load())
 	}
-	if cRuns != 1 || dRuns != 1 {
-		t.Fatalf("a's replayed sends must dispatch c and d exactly once each, ran c=%d d=%d", cRuns, dRuns)
+	if cRuns.Load() != 1 || dRuns.Load() != 1 {
+		t.Fatalf("a's replayed sends must dispatch c and d exactly once each, ran c=%d d=%d", cRuns.Load(), dRuns.Load())
 	}
 	if second.Values["c_ran"] != true || second.Values["d_ran"] != true {
 		t.Fatalf("resumed values = %+v, want c_ran and d_ran true", second.Values)
@@ -213,13 +212,13 @@ func TestResumeMultiDestinationGotoAllSurvive(t *testing.T) {
 func TestInterruptUpdateStateResumeHITL(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
-	var draftRuns, reviewRuns int32
+	var draftRuns, reviewRuns atomic.Int32
 	g.AddNode("draft", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&draftRuns, 1)
+		draftRuns.Add(1)
 		return map[string]any{"draft": "v1"}, nil
 	})
 	g.AddNode("review", func(ctx runtime.Runtime, state map[string]any) (any, error) {
-		atomic.AddInt32(&reviewRuns, 1)
+		reviewRuns.Add(1)
 		if state["approved"] == true {
 			return map[string]any{"status": "published"}, nil
 		}
@@ -233,7 +232,7 @@ func TestInterruptUpdateStateResumeHITL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := cg.InvokeWithOptions(ctx, map[string]any{"topic": "x"}, Options{ThreadID: "t1"})
 	if err != nil {
@@ -242,8 +241,8 @@ func TestInterruptUpdateStateResumeHITL(t *testing.T) {
 	if len(first.Interrupts) != 1 || first.Interrupts[0].Value != "needs-approval" {
 		t.Fatalf("expected one interrupt (needs-approval), got %+v", first.Interrupts)
 	}
-	if draftRuns != 1 || reviewRuns != 1 {
-		t.Fatalf("runs at pause: draft=%d review=%d, want 1 each", draftRuns, reviewRuns)
+	if draftRuns.Load() != 1 || reviewRuns.Load() != 1 {
+		t.Fatalf("runs at pause: draft=%d review=%d, want 1 each", draftRuns.Load(), reviewRuns.Load())
 	}
 	if _, ok := first.Values["status"]; ok {
 		t.Fatalf("status must not be set at the pause, got %+v", first.Values)
@@ -293,11 +292,11 @@ func TestInterruptUpdateStateResumeHITL(t *testing.T) {
 	if resumed.Values["approved"] != true || resumed.Values["draft"] != "v1" {
 		t.Fatalf("resumed values = %+v, want approved=true draft=v1", resumed.Values)
 	}
-	if draftRuns != 1 {
-		t.Fatalf("draft must NOT re-run on resume, ran %d times", draftRuns)
+	if draftRuns.Load() != 1 {
+		t.Fatalf("draft must NOT re-run on resume, ran %d times", draftRuns.Load())
 	}
-	if reviewRuns != 2 {
-		t.Fatalf("review must re-run exactly once after the update, ran %d times", reviewRuns)
+	if reviewRuns.Load() != 2 {
+		t.Fatalf("review must re-run exactly once after the update, ran %d times", reviewRuns.Load())
 	}
 }
 
@@ -338,7 +337,7 @@ func multiInterruptGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
 func TestResumeSequentialInterruptsGraphAPI(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := multiInterruptGraph(t, saver)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := cg.InvokeWithOptions(ctx, map[string]any{"count": 0, "data": ""}, Options{ThreadID: "1"})
 	if err != nil {
@@ -379,7 +378,7 @@ func TestResumeSequentialInterruptsGraphAPI(t *testing.T) {
 func TestResumePauseCheckpointPersistsResumePrefix(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := multiInterruptGraph(t, saver)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"count": 0, "data": ""}, Options{ThreadID: "1"}); err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
@@ -449,7 +448,7 @@ func TestResumeChainedInterruptPrefixAccumulates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	r1, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"})
 	if err != nil {
@@ -517,7 +516,7 @@ func TestResumeChainedInterruptPrefixAccumulates(t *testing.T) {
 func TestResumeNilResumeRepauses(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := multiInterruptGraph(t, saver)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	first, err := cg.InvokeWithOptions(ctx, map[string]any{"count": 0, "data": ""}, Options{ThreadID: "1"})
 	if err != nil {
@@ -557,7 +556,7 @@ func TestResumeNilResumeRepausesKeepsPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"}); err != nil {
 		t.Fatalf("invoke 1 error = %v", err)
@@ -618,8 +617,8 @@ func TestResumeNilResumeRepausesKeepsPrefix(t *testing.T) {
 
 func TestPutPauseWritesEmptyIsNoOp(t *testing.T) {
 	// Even with a failing saver, persisting zero writes must not call it.
-	sink := newCheckpointSink(&putWritesErrSaver{Saver: checkpoint.NewMemorySaver()}, DurabilitySync, context.Background(), nil)
-	err := sink.putPauseWrites(context.Background(), checkpoint.Config{ThreadID: "t"}, nil, "task")
+	sink := newCheckpointSink(&putWritesErrSaver{Saver: checkpoint.NewMemorySaver()}, DurabilitySync, t.Context(), nil)
+	err := sink.putPauseWrites(t.Context(), checkpoint.Config{ThreadID: "t"}, nil, "task")
 	if err != nil {
 		t.Fatalf("putPauseWrites(nil) error = %v, want nil", err)
 	}
@@ -669,7 +668,7 @@ func TestPlanResumeSkipsEndDestinations(t *testing.T) {
 // publishes via plannedTaskIDKey for subgraph namespacing), and the persisted
 // ReservedInterrupt copy carries the same NS.
 func TestInterruptNSIDFormatRootLevel(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
@@ -747,7 +746,7 @@ func TestInterruptNSIDFormatRootLevel(t *testing.T) {
 // TestBoundaryInterruptNSRootLevel pins the boundary interrupt NS format at
 // the root level: node-only namespace (no task ID), ID unchanged.
 func TestBoundaryInterruptNSRootLevel(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) { return nil, nil })
@@ -777,7 +776,7 @@ func TestBoundaryInterruptNSRootLevel(t *testing.T) {
 // TestResumeMapByNSAddressesRootInterrupt verifies a map resume keyed by an
 // interrupt's NS (not its ID) reaches the pending root-level interrupt.
 func TestResumeMapByNSAddressesRootInterrupt(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {

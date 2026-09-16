@@ -38,7 +38,7 @@ func drainStream(t *testing.T, stream runnables.Stream[messages.Message]) []mess
 	defer stream.Close()
 	var chunks []messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -69,7 +69,7 @@ func streamWithRecorder(t *testing.T, server *httptest.Server) (runnables.Stream
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 		runnables.WithMetadata("origin", "test"),
@@ -224,7 +224,7 @@ func TestStreamErrorEvent(t *testing.T) {
 
 	stream, _ := streamWithRecorder(t, server)
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); err == nil ||
+	if _, _, err := stream.Next(t.Context()); err == nil ||
 		!strings.Contains(err.Error(), "Overloaded") {
 		t.Fatalf("stream error event: %v", err)
 	}
@@ -237,12 +237,12 @@ func TestStreamErrorEventWithoutMessage(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil || err.Error() != "anthropic stream error" {
 		t.Fatalf("stream error event without message: %v", err)
 	}
@@ -270,12 +270,12 @@ func TestStreamInvalidEventJSON(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	_, _, err = stream.Next(context.Background())
+	_, _, err = stream.Next(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "decode anthropic stream event") {
 		t.Fatalf("invalid event json: %v", err)
 	}
@@ -317,13 +317,13 @@ func TestStreamNextWithCanceledContext(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
 
-	canceled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := stream.Next(canceled); err == nil {
 		t.Fatal("Next with canceled context should fail")
@@ -354,7 +354,7 @@ func TestStreamBuildRequestError(t *testing.T) {
 		messages.ParseContentBlock(map[string]any{"type": "image"}),
 	}
 	model := NewChatModel(modelconfig.WithBaseURL("http://127.0.0.1:1"), modelconfig.WithModel("m"))
-	if _, err := model.Stream(context.Background(), []messages.Message{bad}); err == nil {
+	if _, err := model.Stream(t.Context(), []messages.Message{bad}); err == nil {
 		t.Fatal("stream with invalid content block should fail")
 	}
 }
@@ -365,7 +365,7 @@ func TestStreamTransportError(t *testing.T) {
 	server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(url), modelconfig.WithModel("m"))
-	if _, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("stream to a dead server should fail")
 	}
 }
@@ -394,7 +394,7 @@ func TestStreamProtocolCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelProtocol, err: errStub})),
 	)
@@ -402,7 +402,7 @@ func TestStreamProtocolCallbackError(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); !errors.Is(err, errStub) {
+	if _, _, err := stream.Next(t.Context()); !errors.Is(err, errStub) {
 		t.Fatalf("protocol callback error should propagate: %v", err)
 	}
 }
@@ -417,7 +417,7 @@ func TestStreamChunkCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelStream, err: errStub})),
 	)
@@ -425,7 +425,7 @@ func TestStreamChunkCallbackError(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); !errors.Is(err, errStub) {
+	if _, _, err := stream.Next(t.Context()); !errors.Is(err, errStub) {
 		t.Fatalf("stream callback error should propagate: %v", err)
 	}
 }
@@ -471,19 +471,19 @@ func TestStreamScannerError(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); err == nil {
+	if _, _, err := stream.Next(t.Context()); err == nil {
 		t.Fatal("truncated stream body should fail")
 	}
 }
 
 func TestStreamInvalidBaseURL(t *testing.T) {
 	model := NewChatModel(modelconfig.WithBaseURL("://invalid-url"), modelconfig.WithModel("m"))
-	if _, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("stream with invalid base URL should fail")
 	}
 }
@@ -540,7 +540,7 @@ func TestStreamProtocolCallbackFailureAtEachStep(t *testing.T) {
 			handler := &failAfterHandler{kind: callbacks.EventChatModelProtocol, after: step - 1, err: errStub}
 			model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 			stream, err := model.Stream(
-				context.Background(),
+				t.Context(),
 				[]messages.Message{messages.Human("hi")},
 				runnables.WithCallbacks(callbacks.NewManager(handler)),
 			)
@@ -549,7 +549,7 @@ func TestStreamProtocolCallbackFailureAtEachStep(t *testing.T) {
 			}
 			defer stream.Close()
 			for {
-				if _, _, err := stream.Next(context.Background()); err != nil {
+				if _, _, err := stream.Next(t.Context()); err != nil {
 					if !errors.Is(err, errStub) {
 						t.Fatalf("unexpected error: %v", err)
 					}
@@ -571,7 +571,7 @@ func TestStreamChunkCallbackFailureAtEachStep(t *testing.T) {
 			handler := &failAfterHandler{kind: callbacks.EventChatModelStream, after: step - 1, err: errStub}
 			model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 			stream, err := model.Stream(
-				context.Background(),
+				t.Context(),
 				[]messages.Message{messages.Human("hi")},
 				runnables.WithCallbacks(callbacks.NewManager(handler)),
 			)
@@ -580,7 +580,7 @@ func TestStreamChunkCallbackFailureAtEachStep(t *testing.T) {
 			}
 			defer stream.Close()
 			for {
-				if _, _, err := stream.Next(context.Background()); err != nil {
+				if _, _, err := stream.Next(t.Context()); err != nil {
 					if !errors.Is(err, errStub) {
 						t.Fatalf("unexpected error: %v", err)
 					}
@@ -600,7 +600,7 @@ func TestStreamEndCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelEnd, err: errStub})),
 	)
@@ -608,7 +608,7 @@ func TestStreamEndCallbackError(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); !errors.Is(err, errStub) {
+	if _, _, err := stream.Next(t.Context()); !errors.Is(err, errStub) {
 		t.Fatalf("end callback error should propagate: %v", err)
 	}
 }
@@ -626,7 +626,7 @@ func TestStreamFlushCallbackError(t *testing.T) {
 	handler := &failAfterHandler{kind: callbacks.EventChatModelProtocol, after: 2, err: errStub}
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(handler)),
 	)
@@ -635,7 +635,7 @@ func TestStreamFlushCallbackError(t *testing.T) {
 	}
 	defer stream.Close()
 	for {
-		if _, _, err := stream.Next(context.Background()); err != nil {
+		if _, _, err := stream.Next(t.Context()); err != nil {
 			if !errors.Is(err, errStub) {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -650,7 +650,7 @@ func TestStreamWithoutCallbacks(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -685,7 +685,7 @@ func TestStreamDoneMarkerEndCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelEnd, err: errStub})),
 	)
@@ -693,7 +693,7 @@ func TestStreamDoneMarkerEndCallbackError(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); !errors.Is(err, errStub) {
+	if _, _, err := stream.Next(t.Context()); !errors.Is(err, errStub) {
 		t.Fatalf("end callback error on [DONE] should propagate: %v", err)
 	}
 }
@@ -704,7 +704,7 @@ func TestStreamEOFEndCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelEnd, err: errStub})),
 	)
@@ -712,7 +712,7 @@ func TestStreamEOFEndCallbackError(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); !errors.Is(err, errStub) {
+	if _, _, err := stream.Next(t.Context()); !errors.Is(err, errStub) {
 		t.Fatalf("end callback error on EOF should propagate: %v", err)
 	}
 }
@@ -744,7 +744,7 @@ func TestStreamFlushToolBlockCallbackError(t *testing.T) {
 	handler := &failAfterHandler{kind: callbacks.EventChatModelProtocol, after: 2, err: errStub}
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(handler)),
 	)
@@ -753,7 +753,7 @@ func TestStreamFlushToolBlockCallbackError(t *testing.T) {
 	}
 	defer stream.Close()
 	for {
-		if _, _, err := stream.Next(context.Background()); err != nil {
+		if _, _, err := stream.Next(t.Context()); err != nil {
 			if !errors.Is(err, errStub) {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -773,7 +773,7 @@ func TestStreamFlushThinkingBlockCallbackError(t *testing.T) {
 	handler := &failAfterHandler{kind: callbacks.EventChatModelProtocol, after: 2, err: errStub}
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(handler)),
 	)
@@ -782,7 +782,7 @@ func TestStreamFlushThinkingBlockCallbackError(t *testing.T) {
 	}
 	defer stream.Close()
 	for {
-		if _, _, err := stream.Next(context.Background()); err != nil {
+		if _, _, err := stream.Next(t.Context()); err != nil {
 			if !errors.Is(err, errStub) {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -799,7 +799,7 @@ func TestStreamUnmarshalableToolArgs(t *testing.T) {
 		Args: map[string]any{"bad": func() {}},
 	}}
 	model := NewChatModel(modelconfig.WithBaseURL("http://127.0.0.1:1"), modelconfig.WithModel("m"))
-	if _, err := model.Stream(context.Background(), []messages.Message{ai}); err == nil {
+	if _, err := model.Stream(t.Context(), []messages.Message{ai}); err == nil {
 		t.Fatal("stream with unmarshalable tool args should fail")
 	}
 }
@@ -819,7 +819,7 @@ func TestStreamMalformedToolArgumentsFailStream(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -829,7 +829,7 @@ func TestStreamMalformedToolArgumentsFailStream(t *testing.T) {
 	defer stream.Close()
 	var sawError bool
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			if !strings.Contains(err.Error(), "parse tool call arguments") {
 				t.Fatalf("unexpected stream error: %v", err)

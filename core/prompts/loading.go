@@ -175,7 +175,7 @@ func resolvePromptPath(path string, opts LoadPromptOptions) (string, error) {
 		if filepath.IsAbs(clean) {
 			return "", fmt.Errorf("absolute prompt paths are not allowed")
 		}
-		for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		for part := range strings.SplitSeq(clean, string(filepath.Separator)) {
 			if part == ".." {
 				return "", fmt.Errorf("prompt path traversal is not allowed")
 			}

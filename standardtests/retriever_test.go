@@ -23,7 +23,7 @@ func TestRunRetrieverBasicsWithVectorStoreRetriever(t *testing.T) {
 	RunRetrieverBasics(t, func(t testing.TB) retrievers.Retriever {
 		t.Helper()
 		store := vectorstores.NewInMemory(embeddings.NewFake(16))
-		if _, err := store.AddDocuments(context.Background(), []documents.Document{
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{
 			documents.New("alpha beta", map[string]any{"source": "unit"}),
 			documents.New("gamma", map[string]any{"source": "unit"}),
 		}); err != nil {

@@ -48,7 +48,7 @@ func TestChatModelInvokeNonStreaming(t *testing.T) {
 		modelconfig.WithModel("llama3"),
 	)
 
-	response, err := model.Invoke(context.Background(), []messages.Message{
+	response, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("Be concise"),
 		messages.Human("Say hello"),
 	})
@@ -98,7 +98,7 @@ func TestChatModelRequestMapping(t *testing.T) {
 		modelconfig.WithModel("llama3"),
 		modelconfig.WithHeader("X-Custom", "value"),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{
+	_, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("first instruction"),
 		messages.System("second instruction"),
 		messages.Human("hello"),
@@ -140,7 +140,7 @@ func TestChatModelMapsAIToolCallsIntoRequest(t *testing.T) {
 		Args: map[string]any{"query": "weather"},
 	}}
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
-	_, err := model.Invoke(context.Background(), []messages.Message{
+	_, err := model.Invoke(t.Context(), []messages.Message{
 		messages.Human("use a tool"),
 		ai,
 	})
@@ -172,7 +172,7 @@ func TestChatModelMapsImagesFromContentBlocks(t *testing.T) {
 		messages.ParseContentBlock(map[string]any{"type": "image", "base64": "data:image/png;base64,aGVsbG8="}),
 		messages.ParseContentBlock(map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,c3Rhcg=="}}),
 	}
-	_, err := model.Invoke(context.Background(), []messages.Message{msg})
+	_, err := model.Invoke(t.Context(), []messages.Message{msg})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestChatModelTemperatureAndMaxTokensOptions(t *testing.T) {
 		modelconfig.WithTemperature(0.5),
 		modelconfig.WithMaxTokens(42),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestChatModelSamplingOptions(t *testing.T) {
 		WithStop([]string{"END"}),
 		WithKeepAlive("5m"),
 	)
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestChatModelParsesToolCallsWithDictArguments(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
-	response, err := model.Invoke(context.Background(), []messages.Message{messages.Human("add")})
+	response, err := model.Invoke(t.Context(), []messages.Message{messages.Human("add")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestChatModelParsesToolCallsWithStringArguments(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
-	response, err := model.Invoke(context.Background(), []messages.Message{messages.Human("add")})
+	response, err := model.Invoke(t.Context(), []messages.Message{messages.Human("add")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestChatModelParsesInvalidToolCallArguments(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
-	response, err := model.Invoke(context.Background(), []messages.Message{messages.Human("add")})
+	response, err := model.Invoke(t.Context(), []messages.Message{messages.Human("add")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestChatModelBindTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind tools: %v", err)
 	}
-	_, err = bound.Invoke(context.Background(), []messages.Message{messages.Human("add")})
+	_, err = bound.Invoke(t.Context(), []messages.Message{messages.Human("add")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestChatModelStructuredOutput(t *testing.T) {
 		}, "name"),
 		true,
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{messages.Human("extract")})
+	response, err := model.Invoke(t.Context(), []messages.Message{messages.Human("extract")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestChatModelTypedStructuredOutput(t *testing.T) {
 		t.Fatalf("bind json: %v", err)
 	}
 
-	result, err := runnable.Invoke(context.Background(), []messages.Message{messages.Human("extract")})
+	result, err := runnable.Invoke(t.Context(), []messages.Message{messages.Human("extract")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestChatModelReasoning(t *testing.T) {
 		modelconfig.WithModel("deepseek-r1"),
 		WithReasoning(true),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{messages.Human("how many r")})
+	response, err := model.Invoke(t.Context(), []messages.Message{messages.Human("how many r")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestChatModelCallbacks(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -499,7 +499,7 @@ func TestChatModelRetriesOnServerError(t *testing.T) {
 		modelconfig.WithMaxRetries(3),
 		modelconfig.WithRetryDelay(0),
 	)
-	response, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	response, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestChatModelInvokeError(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -572,7 +572,7 @@ func TestChatModelFormatOptions(t *testing.T) {
 
 	customFormat := map[string]any{"type": "object"}
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), WithFormat(customFormat))
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	format, ok := got.Format.(map[string]any)
@@ -581,7 +581,7 @@ func TestChatModelFormatOptions(t *testing.T) {
 	}
 
 	jsonModel := NewChatModel(modelconfig.WithBaseURL(server.URL), WithJSONMode())
-	if _, err := jsonModel.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := jsonModel.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if got.Format != "json" {
@@ -600,7 +600,7 @@ func TestChatModelInvokeStructuredWithTitle(t *testing.T) {
 	sch["title"] = "Person"
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
-	response, err := model.InvokeStructured(context.Background(), []messages.Message{messages.Human("extract")}, sch)
+	response, err := model.InvokeStructured(t.Context(), []messages.Message{messages.Human("extract")}, sch)
 	if err != nil {
 		t.Fatalf("invoke structured: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestChatModelMalformedJSONResponse(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithMaxRetries(0))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected decode error")
 	}
@@ -632,7 +632,7 @@ func TestChatModelCallbackStartErrorFailsInvoke(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{kind: callbacks.EventChatModelStart})),
 	)
@@ -647,7 +647,7 @@ func TestChatModelCallbackEndErrorFailsInvoke(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{kind: callbacks.EventChatModelEnd})),
 	)
@@ -662,7 +662,7 @@ func TestChatModelStreamCallbackStartError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	_, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{kind: callbacks.EventChatModelStart})),
 	)
@@ -678,7 +678,7 @@ func TestChatModelCallbackEventsCarryMetadata(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 		runnables.WithMetadata("request_id", "req-1"),
@@ -706,7 +706,7 @@ func TestChatModelResponseTypeMismatch(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithMaxRetries(0))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected decode error")
 	}

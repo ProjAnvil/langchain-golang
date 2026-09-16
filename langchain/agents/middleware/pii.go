@@ -287,7 +287,7 @@ type PIIStreamTransformer struct {
 	// buffer via the multi-call reset branch), so this is a convenience for
 	// direct/test usage where a caller wires up one transform and consumes
 	// only per-delta output.
-	flushMu  sync.Mutex
+	flushMu   sync.Mutex
 	lastState *piiStreamState
 }
 

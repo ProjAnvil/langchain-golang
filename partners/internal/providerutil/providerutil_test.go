@@ -50,14 +50,14 @@ func TestNewSSEScannerRejectsOversizedLines(t *testing.T) {
 
 func TestEmitNoCallbacksIsNoop(t *testing.T) {
 	cfg := runnables.NewConfig()
-	if err := Emit(context.Background(), cfg, callbacks.EventChatModelStart, nil, nil, nil); err != nil {
+	if err := Emit(t.Context(), cfg, callbacks.EventChatModelStart, nil, nil, nil); err != nil {
 		t.Fatalf("Emit = %v", err)
 	}
-	if err := EmitStream(context.Background(), cfg, messages.AI("hi")); err != nil {
+	if err := EmitStream(t.Context(), cfg, messages.AI("hi")); err != nil {
 		t.Fatalf("EmitStream = %v", err)
 	}
 	var started bool
-	if err := EmitProtocol(context.Background(), cfg, &started, streamevents.Event{Event: streamevents.EventContentBlockStart}); err != nil {
+	if err := EmitProtocol(t.Context(), cfg, &started, streamevents.Event{Event: streamevents.EventContentBlockStart}); err != nil {
 		t.Fatalf("EmitProtocol = %v", err)
 	}
 	if started {
@@ -69,7 +69,7 @@ func TestEmitCarriesErrorString(t *testing.T) {
 	h := &recordingHandler{}
 	cfg := runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(h)))
 	boom := errors.New("boom")
-	if err := Emit(context.Background(), cfg, callbacks.EventChatModelError, nil, nil, boom); err != nil {
+	if err := Emit(t.Context(), cfg, callbacks.EventChatModelError, nil, nil, boom); err != nil {
 		t.Fatalf("Emit = %v", err)
 	}
 	if len(h.events) != 1 {
@@ -84,8 +84,8 @@ func TestEmitProtocolEmitsMessageStartExactlyOnce(t *testing.T) {
 	h := &recordingHandler{}
 	cfg := runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(h)))
 	var started bool
-	for i := 0; i < 3; i++ {
-		if err := EmitProtocol(context.Background(), cfg, &started, streamevents.Event{
+	for i := range 3 {
+		if err := EmitProtocol(t.Context(), cfg, &started, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 		}); err != nil {
 			t.Fatalf("EmitProtocol #%d = %v", i, err)
@@ -103,10 +103,10 @@ func TestEmitProtocolEmitsMessageStartExactlyOnce(t *testing.T) {
 func TestEmitProtocolEventHasNoStartBookkeeping(t *testing.T) {
 	h := &recordingHandler{}
 	cfg := runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(h)))
-	if err := EmitProtocolEvent(context.Background(), cfg, streamevents.Event{Event: streamevents.EventContentBlockStart}); err != nil {
+	if err := EmitProtocolEvent(t.Context(), cfg, streamevents.Event{Event: streamevents.EventContentBlockStart}); err != nil {
 		t.Fatalf("EmitProtocolEvent = %v", err)
 	}
-	if err := EmitProtocolEvent(context.Background(), cfg, streamevents.Event{Event: streamevents.EventMessageFinish}); err != nil {
+	if err := EmitProtocolEvent(t.Context(), cfg, streamevents.Event{Event: streamevents.EventMessageFinish}); err != nil {
 		t.Fatalf("EmitProtocolEvent = %v", err)
 	}
 	if len(h.events) != 2 {
@@ -117,7 +117,7 @@ func TestEmitProtocolEventHasNoStartBookkeeping(t *testing.T) {
 func TestEmitHandlerErrorPropagates(t *testing.T) {
 	h := &recordingHandler{err: errors.New("handler down")}
 	cfg := runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(h)))
-	if err := EmitStream(context.Background(), cfg, messages.AI("hi")); err == nil {
+	if err := EmitStream(t.Context(), cfg, messages.AI("hi")); err == nil {
 		t.Fatal("EmitStream must propagate handler errors")
 	}
 }

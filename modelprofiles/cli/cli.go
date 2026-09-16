@@ -12,13 +12,15 @@
 package cli
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/modelprofiles"
@@ -101,10 +103,7 @@ func Refresh(opts RefreshOptions) error {
 	fmt.Fprintf(stdout, "Provider: %s\n", opts.Provider)
 	fmt.Fprintf(stdout, "Data directory: %s\n", dataDir)
 
-	apiURL := opts.APIURL
-	if apiURL == "" {
-		apiURL = DefaultAPIURL
-	}
+	apiURL := cmp.Or(opts.APIURL, DefaultAPIURL)
 	client := opts.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -153,7 +152,7 @@ func Refresh(opts RefreshOptions) error {
 			extraModels = append(extraModels, modelID)
 		}
 	}
-	sort.Strings(extraModels)
+	slices.Sort(extraModels)
 	if len(extraModels) > 0 {
 		fmt.Fprintf(stdout, "Adding %d models from augmentations only...\n", len(extraModels))
 	}
@@ -432,12 +431,7 @@ func unknownKeysAcross(profiles Registry) []string {
 			seen[key] = struct{}{}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for key := range seen {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 func toStringSet(v any) map[string]bool {

@@ -1,7 +1,6 @@
 package redis_test
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -21,7 +20,7 @@ func rawClient(mrAddr string) goredis.UniversalClient {
 // verifies every Saver method reports it instead of panicking or silently
 // succeeding.
 func TestServerFailures(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, mr := newSaver(t)
 
 	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)
@@ -76,7 +75,7 @@ func TestServerFailures(t *testing.T) {
 // TestServerClosed verifies operations against a server that went away fail
 // with an error (connection loss), never a panic.
 func TestServerClosed(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, mr := newSaver(t)
 	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)
 	if err != nil {
@@ -101,7 +100,7 @@ func TestServerClosed(t *testing.T) {
 // panicking or silently corrupting state — the same technique as
 // TestCorruptCheckpointHashes.
 func TestManagementMalformedStorage(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// DeleteForRuns: a checkpoint-prefixed STRING key fails the metadata
 	// HGet with WRONGTYPE.
@@ -244,7 +243,7 @@ func TestManagementMalformedStorage(t *testing.T) {
 // verifies reads fail with descriptive errors rather than returning
 // corrupted state.
 func TestCorruptCheckpointHashes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tests := []struct {
 		name    string
@@ -321,7 +320,7 @@ func TestCorruptCheckpointHashes(t *testing.T) {
 // never write and verifies reads fail descriptively (or skip, for a write
 // that vanished between SCAN and GET).
 func TestCorruptWriteValues(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	setup := func(t *testing.T) (*redis.Saver, goredis.UniversalClient, checkpoint.Config) {
 		t.Helper()
@@ -378,7 +377,7 @@ func TestCorruptWriteValues(t *testing.T) {
 // error — from a channel value and from a planned task's arg alike — instead
 // of being persisted lossily.
 func TestPutEncodeErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newSaver(t)
 
 	cp := sampleCheckpoint(checkpoint.NewID(1))
@@ -402,7 +401,7 @@ func TestPutEncodeErrors(t *testing.T) {
 // PutWrites with a wrapped error naming the channel, before anything is
 // written.
 func TestPutWritesEncodeError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, mr := newSaver(t)
 
 	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)

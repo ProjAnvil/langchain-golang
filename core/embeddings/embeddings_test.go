@@ -1,18 +1,17 @@
 package embeddings
 
 import (
-	"context"
 	"testing"
 )
 
 func TestFakeEmbeddingsAreDeterministic(t *testing.T) {
 	model := NewFake(16)
 
-	first, err := model.EmbedQuery(context.Background(), "hello world")
+	first, err := model.EmbedQuery(t.Context(), "hello world")
 	if err != nil {
 		t.Fatalf("embed first: %v", err)
 	}
-	second, err := model.EmbedQuery(context.Background(), "hello world")
+	second, err := model.EmbedQuery(t.Context(), "hello world")
 	if err != nil {
 		t.Fatalf("embed second: %v", err)
 	}
@@ -29,11 +28,11 @@ func TestFakeEmbeddingsAreDeterministic(t *testing.T) {
 
 func TestDeterministicFakeEmbedding(t *testing.T) {
 	model := NewDeterministicFake(6)
-	first, err := model.EmbedQuery(context.Background(), "same")
+	first, err := model.EmbedQuery(t.Context(), "same")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := model.EmbedQuery(context.Background(), "same")
+	second, err := model.EmbedQuery(t.Context(), "same")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,11 +48,11 @@ func TestDeterministicFakeEmbedding(t *testing.T) {
 
 func TestRandomFakeEmbeddingPythonFakeParity(t *testing.T) {
 	model := NewRandomFake(5)
-	first, err := model.EmbedQuery(context.Background(), "same")
+	first, err := model.EmbedQuery(t.Context(), "same")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := model.EmbedQuery(context.Background(), "same")
+	second, err := model.EmbedQuery(t.Context(), "same")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +69,7 @@ func TestRandomFakeEmbeddingPythonFakeParity(t *testing.T) {
 	if equal {
 		t.Fatalf("random fake returned identical vectors: %#v", first)
 	}
-	docs, err := model.EmbedDocuments(context.Background(), []string{"a", "b"})
+	docs, err := model.EmbedDocuments(t.Context(), []string{"a", "b"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,18 +83,18 @@ func TestStaticEmbeddingsCopiesVectors(t *testing.T) {
 		DocumentVectors: [][]float64{{1, 2}, {3, 4}},
 		QueryVector:     []float64{5, 6},
 	}
-	docs, err := model.EmbedDocuments(context.Background(), []string{"a", "b"})
+	docs, err := model.EmbedDocuments(t.Context(), []string{"a", "b"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	query, err := model.EmbedQuery(context.Background(), "q")
+	query, err := model.EmbedQuery(t.Context(), "q")
 	if err != nil {
 		t.Fatal(err)
 	}
 	docs[0][0] = 99
 	query[0] = 99
-	againDocs, _ := model.EmbedDocuments(context.Background(), []string{"a"})
-	againQuery, _ := model.EmbedQuery(context.Background(), "q")
+	againDocs, _ := model.EmbedDocuments(t.Context(), []string{"a"})
+	againQuery, _ := model.EmbedQuery(t.Context(), "q")
 	if againDocs[0][0] != 1 || againQuery[0] != 5 {
 		t.Fatal("static embeddings returned internal vectors")
 	}

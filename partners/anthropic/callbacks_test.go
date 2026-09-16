@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,7 +26,7 @@ func TestInvokeStartCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelStart, err: errStub})),
 	)
@@ -42,7 +41,7 @@ func TestInvokeEndCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelEnd, err: errStub})),
 		runnables.WithMetadata("origin", "test"),
@@ -65,7 +64,7 @@ func TestInvokeErrorEventEmitted(t *testing.T) {
 		modelconfig.WithMaxRetries(0),
 	)
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -86,7 +85,7 @@ func TestInvokeProviderErrorResponseBody(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("invoke should fail on error-typed 200 response")
 	}
@@ -99,7 +98,7 @@ func TestInvokeEmptyResponseBody(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
-	_, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("invoke should fail on an empty 200 response")
 	}
@@ -111,7 +110,7 @@ func TestStreamStartCallbackError(t *testing.T) {
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	_, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hi")},
 		runnables.WithCallbacks(callbacks.NewManager(stubHandler{failOn: callbacks.EventChatModelStart, err: errStub})),
 	)

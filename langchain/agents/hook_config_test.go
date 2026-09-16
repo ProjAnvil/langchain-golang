@@ -22,7 +22,7 @@ func TestFuncBeforeModelWithConfigDeclaresJumpTargets(t *testing.T) {
 		t.Fatalf("after_model can_jump_to = %#v, want nil", got)
 	}
 	// The wrapped function still runs.
-	out, err := hook.BeforeModel(context.Background(), map[string]any{})
+	out, err := hook.BeforeModel(t.Context(), map[string]any{})
 	if err != nil || out != nil {
 		t.Fatalf("BeforeModel: err=%v out=%#v", err, out)
 	}
@@ -40,7 +40,7 @@ func TestFuncAfterModelWithConfigDeclaresJumpTargets(t *testing.T) {
 	if got := DeclaredCanJumpTo(hook, "before_model"); got != nil {
 		t.Fatalf("before_model can_jump_to = %#v, want nil", got)
 	}
-	out, err := hook.AfterModel(context.Background(), map[string]any{})
+	out, err := hook.AfterModel(t.Context(), map[string]any{})
 	if err != nil || out != nil {
 		t.Fatalf("AfterModel: err=%v out=%#v", err, out)
 	}
@@ -119,7 +119,7 @@ func TestCanJumpToIntegration(t *testing.T) {
 	}
 
 	// Early exit: the model never runs, only the human message remains.
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("exit")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("exit")})
 	if err != nil {
 		t.Fatalf("invoke (exit): %v", err)
 	}
@@ -128,7 +128,7 @@ func TestCanJumpToIntegration(t *testing.T) {
 	}
 
 	// Normal path: the model runs and appends its reply.
-	out, err = agent.Invoke(context.Background(), []messages.Message{messages.Human("hello")})
+	out, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("hello")})
 	if err != nil {
 		t.Fatalf("invoke (hello): %v", err)
 	}
@@ -163,7 +163,7 @@ func TestCreateAgentAcceptsValidDeclaredJumpTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	out, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil || len(out) != 2 || out[1].Content != "ok" {
 		t.Fatalf("invoke: err=%v out=%#v", err, out)
 	}

@@ -1,13 +1,14 @@
 package middleware
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -97,7 +98,7 @@ func DetectURL(content string) []PIIMatch {
 			out = append(out, match)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+	slices.SortFunc(out, func(a, b PIIMatch) int { return cmp.Compare(a.Start, b.Start) })
 	return out
 }
 
@@ -209,7 +210,7 @@ func passesLuhn(cardNumber string) bool {
 }
 
 func replaceMatches(content string, matches []PIIMatch, replacement func(PIIMatch) string) string {
-	sort.Slice(matches, func(i, j int) bool { return matches[i].Start > matches[j].Start })
+	slices.SortFunc(matches, func(a, b PIIMatch) int { return cmp.Compare(b.Start, a.Start) })
 	out := content
 	for _, match := range matches {
 		out = out[:match.Start] + replacement(match) + out[match.End:]

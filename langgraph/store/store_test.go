@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -25,7 +24,7 @@ func TestPutRejectsInvalidNamespaces(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := s.Put(context.Background(), tc.namespace, "k", map[string]any{}, nil)
+			err := s.Put(t.Context(), tc.namespace, "k", map[string]any{}, nil)
 			if !errors.Is(err, ErrInvalidNamespace) {
 				t.Fatalf("Put(%v) error = %v, want ErrInvalidNamespace", tc.namespace, err)
 			}
@@ -37,7 +36,7 @@ func TestPutRejectsInvalidNamespaces(t *testing.T) {
 // label; it is valid deeper in the path.
 func TestPutAcceptsLanggraphNonRoot(t *testing.T) {
 	s := NewInMemoryStore()
-	if err := s.Put(context.Background(), []string{"a", "langgraph"}, "k", map[string]any{}, nil); err != nil {
+	if err := s.Put(t.Context(), []string{"a", "langgraph"}, "k", map[string]any{}, nil); err != nil {
 		t.Fatalf("Put with non-root langgraph label: %v", err)
 	}
 }

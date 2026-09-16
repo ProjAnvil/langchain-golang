@@ -33,7 +33,7 @@ func TestManagerEmitsEvents(t *testing.T) {
 	recorder := NewRecorder()
 	manager := NewManager(recorder)
 
-	err := manager.Emit(context.Background(), Event{
+	err := manager.Emit(t.Context(), Event{
 		Kind: EventChatModelStart,
 		Name: "fake",
 		Tags: []string{"unit"},
@@ -59,7 +59,7 @@ func TestManagerEmitsEvents(t *testing.T) {
 
 func TestRecorderReturnsCopies(t *testing.T) {
 	recorder := NewRecorder()
-	err := recorder.HandleEvent(context.Background(), Event{
+	err := recorder.HandleEvent(t.Context(), Event{
 		Kind:     EventToolStart,
 		Tags:     []string{"original"},
 		Metadata: map[string]any{"source": "test"},
@@ -96,7 +96,7 @@ func TestManagerAppliesInheritedConfig(t *testing.T) {
 		"request":  "123",
 	}
 
-	err := manager.Emit(context.Background(), Event{
+	err := manager.Emit(t.Context(), Event{
 		Kind:     EventToolStart,
 		RunID:    "child-run",
 		Tags:     tags,
@@ -130,7 +130,7 @@ func TestManagerAppliesInheritedConfig(t *testing.T) {
 func TestManagerPreservesExplicitParentID(t *testing.T) {
 	recorder := NewRecorder()
 	manager := NewManager(recorder).WithParentRunID("manager-parent")
-	if err := manager.Emit(context.Background(), Event{
+	if err := manager.Emit(t.Context(), Event{
 		Kind:     EventToolStart,
 		ParentID: "event-parent",
 	}); err != nil {
@@ -148,13 +148,13 @@ func TestStdOutAndStreamingHandlers(t *testing.T) {
 		NewStdOutHandler(&stdout),
 		NewStreamingStdOutHandler(&stdout),
 	)
-	if err := manager.Emit(context.Background(), Event{Kind: EventToolStart, Name: "search"}); err != nil {
+	if err := manager.Emit(t.Context(), Event{Kind: EventToolStart, Name: "search"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Emit(context.Background(), Event{Kind: EventChatModelStream, Chunk: "tok"}); err != nil {
+	if err := manager.Emit(t.Context(), Event{Kind: EventChatModelStream, Chunk: "tok"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Emit(context.Background(), Event{Kind: EventToolEnd, Name: "search"}); err != nil {
+	if err := manager.Emit(t.Context(), Event{Kind: EventToolEnd, Name: "search"}); err != nil {
 		t.Fatal(err)
 	}
 	got := stdout.String()
@@ -171,7 +171,7 @@ func TestFileHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.HandleEvent(context.Background(), Event{Kind: EventRetrieverStart, Name: "docs"}); err != nil {
+	if err := handler.HandleEvent(t.Context(), Event{Kind: EventRetrieverStart, Name: "docs"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := handler.Close(); err != nil {
@@ -184,7 +184,7 @@ func TestFileHandler(t *testing.T) {
 	if !strings.Contains(string(data), "Entering retriever docs") {
 		t.Fatalf("file output = %q", string(data))
 	}
-	if err := handler.HandleEvent(context.Background(), Event{Kind: EventRetrieverEnd}); err == nil {
+	if err := handler.HandleEvent(t.Context(), Event{Kind: EventRetrieverEnd}); err == nil {
 		t.Fatal("expected closed file error")
 	}
 }
@@ -194,10 +194,10 @@ func TestUsageMetadataHandlerAggregatesByModel(t *testing.T) {
 	msg := messages.AI("ok")
 	msg.ResponseMetadata = map[string]any{"model_name": "fake"}
 	msg.UsageMetadata = messages.UsageMetadata{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}
-	if err := handler.HandleEvent(context.Background(), Event{Kind: EventChatModelEnd, Output: msg}); err != nil {
+	if err := handler.HandleEvent(t.Context(), Event{Kind: EventChatModelEnd, Output: msg}); err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.HandleEvent(context.Background(), Event{Kind: EventChatModelEnd, Output: msg}); err != nil {
+	if err := handler.HandleEvent(t.Context(), Event{Kind: EventChatModelEnd, Output: msg}); err != nil {
 		t.Fatal(err)
 	}
 	usage := handler.Usage()["fake"]
@@ -214,7 +214,7 @@ func TestUsageMetadataHandlerAggregatesByModel(t *testing.T) {
 func TestNestedRunFieldsPreserved(t *testing.T) {
 	recorder := NewRecorder()
 	manager := NewManager(recorder)
-	err := manager.Emit(context.Background(), Event{
+	err := manager.Emit(t.Context(), Event{
 		Kind:     EventToolStart,
 		RunID:    "child",
 		ParentID: "parent",
@@ -233,7 +233,7 @@ func TestManagerEmitReturnsHandlerError(t *testing.T) {
 	want := errors.New("handler failed")
 	manager := NewManager(failingHandler{err: want}, recorder)
 
-	err := manager.Emit(context.Background(), Event{Kind: EventToolStart})
+	err := manager.Emit(t.Context(), Event{Kind: EventToolStart})
 	if !errors.Is(err, want) {
 		t.Fatalf("emit error: got %v want %v", err, want)
 	}
@@ -247,7 +247,7 @@ func TestManagerNestedAsHandler(t *testing.T) {
 	inner := NewManager(recorder).WithParentRunID("inner-parent")
 	outer := NewManager(inner).WithTags("outer")
 
-	if err := outer.Emit(context.Background(), Event{Kind: EventLLMStart, Name: "m"}); err != nil {
+	if err := outer.Emit(t.Context(), Event{Kind: EventLLMStart, Name: "m"}); err != nil {
 		t.Fatal(err)
 	}
 	events := recorder.Events()
@@ -263,12 +263,12 @@ func TestManagerNestedAsHandler(t *testing.T) {
 }
 
 func TestContextWithManagerRoundTrip(t *testing.T) {
-	if _, ok := ManagerFromContext(context.Background()); ok {
+	if _, ok := ManagerFromContext(t.Context()); ok {
 		t.Fatal("expected no manager in background context")
 	}
 
 	manager := NewManager(NewRecorder()).WithTags("ctx")
-	ctx := ContextWithManager(context.Background(), manager)
+	ctx := ContextWithManager(t.Context(), manager)
 	got, ok := ManagerFromContext(ctx)
 	if !ok {
 		t.Fatal("expected manager in context")
@@ -294,7 +294,7 @@ func TestWithMetadataEmptyIsNoop(t *testing.T) {
 		WithMetadata(nil).
 		WithMetadata(map[string]any{})
 
-	if err := manager.Emit(context.Background(), Event{Kind: EventToolStart}); err != nil {
+	if err := manager.Emit(t.Context(), Event{Kind: EventToolStart}); err != nil {
 		t.Fatal(err)
 	}
 	event := recorder.Events()[0]
@@ -315,10 +315,10 @@ func TestStdOutHandlerNilWriterDefaults(t *testing.T) {
 
 	// Zero-value handlers fall back to os.Stdout without writing anything for
 	// ignored event kinds.
-	if err := (StdOutHandler{}).HandleEvent(context.Background(), Event{Kind: EventKind("custom")}); err != nil {
+	if err := (StdOutHandler{}).HandleEvent(t.Context(), Event{Kind: EventKind("custom")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := (StreamingStdOutHandler{}).HandleEvent(context.Background(), Event{Kind: EventLLMStream, Chunk: nil}); err != nil {
+	if err := (StreamingStdOutHandler{}).HandleEvent(t.Context(), Event{Kind: EventLLMStream, Chunk: nil}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -327,7 +327,7 @@ func TestStdOutHandlerErrorEvents(t *testing.T) {
 	for _, kind := range []EventKind{EventChatModelError, EventLLMError, EventToolError, EventRetrieverError} {
 		var buf bytes.Buffer
 		handler := NewStdOutHandler(&buf)
-		err := handler.HandleEvent(context.Background(), Event{Kind: kind, Name: "thing", Error: "boom"})
+		err := handler.HandleEvent(t.Context(), Event{Kind: kind, Name: "thing", Error: "boom"})
 		if err != nil {
 			t.Fatalf("%s: %v", kind, err)
 		}
@@ -339,7 +339,7 @@ func TestStdOutHandlerErrorEvents(t *testing.T) {
 
 func TestStdOutHandlerWriteError(t *testing.T) {
 	handler := NewStdOutHandler(failingWriter{})
-	err := handler.HandleEvent(context.Background(), Event{Kind: EventToolStart, Name: "search"})
+	err := handler.HandleEvent(t.Context(), Event{Kind: EventToolStart, Name: "search"})
 	if err == nil {
 		t.Fatal("expected write error")
 	}
@@ -361,7 +361,7 @@ func TestStreamingHandlerFormatsChunks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			handler := NewStreamingStdOutHandler(&buf)
-			err := handler.HandleEvent(context.Background(), Event{Kind: EventChatModelStream, Chunk: tc.chunk})
+			err := handler.HandleEvent(t.Context(), Event{Kind: EventChatModelStream, Chunk: tc.chunk})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -375,7 +375,7 @@ func TestStreamingHandlerFormatsChunks(t *testing.T) {
 func TestStreamingHandlerIgnoresNonStreamAndPropagatesErrors(t *testing.T) {
 	var buf bytes.Buffer
 	handler := NewStreamingStdOutHandler(&buf)
-	if err := handler.HandleEvent(context.Background(), Event{Kind: EventToolStart, Chunk: "ignored"}); err != nil {
+	if err := handler.HandleEvent(t.Context(), Event{Kind: EventToolStart, Chunk: "ignored"}); err != nil {
 		t.Fatal(err)
 	}
 	if buf.Len() != 0 {
@@ -383,7 +383,7 @@ func TestStreamingHandlerIgnoresNonStreamAndPropagatesErrors(t *testing.T) {
 	}
 
 	failing := NewStreamingStdOutHandler(failingWriter{})
-	if err := failing.HandleEvent(context.Background(), Event{Kind: EventLLMStream, Chunk: "tok"}); err == nil {
+	if err := failing.HandleEvent(t.Context(), Event{Kind: EventLLMStream, Chunk: "tok"}); err == nil {
 		t.Fatal("expected write error")
 	}
 }
@@ -395,7 +395,7 @@ func TestFileHandlerAppendMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.HandleEvent(context.Background(), Event{Kind: EventToolStart, Name: "one"}); err != nil {
+	if err := first.HandleEvent(t.Context(), Event{Kind: EventToolStart, Name: "one"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := first.Close(); err != nil {
@@ -410,7 +410,7 @@ func TestFileHandlerAppendMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := second.HandleEvent(context.Background(), Event{Kind: EventToolEnd, Name: "two"}); err != nil {
+	if err := second.HandleEvent(t.Context(), Event{Kind: EventToolEnd, Name: "two"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := second.Close(); err != nil {
@@ -439,7 +439,7 @@ func TestFileHandlerNilReceiver(t *testing.T) {
 	if err := handler.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := handler.HandleEvent(context.Background(), Event{Kind: EventToolStart}); err == nil {
+	if err := handler.HandleEvent(t.Context(), Event{Kind: EventToolStart}); err == nil {
 		t.Fatal("expected error for nil handler")
 	}
 }
@@ -463,14 +463,14 @@ func TestUsageMetadataHandlerModelNameFallbacks(t *testing.T) {
 		{Kind: EventChatModelEnd, Output: messages.Human("hi")}, // non-AI role: skipped
 	}
 	for _, event := range events {
-		if err := handler.HandleEvent(context.Background(), event); err != nil {
+		if err := handler.HandleEvent(t.Context(), event); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	zeroUsage := messages.AI("ok")
 	zeroUsage.ResponseMetadata = map[string]any{"model_name": "zero"}
-	if err := handler.HandleEvent(context.Background(), Event{Kind: EventChatModelEnd, Output: zeroUsage}); err != nil {
+	if err := handler.HandleEvent(t.Context(), Event{Kind: EventChatModelEnd, Output: zeroUsage}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -503,7 +503,7 @@ func TestUsageMetadataHandlerOutputShapes(t *testing.T) {
 		{Kind: EventChatModelEnd, Output: "not a message"}, // unsupported: ignored
 	}
 	for _, event := range events {
-		if err := handler.HandleEvent(context.Background(), event); err != nil {
+		if err := handler.HandleEvent(t.Context(), event); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -520,7 +520,7 @@ func TestWithMetadataMergesOntoExisting(t *testing.T) {
 		WithMetadata(map[string]any{"first": 1, "shared": "old"}).
 		WithMetadata(map[string]any{"second": 2, "shared": "new"})
 
-	if err := manager.Emit(context.Background(), Event{Kind: EventToolStart}); err != nil {
+	if err := manager.Emit(t.Context(), Event{Kind: EventToolStart}); err != nil {
 		t.Fatal(err)
 	}
 	metadata := recorder.Events()[0].Metadata

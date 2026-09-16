@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,7 +100,7 @@ func TestFilesystemFileSearchToolsInvoke(t *testing.T) {
 		t.Fatalf("new middleware: %v", err)
 	}
 
-	globResult, err := middleware.Tools[0].Invoke(context.Background(), map[string]any{"pattern": "*.go", "path": "/src"})
+	globResult, err := middleware.Tools[0].Invoke(t.Context(), map[string]any{"pattern": "*.go", "path": "/src"})
 	if err != nil {
 		t.Fatalf("glob invoke: %v", err)
 	}
@@ -110,7 +109,7 @@ func TestFilesystemFileSearchToolsInvoke(t *testing.T) {
 	}
 
 	// Empty path and output_mode fall back to defaults.
-	grepResult, err := middleware.Tools[1].Invoke(context.Background(), map[string]any{"pattern": "package"})
+	grepResult, err := middleware.Tools[1].Invoke(t.Context(), map[string]any{"pattern": "package"})
 	if err != nil {
 		t.Fatalf("grep invoke: %v", err)
 	}

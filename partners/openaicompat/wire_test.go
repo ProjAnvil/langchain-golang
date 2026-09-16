@@ -1,7 +1,6 @@
 package openaicompat
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +43,7 @@ func TestGroqWireChatCompletions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hello")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hello")})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -116,7 +115,7 @@ func TestOpenRouterAttributionHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Resolve: %v", err)
 		}
-		if _, err := resolved.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+		if _, err := resolved.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 			t.Fatalf("Invoke: %v", err)
 		}
 		return body, hdrs

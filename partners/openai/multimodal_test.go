@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,7 +68,7 @@ func TestResponsesMultimodalInput(t *testing.T) {
 		`{"id":"resp_1","model":"gpt-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{}}`)
 	model := NewChatModel(modelconfig.WithBaseURL(url), modelconfig.WithModel("gpt-test"))
 
-	if _, err := model.Invoke(context.Background(), []messages.Message{multimodalHuman()}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{multimodalHuman()}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	input, ok := gotBody()["input"].([]any)
@@ -110,7 +109,7 @@ func TestResponsesPlainTextInputStaysString(t *testing.T) {
 		`{"id":"resp_1","model":"gpt-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{}}`)
 	model := NewChatModel(modelconfig.WithBaseURL(url), modelconfig.WithModel("gpt-test"))
 
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	input := gotBody()["input"].([]any)
@@ -130,7 +129,7 @@ func TestResponsesImageFileIDAndDetail(t *testing.T) {
 	human := messages.Human("look").WithContentBlocks([]messages.ContentBlock{
 		messages.ImageBlock{FileID: "file-abc", Extras: map[string]any{"detail": "high"}},
 	})
-	if _, err := model.Invoke(context.Background(), []messages.Message{human}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{human}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	msg, _ := gotBody()["input"].([]any)[0].(map[string]any)
@@ -153,7 +152,7 @@ func TestResponsesMultimodalErrors(t *testing.T) {
 	badImage := messages.Human("x").WithContentBlocks([]messages.ContentBlock{
 		messages.ImageBlock{MimeType: "image/png"},
 	})
-	_, err := model.Invoke(context.Background(), []messages.Message{badImage})
+	_, err := model.Invoke(t.Context(), []messages.Message{badImage})
 	if err == nil || !strings.Contains(err.Error(), "image content block requires") {
 		t.Fatalf("expected image-source error, got %v", err)
 	}
@@ -161,7 +160,7 @@ func TestResponsesMultimodalErrors(t *testing.T) {
 	badAudio := messages.Human("x").WithContentBlocks([]messages.ContentBlock{
 		messages.AudioBlock{URL: "https://example.com/a.wav"},
 	})
-	_, err = model.Invoke(context.Background(), []messages.Message{badAudio})
+	_, err = model.Invoke(t.Context(), []messages.Message{badAudio})
 	if err == nil || !strings.Contains(err.Error(), "audio content block requires base64") {
 		t.Fatalf("expected audio-data error, got %v", err)
 	}
@@ -178,7 +177,7 @@ func TestChatCompletionsMultimodalInput(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	if _, err := model.Invoke(context.Background(), []messages.Message{multimodalHuman()}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{multimodalHuman()}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	msgs := gotBody()["messages"].([]any)
@@ -220,7 +219,7 @@ func TestChatCompletionsPlainTextStaysString(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	msg, _ := gotBody()["messages"].([]any)[0].(map[string]any)
@@ -241,7 +240,7 @@ func TestChatCompletionsMultimodalErrors(t *testing.T) {
 	human := messages.Human("x").WithContentBlocks([]messages.ContentBlock{
 		messages.ImageBlock{FileID: "file-abc"},
 	})
-	_, err := model.Invoke(context.Background(), []messages.Message{human})
+	_, err := model.Invoke(t.Context(), []messages.Message{human})
 	if err == nil || !strings.Contains(err.Error(), "url or base64") {
 		t.Fatalf("expected file_id rejection, got %v", err)
 	}
@@ -255,7 +254,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 		`{"id":"resp_1","model":"o-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{}}`)
 	base := NewChatModel(modelconfig.WithBaseURL(url), modelconfig.WithModel("o-test"))
 
-	if _, err := base.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := base.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("unset Invoke: %v", err)
 	}
 	if _, present := gotBody()["reasoning"]; present {
@@ -265,7 +264,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 		t.Fatalf("responses payload must not carry reasoning_effort scalar, got %v", gotBody()["reasoning_effort"])
 	}
 
-	if _, err := base.WithReasoningEffort("low").Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := base.WithReasoningEffort("low").Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("effort Invoke: %v", err)
 	}
 	reasoning, ok := gotBody()["reasoning"].(map[string]any)
@@ -288,7 +287,7 @@ func TestResponsesStreamUsageChunk(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -296,7 +295,7 @@ func TestResponsesStreamUsageChunk(t *testing.T) {
 
 	var chunks []messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -342,7 +341,7 @@ func TestChatCompletionsStreamUsage(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -350,7 +349,7 @@ func TestChatCompletionsStreamUsage(t *testing.T) {
 
 	var chunks []messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -401,7 +400,7 @@ func TestChatCompletionsUsagePromptTokensSpelling(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

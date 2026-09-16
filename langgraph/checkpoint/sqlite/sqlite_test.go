@@ -1,7 +1,6 @@
 package sqlite_test
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -79,7 +78,7 @@ func TestSaverContract(t *testing.T) {
 // place on open (ALTER TABLE): pre-existing rows read back with an empty
 // TaskPath, and new PutWrites round-trip their task path.
 func TestTaskPathColumnMigration(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	path := dbPath(t)
 	cpID := checkpoint.NewID(1)
 
@@ -154,20 +153,18 @@ func TestTaskPathColumnMigration(t *testing.T) {
 // TestConcurrentAccess hammers a single WAL-mode database file from multiple
 // goroutines (distinct threads) and verifies all writes land.
 func TestConcurrentAccess(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newSaver(t, dbPath(t))
 
 	const goroutines = 8
 	const putsPerGoroutine = 5
 	errs := make(chan error, goroutines*putsPerGoroutine)
 	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
+	for g := range goroutines {
+		wg.Go(func() {
 			threadID := fmt.Sprintf("thread-%d", g)
 			cfg := checkpoint.Config{ThreadID: threadID}
-			for i := 0; i < putsPerGoroutine; i++ {
+			for i := range putsPerGoroutine {
 				cp := sampleCheckpoint(checkpoint.NewID(g*putsPerGoroutine + i + 1))
 				next, err := s.Put(ctx, cfg, cp, checkpoint.Metadata{Source: "loop", Step: i}, nil)
 				if err != nil {
@@ -180,7 +177,7 @@ func TestConcurrentAccess(t *testing.T) {
 				}
 				cfg = next
 			}
-		}(g)
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -203,7 +200,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 // TestInMemoryDatabase verifies `:memory:` databases work end to end.
 func TestInMemoryDatabase(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := newSaver(t, ":memory:")
 
 	cp := sampleCheckpoint(checkpoint.NewID(1))
@@ -225,7 +222,7 @@ func TestInMemoryDatabase(t *testing.T) {
 // folding more writes into the restored slice. If the serde corrupted
 // []string into []any, AppendSliceReducer's type check would fail the fold.
 func TestReducerChannelRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	path := dbPath(t)
 
 	calls := 0

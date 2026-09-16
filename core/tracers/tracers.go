@@ -155,9 +155,7 @@ func (t *MemoryTracer) Replay(target Tracer) {
 // Subscribe returns a channel that receives future events and a cancel
 // function. The channel is buffered so tracing does not block normal execution.
 func (t *MemoryTracer) Subscribe(buffer int) (<-chan Event, func()) {
-	if buffer < 0 {
-		buffer = 0
-	}
+	buffer = max(buffer, 0)
 	ch := make(chan Event, buffer)
 	t.mu.Lock()
 	t.subscribers = append(t.subscribers, ch)

@@ -1,7 +1,8 @@
 package runnables
 
 import (
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/schema"
 )
@@ -49,11 +50,7 @@ func mergeConfigSchemas(runnables ...any) schema.Schema {
 	if len(properties) == 0 && len(requiredSet) == 0 {
 		return emptyConfigSchema()
 	}
-	required := make([]string, 0, len(requiredSet))
-	for key := range requiredSet {
-		required = append(required, key)
-	}
-	sort.Strings(required)
+	required := slices.Sorted(maps.Keys(requiredSet))
 	return configurableConfigSchema(properties, required...)
 }
 

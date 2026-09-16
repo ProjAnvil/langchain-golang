@@ -1,12 +1,13 @@
 package redis
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -546,11 +547,11 @@ func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]ch
 		stored = append(stored, sw)
 		liveKeys = append(liveKeys, keys[i])
 	}
-	sort.Slice(stored, func(i, j int) bool {
-		if stored[i].TaskID != stored[j].TaskID {
-			return stored[i].TaskID < stored[j].TaskID
-		}
-		return stored[i].Idx < stored[j].Idx
+	slices.SortFunc(stored, func(a, b storedWrite) int {
+		return cmp.Or(
+			cmp.Compare(a.TaskID, b.TaskID),
+			cmp.Compare(a.Idx, b.Idx),
+		)
 	})
 	out := make([]checkpoint.Write, len(stored))
 	for i, sw := range stored {

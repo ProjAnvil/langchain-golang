@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -49,7 +48,7 @@ func TestAddSequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"foo": []string{}})
+	res, err := cg.Invoke(t.Context(), map[string]any{"foo": []string{}})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -79,9 +78,8 @@ func TestSetConditionalEntryPointFanOutInvalidUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), map[string]any{"hello": "there"})
-	var iu *channels.InvalidUpdateError
-	if !errors.As(err, &iu) {
+	_, err = cg.Invoke(t.Context(), map[string]any{"hello": "there"})
+	if _, ok := errors.AsType[*channels.InvalidUpdateError](err); !ok {
 		t.Fatalf("Invoke error = %v, want *channels.InvalidUpdateError", err)
 	}
 }
@@ -114,7 +112,7 @@ func TestSetConditionalEntryPointRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"pick": "two"})
+	res, err := cg.Invoke(t.Context(), map[string]any{"pick": "two"})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -144,7 +142,7 @@ func TestSetConditionalEntryPointToEND(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), map[string]any{"x": 1})
+	res, err := cg.Invoke(t.Context(), map[string]any{"x": 1})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -204,7 +202,7 @@ func TestSetConditionalEntryPointRouterError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	_, err = cg.Invoke(context.Background(), map[string]any{"x": 1})
+	_, err = cg.Invoke(t.Context(), map[string]any{"x": 1})
 	if err == nil || !strings.Contains(err.Error(), "router boom") ||
 		!strings.Contains(err.Error(), "conditional entry point") {
 		t.Fatalf("Invoke error = %v, want wrapped router error", err)
@@ -232,7 +230,7 @@ func TestSetFinishPoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	res, err := cg.Invoke(context.Background(), nil)
+	res, err := cg.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

@@ -1,7 +1,6 @@
 package redis_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -80,7 +79,7 @@ func TestNewPanics(t *testing.T) {
 // round-trips a checkpoint, Close (owning the client) breaks further calls,
 // and both a malformed URL and an unreachable server fail at construction.
 func TestNewFromConnString(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ser := serde.NewJSONSerializer()
 
 	mr := miniredis.RunT(t)
@@ -121,7 +120,7 @@ func TestNewFromConnString(t *testing.T) {
 // TestCloseCallerSuppliedClient verifies Close is a no-op for savers built
 // on a caller-supplied client: the client stays usable afterwards.
 func TestCloseCallerSuppliedClient(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, mr := newSaver(t)
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -142,7 +141,7 @@ func TestCloseCallerSuppliedClient(t *testing.T) {
 // zset, PutWrites expires the write keys, entries actually disappear after
 // the TTL elapses, and reads with WithRefreshOnRead extend the TTL.
 func TestTTL(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("keys expire", func(t *testing.T) {
 		s, mr := newSaver(t, redis.WithTTL(time.Minute))
@@ -215,7 +214,7 @@ func TestTTL(t *testing.T) {
 // empty-CheckpointID branch: the writes attach to the thread's LATEST
 // checkpoint, and an empty thread is an error (matching MemorySaver).
 func TestPutWritesResolvesLatestCheckpoint(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newSaver(t)
 
 	thread := checkpoint.Config{ThreadID: "t1"}
@@ -257,7 +256,7 @@ func TestPutWritesResolvesLatestCheckpoint(t *testing.T) {
 // checkpoint has no ChannelVersions map but newVersions must be recorded: a
 // fresh map is allocated and merged.
 func TestPutMergesNewVersionsIntoNilChannelVersions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newSaver(t)
 
 	cp := checkpoint.Checkpoint{V: 1, ID: checkpoint.NewID(1)}
@@ -278,7 +277,7 @@ func TestPutMergesNewVersionsIntoNilChannelVersions(t *testing.T) {
 // replaces the previous record — including clearing a parent link — matching
 // sqlite's INSERT OR REPLACE row semantics.
 func TestRePutReplacesRecord(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newSaver(t)
 
 	parent, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)
@@ -307,7 +306,7 @@ func TestRePutReplacesRecord(t *testing.T) {
 // and the Redis glob metacharacters "*", "?", "[", "]" and "\" round-trip
 // correctly and stay isolated from lookalike threads (DeleteThread included).
 func TestEscapedComponents(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newSaver(t)
 
 	// The "plain" thread is the concatenation of the weird thread and ns:
@@ -358,7 +357,7 @@ func TestEscapedComponents(t *testing.T) {
 // the ordering zset references a checkpoint hash that no longer exists:
 // List skips the orphan instead of erroring.
 func TestListSkipsOrphanIndexEntries(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, mr := newSaver(t)
 
 	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)
@@ -389,7 +388,7 @@ func TestListSkipsOrphanIndexEntries(t *testing.T) {
 // (and their writes) exceed the 100-key SCAN count, exercising the cursor
 // loop in both List and DeleteThread.
 func TestScanPagination(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s, _ := newSaver(t)
 
 	cfg := checkpoint.Config{ThreadID: "t1"}

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	textBlockIndex     = 0
+	textBlockIndex      = 0
 	reasoningBlockIndex = 1
 )
 
@@ -65,13 +65,13 @@ func (m ChatModel) createChatStream(
 
 	scanner := providerutil.NewSSEScanner(resp.Body)
 	return &chatStream{
-		ctx:        ctx,
-		cancel:     cancel,
-		body:       resp.Body,
-		scanner:    scanner,
-		cfg:        cfg,
-		reasoning:  m.reasoning,
-		textBlock:  &streamTextBlock{},
+		ctx:       ctx,
+		cancel:    cancel,
+		body:      resp.Body,
+		scanner:   scanner,
+		cfg:       cfg,
+		reasoning: m.reasoning,
+		textBlock: &streamTextBlock{},
 	}, nil
 }
 

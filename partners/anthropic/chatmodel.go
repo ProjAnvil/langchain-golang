@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -180,7 +181,7 @@ func toolChoiceFromCore(choice language.ToolChoice) (map[string]any, error) {
 func (m ChatModel) BindToolsStrict(boundTools []tools.Tool, strict bool) (ChatModel, error) {
 	next := m
 	next.boundTools = append([]tools.Tool(nil), boundTools...)
-	next.toolStrict = boolPtr(strict)
+	next.toolStrict = new(strict)
 	return next, nil
 }
 
@@ -451,7 +452,7 @@ type requestPayload struct {
 	StopSequences     []string         `json:"stop_sequences,omitempty"`
 	Tools             []toolSpec       `json:"tools,omitempty"`
 	ToolChoice        map[string]any   `json:"tool_choice,omitempty"`
-	Stream            bool             `json:"stream,omitempty"`
+	Stream            bool             `json:"stream,omitzero"`
 	Thinking          map[string]any   `json:"thinking,omitempty"`
 	ContextManagement map[string]any   `json:"context_management,omitempty"`
 	InferenceGeo      string           `json:"inference_geo,omitempty"`
@@ -470,7 +471,7 @@ type contentBlock struct {
 	Input        map[string]any `json:"input,omitempty"`
 	ToolUseID    string         `json:"tool_use_id,omitempty"`
 	Content      any            `json:"content,omitempty"`
-	IsError      bool           `json:"is_error,omitempty"`
+	IsError      bool           `json:"is_error,omitzero"`
 	Source       map[string]any `json:"source,omitempty"`
 	CacheControl map[string]any `json:"cache_control,omitempty"`
 	Thinking     string         `json:"thinking,omitempty"`
@@ -708,18 +709,7 @@ func cloneMetadata(metadata map[string]any) map[string]any {
 
 // cloneAnyMap returns a shallow defensive copy of an arbitrary config map.
 func cloneAnyMap(m map[string]any) map[string]any {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]any, len(m))
-	for key, value := range m {
-		out[key] = value
-	}
-	return out
-}
-
-func boolPtr(v bool) *bool {
-	return &v
+	return maps.Clone(m)
 }
 
 func cloneBoolPtr(v *bool) *bool {

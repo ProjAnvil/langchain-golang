@@ -17,7 +17,7 @@ func TestPassthrough(t *testing.T) {
 		return nil
 	}
 
-	got, err := runnable.Invoke(context.Background(), "hello")
+	got, err := runnable.Invoke(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestAssign(t *testing.T) {
 	})
 
 	input := map[string]any{"a": 2, "b": 3}
-	got, err := assign.Invoke(context.Background(), input)
+	got, err := assign.Invoke(t.Context(), input)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestAssignPropagatesChildConfig(t *testing.T) {
 	})
 
 	got, err := assign.Invoke(
-		context.Background(),
+		t.Context(),
 		map[string]any{"a": 2, "b": 3},
 		WithRunID("root"),
 		WithTags("parent"),
@@ -84,14 +84,14 @@ func TestBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new branch: %v", err)
 	}
-	got, err := branch.Invoke(context.Background(), 4)
+	got, err := branch.Invoke(t.Context(), 4)
 	if err != nil {
 		t.Fatalf("invoke even: %v", err)
 	}
 	if got != "even" {
 		t.Fatalf("even got %q", got)
 	}
-	got, err = branch.Invoke(context.Background(), 3)
+	got, err = branch.Invoke(t.Context(), 3)
 	if err != nil {
 		t.Fatalf("invoke odd: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestBranchPropagatesConditionAndBranchConfig(t *testing.T) {
 	}
 
 	got, err := branch.Invoke(
-		context.Background(),
+		t.Context(),
 		1,
 		WithRunID("root"),
 		WithTags("parent"),
@@ -141,7 +141,7 @@ func TestWithFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new fallbacks: %v", err)
 	}
-	got, err := runnable.Invoke(context.Background(), "ok")
+	got, err := runnable.Invoke(t.Context(), "ok")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestWithFallbacksPropagatesAttemptConfig(t *testing.T) {
 		t.Fatalf("new fallbacks: %v", err)
 	}
 	got, err := runnable.Invoke(
-		context.Background(),
+		t.Context(),
 		"input",
 		WithRunID("root"),
 		WithTags("parent"),
@@ -191,7 +191,7 @@ func TestWithFallbacksReturnsFirstError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new fallbacks: %v", err)
 	}
-	_, err = runnable.Invoke(context.Background(), "ok")
+	_, err = runnable.Invoke(t.Context(), "ok")
 	if !errors.Is(err, primaryErr) {
 		t.Fatalf("err: got %v want %v", err, primaryErr)
 	}
@@ -203,17 +203,17 @@ func TestPassthroughOnInvokeError(t *testing.T) {
 		return errTestSentinel
 	}
 
-	if _, err := runnable.Invoke(context.Background(), "x"); err != errTestSentinel {
+	if _, err := runnable.Invoke(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("invoke err: got %v want %v", err, errTestSentinel)
 	}
-	if _, err := runnable.Stream(context.Background(), "x"); err != errTestSentinel {
+	if _, err := runnable.Stream(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
 	}
 }
 
 func TestPassthroughBatch(t *testing.T) {
 	runnable := NewPassthrough[string](schema.String(""))
-	got, err := runnable.Batch(context.Background(), []string{"a", "b"})
+	got, err := runnable.Batch(t.Context(), []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestPassthroughBatch(t *testing.T) {
 		}
 		return nil
 	}
-	got, err = runnable.Batch(context.Background(), []string{"ok", "bad"})
+	got, err = runnable.Batch(t.Context(), []string{"ok", "bad"})
 	if err == nil {
 		t.Fatal("expected joined hook error")
 	}
@@ -243,12 +243,12 @@ func TestPassthroughBatch(t *testing.T) {
 
 func TestPassthroughStreamAndSchemas(t *testing.T) {
 	runnable := NewPassthrough[int](schema.Integer("number"))
-	stream, err := runnable.Stream(context.Background(), 7)
+	stream, err := runnable.Stream(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	got, ok, err := stream.Next(context.Background())
+	got, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || got != 7 {
 		t.Fatalf("next got=%d ok=%v err=%v", got, ok, err)
 	}
@@ -271,7 +271,7 @@ func TestAssignBatchStreamAndSchemas(t *testing.T) {
 		}, schema.Schema{"type": "object"}, schema.Integer("")),
 	})
 
-	got, err := assign.Batch(context.Background(), []map[string]any{{"n": 2}, {"n": 3}})
+	got, err := assign.Batch(t.Context(), []map[string]any{{"n": 2}, {"n": 3}})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -279,12 +279,12 @@ func TestAssignBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	stream, err := assign.Stream(context.Background(), map[string]any{"n": 5})
+	stream, err := assign.Stream(t.Context(), map[string]any{"n": 5})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk["double"] != 10 {
 		t.Fatalf("chunk=%#v ok=%v err=%v", chunk, ok, err)
 	}
@@ -303,13 +303,13 @@ func TestAssignStepError(t *testing.T) {
 			return nil, errTestSentinel
 		}, schema.Schema{}, schema.Schema{}),
 	})
-	if _, err := assign.Invoke(context.Background(), map[string]any{}); err != errTestSentinel {
+	if _, err := assign.Invoke(t.Context(), map[string]any{}); err != errTestSentinel {
 		t.Fatalf("invoke err: got %v want %v", err, errTestSentinel)
 	}
-	if _, err := assign.Stream(context.Background(), map[string]any{}); err != errTestSentinel {
+	if _, err := assign.Stream(t.Context(), map[string]any{}); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
 	}
-	if _, err := assign.Batch(context.Background(), []map[string]any{{}}); err == nil {
+	if _, err := assign.Batch(t.Context(), []map[string]any{{}}); err == nil {
 		t.Fatal("expected batch error")
 	}
 }
@@ -346,7 +346,7 @@ func TestBranchBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("new branch: %v", err)
 	}
 
-	got, err := branch.Batch(context.Background(), []int{1, -1})
+	got, err := branch.Batch(t.Context(), []int{1, -1})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -354,22 +354,22 @@ func TestBranchBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	stream, err := branch.Stream(context.Background(), 5)
+	stream, err := branch.Stream(t.Context(), 5)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != "positive" {
 		t.Fatalf("chunk=%q ok=%v err=%v", chunk, ok, err)
 	}
 
-	stream, err = branch.Stream(context.Background(), -5)
+	stream, err = branch.Stream(t.Context(), -5)
 	if err != nil {
 		t.Fatalf("default stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err = stream.Next(context.Background())
+	chunk, ok, err = stream.Next(t.Context())
 	if err != nil || !ok || chunk != "negative" {
 		t.Fatalf("default chunk=%q ok=%v err=%v", chunk, ok, err)
 	}
@@ -394,10 +394,10 @@ func TestBranchConditionError(t *testing.T) {
 		t.Fatalf("new branch: %v", err)
 	}
 
-	if _, err := branch.Invoke(context.Background(), 1); err != errTestSentinel {
+	if _, err := branch.Invoke(t.Context(), 1); err != errTestSentinel {
 		t.Fatalf("invoke err: got %v want %v", err, errTestSentinel)
 	}
-	if _, err := branch.Stream(context.Background(), 1); err != errTestSentinel {
+	if _, err := branch.Stream(t.Context(), 1); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
 	}
 }
@@ -424,7 +424,7 @@ func TestWithFallbacksBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("new fallbacks: %v", err)
 	}
 
-	got, err := runnable.Batch(context.Background(), []string{"good", "bad"})
+	got, err := runnable.Batch(t.Context(), []string{"good", "bad"})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -432,12 +432,12 @@ func TestWithFallbacksBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	stream, err := runnable.Stream(context.Background(), "bad")
+	stream, err := runnable.Stream(t.Context(), "bad")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != "bad-fallback" {
 		t.Fatalf("chunk=%q ok=%v err=%v", chunk, ok, err)
 	}
@@ -461,7 +461,7 @@ func TestWithFallbacksStreamReturnsFirstError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new fallbacks: %v", err)
 	}
-	if _, err := runnable.Stream(context.Background(), "x"); err != errTestSentinel {
+	if _, err := runnable.Stream(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
 	}
 }
@@ -487,7 +487,7 @@ func TestWithFallbacksExceptionFilterMatchedErrorFallsBack(t *testing.T) {
 	}
 	runnable.ExceptionsToHandle = []func(error) bool{MatchErrors(errRateLimited)}
 
-	got, err := runnable.Invoke(context.Background(), "ok")
+	got, err := runnable.Invoke(t.Context(), "ok")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -515,7 +515,7 @@ func TestWithFallbacksExceptionFilterUnmatchedErrorPropagates(t *testing.T) {
 	}
 	runnable.ExceptionsToHandle = []func(error) bool{MatchErrors(errRateLimited)}
 
-	_, err = runnable.Invoke(context.Background(), "ok")
+	_, err = runnable.Invoke(t.Context(), "ok")
 	if !errors.Is(err, errAuthFailed) {
 		t.Fatalf("invoke err: got %v want %v", err, errAuthFailed)
 	}
@@ -523,10 +523,10 @@ func TestWithFallbacksExceptionFilterUnmatchedErrorPropagates(t *testing.T) {
 		t.Fatalf("fallback calls = %d, want 0 for unmatched error", fallbackCalls)
 	}
 
-	if _, err := runnable.Batch(context.Background(), []string{"ok"}); !errors.Is(err, errAuthFailed) {
+	if _, err := runnable.Batch(t.Context(), []string{"ok"}); !errors.Is(err, errAuthFailed) {
 		t.Fatalf("batch err: got %v want %v", err, errAuthFailed)
 	}
-	if _, err := runnable.Stream(context.Background(), "ok"); !errors.Is(err, errAuthFailed) {
+	if _, err := runnable.Stream(t.Context(), "ok"); !errors.Is(err, errAuthFailed) {
 		t.Fatalf("stream err: got %v want %v", err, errAuthFailed)
 	}
 	if fallbackCalls != 0 {
@@ -553,7 +553,7 @@ func TestWithFallbacksExceptionFilterAppliesToFallbacksToo(t *testing.T) {
 	}
 	runnable.ExceptionsToHandle = []func(error) bool{MatchErrors(errRateLimited)}
 
-	_, err = runnable.Invoke(context.Background(), "ok")
+	_, err = runnable.Invoke(t.Context(), "ok")
 	if !errors.Is(err, errAuthFailed) {
 		t.Fatalf("invoke err: got %v want %v (unmatched fallback error must propagate)", err, errAuthFailed)
 	}
@@ -575,7 +575,7 @@ func TestWithFallbacksDefaultFilterHandlesAllErrors(t *testing.T) {
 		t.Fatalf("new fallbacks: %v", err)
 	}
 	// ExceptionsToHandle left nil: every error activates the fallback chain.
-	got, err := runnable.Invoke(context.Background(), "ok")
+	got, err := runnable.Invoke(t.Context(), "ok")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestAssignNilMapInput(t *testing.T) {
 			return 1, nil
 		}, schema.Schema{"type": "object"}, schema.Integer("")),
 	})
-	got, err := assign.Invoke(context.Background(), nil)
+	got, err := assign.Invoke(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

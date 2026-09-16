@@ -1,10 +1,11 @@
 package moderation
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -32,10 +33,7 @@ type ViolationError struct {
 }
 
 func (e *ViolationError) Error() string {
-	stage := e.Stage
-	if stage == "" {
-		stage = "content"
-	}
+	stage := cmp.Or(e.Stage, "content")
 	return fmt.Sprintf("openai moderation flagged %s: %s", stage, strings.Join(e.Categories, ", "))
 }
 
@@ -151,7 +149,7 @@ func (m *Middleware) applyViolation(ctx context.Context, msgs []messages.Message
 		return nil, &ViolationError{Stage: stage, Content: content, Categories: categories, Result: result}
 	case ExitEnd:
 		return map[string]any{
-			"jump_to": "end",
+			"jump_to":  "end",
 			"messages": []messages.Message{messages.AI(m.formatViolationMessage(content, result))},
 		}, nil
 	case ExitReplace:
@@ -173,16 +171,10 @@ func (m *Middleware) formatViolationMessage(content string, result Result) strin
 	for i, c := range categories {
 		labels[i] = strings.ReplaceAll(c, "_", " ")
 	}
-	categoryLabel := strings.Join(labels, ", ")
-	if categoryLabel == "" {
-		categoryLabel = "OpenAI's safety policies"
-	}
+	categoryLabel := cmp.Or(strings.Join(labels, ", "), "OpenAI's safety policies")
 	scoresJSON, _ := json.Marshal(result.Scores)
 
-	template := m.ViolationMessage
-	if template == "" {
-		template = defaultViolationTemplate
-	}
+	template := cmp.Or(m.ViolationMessage, defaultViolationTemplate)
 	msg := strings.ReplaceAll(template, "{categories}", categoryLabel)
 	msg = strings.ReplaceAll(msg, "{category_scores}", string(scoresJSON))
 	msg = strings.ReplaceAll(msg, "{original_content}", content)
@@ -205,6 +197,6 @@ func flaggedCategories(result Result) []string {
 			cats = append(cats, name)
 		}
 	}
-	sort.Strings(cats)
+	slices.Sort(cats)
 	return cats
 }

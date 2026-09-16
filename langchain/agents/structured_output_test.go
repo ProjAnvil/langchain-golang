@@ -216,8 +216,7 @@ func TestAutoStrategy_SelectsTool(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error, got resolved value %T", resolved)
 		}
-		var unsupported *StructuredOutputUnsupportedError
-		if !errors.As(err, &unsupported) {
+		if _, ok := errors.AsType[*StructuredOutputUnsupportedError](err); !ok {
 			t.Fatalf("expected *StructuredOutputUnsupportedError, got %T (%v)", err, err)
 		}
 		if resolved != nil {
@@ -231,8 +230,7 @@ func TestAutoStrategy_SelectsTool(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error, got resolved value %T", resolved)
 		}
-		var unsupported *StructuredOutputUnsupportedError
-		if !errors.As(err, &unsupported) {
+		if _, ok := errors.AsType[*StructuredOutputUnsupportedError](err); !ok {
 			t.Fatalf("expected *StructuredOutputUnsupportedError, got %T (%v)", err, err)
 		}
 	})
@@ -408,7 +406,7 @@ func TestProviderStrategyUsesStructuredCaller(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("weather in Tokyo?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -445,7 +443,7 @@ func TestProviderStrategyFallsBackWithoutStructuredCaller(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in London?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("weather in London?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -478,7 +476,7 @@ func TestProviderStrategyUsesStructuredCallerWithTools(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("weather in Tokyo?")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("weather in Tokyo?")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -501,9 +499,9 @@ func TestStructuredOutputValidationErrorUnwrap(t *testing.T) {
 	if !errors.Is(err, source) {
 		t.Fatalf("expected Unwrap to expose the source error; errors.Is failed")
 	}
-	var target *StructuredOutputValidationError
-	if !errors.As(err, &target) || target.ToolName != "weather_schema" {
-		t.Fatalf("errors.As failed: %#v", target)
+	target, ok := errors.AsType[*StructuredOutputValidationError](err)
+	if !ok || target.ToolName != "weather_schema" {
+		t.Fatalf("errors.AsType failed: %#v", target)
 	}
 }
 
@@ -555,7 +553,7 @@ func TestOutputToolBindingToolIsInvocable(t *testing.T) {
 	}
 	// The structured-output tool is a parse target only: invoking it is a
 	// no-op that returns an empty result without error.
-	result, err := binding.Tool.Invoke(context.Background(), map[string]any{"temperature": 75})
+	result, err := binding.Tool.Invoke(t.Context(), map[string]any{"temperature": 75})
 	if err != nil {
 		t.Fatalf("tool invoke: %v", err)
 	}

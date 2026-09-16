@@ -29,7 +29,7 @@ func TestBindCallTimeConfigWins(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 
-	_, err = bound.Invoke(context.Background(), "x",
+	_, err = bound.Invoke(t.Context(), "x",
 		WithMaxConcurrency(1),
 		WithMetadata("trace", "call"),
 		WithConfigurable("mode", "call"),
@@ -56,7 +56,7 @@ func TestBindCallTimeConfigWins(t *testing.T) {
 	}
 
 	// Without call-site overrides the bound settings still apply.
-	_, err = bound.Invoke(context.Background(), "x")
+	_, err = bound.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestBindBatchAndStreamDelegate(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 
-	got, err := bound.Batch(context.Background(), []int{1, 2, 3})
+	got, err := bound.Batch(t.Context(), []int{1, 2, 3})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -87,12 +87,12 @@ func TestBindBatchAndStreamDelegate(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	stream, err := bound.Stream(context.Background(), 21)
+	stream, err := bound.Stream(t.Context(), 21)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != 42 {
 		t.Fatalf("chunk=%d ok=%v err=%v", chunk, ok, err)
 	}
@@ -115,14 +115,14 @@ func TestBindChainedBindMerges(t *testing.T) {
 	}
 	chained := bound.Bind(WithMaxConcurrency(7))
 
-	if _, err := chained.Invoke(context.Background(), "x"); err != nil {
+	if _, err := chained.Invoke(t.Context(), "x"); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if seen[0].MaxConcurrency != 7 {
 		t.Fatalf("later bind must win: got %d want 7", seen[0].MaxConcurrency)
 	}
 	// The original binding is unchanged.
-	if _, err := bound.Invoke(context.Background(), "x"); err != nil {
+	if _, err := bound.Invoke(t.Context(), "x"); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if seen[1].MaxConcurrency != 2 {
@@ -145,7 +145,7 @@ func TestPickSubset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pick: %v", err)
 	}
-	got, err := pick.Invoke(context.Background(), "in")
+	got, err := pick.Invoke(t.Context(), "in")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestPickSingleKeyReturnsValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pick: %v", err)
 	}
-	got, err := pick.Invoke(context.Background(), "in")
+	got, err := pick.Invoke(t.Context(), "in")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestPickNoKeysIsIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pick: %v", err)
 	}
-	got, err := pick.Invoke(context.Background(), "in")
+	got, err := pick.Invoke(t.Context(), "in")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestPickMissingKeyErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pick: %v", err)
 	}
-	if _, err := single.Invoke(context.Background(), "in"); err == nil {
+	if _, err := single.Invoke(t.Context(), "in"); err == nil {
 		t.Fatal("expected error for missing single key")
 	}
 
@@ -207,7 +207,7 @@ func TestPickMissingKeyErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new pick: %v", err)
 	}
-	if _, err := multi.Batch(context.Background(), []string{"in", "in"}); err == nil {
+	if _, err := multi.Batch(t.Context(), []string{"in", "in"}); err == nil {
 		t.Fatal("expected error for missing key in batch")
 	}
 }
@@ -225,7 +225,7 @@ func TestPickBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("new pick: %v", err)
 	}
 
-	got, err := pick.Batch(context.Background(), []string{"x", "y"})
+	got, err := pick.Batch(t.Context(), []string{"x", "y"})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -233,12 +233,12 @@ func TestPickBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	stream, err := pick.Stream(context.Background(), "x")
+	stream, err := pick.Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || !reflect.DeepEqual(chunk, map[string]any{"a": 1, "b": 2}) {
 		t.Fatalf("chunk=%#v ok=%v err=%v", chunk, ok, err)
 	}
@@ -269,7 +269,7 @@ func TestEachInvokesEveryElementInOrder(t *testing.T) {
 		t.Fatalf("new each: %v", err)
 	}
 
-	got, err := each.Invoke(context.Background(), []int{1, 2, 3})
+	got, err := each.Invoke(t.Context(), []int{1, 2, 3})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestEachRunsElementsConcurrently(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		out, err := each.Invoke(context.Background(), []int{1, 2, 3, 4}, WithMaxConcurrency(4))
+		out, err := each.Invoke(t.Context(), []int{1, 2, 3, 4}, WithMaxConcurrency(4))
 		done <- result{out, err}
 	}()
 
@@ -354,7 +354,7 @@ func TestEachHonorsMaxConcurrency(t *testing.T) {
 	for i := range inputs {
 		inputs[i] = i
 	}
-	got, err := each.Invoke(context.Background(), inputs, WithMaxConcurrency(3))
+	got, err := each.Invoke(t.Context(), inputs, WithMaxConcurrency(3))
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestEachPropagatesElementError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new each: %v", err)
 	}
-	_, err = each.Invoke(context.Background(), []int{0, 1, 2})
+	_, err = each.Invoke(t.Context(), []int{0, 1, 2})
 	if err == nil || !errors.Is(err, errTestSentinel) {
 		t.Fatalf("err: got %v want %v inside", err, errTestSentinel)
 	}
@@ -399,7 +399,7 @@ func TestEachBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("new each: %v", err)
 	}
 
-	got, err := each.Batch(context.Background(), [][]int{{1, 2}, {3}})
+	got, err := each.Batch(t.Context(), [][]int{{1, 2}, {3}})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -407,12 +407,12 @@ func TestEachBatchStreamAndSchemas(t *testing.T) {
 		t.Fatalf("batch got %#v", got)
 	}
 
-	stream, err := each.Stream(context.Background(), []int{5, 6})
+	stream, err := each.Stream(t.Context(), []int{5, 6})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || !reflect.DeepEqual(chunk, []int{10, 12}) {
 		t.Fatalf("chunk=%#v ok=%v err=%v", chunk, ok, err)
 	}

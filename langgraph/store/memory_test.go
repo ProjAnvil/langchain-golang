@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"testing"
@@ -11,7 +10,7 @@ import (
 // and no error.
 func TestListNamespacesEmptyStore(t *testing.T) {
 	s := NewInMemoryStore()
-	got, err := s.ListNamespaces(context.Background(), ListNamespacesOptions{})
+	got, err := s.ListNamespaces(t.Context(), ListNamespacesOptions{})
 	if err != nil {
 		t.Fatalf("ListNamespaces: %v", err)
 	}
@@ -24,10 +23,10 @@ func TestListNamespacesEmptyStore(t *testing.T) {
 // copies — mutating them must not corrupt the store's internal namespaces.
 func TestListNamespacesReturnsDefensiveCopy(t *testing.T) {
 	s := NewInMemoryStore()
-	if err := s.Put(context.Background(), []string{"a", "b"}, "k", map[string]any{"v": 1}, nil); err != nil {
+	if err := s.Put(t.Context(), []string{"a", "b"}, "k", map[string]any{"v": 1}, nil); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	got, err := s.ListNamespaces(context.Background(), ListNamespacesOptions{})
+	got, err := s.ListNamespaces(t.Context(), ListNamespacesOptions{})
 	if err != nil {
 		t.Fatalf("ListNamespaces: %v", err)
 	}
@@ -36,7 +35,7 @@ func TestListNamespacesReturnsDefensiveCopy(t *testing.T) {
 	}
 	got[0][0] = "MUTATED"
 
-	again, err := s.ListNamespaces(context.Background(), ListNamespacesOptions{})
+	again, err := s.ListNamespaces(t.Context(), ListNamespacesOptions{})
 	if err != nil {
 		t.Fatalf("ListNamespaces: %v", err)
 	}
@@ -49,13 +48,13 @@ func TestListNamespacesReturnsDefensiveCopy(t *testing.T) {
 // defaults to 100, so a small store is returned in full.
 func TestListNamespacesZeroAndNegativeLimitDefault(t *testing.T) {
 	s := NewInMemoryStore()
-	for i := 0; i < 3; i++ {
-		if err := s.Put(context.Background(), []string{fmt.Sprintf("n%d", i)}, "k", map[string]any{}, nil); err != nil {
+	for i := range 3 {
+		if err := s.Put(t.Context(), []string{fmt.Sprintf("n%d", i)}, "k", map[string]any{}, nil); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 	}
 	for _, limit := range []int{0, -1} {
-		got, err := s.ListNamespaces(context.Background(), ListNamespacesOptions{Limit: limit})
+		got, err := s.ListNamespaces(t.Context(), ListNamespacesOptions{Limit: limit})
 		if err != nil {
 			t.Fatalf("ListNamespaces(limit=%d): %v", limit, err)
 		}
@@ -69,14 +68,14 @@ func TestListNamespacesZeroAndNegativeLimitDefault(t *testing.T) {
 // the empty path, deduped to a single empty namespace (Python's ns[:0] then set).
 func TestListNamespacesMaxDepthZero(t *testing.T) {
 	s := NewInMemoryStore()
-	if err := s.Put(context.Background(), []string{"a", "b"}, "k1", map[string]any{}, nil); err != nil {
+	if err := s.Put(t.Context(), []string{"a", "b"}, "k1", map[string]any{}, nil); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := s.Put(context.Background(), []string{"c", "d"}, "k2", map[string]any{}, nil); err != nil {
+	if err := s.Put(t.Context(), []string{"c", "d"}, "k2", map[string]any{}, nil); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	zero := 0
-	got, err := s.ListNamespaces(context.Background(), ListNamespacesOptions{MaxDepth: &zero})
+	got, err := s.ListNamespaces(t.Context(), ListNamespacesOptions{MaxDepth: &zero})
 	if err != nil {
 		t.Fatalf("ListNamespaces: %v", err)
 	}
@@ -89,7 +88,7 @@ func TestListNamespacesMaxDepthZero(t *testing.T) {
 // (nil, nil), a Put makes it retrievable with timestamps and value, and a
 // Delete removes it again (Delete of a missing key is a silent no-op).
 func TestGetPutDeleteRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	ns := []string{"memories", "user1"}
 
@@ -165,7 +164,7 @@ func TestGetPutDeleteRoundTrip(t *testing.T) {
 // TestDeletePrunesEmptyBucket: deleting the last item of a namespace removes
 // the namespace from ListNamespaces.
 func TestDeletePrunesEmptyBucket(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	ns := []string{"a", "b"}
 	if err := s.Put(ctx, ns, "k", map[string]any{}, nil); err != nil {
@@ -186,7 +185,7 @@ func TestDeletePrunesEmptyBucket(t *testing.T) {
 // TestPutReplacesExisting: a second Put on the same (namespace, key) replaces
 // the value entirely (fresh Item, mirroring Python's _apply_put_ops).
 func TestPutReplacesExisting(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	ns := []string{"n"}
 	if err := s.Put(ctx, ns, "k", map[string]any{"v": 1}, nil); err != nil {
@@ -207,7 +206,7 @@ func TestPutReplacesExisting(t *testing.T) {
 // TestPutDoesNotAliasCallerValue: mutating the caller's value map after Put
 // must not change what is stored.
 func TestPutDoesNotAliasCallerValue(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	ns := []string{"n"}
 	value := map[string]any{"v": 1}
@@ -229,7 +228,7 @@ func TestPutDoesNotAliasCallerValue(t *testing.T) {
 // TestPutDoesNotAliasCallerNamespace: mutating the caller's namespace slice
 // after Put must not corrupt the store's internal namespace bookkeeping.
 func TestPutDoesNotAliasCallerNamespace(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	ns := []string{"a", "b"}
 	if err := s.Put(ctx, ns, "k", map[string]any{}, nil); err != nil {
@@ -256,7 +255,7 @@ func TestPutDoesNotAliasCallerNamespace(t *testing.T) {
 
 // TestPutNilValue: a nil value map is stored (and returned) as nil.
 func TestPutNilValue(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	if err := s.Put(ctx, []string{"n"}, "k", nil, nil); err != nil {
 		t.Fatalf("Put nil value: %v", err)
@@ -276,7 +275,7 @@ func TestPutNilValue(t *testing.T) {
 // TestSearchEmptyPrefixMatchesAll: an empty namespace prefix matches every
 // item, ordered deterministically by (namespace, key).
 func TestSearchEmptyPrefixMatchesAll(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	puts := []struct {
 		ns  []string
@@ -319,7 +318,7 @@ func TestSearchEmptyPrefixMatchesAll(t *testing.T) {
 // prefix segment must match a whole namespace label, and a prefix longer than
 // a stored namespace does not match it.
 func TestSearchNamespacePrefixMatching(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	for _, ns := range [][]string{{"a", "b"}, {"a", "bc"}, {"ab"}} {
 		if err := s.Put(ctx, ns, "k", map[string]any{}, nil); err != nil {
@@ -347,9 +346,9 @@ func TestSearchNamespacePrefixMatching(t *testing.T) {
 // TestSearchLimitOffsetAndDefaults: a zero/negative Limit defaults to 10, a
 // negative Offset is clamped to 0, and pagination slices the ordered results.
 func TestSearchLimitOffsetAndDefaults(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		key := fmt.Sprintf("k%02d", i)
 		if err := s.Put(ctx, []string{"n"}, key, map[string]any{}, nil); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -398,7 +397,7 @@ func TestSearchLimitOffsetAndDefaults(t *testing.T) {
 // TestSearchReturnsDefensiveCopies: mutating a returned item's namespace or
 // value must not corrupt the stored item.
 func TestSearchReturnsDefensiveCopies(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	ns := []string{"n"}
 	if err := s.Put(ctx, ns, "k", map[string]any{"v": 1}, nil); err != nil {
@@ -428,7 +427,7 @@ func TestSearchReturnsDefensiveCopies(t *testing.T) {
 
 // TestSearchScalarFilter: a scalar filter value matches by deep equality.
 func TestSearchScalarFilter(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	if err := s.Put(ctx, []string{"n"}, "yes", map[string]any{"color": "red", "n": 1}, nil); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -460,7 +459,7 @@ func TestSearchScalarFilter(t *testing.T) {
 // operators (documented divergence from Python: they narrow to zero results
 // instead of raising).
 func TestSearchOperatorFilters(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	values := map[string]map[string]any{
 		"one":     {"n": 1},
@@ -520,7 +519,7 @@ func TestSearchOperatorFilters(t *testing.T) {
 // TestSearchNestedMapAndSliceFilters: a map filter without "$" keys matches a
 // nested map recursively; a slice filter matches element-wise.
 func TestSearchNestedMapAndSliceFilters(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	if err := s.Put(ctx, []string{"n"}, "match", map[string]any{
 		"meta": map[string]any{"city": "paris", "zip": "75001"},
@@ -590,7 +589,7 @@ func TestSearchNestedMapAndSliceFilters(t *testing.T) {
 // TestSearchNumericCoercion: ordering operators coerce all Go numeric kinds
 // to float64, mirroring Python's float().
 func TestSearchNumericCoercion(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	puts := []struct {
 		key string
@@ -634,7 +633,7 @@ func TestSearchNumericCoercion(t *testing.T) {
 // ListNamespaces branches: prefix/suffix filters, max-depth truncation with
 // dedupe, negative max-depth, offset, and offset beyond the result set.
 func TestListNamespacesPrefixSuffixMaxDepthOffset(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	s := NewInMemoryStore()
 	for _, ns := range [][]string{
 		{"a", "b", "c"},

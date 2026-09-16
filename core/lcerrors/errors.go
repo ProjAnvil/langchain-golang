@@ -97,8 +97,7 @@ func WrapTransport(err error) error {
 	if err == nil {
 		return nil
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 		return fmt.Errorf("%w: %v", ErrTimeout, err)
 	}
 	return err

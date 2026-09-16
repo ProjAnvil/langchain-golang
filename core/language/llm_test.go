@@ -18,14 +18,14 @@ func TestFakeLLMInvokeBatchAndProfile(t *testing.T) {
 		WithLLMModelProfile(map[string]any{"name": "fake-llm"}),
 	)
 
-	got, err := model.Invoke(context.Background(), "hello")
+	got, err := model.Invoke(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if got != "one" {
 		t.Fatalf("invoke = %q", got)
 	}
-	batch, err := NewFakeLLM().Batch(context.Background(), []string{"a", "b"})
+	batch, err := NewFakeLLM().Batch(t.Context(), []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestFakeLLMCallbacks(t *testing.T) {
 	model := NewFakeLLM()
 
 	got, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		"hello",
 		runnables.WithName("fake-llm"),
 		runnables.WithRunID("run-1"),
@@ -76,7 +76,7 @@ func TestFakeLLMStreamCallbacks(t *testing.T) {
 	recorder := callbacks.NewRecorder()
 	model := NewFakeLLM(WithLLMStreamChunks("he", "llo"))
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		"hello",
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -87,7 +87,7 @@ func TestFakeLLMStreamCallbacks(t *testing.T) {
 
 	var chunks []string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -121,7 +121,7 @@ func TestFakeLLMRateLimiterErrorPreventsStartEvent(t *testing.T) {
 	wantErr := errors.New("rate limited")
 	model := NewFakeLLM(WithLLMRateLimiter(&recordingLimiter{err: wantErr}))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		"hello",
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -207,20 +207,20 @@ func TestFakeLLMDefaultModelProfile(t *testing.T) {
 func TestFakeLLMStreamFallsBackToInvoke(t *testing.T) {
 	model := NewFakeLLM(WithLLMResponses("streamed response"))
 
-	stream, err := model.Stream(context.Background(), "hello")
+	stream, err := model.Stream(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil {
 		t.Fatalf("next: %v", err)
 	}
 	if !ok || chunk != "streamed response" {
 		t.Fatalf("chunk: ok=%v value=%q", ok, chunk)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected exhausted stream, ok=%v err=%v", ok, err)
 	}
 }
@@ -232,7 +232,7 @@ func TestFakeLLMStreamRateLimiterError(t *testing.T) {
 		WithLLMStreamChunks("chunk"),
 	)
 
-	_, err := model.Stream(context.Background(), "hello")
+	_, err := model.Stream(t.Context(), "hello")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err=%v, want %v", err, wantErr)
 	}
@@ -240,7 +240,7 @@ func TestFakeLLMStreamRateLimiterError(t *testing.T) {
 	// Without configured chunks, Stream delegates to Invoke, which must surface
 	// the same limiter error.
 	noChunks := NewFakeLLM(WithLLMRateLimiter(&recordingLimiter{err: wantErr}))
-	_, err = noChunks.Stream(context.Background(), "hello")
+	_, err = noChunks.Stream(t.Context(), "hello")
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("fallback stream err=%v, want %v", err, wantErr)
 	}
@@ -249,7 +249,7 @@ func TestFakeLLMStreamRateLimiterError(t *testing.T) {
 func TestFakeLLMStreamWithoutCallbacks(t *testing.T) {
 	model := NewFakeLLM(WithLLMStreamChunks("a", "b"))
 
-	stream, err := model.Stream(context.Background(), "hello")
+	stream, err := model.Stream(t.Context(), "hello")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestFakeLLMStreamWithoutCallbacks(t *testing.T) {
 
 	var chunks []string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -276,7 +276,7 @@ func TestFakeLLMInvokeCallbackError(t *testing.T) {
 
 	startModel := NewFakeLLM()
 	_, err := startModel.Invoke(
-		context.Background(),
+		t.Context(),
 		"hello",
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
 			kind: callbacks.EventLLMStart,
@@ -289,7 +289,7 @@ func TestFakeLLMInvokeCallbackError(t *testing.T) {
 
 	endModel := NewFakeLLM()
 	_, err = endModel.Invoke(
-		context.Background(),
+		t.Context(),
 		"hello",
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
 			kind: callbacks.EventLLMEnd,
@@ -306,7 +306,7 @@ func TestFakeLLMStreamStartCallbackError(t *testing.T) {
 	model := NewFakeLLM(WithLLMStreamChunks("chunk"))
 
 	_, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		"hello",
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
 			kind: callbacks.EventLLMStart,
@@ -328,7 +328,7 @@ func TestLLMCallbackStreamErrorPaths(t *testing.T) {
 			errorStringStream{err: wantErr},
 		)
 
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if !errors.Is(err, wantErr) || ok {
 			t.Fatalf("next: ok=%v err=%v", ok, err)
 		}
@@ -351,12 +351,12 @@ func TestLLMCallbackStreamErrorPaths(t *testing.T) {
 			runnables.NewSliceStream([]string{}),
 		)
 
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if !errors.Is(err, wantErr) || ok {
 			t.Fatalf("next: ok=%v err=%v", ok, err)
 		}
 		// The end event must only be emitted once; a second Next is a clean stop.
-		if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+		if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 			t.Fatalf("second next: ok=%v err=%v", ok, err)
 		}
 	})
@@ -370,7 +370,7 @@ func TestLLMCallbackStreamErrorPaths(t *testing.T) {
 			runnables.NewSliceStream([]string{"chunk"}),
 		)
 
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if !errors.Is(err, wantErr) || ok {
 			t.Fatalf("next: ok=%v err=%v", ok, err)
 		}

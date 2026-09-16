@@ -78,7 +78,7 @@ func (r *nameRecorder) BeforeModel(ctx context.Context, _ map[string]any) (map[s
 // the parent stream. Before the fix, the nested model node inherited the
 // parent's event sink via context and streamed the inner agent's output.
 func TestCreateAgent_SubagentUnderStreamingParentNoLeak(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Inner agent's model supports streaming and emits a sentinel. Its single
 	// chunk is the whole sentinel so the assertion can match one delta exactly.
@@ -136,7 +136,7 @@ func TestCreateAgent_SubagentUnderStreamingParentNoLeak(t *testing.T) {
 // a named inner agent via a hand-rolled tool, and the inner agent's final
 // answer flows back as the tool result.
 func TestCreateAgent_SubagentViaTool(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	innerAgent, err := CreateAgent(
 		&sequenceModel{responses: []messages.Message{messages.AI("sunny in SF")}},
@@ -184,7 +184,7 @@ func TestCreateAgent_SubagentViaTool(t *testing.T) {
 // because InvokeWithState rebinds the run-name context tag. This is the
 // A1-level "distinguishable subagent" property.
 func TestCreateAgent_SubagentNamePropagation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	rec := &nameRecorder{}
 	innerAgent, err := CreateAgent(
@@ -230,7 +230,7 @@ func TestCreateAgent_SubagentNamePropagation(t *testing.T) {
 // ToolMessage (via ToolNode's default HandleToolErrors), not a panic, and the
 // supervisor run still completes.
 func TestCreateAgent_SubagentErrorPropagation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Inner model with no responses: its first (and only) Invoke errors.
 	innerAgent, err := CreateAgent(
@@ -276,7 +276,7 @@ func TestCreateAgent_SubagentErrorPropagation(t *testing.T) {
 // and the leaf actually runs (observed via its name during the supervisor's
 // single Invoke).
 func TestCreateAgent_SubagentNested(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	leafRec := &nameRecorder{}
 	leaf, err := CreateAgent(
@@ -336,7 +336,7 @@ func TestCreateAgent_SubagentNested(t *testing.T) {
 // withRunTags being a no-op when Agent.Name is empty — it leaves the parent's
 // run-name context tag in place rather than replacing it.
 func TestCreateAgent_UnnamedSubagentInheritsParentName(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	rec := &nameRecorder{}
 	innerAgent, err := CreateAgent(

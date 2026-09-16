@@ -57,7 +57,7 @@ func TestCreateAgentToolsNodeAppliesCommandUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCreateAgentToolsNodeHonorsCommandGoto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestCreateAgentToolsNodeCommandMessagesMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestCreateAgentToolsNodeCommandResumeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	_, err = agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	_, err = agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		t.Fatal("expected an error for a tool Command carrying Resume")
 	}

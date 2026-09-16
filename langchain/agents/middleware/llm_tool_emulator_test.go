@@ -17,7 +17,7 @@ func TestLLMToolEmulatorEmulateAllTools(t *testing.T) {
 	if !emulator.EmulateAll {
 		t.Fatal("expected EmulateAll for nil tool names")
 	}
-	response, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "anything", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	response, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "anything", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, errors.New("should not call handler")
 	})
 	if err != nil || response.Content != "fake" {
@@ -30,7 +30,7 @@ func TestLLMToolEmulatorEmulateFuncError(t *testing.T) {
 	emulator := NewLLMToolEmulator([]string{"search"}, WithToolEmulatorFunc(func(ToolCallRequest, string) (string, error) {
 		return "", wantErr
 	}))
-	_, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, errors.New("should not call handler")
 	})
 	if !errors.Is(err, wantErr) {
@@ -40,7 +40,7 @@ func TestLLMToolEmulatorEmulateFuncError(t *testing.T) {
 
 func TestLLMToolEmulatorRequiresEmulationFunc(t *testing.T) {
 	emulator := NewLLMToolEmulator([]string{"search"})
-	_, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+	_, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 		return messages.Message{}, errors.New("should not call handler")
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires an emulation function") {
@@ -62,7 +62,7 @@ func TestLLMToolEmulatorStructuredParseFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := newStructuredFakeChatModel(tt.response)
 			emulator := NewLLMToolEmulator([]string{"search"}, WithToolEmulatorModel(fake))
-			_, err := emulator.WrapToolCall(context.Background(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
+			_, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {
 				return messages.Message{}, errors.New("should not call handler")
 			})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {

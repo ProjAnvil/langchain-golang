@@ -46,8 +46,8 @@ import (
 //
 // There is deliberately no Initial seed value (see the file doc comment).
 type StateField struct {
-	Name    string            // state key, e.g. "documents"
-	Reducer channels.Reducer  // merge strategy; nil → LastValue (replace)
+	Name    string           // state key, e.g. "documents"
+	Reducer channels.Reducer // merge strategy; nil → LastValue (replace)
 }
 
 // WithAgentStateFields registers custom state fields, mirroring Python's

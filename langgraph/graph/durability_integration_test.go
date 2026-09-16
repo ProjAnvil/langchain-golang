@@ -31,13 +31,13 @@ func TestAsyncDurabilityEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	_, err = cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Checkpoint should be persisted after invoke returns (flush in defer)
-	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	tup, err := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if err != nil || tup == nil {
 		t.Fatal("expected checkpoint after async invoke")
 	}
@@ -58,13 +58,13 @@ func TestExitDurabilityEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	_, err = cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Final checkpoint should exist after invoke returns
-	tup, err := saver.GetTuple(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	tup, err := saver.GetTuple(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if err != nil || tup == nil {
 		t.Fatal("expected final checkpoint after exit-mode invoke")
 	}
@@ -86,8 +86,8 @@ func TestAsyncDurabilityNoGoroutineLeak(t *testing.T) {
 	}
 
 	before := _runtime.NumGoroutine()
-	for i := 0; i < 10; i++ {
-		_, err = cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"})
+	for range 10 {
+		_, err = cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -166,7 +166,7 @@ func durabilityGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
 // sync-compiled graph invoked with DurabilityExit persists only the exit-mode
 // flush (stub + final checkpoint), skipping the per-superstep puts.
 func TestRunDurabilityOverridesCompiled(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Baseline: compiled default (sync), no run override. Two supersteps =>
 	// input + 2 loop checkpoints = 3 Puts.
@@ -215,7 +215,7 @@ func TestRunDurabilityOverridesCompiled(t *testing.T) {
 // background worker), NOT Python's runtime "async" default flipping a
 // sync-compiled graph.
 func TestRunDurabilityDefaultUnchanged(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := newCountingSaver(checkpoint.NewMemorySaver())
 	cg := durabilityGraph(t, WithCheckpointer(saver), WithDurability(DurabilityAsync))
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
@@ -239,7 +239,7 @@ func TestRunDurabilityDefaultUnchanged(t *testing.T) {
 // errors the run instead of silently no-op'ing every checkpoint write.
 func TestRunDurabilityInvalidValue(t *testing.T) {
 	cg := durabilityGraph(t, WithCheckpointer(checkpoint.NewMemorySaver()))
-	_, err := cg.InvokeWithOptions(context.Background(), map[string]any{}, Options{ThreadID: "t1"}.WithRunDurability(Durability("bogus")))
+	_, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "t1"}.WithRunDurability(Durability("bogus")))
 	if err == nil || !strings.Contains(err.Error(), "durability") {
 		t.Fatalf("Invoke() error = %v, want an error naming the invalid durability", err)
 	}
@@ -251,7 +251,7 @@ func TestRunDurabilityInvalidValue(t *testing.T) {
 // parent+child invoked with DurabilityExit defers the child's writes too
 // (single exit flush in the child namespace).
 func TestRunDurabilityPropagatesToSubgraphs(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := newCountingSaver(checkpoint.NewMemorySaver())
 
 	// A two-node child (two supersteps), so sync vs exit differ in the
@@ -351,7 +351,7 @@ func interruptResumeGraph(t *testing.T, saver checkpoint.Saver, opts ...CompileO
 func TestPauseDurabilityMatrixRootInterrupt(t *testing.T) {
 	for _, mode := range []Durability{DurabilitySync, DurabilityAsync, DurabilityExit} {
 		t.Run(string(mode), func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			saver := checkpoint.NewMemorySaver()
 			cg := interruptResumeGraph(t, saver, WithDurability(mode))
 
@@ -391,7 +391,7 @@ func TestPauseDurabilityMatrixRootInterrupt(t *testing.T) {
 func TestPauseDurabilityCrossInstanceResume(t *testing.T) {
 	for _, mode := range []Durability{DurabilityAsync, DurabilityExit} {
 		t.Run(string(mode), func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			saver := checkpoint.NewMemorySaver()
 			first := interruptResumeGraph(t, saver, WithDurability(mode))
 
@@ -425,7 +425,7 @@ func TestPauseDurabilityCrossInstanceResume(t *testing.T) {
 func TestPauseDurabilityBoundaryInterrupts(t *testing.T) {
 	for _, mode := range []Durability{DurabilitySync, DurabilityAsync, DurabilityExit} {
 		t.Run(string(mode), func(t *testing.T) {
-			ctx := context.Background()
+			ctx := t.Context()
 			saver := checkpoint.NewMemorySaver()
 			g := NewStateGraph()
 			g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
@@ -473,7 +473,7 @@ func TestPauseDurabilityBoundaryInterrupts(t *testing.T) {
 // reconstruction across a pause is a pre-existing limitation shared with sync
 // mode and is out of scope here.)
 func TestPauseDurabilityExitDeltaChannelSurvivesPause(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 	g := NewStateGraph()
 	g.AddChannel("msgs", channels.NewDeltaChannel(stringBatchReducer, func() any { return []string{} }, 100))
@@ -568,7 +568,7 @@ func exitDeltaGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
 func TestExitDurabilityDeltaChannelMultiTurn(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := exitDeltaGraph(t, WithCheckpointer(saver), WithDurability(DurabilityExit))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Turn 1: input delta write ["t1","turn"]; node appends ["node"].
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"msgs": []string{"t1", "turn"}}, Options{ThreadID: "multi"}); err != nil {

@@ -56,7 +56,7 @@ func TestAzureChatModelBatch(t *testing.T) {
 	})
 
 	model := NewAzureChatModel(server.URL, "dep", "2024-01-01", "az-key")
-	outputs, err := model.Batch(context.Background(), [][]messages.Message{
+	outputs, err := model.Batch(t.Context(), [][]messages.Message{
 		{messages.Human("one")},
 		{messages.Human("two")},
 	})
@@ -102,7 +102,7 @@ func TestAzureChatModelBindTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BindTools: %v", err)
 	}
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	toolsList, ok := gotBody["tools"].([]any)
@@ -126,7 +126,7 @@ func TestAzureChatModelCustomHeaders(t *testing.T) {
 	model := NewAzureChatModel(server.URL, "dep", "2024-01-01", "az-key",
 		modelconfig.WithHeader("X-Custom", "custom-value"),
 	)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotHeader != "custom-value" {
@@ -142,7 +142,7 @@ func TestAzureChatModelInvokeError(t *testing.T) {
 	model := NewAzureChatModel(server.URL, "dep", "2024-01-01", "az-key",
 		modelconfig.WithMaxRetries(0),
 	)
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err == nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err == nil {
 		t.Fatal("expected error for 500 response")
 	}
 }
@@ -153,7 +153,7 @@ func TestAzureChatModelStreamHTTPError(t *testing.T) {
 	})
 
 	model := NewAzureChatModel(server.URL, "dep", "2024-01-01", "az-key")
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -165,7 +165,7 @@ func TestAzureChatModelStreamHTTPError(t *testing.T) {
 func TestAzureChatModelStreamTransportError(t *testing.T) {
 	// Nothing listens on 127.0.0.1:1, so the HTTP round trip fails fast.
 	model := NewAzureChatModel("http://127.0.0.1:1", "dep", "2024-01-01", "az-key")
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -176,7 +176,7 @@ func TestAzureChatModelStreamTransportError(t *testing.T) {
 
 func TestAzureChatModelStreamBadEndpointURL(t *testing.T) {
 	model := NewAzureChatModel("://bad-url", "dep", "2024-01-01", "az-key")
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err == nil {
 		if stream != nil {
 			_ = stream.Close()
@@ -199,7 +199,7 @@ func TestAzureChatModelStreamReadsChunks(t *testing.T) {
 	})
 
 	model := NewAzureChatModel(server.URL, "dep", "2024-01-01", "az-key")
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestAzureChatModelStreamReadsChunks(t *testing.T) {
 
 	var content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -227,7 +227,7 @@ func TestAzureEmbeddingsEmbedQuery(t *testing.T) {
 	})
 
 	e := NewAzureEmbeddings(server.URL, "emb-dep", "2024-01-01", "az-key")
-	vector, err := e.EmbedQuery(context.Background(), "query")
+	vector, err := e.EmbedQuery(t.Context(), "query")
 	if err != nil {
 		t.Fatalf("EmbedQuery: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestAzureEmbeddingsOptionalParams(t *testing.T) {
 		WithEmbeddingDimensions(128),
 		WithEmbeddingEncodingFormat("base64"),
 	)
-	if _, err := e.EmbedDocuments(context.Background(), []string{"hello"}); err != nil {
+	if _, err := e.EmbedDocuments(t.Context(), []string{"hello"}); err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
 	if got.Dimensions == nil || *got.Dimensions != 128 {
@@ -265,7 +265,7 @@ func TestAzureEmbeddingsIndexOutOfRange(t *testing.T) {
 	})
 
 	e := NewAzureEmbeddings(server.URL, "emb-dep", "2024-01-01", "az-key")
-	_, err := e.EmbedDocuments(context.Background(), []string{"only"})
+	_, err := e.EmbedDocuments(t.Context(), []string{"only"})
 	if err == nil || !strings.Contains(err.Error(), "index out of range") {
 		t.Fatalf("expected index out of range error, got %v", err)
 	}
@@ -277,7 +277,7 @@ func TestAzureEmbeddingsCountMismatch(t *testing.T) {
 	})
 
 	e := NewAzureEmbeddings(server.URL, "emb-dep", "2024-01-01", "az-key")
-	_, err := e.EmbedDocuments(context.Background(), []string{"one", "two"})
+	_, err := e.EmbedDocuments(t.Context(), []string{"one", "two"})
 	if err == nil || !strings.Contains(err.Error(), "count mismatch") {
 		t.Fatalf("expected count mismatch error, got %v", err)
 	}
@@ -285,7 +285,7 @@ func TestAzureEmbeddingsCountMismatch(t *testing.T) {
 
 func TestAzureEmbeddingsEmptyDocuments(t *testing.T) {
 	e := NewAzureEmbeddings("http://127.0.0.1:1", "emb-dep", "2024-01-01", "az-key")
-	vectors, err := e.EmbedDocuments(context.Background(), nil)
+	vectors, err := e.EmbedDocuments(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("EmbedDocuments: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestAzureEmbeddingsEmbedQueryError(t *testing.T) {
 	e := NewAzureEmbeddings(server.URL, "emb-dep", "2024-01-01", "az-key",
 		modelconfig.WithMaxRetries(0),
 	)
-	if _, err := e.EmbedQuery(context.Background(), "query"); err == nil {
+	if _, err := e.EmbedQuery(t.Context(), "query"); err == nil {
 		t.Fatal("expected error for 500 response")
 	}
 }
@@ -313,7 +313,7 @@ func TestAzureTextModelBatch(t *testing.T) {
 	})
 
 	m := NewAzureTextModel(server.URL, "txt-dep", "2024-01-01", "az-key")
-	outputs, err := m.Batch(context.Background(), []string{"one", "two"})
+	outputs, err := m.Batch(t.Context(), []string{"one", "two"})
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -328,17 +328,17 @@ func TestAzureTextModelStream(t *testing.T) {
 	})
 
 	m := NewAzureTextModel(server.URL, "txt-dep", "2024-01-01", "az-key")
-	stream, err := m.Stream(context.Background(), "prompt")
+	stream, err := m.Stream(t.Context(), "prompt")
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || chunk != "streamed" {
 		t.Fatalf("chunk = %q ok=%v err=%v", chunk, ok, err)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected stream end, ok=%v err=%v", ok, err)
 	}
 }
@@ -362,7 +362,7 @@ func TestAzureTextModelNoChoices(t *testing.T) {
 	m := NewAzureTextModel(server.URL, "txt-dep", "2024-01-01", "az-key",
 		modelconfig.WithModel("gpt-3.5-turbo-instruct"),
 	)
-	_, err := m.Invoke(context.Background(), "prompt")
+	_, err := m.Invoke(t.Context(), "prompt")
 	if err == nil || !strings.Contains(err.Error(), "no choices") {
 		t.Fatalf("expected no choices error, got %v", err)
 	}

@@ -88,7 +88,7 @@ func TestCreateAgentFullStackMiddlewareOrdering(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	if _, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("go")}); err != nil {
+	if _, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("go")}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 

@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -87,7 +86,7 @@ func TestGetGraphConditionalEdgesWithPathMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if _, err := cg.Invoke(context.Background(), map[string]any{}); err != nil {
+	if _, err := cg.Invoke(t.Context(), map[string]any{}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 }

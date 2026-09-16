@@ -1,7 +1,6 @@
 package postgres_test
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"maps"
@@ -48,7 +47,7 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	if testing.Short() {
 		t.Skip("skipping embedded-postgres test in -short mode")
 	}
-	pool, err := pgxpool.New(context.Background(), testDSN)
+	pool, err := pgxpool.New(t.Context(), testDSN)
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
@@ -62,7 +61,7 @@ func newEmptySaver(t *testing.T) checkpoint.Saver {
 	t.Helper()
 	pool := newPool(t)
 	s := postgres.New(pool, serde.NewJSONSerializer())
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := s.Setup(ctx); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -83,7 +82,7 @@ func TestPostgresSaverContract(t *testing.T) {
 // assertions and is not repeated here.)
 func TestSetupIdempotent(t *testing.T) {
 	pool := newPool(t) // also skips in -short mode
-	ctx := context.Background()
+	ctx := t.Context()
 
 	s, err := postgres.NewFromConnString(ctx, testDSN, serde.NewJSONSerializer())
 	if err != nil {
@@ -128,7 +127,7 @@ func TestSetupIdempotent(t *testing.T) {
 func TestInlineBlobSplit(t *testing.T) {
 	s := newEmptySaver(t)
 	pool := newPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	values := map[string]any{
 		"s":    "x",
@@ -206,7 +205,7 @@ func TestInlineBlobSplit(t *testing.T) {
 // (parents) containment.
 func TestMetadataContainmentFilter(t *testing.T) {
 	s := newEmptySaver(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	put := func(id int, md checkpoint.Metadata) {
 		t.Helper()
@@ -248,7 +247,7 @@ func TestMetadataContainmentFilter(t *testing.T) {
 func TestPerVersionBlobDedup(t *testing.T) {
 	s := newEmptySaver(t)
 	pool := newPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	big1 := make([]string, 100)
 	for i := range big1 {
@@ -321,7 +320,7 @@ func TestPerVersionBlobDedup(t *testing.T) {
 // divergence is listed in doc.go.
 func TestNullCharsRejectedDivergence(t *testing.T) {
 	s := newEmptySaver(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	base := checkpoint.Checkpoint{
 		V:  1,
@@ -364,7 +363,7 @@ func TestNullCharsRejectedDivergence(t *testing.T) {
 func TestPutWritesTaskPathStored(t *testing.T) {
 	s := newEmptySaver(t)
 	pool := newPool(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cp := checkpoint.Checkpoint{
 		V:  1,

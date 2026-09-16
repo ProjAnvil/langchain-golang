@@ -15,7 +15,7 @@ import (
 // Mirrors test_indexing.py::test_index_into_document_index (line 2644):
 // full lifecycle against a DocumentIndex destination.
 func TestIndexDocumentsIntoDocumentIndex(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	documentIndex := NewInMemoryDocumentIndex(4)
 	docs := []documents.Document{
@@ -77,7 +77,7 @@ func (s *kwargsSpyStore) AddDocumentsWithKwargs(
 // Mirrors test_indexing.py::test_index_with_upsert_kwargs (line 2782):
 // upsert kwargs reach the vector store's add path.
 func TestIndexDocumentsUpsertKwargsVectorStore(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	spy := &kwargsSpyStore{InMemory: vectorstores.NewInMemory(embeddings.NewFake(8))}
 	docs := []documents.Document{
@@ -123,7 +123,7 @@ func (s *kwargsSpyIndex) UpsertWithKwargs(
 // Mirrors test_indexing.py::test_index_with_upsert_kwargs_for_document_indexer
 // (line 2835): upsert kwargs reach the document index's upsert.
 func TestIndexDocumentsUpsertKwargsDocumentIndex(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	spy := &kwargsSpyIndex{InMemoryDocumentIndex: NewInMemoryDocumentIndex(4)}
 	docs := []documents.Document{
@@ -152,7 +152,7 @@ func TestIndexDocumentsUpsertKwargsDocumentIndex(t *testing.T) {
 // A vector store without KwargAdder rejects UpsertKwargs (Python would pass
 // them to add_documents and raise TypeError on an unexpected kwarg).
 func TestIndexDocumentsUpsertKwargsUnsupportedVectorStore(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	_, err := IndexDocuments(ctx, []documents.Document{documents.New("x", nil)}, manager, store, Options{
@@ -165,7 +165,7 @@ func TestIndexDocumentsUpsertKwargsUnsupportedVectorStore(t *testing.T) {
 
 // Same for a DocumentIndex without KwargUpserter.
 func TestIndexDocumentsUpsertKwargsUnsupportedDocumentIndex(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	documentIndex := NewInMemoryDocumentIndex(4)
 	_, err := IndexDocuments(ctx, []documents.Document{documents.New("x", nil)}, manager, documentIndex, Options{
@@ -179,7 +179,7 @@ func TestIndexDocumentsUpsertKwargsUnsupportedDocumentIndex(t *testing.T) {
 // Python raises TypeError when the destination is neither a VectorStore nor a
 // DocumentIndex (indexing/api.py:445-450).
 func TestIndexDocumentsRejectsUnknownDestination(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	_, err := IndexDocuments(ctx, []documents.Document{documents.New("x", nil)}, manager, "not-a-store", Options{})
 	if err == nil || !strings.Contains(err.Error(), "VectorStore") || !strings.Contains(err.Error(), "DocumentIndex") {
@@ -203,7 +203,7 @@ func (f failingUpsertIndex) Upsert(_ context.Context, items []documents.Document
 }
 
 func TestIndexDocumentsDocumentIndexUpsertFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	documentIndex := failingUpsertIndex{NewInMemoryDocumentIndex(4)}
 	_, err := IndexDocuments(ctx, []documents.Document{documents.New("x", nil)}, manager, documentIndex, Options{})
@@ -222,7 +222,7 @@ func (f failingDeleteIndex) Delete(_ context.Context, ids []string) (DeleteRespo
 }
 
 func TestIndexDocumentsDocumentIndexDeleteFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("stale", map[string]any{"source": "s"})}
@@ -248,7 +248,7 @@ func (f errorDeleteIndex) Delete(context.Context, []string) (DeleteResponse, err
 }
 
 func TestIndexDocumentsDocumentIndexDeleteError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	store := vectorstores.NewInMemory(embeddings.NewFake(8))
 	docs := []documents.Document{documents.New("stale", map[string]any{"source": "s"})}
@@ -264,7 +264,7 @@ func TestIndexDocumentsDocumentIndexDeleteError(t *testing.T) {
 
 // IndexDocumentIterator accepts a DocumentIndex destination too.
 func TestIndexDocumentIteratorIntoDocumentIndex(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	documentIndex := NewInMemoryDocumentIndex(4)
 	iter := documentloaders.NewSliceIterator([]documents.Document{
@@ -294,7 +294,7 @@ func (s errorUpsertIndex) UpsertWithKwargs(
 }
 
 func TestIndexDocumentsUpsertKwargsErrorPropagates(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	manager := NewInMemoryRecordManager("unit")
 	errTest := errors.New("upsert blew up")
 	spy := errorUpsertIndex{InMemoryDocumentIndex: NewInMemoryDocumentIndex(4), err: errTest}

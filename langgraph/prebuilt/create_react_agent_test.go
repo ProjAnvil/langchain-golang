@@ -90,7 +90,7 @@ func TestCreateReactAgentToolLoop(t *testing.T) {
 	if agent.Graph == nil {
 		t.Fatal("agent.Graph is nil")
 	}
-	res, err := agent.Graph.Invoke(context.Background(), map[string]any{
+	res, err := agent.Graph.Invoke(t.Context(), map[string]any{
 		"messages": []messages.Message{messages.Human("say hi back")},
 	})
 	if err != nil {

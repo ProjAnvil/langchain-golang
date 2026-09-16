@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +17,7 @@ func TestTokenProviderReturnsFreshToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}, "", "client-1")
 
-	got, err := provider.AccessToken(context.Background())
+	got, err := provider.AccessToken(t.Context())
 	if err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
@@ -42,7 +41,7 @@ func TestTokenProviderRefreshesWhenExpired(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, server.URL+"/oauth/token", "client-1")
 
-	got, err := provider.AccessToken(context.Background())
+	got, err := provider.AccessToken(t.Context())
 	if err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
@@ -74,7 +73,7 @@ func TestCodexChatModelInjectsHeaders(t *testing.T) {
 	model := NewCodexChatModel("acct-123", provider, modelconfig.WithModel("gpt-test"))
 	model.baseURL = server.URL
 
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}

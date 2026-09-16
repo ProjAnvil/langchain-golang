@@ -1,7 +1,6 @@
 package httpclient
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -40,7 +39,7 @@ func TestPostJSONDecodesSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := PostJSON[widget](context.Background(), "openai", cfg(server.URL, 0), "/x", map[string]any{"q": 1},
+	got, err := PostJSON[widget](t.Context(), "openai", cfg(server.URL, 0), "/x", map[string]any{"q": 1},
 		func(req *http.Request) { req.Header.Set("X-Provider-Token", "secret") })
 	if err != nil {
 		t.Fatalf("PostJSON: %v", err)
@@ -62,7 +61,7 @@ func TestPostJSONRetriesThenSucceeds(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := PostJSON[widget](context.Background(), "openai", cfg(server.URL, 2), "/x", nil, nil)
+	got, err := PostJSON[widget](t.Context(), "openai", cfg(server.URL, 2), "/x", nil, nil)
 	if err != nil {
 		t.Fatalf("PostJSON: %v", err)
 	}
@@ -78,15 +77,15 @@ func TestPostJSONRateLimitedExhaustsRetries(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := PostJSON[widget](context.Background(), "openai", cfg(server.URL, 1), "/x", nil, nil)
+	_, err := PostJSON[widget](t.Context(), "openai", cfg(server.URL, 1), "/x", nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if !errors.Is(err, lcerrors.ErrRateLimited) {
 		t.Fatalf("err not ErrRateLimited: %v", err)
 	}
-	var pe *lcerrors.ProviderError
-	if !errors.As(err, &pe) || pe.RetryAfter != 2*time.Second {
+	pe, ok := errors.AsType[*lcerrors.ProviderError](err)
+	if !ok || pe.RetryAfter != 2*time.Second {
 		t.Fatalf("RetryAfter = %v", pe.RetryAfter)
 	}
 	if !IsRetryable(err) {
@@ -100,7 +99,7 @@ func TestPostJSONServerErrorIsProviderAndRetryable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := PostJSON[widget](context.Background(), "anthropic", cfg(server.URL, 0), "/x", nil, nil)
+	_, err := PostJSON[widget](t.Context(), "anthropic", cfg(server.URL, 0), "/x", nil, nil)
 	if !errors.Is(err, lcerrors.ErrProvider) {
 		t.Fatalf("err not ErrProvider: %v", err)
 	}
@@ -120,7 +119,7 @@ func TestPostJSONBadRequestIsProviderNotRetryable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := PostJSON[widget](context.Background(), "ollama", cfg(server.URL, 3), "/x", nil, nil)
+	_, err := PostJSON[widget](t.Context(), "ollama", cfg(server.URL, 3), "/x", nil, nil)
 	if !errors.Is(err, lcerrors.ErrProvider) {
 		t.Fatalf("err not ErrProvider: %v", err)
 	}
@@ -141,7 +140,7 @@ func TestPostJSONTimeoutIsErrTimeout(t *testing.T) {
 	clientCfg := cfg(server.URL, 0, func(c *modelconfig.Config) {
 		c.HTTPClient = &http.Client{Timeout: time.Millisecond}
 	})
-	_, err := PostJSON[widget](context.Background(), "openai", clientCfg, "/x", nil, nil)
+	_, err := PostJSON[widget](t.Context(), "openai", clientCfg, "/x", nil, nil)
 	if !errors.Is(err, lcerrors.ErrTimeout) {
 		t.Fatalf("err not ErrTimeout: %v", err)
 	}
@@ -164,8 +163,8 @@ func TestResponseErrorClassifiesNon2xx(t *testing.T) {
 	if !errors.Is(got, lcerrors.ErrProvider) {
 		t.Fatalf("err not ErrProvider: %v", got)
 	}
-	var pe *lcerrors.ProviderError
-	if !errors.As(got, &pe) || pe.StatusCode != http.StatusUnauthorized || pe.Body == "" {
+	pe, ok := errors.AsType[*lcerrors.ProviderError](got)
+	if !ok || pe.StatusCode != http.StatusUnauthorized || pe.Body == "" {
 		t.Fatalf("ProviderError = %+v", pe)
 	}
 }
@@ -216,7 +215,7 @@ func TestPostJSONMarshalError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := PostJSON[widget](context.Background(), "openai", cfg(server.URL, 3), "/x",
+	_, err := PostJSON[widget](t.Context(), "openai", cfg(server.URL, 3), "/x",
 		make(chan int), nil)
 	if err == nil {
 		t.Fatal("expected marshal error")
@@ -226,7 +225,7 @@ func TestPostJSONMarshalError(t *testing.T) {
 func TestPostJSONInvalidEndpointURL(t *testing.T) {
 	// A '%' in BaseURL produces a URL the request constructor rejects.
 	c := modelconfig.New(modelconfig.WithBaseURL("%"), modelconfig.WithMaxRetries(3))
-	_, err := PostJSON[widget](context.Background(), "openai", c, "/x", nil, nil)
+	_, err := PostJSON[widget](t.Context(), "openai", c, "/x", nil, nil)
 	if err == nil {
 		t.Fatal("expected URL construction error")
 	}
@@ -242,7 +241,7 @@ func TestPostJSONDecodeError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := PostJSON[widget](context.Background(), "openai", cfg(server.URL, 0), "/x", nil, nil)
+	_, err := PostJSON[widget](t.Context(), "openai", cfg(server.URL, 0), "/x", nil, nil)
 	if err == nil {
 		t.Fatal("expected decode error")
 	}
@@ -275,7 +274,7 @@ func TestPostJSONBodyReadError(t *testing.T) {
 	)
 	c.HTTPClient = &http.Client{Transport: errBodyTransport{}}
 
-	_, err := PostJSON[widget](context.Background(), "openai", c, "/x", nil, nil)
+	_, err := PostJSON[widget](t.Context(), "openai", c, "/x", nil, nil)
 	if err == nil {
 		t.Fatal("expected body read error")
 	}
@@ -291,8 +290,7 @@ func TestResponseErrorBodyReadError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from unreadable body")
 	}
-	var pe *lcerrors.ProviderError
-	if errors.As(err, &pe) {
+	if _, ok := errors.AsType[*lcerrors.ProviderError](err); ok {
 		t.Fatalf("read failure must not become a ProviderError: %v", err)
 	}
 }

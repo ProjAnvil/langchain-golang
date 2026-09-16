@@ -60,7 +60,7 @@ func TestCustomToolSchemaSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 }
@@ -78,7 +78,7 @@ func TestCustomToolSchemaWithoutFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	entry := got["tools"].([]any)[0].(map[string]any)
@@ -91,14 +91,14 @@ func TestCustomToolInvoke(t *testing.T) {
 	// Python: my_tool.invoke({"args": {...}, "extras": {"type": "custom_tool_call"}})
 	// runs the wrapped func on the freeform string. The Go ToolCall contract
 	// carries the string under Args["__arg1"] (see parsing test below).
-	result, err := newTestCustomTool(t).Invoke(context.Background(), map[string]any{"__arg1": "b"})
+	result, err := newTestCustomTool(t).Invoke(t.Context(), map[string]any{"__arg1": "b"})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if result.Content != "ab" {
 		t.Fatalf("content = %q, want ab", result.Content)
 	}
-	if _, err := newTestCustomTool(t).Invoke(context.Background(), map[string]any{"__arg1": 42}); err == nil {
+	if _, err := newTestCustomTool(t).Invoke(t.Context(), map[string]any{"__arg1": 42}); err == nil {
 		t.Fatal("expected error for non-string input")
 	}
 }
@@ -114,7 +114,7 @@ func TestCustomToolCallParsing(t *testing.T) {
 	defer server.Close()
 
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("Use the tool")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("Use the tool")})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestCustomToolMessageReplay(t *testing.T) {
 		},
 	}
 	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
-	if _, err := model.Invoke(context.Background(), history); err != nil {
+	if _, err := model.Invoke(t.Context(), history); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	input, ok := got["input"].([]any)

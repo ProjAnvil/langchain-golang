@@ -51,11 +51,11 @@ func TestBarrierAccumulatesIdempotently(t *testing.T) {
 func TestBarrierRejectsUnknownName(t *testing.T) {
 	b := NewBarrier("a", "b")
 	_, err := b.Update([]any{"c"})
-	var iu *InvalidUpdateError
-	if !errors.As(err, &iu) {
+	if _, ok := errors.AsType[*InvalidUpdateError](err); !ok {
 		t.Fatalf("Update(c) error = %v, want *InvalidUpdateError", err)
 	}
-	if _, err := b.Update([]any{42}); !errors.As(err, &iu) {
+	_, err = b.Update([]any{42})
+	if _, ok := errors.AsType[*InvalidUpdateError](err); !ok {
 		t.Fatalf("Update(42) error = %v, want *InvalidUpdateError (non-string)", err)
 	}
 	if b.IsAvailable() {

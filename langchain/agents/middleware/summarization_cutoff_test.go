@@ -12,12 +12,12 @@ import (
 // so the kept suffix never starts with orphaned tool responses.
 func TestFindSafeCutoffPoint_SnapsToAIMessage(t *testing.T) {
 	msgs := []messages.Message{
-		messages.Human("q1"),                                                                                                    // 0
-		messages.AI("a1"),                                                                                                       // 1
-		messages.Human("q2"),                                                                                                    // 2
-		{Role: messages.RoleAI, Content: "", ToolCalls: []messages.ToolCall{{ID: "t1", Name: "search"}}},                        // 3
-		{Role: messages.RoleTool, ToolCallID: "t1", Content: "result"},                                                          // 4
-		messages.Human("q3"),                                                                                                    // 5
+		messages.Human("q1"), // 0
+		messages.AI("a1"),    // 1
+		messages.Human("q2"), // 2
+		{Role: messages.RoleAI, Content: "", ToolCalls: []messages.ToolCall{{ID: "t1", Name: "search"}}}, // 3
+		{Role: messages.RoleTool, ToolCallID: "t1", Content: "result"},                                   // 4
+		messages.Human("q3"), // 5
 	}
 	// Cutoff at 4 (a ToolMessage) must snap back to 3 (the AI that issued t1).
 	if got := findSafeCutoffPoint(msgs, 4); got != 3 {
@@ -38,10 +38,10 @@ func TestFindSafeCutoffPoint_SnapsToAIMessage(t *testing.T) {
 func TestKeepStart_MessageCountPathSnapsToSafeCutoff(t *testing.T) {
 	mw := &SummarizationMiddleware{Keep: KeepPolicy{Messages: 2}} // keep last 2
 	msgs := []messages.Message{
-		messages.Human("q1"),                                                                                                    // 0
-		{Role: messages.RoleAI, Content: "", ToolCalls: []messages.ToolCall{{ID: "t1", Name: "s"}}},                             // 1
-		{Role: messages.RoleTool, ToolCallID: "t1", Content: "r"},                                                               // 2
-		messages.Human("q3"),                                                                                                    // 3
+		messages.Human("q1"), // 0
+		{Role: messages.RoleAI, Content: "", ToolCalls: []messages.ToolCall{{ID: "t1", Name: "s"}}}, // 1
+		{Role: messages.RoleTool, ToolCallID: "t1", Content: "r"},                                   // 2
+		messages.Human("q3"), // 3
 	}
 	// Naive keep-last-2 → start=2 (ToolMessage). Safe cutoff snaps to 1 (the AI).
 	got := mw.keepStart(msgs)

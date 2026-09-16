@@ -37,7 +37,7 @@ func TestCreateReactAgentPrePostModelHooks(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	state, err := agent.InvokeWithState(context.Background(), []messages.Message{messages.Human("hi")})
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestCreateReactAgentDynamicModel(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	msgs, err := agent.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	msgs, err := agent.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}

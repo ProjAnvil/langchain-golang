@@ -3,8 +3,9 @@ package exampleselectors
 import (
 	"context"
 	"fmt"
+	"maps"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -36,11 +37,7 @@ func DefaultLength(text string) int {
 
 // KeyValueFormatter formats examples deterministically as "key: value" lines.
 func KeyValueFormatter(example Example) (string, error) {
-	keys := make([]string, 0, len(example))
-	for key := range example {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(example))
 	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
 		lines = append(lines, fmt.Sprintf("%s: %v", key, example[key]))

@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -30,7 +29,7 @@ func TestGetStateTasksPendingInterrupt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	result, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"})
 	if err != nil {
@@ -82,7 +81,7 @@ func TestGetStateTasksBoundaryInterrupt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke: %v", err)
@@ -104,10 +103,10 @@ func TestGetStateTasksBoundaryInterrupt(t *testing.T) {
 func TestGetStateTasksCompletedRun(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := snapshotLinearGraph(t, saver, map[string]int{})
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	snap, err := cg.GetState(context.Background(), checkpoint.Config{ThreadID: "t1"})
+	snap, err := cg.GetState(t.Context(), checkpoint.Config{ThreadID: "t1"})
 	if err != nil {
 		t.Fatalf("GetState: %v", err)
 	}
@@ -124,10 +123,10 @@ func TestGetStateTasksCompletedRun(t *testing.T) {
 func TestGetStateHistoryTasks(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := snapshotLinearGraph(t, saver, map[string]int{})
-	if _, err := cg.InvokeWithOptions(context.Background(), map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
+	if _, err := cg.InvokeWithOptions(t.Context(), map[string]any{"k0": "v0"}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	snaps, err := cg.GetStateHistory(context.Background(), checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	snaps, err := cg.GetStateHistory(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
 	if err != nil {
 		t.Fatalf("GetStateHistory: %v", err)
 	}

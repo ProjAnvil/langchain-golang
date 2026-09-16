@@ -1,7 +1,6 @@
 package vectorstores
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -11,7 +10,7 @@ import (
 // Mirrors test_inmemory_similarity_search (test_in_memory.py:19): a store
 // built from texts answers similarity search end to end.
 func TestFromTextsEndToEnd(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, err := FromTexts(ctx, embeddings.NewDeterministicFake(3), []string{"foo", "bar", "baz"})
 	if err != nil {
 		t.Fatalf("FromTexts: %v", err)
@@ -28,7 +27,7 @@ func TestFromTextsEndToEnd(t *testing.T) {
 // Mirrors test_default_from_documents (test_vectorstore.py:242), first case:
 // document IDs are used when WithIDs is absent.
 func TestFromDocumentsUsesDocumentIDs(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, err := FromDocuments(ctx, embeddings.NewFake(1), []documents.Document{
 		documents.New("hello", map[string]any{"foo": "bar"}).WithID("1"),
 	})
@@ -46,7 +45,7 @@ func TestFromDocumentsUsesDocumentIDs(t *testing.T) {
 
 // Second case: explicit ids are honored for documents without IDs.
 func TestFromDocumentsWithIDsOption(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, err := FromDocuments(ctx, embeddings.NewFake(1), []documents.Document{
 		documents.New("hello", map[string]any{"foo": "bar"}),
 	}, WithIDs([]string{"1"}))
@@ -65,7 +64,7 @@ func TestFromDocumentsWithIDsOption(t *testing.T) {
 // Third case: ids win over document IDs, and the input document is not
 // modified (Python asserts original_document.id == "7" afterwards).
 func TestFromDocumentsIDsOverrideWithoutMutatingInput(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	original := documents.New("baz", nil).WithID("7")
 	store, err := FromDocuments(ctx, embeddings.NewFake(1), []documents.Document{original}, WithIDs([]string{"6"}))
 	if err != nil {
@@ -85,7 +84,7 @@ func TestFromDocumentsIDsOverrideWithoutMutatingInput(t *testing.T) {
 
 // Metadatas option flows through to stored documents.
 func TestFromTextsWithMetadatas(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store, err := FromTexts(ctx, embeddings.NewFake(4), []string{"foo", "bar"},
 		WithMetadatas([]map[string]any{{"id": 1}, {"id": 2}}))
 	if err != nil {
@@ -104,7 +103,7 @@ func TestFromTextsWithMetadatas(t *testing.T) {
 
 // A nil embedder surfaces the store's "embedder is required" error.
 func TestFromTextsNilEmbedder(t *testing.T) {
-	if _, err := FromTexts(context.Background(), nil, []string{"x"}); err == nil {
+	if _, err := FromTexts(t.Context(), nil, []string{"x"}); err == nil {
 		t.Fatal("expected error for nil embedder")
 	}
 }

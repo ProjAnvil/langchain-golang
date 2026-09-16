@@ -140,15 +140,13 @@ func (p RetryPolicy) BackoffDelay(attempt int) time.Duration { return p.backoff(
 // panic, converted to a terminal interrupted outcome before the retry loop —
 // see runTask).
 func DefaultRetryOn(err error) bool {
-	var invalidUpdate *channels.InvalidUpdateError
-	if errors.As(err, &invalidUpdate) {
+	if _, ok := errors.AsType[*channels.InvalidUpdateError](err); ok {
 		return false
 	}
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	var nonRetryable *nonRetryableError
-	if errors.As(err, &nonRetryable) {
+	if _, ok := errors.AsType[*nonRetryableError](err); ok {
 		return false
 	}
 	return true

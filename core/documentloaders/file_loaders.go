@@ -6,7 +6,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -115,7 +115,7 @@ func (l FileSystemBlobLoader) matchPaths(ctx context.Context) ([]string, error) 
 			paths = append(paths, path)
 		}
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 	return paths, nil
 }
 

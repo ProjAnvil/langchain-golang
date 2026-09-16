@@ -13,11 +13,11 @@ import (
 // and no validation against BuiltinProviders or the factory registry.
 func TestParseModelString(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantSpec   ChatModelSpec
-		wantErr    bool
-		errSubstr  string
+		name      string
+		input     string
+		wantSpec  ChatModelSpec
+		wantErr   bool
+		errSubstr string
 	}{
 		{
 			name:     "simple provider:model",
@@ -143,8 +143,8 @@ func TestResolve_UnknownProvider(t *testing.T) {
 		t.Fatal("expected error for unknown provider, got nil")
 	}
 
-	var unknownErr *UnknownProviderError
-	if !errors.As(err, &unknownErr) {
+	unknownErr, ok := errors.AsType[*UnknownProviderError](err)
+	if !ok {
 		t.Fatalf("expected *UnknownProviderError, got %T: %v", err, err)
 	}
 	if unknownErr.Provider != "definitely-not-registered-xyz" {

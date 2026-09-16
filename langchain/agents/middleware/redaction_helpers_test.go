@@ -81,8 +81,7 @@ func TestApplyRedactionStrategyEdgeCases(t *testing.T) {
 	if _, err := ApplyRedactionStrategy("a@b.com", matches, RedactionBlock); err == nil {
 		t.Fatal("expected block strategy to return PIIDetectionError")
 	} else {
-		var piiErr PIIDetectionError
-		if !errors.As(err, &piiErr) {
+		if _, ok := errors.AsType[PIIDetectionError](err); !ok {
 			t.Fatalf("expected PIIDetectionError, got %v", err)
 		}
 	}

@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -34,7 +33,7 @@ func TestWithAgentContextSchemaAcceptedByCreateAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	out, err := agent.Invoke(WithContextValues(context.Background(), map[string]any{"user_id": "u1"}),
+	out, err := agent.Invoke(WithContextValues(t.Context(), map[string]any{"user_id": "u1"}),
 		[]messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)

@@ -7,7 +7,6 @@ package middleware
 // behavior is covered by the agents-package HITL node tests (T16 PR2).
 
 import (
-	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -60,7 +59,7 @@ func TestInterruptModeAfterModelNoOp(t *testing.T) {
 	// Inline AfterModel must be a no-op in interrupt mode: the dedicated HITL
 	// graph node owns the review flow, so running it inline too would pause
 	// before the model node's update commits (double-run guard).
-	update, err := m.AfterModel(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+	update, err := m.AfterModel(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	if err != nil {
 		t.Fatalf("interrupt-mode AfterModel error: %v", err)
 	}
@@ -77,7 +76,7 @@ func TestAfterModelNodeInterruptCallPoint(t *testing.T) {
 	// No reviewable calls: the node hook is a no-op and must not touch the
 	// interrupt machinery at all.
 	plain := messages.AI("no calls")
-	update, err := m.AfterModelNode(context.Background(), map[string]any{"messages": []messages.Message{plain}})
+	update, err := m.AfterModelNode(t.Context(), map[string]any{"messages": []messages.Message{plain}})
 	if err != nil || update != nil {
 		t.Fatalf("expected nil update without reviewable calls, got %#v %v", update, err)
 	}
@@ -100,7 +99,7 @@ func TestAfterModelNodeInterruptCallPoint(t *testing.T) {
 				t.Fatalf("expected the graph Interrupt panic, got %v", r)
 			}
 		}()
-		_, _ = m.AfterModelNode(context.Background(), map[string]any{"messages": []messages.Message{ai}})
+		_, _ = m.AfterModelNode(t.Context(), map[string]any{"messages": []messages.Message{ai}})
 	}()
 	if !panicked {
 		t.Fatal("expected AfterModelNode to call graph.Interrupt for reviewable calls")
@@ -178,11 +177,11 @@ func TestDecodeHITLResponse(t *testing.T) {
 
 	// Rejected shapes.
 	for _, bad := range []any{
-		"decisions",                 // not a response at all
-		42,                          // ditto
-		map[string]any{"other": 1},  // no decisions key
+		"decisions",                // not a response at all
+		42,                         // ditto
+		map[string]any{"other": 1}, // no decisions key
 		map[string]any{"decisions": "not-a-list"},
-		[]any{"not-a-decision"},     // element not a map/Decision
+		[]any{"not-a-decision"}, // element not a map/Decision
 		map[string]any{"decisions": []any{map[string]any{ /* missing type */ }}},
 		map[string]any{"decisions": []any{map[string]any{"type": 7}}},
 	} {
@@ -219,9 +218,9 @@ func TestHITLRequestFromInterrupt(t *testing.T) {
 		},
 		"review_configs": []any{
 			map[string]any{
-				"action_name":        "search",
-				"allowed_decisions":  []any{"approve", "edit"},
-				"args_schema":        map[string]any{"type": "object"},
+				"action_name":       "search",
+				"allowed_decisions": []any{"approve", "edit"},
+				"args_schema":       map[string]any{"type": "object"},
 			},
 		},
 	}})

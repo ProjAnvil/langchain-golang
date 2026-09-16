@@ -25,14 +25,14 @@ import (
 // MemorySaver simulate two processes: the second Invoke carries nothing but
 // Options{ThreadID, Resume} and a root-level interrupt answers through.
 func TestCrossProcessResumeRootInterrupt(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
-	var askRuns int32
+	var askRuns atomic.Int32
 	build := func() *CompiledGraph {
 		t.Helper()
 		g := NewStateGraph()
 		g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
-			atomic.AddInt32(&askRuns, 1)
+			askRuns.Add(1)
 			v := Interrupt(rt, "root-question")
 			return map[string]any{"answer": v}, nil
 		})
@@ -65,8 +65,8 @@ func TestCrossProcessResumeRootInterrupt(t *testing.T) {
 	if got := res2.Values["answer"]; got != "42" {
 		t.Fatalf("Values[answer] = %v, want 42 (resume value reached the re-run node)", got)
 	}
-	if askRuns != 2 {
-		t.Fatalf("ask runs = %d, want 2 (paused once, re-run once)", askRuns)
+	if askRuns.Load() != 2 {
+		t.Fatalf("ask runs = %d, want 2 (paused once, re-run once)", askRuns.Load())
 	}
 }
 
@@ -76,14 +76,14 @@ func TestCrossProcessResumeRootInterrupt(t *testing.T) {
 // Metadata.Parents pin), re-dispatch the subgraph task under the same planned
 // ID, and forward the resume payload into the pinned child.
 func TestCrossProcessResumeSubgraphInterrupt(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
-	var askRuns, afterRuns int32
+	var askRuns, afterRuns atomic.Int32
 	var resumedWith any
 	buildChild := func() *CompiledGraph {
 		g := NewStateGraph()
 		g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
-			atomic.AddInt32(&askRuns, 1)
+			askRuns.Add(1)
 			v := Interrupt(rt, "child-question")
 			resumedWith = v
 			return map[string]any{"answer": v}, nil
@@ -100,7 +100,7 @@ func TestCrossProcessResumeSubgraphInterrupt(t *testing.T) {
 		g := NewStateGraph()
 		g.AddSubgraph("sub", buildChild())
 		g.AddNode("after", func(_ runtime.Runtime, _ map[string]any) (any, error) {
-			atomic.AddInt32(&afterRuns, 1)
+			afterRuns.Add(1)
 			return nil, nil
 		})
 		g.AddEdge(types.START, "sub")
@@ -136,11 +136,11 @@ func TestCrossProcessResumeSubgraphInterrupt(t *testing.T) {
 	if got := res2.Values["answer"]; got != "42" {
 		t.Fatalf("Values[answer] = %v, want 42 (child values merged into the parent)", got)
 	}
-	if askRuns != 2 {
-		t.Fatalf("ask runs = %d, want 2 (paused once, re-run once)", askRuns)
+	if askRuns.Load() != 2 {
+		t.Fatalf("ask runs = %d, want 2 (paused once, re-run once)", askRuns.Load())
 	}
-	if afterRuns != 1 {
-		t.Fatalf("after runs = %d, want 1 (ran once, after the resumed superstep)", afterRuns)
+	if afterRuns.Load() != 1 {
+		t.Fatalf("after runs = %d, want 1 (ran once, after the resumed superstep)", afterRuns.Load())
 	}
 }
 
@@ -153,11 +153,11 @@ func TestCrossProcessResumeSubgraphInterrupt(t *testing.T) {
 // child to the legacy pause checkpoint (loaded from the legacy ns), run it to
 // completion, and write every NEW checkpoint under the per-task namespace.
 func TestLegacyNamespacedSubgraphInterruptResume(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
-	var askRuns int32
+	var askRuns atomic.Int32
 	child := compileChild(t, "ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&askRuns, 1)
+		askRuns.Add(1)
 		v := Interrupt(rt, "legacy-question")
 		return map[string]any{"answer": v}, nil
 	})
@@ -179,10 +179,10 @@ func TestLegacyNamespacedSubgraphInterruptResume(t *testing.T) {
 	// pre-NS data decodes). The zero-prefixed IDs sort below every NewID
 	// value so the resumed run's checkpoints rank newest.
 	const (
-		legacyChildPauseID = "0000000000000-000000-0000000000000002"
+		legacyChildPauseID  = "0000000000000-000000-0000000000000002"
 		legacyParentPauseID = "0000000000000-000000-0000000000000003"
-		askTaskID          = "0000000000000001"
-		subTaskID          = "0000000000000002"
+		askTaskID           = "0000000000000001"
+		subTaskID           = "0000000000000002"
 	)
 	legacyInterrupt := types.Interrupt{Value: "legacy-question", ID: "ask-1"}
 	legacyChildPause := checkpoint.Checkpoint{
@@ -225,8 +225,8 @@ func TestLegacyNamespacedSubgraphInterruptResume(t *testing.T) {
 	if got := res.Values["answer"]; got != "legacy-answer" {
 		t.Fatalf("Values[answer] = %v, want the resumed value", res.Values)
 	}
-	if askRuns != 1 {
-		t.Fatalf("ask runs = %d, want 1 (executed once, from the pinned legacy pause)", askRuns)
+	if askRuns.Load() != 1 {
+		t.Fatalf("ask runs = %d, want 1 (executed once, from the pinned legacy pause)", askRuns.Load())
 	}
 
 	// New writes land under the per-task namespace keyed by the re-dispatched
@@ -290,12 +290,12 @@ func (c *countingCache) snapshot() (gets, sets map[string]int) {
 // so the child re-executes and consumes the resume value. A cache hit here
 // would silently drop the answer.
 func TestSubgraphInterruptCacheResumeSkipsCache(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
-	var askRuns int32
+	var askRuns atomic.Int32
 	var resumedWith any
 	child := compileChild(t, "ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
-		atomic.AddInt32(&askRuns, 1)
+		askRuns.Add(1)
 		v := Interrupt(rt, "cached-q")
 		resumedWith = v
 		return map[string]any{"answer": v}, nil
@@ -324,8 +324,8 @@ func TestSubgraphInterruptCacheResumeSkipsCache(t *testing.T) {
 	if len(res.Interrupts) != 1 {
 		t.Fatalf("Interrupts = %+v, want the child interrupt", res.Interrupts)
 	}
-	if askRuns != 1 {
-		t.Fatalf("ask runs after pause = %d, want 1", askRuns)
+	if askRuns.Load() != 1 {
+		t.Fatalf("ask runs after pause = %d, want 1", askRuns.Load())
 	}
 	// The interrupted miss stored nothing.
 	gets, sets := cache.snapshot()
@@ -346,8 +346,8 @@ func TestSubgraphInterruptCacheResumeSkipsCache(t *testing.T) {
 	if got := res2.Values["answer"]; got != "42" {
 		t.Fatalf("Values[answer] = %v, want 42", got)
 	}
-	if askRuns != 2 {
-		t.Fatalf("ask runs after resume = %d, want 2 (resume re-executes the interrupted subgraph)", askRuns)
+	if askRuns.Load() != 2 {
+		t.Fatalf("ask runs after resume = %d, want 2 (resume re-executes the interrupted subgraph)", askRuns.Load())
 	}
 	// The resumed task never consulted the cache (interrupt tasks skip the
 	// lookup), and its completion stored nothing either (resumed tasks store
@@ -368,7 +368,7 @@ func TestSubgraphInterruptCacheResumeSkipsCache(t *testing.T) {
 // with its full nested NS. With Subgraphs: true the child's own chunks carry
 // the child namespace.
 func TestStreamPauseChunkCarriesSubgraphInterrupt(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := compileChild(t, "ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
 		v := Interrupt(rt, "stream-q")
@@ -486,7 +486,7 @@ func (r *eventRecorder) EmitRawEvent(e RawEvent) {
 // RawNodeStart/RawNodeEnd — the End fires after runTask converts the panic
 // into the interrupts outcome, so every node's start/end pair stays matched.
 func TestInvokeStreamNodeEventsPairedAcrossSubgraphPanic(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	child := compileChild(t, "ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
 		v := Interrupt(rt, "pair-q")
@@ -579,7 +579,7 @@ func TestInvokeStreamNodeEventsPairedAcrossSubgraphPanic(t *testing.T) {
 // full nested NS), alongside the planned subgraph task. A second pause (Send
 // fan-out) aggregates both copies.
 func TestGetStateShowsSubgraphInterruptCopies(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cg, _ := interruptingSubgraphFixture(t)
 	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"})

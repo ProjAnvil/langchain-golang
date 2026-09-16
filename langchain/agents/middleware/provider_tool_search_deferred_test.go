@@ -22,7 +22,7 @@ func TestDeferredToolWrapper(t *testing.T) {
 	if deferred.ArgsSchema() == nil {
 		t.Fatal("expected args schema to be forwarded")
 	}
-	result, err := deferred.Invoke(context.Background(), map[string]any{"x": 1})
+	result, err := deferred.Invoke(t.Context(), map[string]any{"x": 1})
 	if err != nil || result.Content != "ok" {
 		t.Fatalf("invoke mismatch: %#v %v", result, err)
 	}
@@ -44,7 +44,7 @@ func TestProviderToolSearchUnknownSearchableTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "ghost") {
@@ -59,7 +59,7 @@ func TestProviderToolSearchNoDeferredToolsPassThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 		if len(req.Tools) != 1 {
 			t.Fatalf("request should pass through unchanged: %#v", req.Tools)
 		}
@@ -88,7 +88,7 @@ func TestProviderToolSearchAddsServerToolSpec(t *testing.T) {
 			if err != nil {
 				t.Fatalf("new request: %v", err)
 			}
-			_, err = middleware.WrapModelCall(context.Background(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
+			_, err = middleware.WrapModelCall(t.Context(), request, func(ctx context.Context, req ModelRequest) (ModelResponse, error) {
 				if len(req.Tools) != 3 {
 					t.Fatalf("expected deferred + custom + spec tools: %#v", req.Tools)
 				}
@@ -115,7 +115,7 @@ func TestProviderToolSearchUndeterminedProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "could not determine the provider") {
@@ -130,7 +130,7 @@ func TestProviderToolSearchUnsupportedProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	_, err = middleware.WrapModelCall(context.Background(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = middleware.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
 		return ModelResponse{}, nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires a provider with server-side tool search") {

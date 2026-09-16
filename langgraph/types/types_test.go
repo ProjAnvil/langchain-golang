@@ -33,8 +33,8 @@ func TestGraphInterruptErrorsAs(t *testing.T) {
 	inner := &GraphInterrupt{Interrupt: Interrupt{Value: 42, ID: "int-2"}}
 	wrapped := fmt.Errorf("node failed: %w", inner)
 
-	var target *GraphInterrupt
-	if !errors.As(wrapped, &target) {
+	target, ok := errors.AsType[*GraphInterrupt](wrapped)
+	if !ok {
 		t.Fatal("errors.As should unwrap a GraphInterrupt")
 	}
 	if target.Interrupt.ID != "int-2" || target.Interrupt.Value != 42 {
@@ -60,8 +60,8 @@ func TestGraphRecursionErrorErrorsAs(t *testing.T) {
 	inner := &GraphRecursionError{Limit: 10, Node: "loop"}
 	wrapped := fmt.Errorf("graph: subgraph %q: %w", "inner", inner)
 
-	var target *GraphRecursionError
-	if !errors.As(wrapped, &target) {
+	target, ok := errors.AsType[*GraphRecursionError](wrapped)
+	if !ok {
 		t.Fatal("errors.As should unwrap a GraphRecursionError")
 	}
 	if target.Limit != 10 || target.Node != "loop" {

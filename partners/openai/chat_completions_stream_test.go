@@ -33,7 +33,7 @@ func TestChatCompletionsStreamText(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestChatCompletionsStreamText(t *testing.T) {
 
 	var got []string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -71,7 +71,7 @@ func TestChatCompletionsStreamToolCalls(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	).WithChatCompletions()
 
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestChatCompletionsStreamToolCalls(t *testing.T) {
 
 	var final messages.Message
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -131,13 +131,13 @@ func TestChatCompletionsStreamToolsNestedFunctionShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := bound.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := bound.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer stream.Close()
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -187,7 +187,7 @@ func TestChatCompletionsStreamReasoningContent(t *testing.T) {
 		modelconfig.WithModel("deepseek-reasoner"),
 	).WithChatCompletions()
 
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hi")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestChatCompletionsStreamReasoningContent(t *testing.T) {
 
 	var reasoning, content string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
@@ -249,11 +249,11 @@ func TestChatCompletionsReasoningEffort(t *testing.T) {
 		modelconfig.WithBaseURL(server.URL),
 		modelconfig.WithModel("o-test"),
 	).WithChatCompletions()
-	if _, err := base.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := base.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("unset Invoke: %v", err)
 	}
 	effort := base.WithChatCompletions().WithReasoningEffort("high")
-	if _, err := effort.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := effort.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("effort Invoke: %v", err)
 	}
 	if gotEffort != "high" {

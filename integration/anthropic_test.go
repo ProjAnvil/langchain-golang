@@ -15,7 +15,7 @@ import (
 
 func TestAnthropicChatModel_Invoke(t *testing.T) {
 	model := newAnthropicModel(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
 	resp, err := model.Invoke(ctx, []messages.Message{
@@ -32,7 +32,7 @@ func TestAnthropicChatModel_Invoke(t *testing.T) {
 
 func TestAnthropicChatModel_Stream(t *testing.T) {
 	model := newAnthropicModel(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
 	stream, err := model.Stream(ctx, []messages.Message{
@@ -68,7 +68,7 @@ func TestAnthropic_CreateAgent_ToolLoop(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 	defer cancel()
 
 	reply, err := agent.Invoke(ctx, []messages.Message{
@@ -90,7 +90,7 @@ func TestAnthropic_StreamEvents(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
 	stream, err := agent.StreamEvents(ctx, []messages.Message{

@@ -19,7 +19,6 @@ package agents
 //     round-tripped interrupt value decodes through the map wire form.
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -91,7 +90,7 @@ func TestCreateAgentHITLNestedSupervisorResume(t *testing.T) {
 	worker := newHITLWorkerAgent(t, &toolRuns, childModel)
 	supervisor := newSupervisorGraph(t, worker, checkpoint.NewMemorySaver(), &reportRuns)
 
-	res, err := supervisor.InvokeWithOptions(context.Background(),
+	res, err := supervisor.InvokeWithOptions(t.Context(),
 		map[string]any{"messages": []messages.Message{messages.Human("hi")}},
 		graphpkg.Options{ThreadID: "sup-1"})
 	if err != nil {
@@ -125,7 +124,7 @@ func TestCreateAgentHITLNestedSupervisorResume(t *testing.T) {
 	}
 
 	// Resume from the PARENT side, addressing the nested interrupt by NS.
-	res, err = supervisor.InvokeWithOptions(context.Background(), nil, graphpkg.Options{
+	res, err = supervisor.InvokeWithOptions(t.Context(), nil, graphpkg.Options{
 		ThreadID: "sup-1",
 		Resume: map[string]any{intr.NS: middleware.HITLResponse{
 			Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}},
@@ -169,7 +168,7 @@ func TestCreateAgentHITLNestedSupervisorGraphNS(t *testing.T) {
 	worker := newHITLWorkerAgent(t, &toolRuns, childModel)
 	supervisor := newSupervisorGraph(t, worker, checkpoint.NewMemorySaver(), &reportRuns)
 
-	res, err := supervisor.InvokeWithOptions(context.Background(),
+	res, err := supervisor.InvokeWithOptions(t.Context(),
 		map[string]any{"messages": []messages.Message{messages.Human("hi")}},
 		graphpkg.Options{ThreadID: "sup-2"})
 	if err != nil || len(res.Interrupts) != 1 {
@@ -188,7 +187,7 @@ func TestCreateAgentHITLNestedSupervisorGraphNS(t *testing.T) {
 	}
 
 	// A Graph naming no pending interrupt's namespace errors descriptively.
-	_, err = supervisor.InvokeWithOptions(context.Background(), nil, graphpkg.Options{
+	_, err = supervisor.InvokeWithOptions(t.Context(), nil, graphpkg.Options{
 		ThreadID: "sup-2",
 		Graph:    "no-such-namespace",
 		Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}}},
@@ -198,7 +197,7 @@ func TestCreateAgentHITLNestedSupervisorGraphNS(t *testing.T) {
 	}
 
 	// The scoped resume: Graph = the child task's namespace, scalar answer.
-	res, err = supervisor.InvokeWithOptions(context.Background(), nil, graphpkg.Options{
+	res, err = supervisor.InvokeWithOptions(t.Context(), nil, graphpkg.Options{
 		ThreadID: "sup-2",
 		Graph:    childNS,
 		Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{{Type: middleware.DecisionApprove}}},
@@ -237,7 +236,7 @@ type wireCheckpoint struct {
 	V               int                         `json:"v"`
 	ID              string                      `json:"id"`
 	TS              time.Time                   `json:"ts"`
-	ChannelValues   map[string]wireValue       `json:"channel_values,omitempty"`
+	ChannelValues   map[string]wireValue        `json:"channel_values,omitempty"`
 	ChannelVersions map[string]int64            `json:"channel_versions,omitempty"`
 	VersionsSeen    map[string]map[string]int64 `json:"versions_seen,omitempty"`
 	Next            []wireTask                  `json:"next,omitempty"`
@@ -259,7 +258,7 @@ type wireWrite struct {
 // to completion, answering through the wire-form decisions map that a
 // non-Go producer (or a JSON-decoded gateway payload) would send.
 func TestCreateAgentHITLCrossProcessCheckpointRoundTrip(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ser := serde.NewJSONSerializer()
 
 	dumpValue := func(v any) wireValue {
@@ -310,11 +309,11 @@ func TestCreateAgentHITLCrossProcessCheckpointRoundTrip(t *testing.T) {
 		t.Fatalf("the paused thread persisted no checkpoints")
 	}
 	type wireTuple struct {
-		Config checkpoint.Config `json:"config"`
-		Parent *checkpoint.Config `json:"parent,omitempty"`
+		Config checkpoint.Config   `json:"config"`
+		Parent *checkpoint.Config  `json:"parent,omitempty"`
 		MD     checkpoint.Metadata `json:"md"`
-		CP     wireCheckpoint     `json:"cp"`
-		Writes []wireWrite        `json:"writes,omitempty"`
+		CP     wireCheckpoint      `json:"cp"`
+		Writes []wireWrite         `json:"writes,omitempty"`
 	}
 	var wire []wireTuple
 	for _, tup := range tuples { // newest first; marshaling order is irrelevant

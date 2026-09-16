@@ -19,7 +19,7 @@ func pipeStrFn(tag string) Runnable[string, string] {
 
 func TestPipe_InvokeTwoSteps(t *testing.T) {
 	chain := Pipe(pipeStrFn("a"), pipeStrFn("b"))
-	got, err := chain.Invoke(context.Background(), "x")
+	got, err := chain.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestPipe_InvokeTwoSteps(t *testing.T) {
 
 func TestPipe3_InvokeThreeSteps(t *testing.T) {
 	chain := Pipe3(pipeStrFn("a"), pipeStrFn("b"), pipeStrFn("c"))
-	got, err := chain.Invoke(context.Background(), "x")
+	got, err := chain.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestPipe_SatisfiesRunnable(t *testing.T) {
 
 func TestPipe_Batch(t *testing.T) {
 	chain := Pipe(pipeStrFn("a"), pipeStrFn("b"))
-	got, err := chain.Batch(context.Background(), []string{"x", "y"})
+	got, err := chain.Batch(t.Context(), []string{"x", "y"})
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestPipe_Stream(t *testing.T) {
 		streamFn: func(s string) ([]string, error) { return []string{s + "1", s + "2"}, nil },
 	}
 
-	stream, err := Pipe(src, transform).Stream(context.Background(), "ignored")
+	stream, err := Pipe(src, transform).Stream(t.Context(), "ignored")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestPipe_NestedEqualsPipe3(t *testing.T) {
 	a, b, c := pipeStrFn("a"), pipeStrFn("b"), pipeStrFn("c")
 	nested := Pipe(Pipe(a, b), c) // Pipe(a,b) is SeqN[string,string], feeds outer Pipe
 	flat := Pipe3(a, b, c)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	gotNested, err := nested.Invoke(ctx, "x")
 	if err != nil {
@@ -196,7 +196,7 @@ func TestPipe_ComposesWithExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new fallbacks: %v", err)
 	}
-	got, err := fb.Invoke(context.Background(), "x")
+	got, err := fb.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestPipe_ConfigSchemaMergedFromSteps(t *testing.T) {
 
 func TestPipe4_Invoke(t *testing.T) {
 	chain := Pipe4(pipeStrFn("a"), pipeStrFn("b"), pipeStrFn("c"), pipeStrFn("d"))
-	got, err := chain.Invoke(context.Background(), "x")
+	got, err := chain.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestPipe4_Invoke(t *testing.T) {
 
 func TestPipe5_Invoke(t *testing.T) {
 	chain := Pipe5(pipeStrFn("a"), pipeStrFn("b"), pipeStrFn("c"), pipeStrFn("d"), pipeStrFn("e"))
-	got, err := chain.Invoke(context.Background(), "x")
+	got, err := chain.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestPipe5_Invoke(t *testing.T) {
 
 func TestPipe6_Invoke(t *testing.T) {
 	chain := Pipe6(pipeStrFn("a"), pipeStrFn("b"), pipeStrFn("c"), pipeStrFn("d"), pipeStrFn("e"), pipeStrFn("f"))
-	got, err := chain.Invoke(context.Background(), "x")
+	got, err := chain.Invoke(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestPipe3_Stream(t *testing.T) {
 		streamFn: func(s string) ([]string, error) { return []string{s + "!"}, nil },
 	}
 
-	stream, err := Pipe3(src, mid, tail).Stream(context.Background(), "ignored")
+	stream, err := Pipe3(src, mid, tail).Stream(t.Context(), "ignored")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestPipe_Schemas(t *testing.T) {
 
 func TestSeqN_StreamEmptySequence(t *testing.T) {
 	var chain SeqN[string, string]
-	if _, err := chain.Stream(context.Background(), "x"); err == nil {
+	if _, err := chain.Stream(t.Context(), "x"); err == nil {
 		t.Fatal("expected error for empty sequence")
 	}
 }
@@ -350,7 +350,7 @@ func TestSeqN_InvokeStepError(t *testing.T) {
 		return "", errTestSentinel
 	}, schema.String(""), schema.String(""))
 	chain := Pipe(pipeStrFn("a"), fail)
-	if _, err := chain.Invoke(context.Background(), "x"); err != errTestSentinel {
+	if _, err := chain.Invoke(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("invoke err: got %v want %v", err, errTestSentinel)
 	}
 }
@@ -360,7 +360,7 @@ func TestSeqN_BatchStepError(t *testing.T) {
 		return "", errTestSentinel
 	}, schema.String(""), schema.String(""))
 	chain := Pipe(pipeStrFn("a"), fail)
-	if _, err := chain.Batch(context.Background(), []string{"x"}); err == nil {
+	if _, err := chain.Batch(t.Context(), []string{"x"}); err == nil {
 		t.Fatal("expected batch error from failing step")
 	}
 }
@@ -373,13 +373,13 @@ func TestErasedRunnableTypeMismatch(t *testing.T) {
 	}, schema.Integer("in"), schema.Integer("out"))
 	erased := erase[int, int](intToInt)
 
-	if _, err := erased.Invoke(context.Background(), "not-an-int"); err == nil {
+	if _, err := erased.Invoke(t.Context(), "not-an-int"); err == nil {
 		t.Fatal("expected invoke type mismatch error")
 	}
-	if _, err := erased.Batch(context.Background(), []any{1, "nope"}); err == nil {
+	if _, err := erased.Batch(t.Context(), []any{1, "nope"}); err == nil {
 		t.Fatal("expected batch type mismatch error")
 	}
-	if _, err := erased.Stream(context.Background(), 1.5); err == nil {
+	if _, err := erased.Stream(t.Context(), 1.5); err == nil {
 		t.Fatal("expected stream type mismatch error")
 	}
 
@@ -399,7 +399,7 @@ func TestSeqN_StreamTailTypeMismatch(t *testing.T) {
 		streamFn: func(_ string) ([]string, error) { return []string{"a"}, nil },
 	}
 	chain := Pipe(src, pipeStrFn("b"))
-	stream, err := chain.Stream(context.Background(), "x")
+	stream, err := chain.Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -407,14 +407,14 @@ func TestSeqN_StreamTailTypeMismatch(t *testing.T) {
 
 	// Rebind the tail to an impossible output type via a manual tail stream.
 	tail := &seqNTailStream[int]{inner: mustAnyStream(t, src, "x")}
-	if _, _, err := tail.Next(context.Background()); err == nil {
+	if _, _, err := tail.Next(t.Context()); err == nil {
 		t.Fatal("expected tail type mismatch error")
 	}
 }
 
 func mustAnyStream(t *testing.T, r streamFn, input string) Stream[any] {
 	t.Helper()
-	stream, err := r.Stream(context.Background(), input)
+	stream, err := r.Stream(t.Context(), input)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestSeqN_StreamFirstStepError(t *testing.T) {
 		streamFn: func(_ string) ([]string, error) { return nil, errTestSentinel },
 	}
 	chain := Pipe(fail, pipeStrFn("b"))
-	if _, err := chain.Stream(context.Background(), "x"); err != errTestSentinel {
+	if _, err := chain.Stream(t.Context(), "x"); err != errTestSentinel {
 		t.Fatalf("stream err: got %v want %v", err, errTestSentinel)
 	}
 }
@@ -441,11 +441,11 @@ func TestPipe_StreamCloseMidDrain(t *testing.T) {
 		invokeFn: func(s string) (string, error) { return s, nil },
 		streamFn: func(s string) ([]string, error) { return []string{s + "1", s + "2"}, nil },
 	}
-	stream, err := Pipe(src, transform).Stream(context.Background(), "x")
+	stream, err := Pipe(src, transform).Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	got, ok, err := stream.Next(context.Background())
+	got, ok, err := stream.Next(t.Context())
 	if err != nil || !ok || got != "a1" {
 		t.Fatalf("first chunk=%q ok=%v err=%v", got, ok, err)
 	}
@@ -484,12 +484,12 @@ func (errNextStringRunnable) OutputSchema() schema.Schema { return schema.String
 
 func TestPipe_StreamFirstStageNextError(t *testing.T) {
 	chain := Pipe(errNextStringRunnable{}, pipeStrFn("b"))
-	stream, err := chain.Stream(context.Background(), "x")
+	stream, err := chain.Stream(t.Context(), "x")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
-	if _, _, err := stream.Next(context.Background()); err != errTestSentinel {
+	if _, _, err := stream.Next(t.Context()); err != errTestSentinel {
 		t.Fatalf("next err: got %v want %v", err, errTestSentinel)
 	}
 }

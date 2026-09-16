@@ -16,7 +16,7 @@ func TestTextLoaderLoadsFile(t *testing.T) {
 	loader := NewTextLoader(path)
 	loader.Metadata = map[string]any{"kind": "note"}
 
-	docs, err := Load(context.Background(), loader)
+	docs, err := Load(t.Context(), loader)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestGenericLoaderCombinesBlobLoaderAndParser(t *testing.T) {
 		t.Fatalf("new generic loader: %v", err)
 	}
 
-	docs, err := Load(context.Background(), loader)
+	docs, err := Load(t.Context(), loader)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -103,12 +103,12 @@ func TestGenericLoaderRequiresComponents(t *testing.T) {
 
 func TestFileSystemBlobLoaderPathErrors(t *testing.T) {
 	loader := FileSystemBlobLoader{}
-	if _, err := loader.YieldBlobs(context.Background()); err == nil {
+	if _, err := loader.YieldBlobs(t.Context()); err == nil {
 		t.Fatal("expected missing path error")
 	}
 
 	loader = NewFileSystemBlobLoader(filepath.Join(t.TempDir(), "missing"))
-	if _, err := loader.YieldBlobs(context.Background()); err == nil {
+	if _, err := loader.YieldBlobs(t.Context()); err == nil {
 		t.Fatal("expected stat error")
 	}
 }
@@ -136,12 +136,12 @@ func TestFileSystemBlobLoaderInvalidGlob(t *testing.T) {
 
 	loader := NewFileSystemBlobLoader(dir)
 	loader.Glob = "["
-	if _, err := loader.YieldBlobs(context.Background()); err == nil {
+	if _, err := loader.YieldBlobs(t.Context()); err == nil {
 		t.Fatal("expected bad pattern error (non-recursive)")
 	}
 
 	loader.Recursive = true
-	if _, err := loader.YieldBlobs(context.Background()); err == nil {
+	if _, err := loader.YieldBlobs(t.Context()); err == nil {
 		t.Fatal("expected bad pattern error (recursive)")
 	}
 }
@@ -150,7 +150,7 @@ func TestFileSystemBlobLoaderContextCancellation(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, filepath.Join(dir, "a.txt"), "a")
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	loader := NewFileSystemBlobLoader(dir)
@@ -209,7 +209,7 @@ func TestFileBlobIteratorErrors(t *testing.T) {
 	writeTestFile(t, path, "a")
 
 	loader := NewFileSystemBlobLoader(dir)
-	iter, err := loader.YieldBlobs(context.Background())
+	iter, err := loader.YieldBlobs(t.Context())
 	if err != nil {
 		t.Fatalf("yield blobs: %v", err)
 	}
@@ -219,18 +219,18 @@ func TestFileBlobIteratorErrors(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	if _, _, err := iter.Next(context.Background()); err == nil {
+	if _, _, err := iter.Next(t.Context()); err == nil {
 		t.Fatal("expected read error")
 	}
 
 	// A cancelled context surfaces from Next before reading.
 	writeTestFile(t, path, "a")
-	iter2, err := loader.YieldBlobs(context.Background())
+	iter2, err := loader.YieldBlobs(t.Context())
 	if err != nil {
 		t.Fatalf("yield blobs: %v", err)
 	}
 	defer iter2.Close()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := iter2.Next(ctx); err == nil {
 		t.Fatal("expected context error")
@@ -253,7 +253,7 @@ func TestFileBlobIteratorDefaultSourceMetadata(t *testing.T) {
 }
 
 func TestTextParserLazyParseMetadata(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Nil metadata and no path: no source key is injected.
 	docs, err := Parse(ctx, TextParser{}, Blob{Data: []byte("plain")})
@@ -295,13 +295,13 @@ func TestGenericLoaderLazyLoadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new generic loader: %v", err)
 	}
-	if _, err := loader.LazyLoad(context.Background()); err == nil {
+	if _, err := loader.LazyLoad(t.Context()); err == nil {
 		t.Fatal("expected yield blobs error")
 	}
 }
 
 func TestGenericLoaderIteratorErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	blob := NewBlobFromData([]byte("x"), "text/plain", nil)
 
 	t.Run("blob iterator error", func(t *testing.T) {
@@ -362,7 +362,7 @@ func TestGenericLoaderIteratorErrors(t *testing.T) {
 }
 
 func TestGenericLoaderIteratorClose(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	blob := NewBlobFromData([]byte("x"), "text/plain", nil)
 
 	// Close with an active document iterator reports its close error first.
@@ -395,7 +395,7 @@ func TestGenericLoaderIteratorClose(t *testing.T) {
 
 func TestTextLoaderMissingFile(t *testing.T) {
 	loader := NewTextLoader(filepath.Join(t.TempDir(), "missing.txt"))
-	if _, err := loader.LazyLoad(context.Background()); err == nil {
+	if _, err := loader.LazyLoad(t.Context()); err == nil {
 		t.Fatal("expected lazy load error")
 	}
 }
@@ -435,14 +435,14 @@ func (i *fakeBlobIterator) Close() error {
 
 func collectBlobs(t *testing.T, loader FileSystemBlobLoader) []Blob {
 	t.Helper()
-	iter, err := loader.YieldBlobs(context.Background())
+	iter, err := loader.YieldBlobs(t.Context())
 	if err != nil {
 		t.Fatalf("yield blobs: %v", err)
 	}
 	defer iter.Close()
 	var blobs []Blob
 	for {
-		blob, ok, err := iter.Next(context.Background())
+		blob, ok, err := iter.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next blob: %v", err)
 		}

@@ -1,14 +1,13 @@
 package stores
 
 import (
-	"context"
 	"reflect"
-	"sort"
+	"slices"
 	"testing"
 )
 
 func TestInMemoryStoreMGet(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryStore[string]()
 
 	if err := store.MSet(ctx, []KeyValue[string]{
@@ -34,7 +33,7 @@ func TestInMemoryStoreMGet(t *testing.T) {
 }
 
 func TestInMemoryStoreMSet(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryStore[string]()
 
 	if err := store.MSet(ctx, []KeyValue[string]{
@@ -52,7 +51,7 @@ func TestInMemoryStoreMSet(t *testing.T) {
 }
 
 func TestInMemoryStoreMDelete(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryStore[string]()
 
 	if err := store.MSet(ctx, []KeyValue[string]{
@@ -82,7 +81,7 @@ func TestInMemoryStoreMDelete(t *testing.T) {
 }
 
 func TestInMemoryStoreYieldKeys(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryStore[string]()
 
 	if err := store.MSet(ctx, []KeyValue[string]{
@@ -97,7 +96,7 @@ func TestInMemoryStoreYieldKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("yield keys: %v", err)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	if !reflect.DeepEqual(keys, []string{"key1", "key2", "key3"}) {
 		t.Fatalf("keys mismatch: got %#v", keys)
 	}
@@ -106,7 +105,7 @@ func TestInMemoryStoreYieldKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("yield keys with prefix: %v", err)
 	}
-	sort.Strings(keysWithPrefix)
+	slices.Sort(keysWithPrefix)
 	if !reflect.DeepEqual(keysWithPrefix, []string{"key1", "key2", "key3"}) {
 		t.Fatalf("keys with prefix mismatch: got %#v", keysWithPrefix)
 	}
@@ -121,7 +120,7 @@ func TestInMemoryStoreYieldKeys(t *testing.T) {
 }
 
 func TestInMemoryByteStore(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	store := NewInMemoryByteStore()
 
 	if err := store.MSet(ctx, []KeyValue[[]byte]{

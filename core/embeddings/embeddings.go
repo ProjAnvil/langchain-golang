@@ -61,7 +61,7 @@ func (e FakeEmbeddings) EmbedQuery(ctx context.Context, text string) ([]float64,
 
 func (e FakeEmbeddings) embed(text string) []float64 {
 	vector := make([]float64, e.dimensions)
-	for _, token := range strings.Fields(strings.ToLower(text)) {
+	for token := range strings.FieldsSeq(strings.ToLower(text)) {
 		hash := fnv.New64a()
 		_, _ = hash.Write([]byte(token))
 		index := int(hash.Sum64() % uint64(e.dimensions))

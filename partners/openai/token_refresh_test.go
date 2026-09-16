@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -31,7 +30,7 @@ func TestRefreshKeepsRefreshTokenWhenOmitted(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, server.URL, "client-1")
 
-	got, err := provider.AccessToken(context.Background())
+	got, err := provider.AccessToken(t.Context())
 	if err != nil || got != "new-at" {
 		t.Fatalf("AccessToken = %q, %v", got, err)
 	}
@@ -52,7 +51,7 @@ func TestRefreshInvalidJSONResponse(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}, server.URL, "client-1")
 
-	if _, err := provider.AccessToken(context.Background()); err == nil {
+	if _, err := provider.AccessToken(t.Context()); err == nil {
 		t.Fatal("expected decode error")
 	}
 }

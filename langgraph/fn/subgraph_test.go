@@ -1,7 +1,6 @@
 package fn
 
 import (
-	"context"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -45,7 +44,7 @@ func fnSubgraphTop(t *testing.T, e *Entrypoint[any, string, any], saver *checkpo
 // the pinned child run answers it; the entrypoint's __end__ write merges back
 // into the parent state.
 func TestEntrypointSubgraphInterruptPropagatesAndResumes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 	var runs atomic.Int32
 	e, err := NewEntrypoint[any, string, any](
@@ -100,7 +99,7 @@ func TestEntrypointSubgraphInterruptPropagatesAndResumes(t *testing.T) {
 // consumed. Misalignment here would surface as the second interrupt
 // re-receiving the first resume value.
 func TestEntrypointSubgraphTaskReplayAcrossPauses(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()
 	var setupCalls, askCalls atomic.Int32
 	setup := NewTask[any, string]("setup", func(_ runtime.Runtime, _ any) (string, error) {

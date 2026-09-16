@@ -1,7 +1,6 @@
 package fn
 
 import (
-	"context"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -11,7 +10,7 @@ import (
 
 func TestNextCallIdx(t *testing.T) {
 	d := newDispatcher(nil)
-	for want := 0; want < 3; want++ {
+	for want := range 3 {
 		if got := d.nextCallIdx(""); got != want {
 			t.Fatalf("nextCallIdx(\"\") = %d, want %d", got, want)
 		}
@@ -29,11 +28,11 @@ func TestNextCallIdx(t *testing.T) {
 }
 
 func TestDispatcherContext(t *testing.T) {
-	if d := dispatcherFromContext(context.Background()); d != nil {
+	if d := dispatcherFromContext(t.Context()); d != nil {
 		t.Fatalf("dispatcherFromContext on bare ctx = %v, want nil", d)
 	}
 	d := newDispatcher(nil)
-	ctx := contextWithDispatcher(context.Background(), d)
+	ctx := contextWithDispatcher(t.Context(), d)
 	if got := dispatcherFromContext(ctx); got != d {
 		t.Fatalf("dispatcherFromContext = %p, want %p", got, d)
 	}

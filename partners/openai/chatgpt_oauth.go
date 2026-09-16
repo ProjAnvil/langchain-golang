@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -46,9 +47,7 @@ type TokenProvider struct {
 
 // NewTokenProvider builds a provider around an initial token bundle.
 func NewTokenProvider(token Token, tokenURL, clientID string) *TokenProvider {
-	if tokenURL == "" {
-		tokenURL = defaultChatGPTTokenURL
-	}
+	tokenURL = cmp.Or(tokenURL, defaultChatGPTTokenURL)
 	return &TokenProvider{
 		token:       token,
 		tokenURL:    tokenURL,

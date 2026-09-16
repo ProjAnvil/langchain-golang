@@ -134,8 +134,8 @@ func extractImage(m map[string]any) string {
 // unchanged if it is not a data URI.
 func stripDataURL(value string) string {
 	if strings.HasPrefix(value, "data:") {
-		if comma := strings.Index(value, ","); comma >= 0 {
-			return value[comma+1:]
+		if _, payload, found := strings.Cut(value, ","); found {
+			return payload
 		}
 	}
 	return value

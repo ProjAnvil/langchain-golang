@@ -8,7 +8,7 @@ import (
 
 func TestTransformParsesIndependentChunks(t *testing.T) {
 	parser := StringParser{}
-	got, err := Transform(context.Background(), parser, []string{"a", "b"})
+	got, err := Transform(t.Context(), parser, []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("transform: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestTransformParsesIndependentChunks(t *testing.T) {
 
 func TestCumulativeJSONParserTransform(t *testing.T) {
 	parser := CumulativeJSONParser{}
-	got, err := parser.Transform(context.Background(), []string{
+	got, err := parser.Transform(t.Context(), []string{
 		`{"answer":`,
 		` 1,`,
 		` "ok": true}`,
@@ -42,7 +42,7 @@ func TestCumulativeJSONParserTransform(t *testing.T) {
 
 func TestCumulativeJSONParserDiff(t *testing.T) {
 	parser := CumulativeJSONParser{Diff: true}
-	got, err := parser.Transform(context.Background(), []string{
+	got, err := parser.Transform(t.Context(), []string{
 		`{"answer":1`,
 		`, "ok": true`,
 		`, "answer":2}`,
@@ -91,7 +91,7 @@ func TestParsePartialJSONIncompleteToken(t *testing.T) {
 }
 
 func TestTransformContextCanceled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := Transform(ctx, StringParser{}, []string{"a"})
 	if err == nil {
@@ -101,14 +101,14 @@ func TestTransformContextCanceled(t *testing.T) {
 
 func TestTransformPropagatesParseError(t *testing.T) {
 	parser := NewJSONParser[map[string]any]("")
-	_, err := Transform(context.Background(), parser, []string{"not json"})
+	_, err := Transform(t.Context(), parser, []string{"not json"})
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
 }
 
 func TestCumulativeJSONParserContextCanceled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	parser := CumulativeJSONParser{}
 	if _, err := parser.Transform(ctx, []string{"{}"}); err == nil {
@@ -118,7 +118,7 @@ func TestCumulativeJSONParserContextCanceled(t *testing.T) {
 
 func TestCumulativeJSONParserSkipsUnparseable(t *testing.T) {
 	parser := CumulativeJSONParser{}
-	got, err := parser.Transform(context.Background(), []string{
+	got, err := parser.Transform(t.Context(), []string{
 		`{"a": tru`,
 		`e}`,
 	})

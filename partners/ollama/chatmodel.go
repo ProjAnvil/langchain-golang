@@ -261,18 +261,18 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content"`
-	Images     []string         `json:"images,omitempty"`
+	Role       string            `json:"role"`
+	Content    string            `json:"content"`
+	Images     []string          `json:"images,omitempty"`
 	ToolCalls  []chatMessageTool `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-	Thinking   string           `json:"thinking,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+	Thinking   string            `json:"thinking,omitempty"`
 }
 
 type chatMessageTool struct {
-	Type     string                `json:"type"`
-	ID       string                `json:"id,omitempty"`
-	Function chatMessageToolFn      `json:"function"`
+	Type     string            `json:"type"`
+	ID       string            `json:"id,omitempty"`
+	Function chatMessageToolFn `json:"function"`
 }
 
 type chatMessageToolFn struct {
@@ -292,16 +292,16 @@ type chatToolFunction struct {
 }
 
 type chatResponse struct {
-	Model           string         `json:"model"`
-	CreatedAt       string         `json:"created_at"`
+	Model           string              `json:"model"`
+	CreatedAt       string              `json:"created_at"`
 	Message         chatResponseMessage `json:"message"`
-	Done            bool           `json:"done"`
-	DoneReason      string         `json:"done_reason"`
-	PromptEvalCount int            `json:"prompt_eval_count"`
-	EvalCount       int            `json:"eval_count"`
-	TotalDuration   int64          `json:"total_duration"`
-	LoadDuration    int64          `json:"load_duration"`
-	Raw             map[string]any `json:"-"`
+	Done            bool                `json:"done"`
+	DoneReason      string              `json:"done_reason"`
+	PromptEvalCount int                 `json:"prompt_eval_count"`
+	EvalCount       int                 `json:"eval_count"`
+	TotalDuration   int64               `json:"total_duration"`
+	LoadDuration    int64               `json:"load_duration"`
+	Raw             map[string]any      `json:"-"`
 }
 
 func (r *chatResponse) UnmarshalJSON(data []byte) error {
@@ -341,10 +341,10 @@ func (r chatResponse) toMessage() messages.Message {
 
 	message := messages.AI(text)
 	message.ResponseMetadata = map[string]any{
-		"model":         r.Model,
-		"model_name":    r.Model,
-		"created_at":    r.CreatedAt,
-		"done_reason":   r.DoneReason,
+		"model":          r.Model,
+		"model_name":     r.Model,
+		"created_at":     r.CreatedAt,
+		"done_reason":    r.DoneReason,
 		"model_provider": "ollama",
 	}
 	message.ToolCalls = toolCalls

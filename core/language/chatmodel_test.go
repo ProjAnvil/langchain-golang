@@ -16,7 +16,7 @@ import (
 func TestFakeChatModelInvokeEchoesLastMessage(t *testing.T) {
 	model := NewFakeChatModel()
 
-	got, err := model.Invoke(context.Background(), []messages.Message{
+	got, err := model.Invoke(t.Context(), []messages.Message{
 		messages.System("be concise"),
 		messages.Human("hello"),
 	})
@@ -84,7 +84,7 @@ func TestFakeChatModelInvokeCallbacks(t *testing.T) {
 	model := NewFakeChatModel()
 
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithName("fake-chat"),
 		runnables.WithRunID("run-1"),
@@ -124,7 +124,7 @@ func TestFakeChatModelStreamCallbacks(t *testing.T) {
 	)
 
 	stream, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -134,7 +134,7 @@ func TestFakeChatModelStreamCallbacks(t *testing.T) {
 	defer stream.Close()
 
 	for {
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}
@@ -163,7 +163,7 @@ func TestFakeChatModelStreamCallbacks(t *testing.T) {
 func TestFakeChatModelRateLimiter(t *testing.T) {
 	limiter := &recordingLimiter{}
 	model := NewFakeChatModel(WithRateLimiter(limiter))
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hello")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hello")}); err != nil {
 		t.Fatal(err)
 	}
 	if limiter.calls != 1 || !limiter.blocking {
@@ -174,7 +174,7 @@ func TestFakeChatModelRateLimiter(t *testing.T) {
 		WithRateLimiter(limiter),
 		WithStreamChunks(messages.AI("chunk")),
 	)
-	stream, err := streamModel.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	stream, err := streamModel.Stream(t.Context(), []messages.Message{messages.Human("hello")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestFakeChatModelRateLimiterErrorPreventsStartEvent(t *testing.T) {
 	wantErr := errors.New("rate limited")
 	model := NewFakeChatModel(WithRateLimiter(&recordingLimiter{err: wantErr}))
 	_, err := model.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
 	)
@@ -243,7 +243,7 @@ func TestStreamEventsFallbackTextProjection(t *testing.T) {
 		),
 	)
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {
@@ -275,7 +275,7 @@ func TestStreamEventsPreservesUserCallbacks(t *testing.T) {
 	)
 
 	_, err := StreamEvents(
-		context.Background(),
+		t.Context(),
 		model,
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(recorder)),
@@ -306,7 +306,7 @@ func TestStreamEventsFallbackMalformedToolCallChunk(t *testing.T) {
 	})}
 	model := NewFakeChatModel(WithStreamChunks(chunk))
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("search"),
 	})
 	if err != nil {
@@ -328,7 +328,7 @@ func TestStreamEventsFallbackMalformedToolCallChunk(t *testing.T) {
 func TestStreamEventsUsesNativeProtocolEvents(t *testing.T) {
 	model := protocolFakeChatModel{}
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {
@@ -438,7 +438,7 @@ func TestFakeChatModelBindToolsProducesIndependentCopy(t *testing.T) {
 	}
 
 	// Advancing the bound copy's response cursor must not move the original's.
-	if _, err := bound.Invoke(context.Background(), []messages.Message{messages.Human("a")}); err != nil {
+	if _, err := bound.Invoke(t.Context(), []messages.Message{messages.Human("a")}); err != nil {
 		t.Fatalf("bound invoke: %v", err)
 	}
 	if boundFake.responseIdx != 1 {
@@ -449,7 +449,7 @@ func TestFakeChatModelBindToolsProducesIndependentCopy(t *testing.T) {
 	}
 
 	// The original still serves its own configured responses.
-	got, err := model.Invoke(context.Background(), []messages.Message{messages.Human("b")})
+	got, err := model.Invoke(t.Context(), []messages.Message{messages.Human("b")})
 	if err != nil {
 		t.Fatalf("original invoke: %v", err)
 	}
@@ -472,15 +472,15 @@ func TestFakeChatModelBoundAndOriginalAreConcurrentlySafe(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 50; i++ {
-			if _, err := model.Invoke(context.Background(), input); err != nil {
+		for range 50 {
+			if _, err := model.Invoke(t.Context(), input); err != nil {
 				t.Errorf("original invoke: %v", err)
 				return
 			}
 		}
 	}()
-	for i := 0; i < 50; i++ {
-		if _, err := bound.Invoke(context.Background(), input); err != nil {
+	for range 50 {
+		if _, err := bound.Invoke(t.Context(), input); err != nil {
 			t.Fatalf("bound invoke: %v", err)
 		}
 	}
@@ -523,7 +523,7 @@ func TestFakeChatModelBatch(t *testing.T) {
 	// the deterministic echo path rather than the shared response cursor.
 	model := NewFakeChatModel()
 
-	got, err := model.Batch(context.Background(), [][]messages.Message{
+	got, err := model.Batch(t.Context(), [][]messages.Message{
 		{messages.Human("a")},
 		{messages.Human("b")},
 		{messages.Human("c")},
@@ -547,7 +547,7 @@ func TestFakeChatModelBatchPropagatesErrors(t *testing.T) {
 	// Batch invokes concurrently, so use a stateless limiter to stay race-free.
 	model := NewFakeChatModel(WithRateLimiter(staticErrorLimiter{err: wantErr}))
 
-	_, err := model.Batch(context.Background(), [][]messages.Message{
+	_, err := model.Batch(t.Context(), [][]messages.Message{
 		{messages.Human("a")},
 		{messages.Human("b")},
 	})
@@ -595,20 +595,20 @@ func TestFakeChatModelModelProfileFromCapabilities(t *testing.T) {
 func TestFakeChatModelStreamFallsBackToInvoke(t *testing.T) {
 	model := NewFakeChatModel(WithResponses(messages.AI("streamed response")))
 
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hello")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	defer stream.Close()
 
-	chunk, ok, err := stream.Next(context.Background())
+	chunk, ok, err := stream.Next(t.Context())
 	if err != nil {
 		t.Fatalf("next: %v", err)
 	}
 	if !ok || chunk.Content != "streamed response" {
 		t.Fatalf("chunk: ok=%v content=%q", ok, chunk.Content)
 	}
-	if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+	if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 		t.Fatalf("expected exhausted stream, ok=%v err=%v", ok, err)
 	}
 }
@@ -620,7 +620,7 @@ func TestFakeChatModelStreamRateLimiterError(t *testing.T) {
 		WithStreamChunks(messages.AI("chunk")),
 	)
 
-	_, err := model.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	_, err := model.Stream(t.Context(), []messages.Message{messages.Human("hello")})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err=%v, want %v", err, wantErr)
 	}
@@ -628,7 +628,7 @@ func TestFakeChatModelStreamRateLimiterError(t *testing.T) {
 	// Without configured chunks, Stream delegates to Invoke, which must surface
 	// the same limiter error.
 	noChunks := NewFakeChatModel(WithRateLimiter(&recordingLimiter{err: wantErr}))
-	_, err = noChunks.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	_, err = noChunks.Stream(t.Context(), []messages.Message{messages.Human("hello")})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("fallback stream err=%v, want %v", err, wantErr)
 	}
@@ -639,7 +639,7 @@ func TestFakeChatModelInvokeCallbackError(t *testing.T) {
 
 	startModel := NewFakeChatModel(WithResponses(messages.AI("ok")))
 	_, err := startModel.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
 			kind: callbacks.EventChatModelStart,
@@ -655,7 +655,7 @@ func TestFakeChatModelInvokeCallbackError(t *testing.T) {
 	// End-event failure on the configured-response path.
 	endModel := NewFakeChatModel(WithResponses(messages.AI("ok")))
 	_, err = endModel.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(endHandler)),
 	)
@@ -666,7 +666,7 @@ func TestFakeChatModelInvokeCallbackError(t *testing.T) {
 	// End-event failure on the echo path (no configured responses).
 	echoModel := NewFakeChatModel()
 	_, err = echoModel.Invoke(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(endHandler)),
 	)
@@ -680,7 +680,7 @@ func TestFakeChatModelStreamStartCallbackError(t *testing.T) {
 	model := NewFakeChatModel(WithStreamChunks(messages.AI("chunk")))
 
 	_, err := model.Stream(
-		context.Background(),
+		t.Context(),
 		[]messages.Message{messages.Human("hello")},
 		runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
 			kind: callbacks.EventChatModelStart,
@@ -698,12 +698,12 @@ func TestCallbackStreamErrorPaths(t *testing.T) {
 	t.Run("inner stream error emits error event", func(t *testing.T) {
 		recorder := callbacks.NewRecorder()
 		stream := newCallbackStream(
-			context.Background(),
+			t.Context(),
 			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(recorder))),
 			errorMessageStream{err: wantErr},
 		)
 
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if !errors.Is(err, wantErr) || ok {
 			t.Fatalf("next: ok=%v err=%v", ok, err)
 		}
@@ -719,7 +719,7 @@ func TestCallbackStreamErrorPaths(t *testing.T) {
 
 	t.Run("end event failure propagates once", func(t *testing.T) {
 		stream := newCallbackStream(
-			context.Background(),
+			t.Context(),
 			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
 				kind: callbacks.EventChatModelEnd,
 				err:  wantErr,
@@ -727,19 +727,19 @@ func TestCallbackStreamErrorPaths(t *testing.T) {
 			runnables.NewSliceStream([]messages.Message{}),
 		)
 
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if !errors.Is(err, wantErr) || ok {
 			t.Fatalf("next: ok=%v err=%v", ok, err)
 		}
 		// The end event must only be emitted once; a second Next is a clean stop.
-		if _, ok, err := stream.Next(context.Background()); err != nil || ok {
+		if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 			t.Fatalf("second next: ok=%v err=%v", ok, err)
 		}
 	})
 
 	t.Run("stream event failure propagates", func(t *testing.T) {
 		stream := newCallbackStream(
-			context.Background(),
+			t.Context(),
 			runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(failOnKindHandler{
 				kind: callbacks.EventChatModelStream,
 				err:  wantErr,
@@ -747,7 +747,7 @@ func TestCallbackStreamErrorPaths(t *testing.T) {
 			runnables.NewSliceStream([]messages.Message{messages.AI("chunk")}),
 		)
 
-		_, ok, err := stream.Next(context.Background())
+		_, ok, err := stream.Next(t.Context())
 		if !errors.Is(err, wantErr) || ok {
 			t.Fatalf("next: ok=%v err=%v", ok, err)
 		}
@@ -758,7 +758,7 @@ func TestStreamEventsModelStreamError(t *testing.T) {
 	wantErr := errors.New("stream unavailable")
 	model := stubChatModel{streamErr: wantErr}
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if !errors.Is(err, wantErr) {
@@ -773,7 +773,7 @@ func TestStreamEventsStreamNextError(t *testing.T) {
 	wantErr := errors.New("chunk decode failed")
 	model := stubChatModel{nextErr: wantErr}
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if !errors.Is(err, wantErr) {
@@ -802,7 +802,7 @@ func TestStreamEventsFallbackContentBlocks(t *testing.T) {
 	}
 	model := NewFakeChatModel(WithStreamChunks(chunk))
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {
@@ -857,7 +857,7 @@ func TestStreamEventsFallbackToolCalls(t *testing.T) {
 	}}
 	model := NewFakeChatModel(WithStreamChunks(chunk))
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("search"),
 	})
 	if err != nil {
@@ -890,7 +890,7 @@ func TestStreamEventsFallbackToolCalls(t *testing.T) {
 func TestStreamEventsEmptyStream(t *testing.T) {
 	model := stubChatModel{}
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {
@@ -906,7 +906,7 @@ func TestStreamEventsEmptyStream(t *testing.T) {
 func TestStreamEventsIgnoresMalformedProtocolEvent(t *testing.T) {
 	model := badProtocolChatModel{chunks: []messages.Message{messages.AI("legacy")}}
 
-	stream, err := StreamEvents(context.Background(), model, []messages.Message{
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
 		messages.Human("hello"),
 	})
 	if err != nil {
@@ -1048,7 +1048,7 @@ func TestFakeChatModelStreamWithoutCallbacks(t *testing.T) {
 		messages.AI("llo"),
 	))
 
-	stream, err := model.Stream(context.Background(), []messages.Message{messages.Human("hello")})
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hello")})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -1056,7 +1056,7 @@ func TestFakeChatModelStreamWithoutCallbacks(t *testing.T) {
 
 	var text string
 	for {
-		chunk, ok, err := stream.Next(context.Background())
+		chunk, ok, err := stream.Next(t.Context())
 		if err != nil {
 			t.Fatalf("next: %v", err)
 		}

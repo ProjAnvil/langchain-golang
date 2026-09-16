@@ -1,13 +1,14 @@
 package indexing
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,7 +20,7 @@ import (
 )
 
 func TestSQLRecordManagerLifecycle(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	db := openTestSQLDB(t)
 	manager, err := NewSQLRecordManager("unit", db, WithSQLRecordNowQuery("SELECT NOW"))
 	if err != nil {
@@ -70,16 +71,16 @@ func TestSQLRecordManagerValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
-	if err := manager.Update(context.Background(), []string{"a"}, []string{"one", "two"}, time.Time{}); err == nil {
+	if err := manager.Update(t.Context(), []string{"a"}, []string{"one", "two"}, time.Time{}); err == nil {
 		t.Fatal("expected group length error")
 	}
-	if err := manager.Update(context.Background(), []string{"a"}, nil, time.Now().Add(time.Hour)); err == nil {
+	if err := manager.Update(t.Context(), []string{"a"}, nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("expected future time error")
 	}
 }
 
 func TestIndexDocumentsWithSQLRecordManagerFullCleanup(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	db := openTestSQLDB(t)
 	manager, err := NewSQLRecordManager("unit", db, WithSQLRecordNowQuery("SELECT NOW"))
 	if err != nil {
@@ -315,7 +316,7 @@ func (c *testSQLConn) QueryContext(_ context.Context, query string, args []drive
 			if strings.Contains(upper, " LIMIT ") {
 				groupCount--
 			}
-			for i := 0; i < groupCount; i++ {
+			for range groupCount {
 				groups[argString(args[argIndex].Value)] = true
 				argIndex++
 			}
@@ -337,7 +338,7 @@ func (c *testSQLConn) QueryContext(_ context.Context, query string, args []drive
 			}
 			records = append(records, record)
 		}
-		sort.Slice(records, func(i, j int) bool { return records[i].key < records[j].key })
+		slices.SortFunc(records, func(a, b testSQLRecord) int { return cmp.Compare(a.key, b.key) })
 		if limit > 0 && len(records) > limit {
 			records = records[:limit]
 		}
@@ -409,7 +410,7 @@ func mustSQLManager(t *testing.T, db *sql.DB) *SQLRecordManager {
 }
 
 func TestSQLRecordManagerGetTimeValueTypes(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	refTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
 	tests := []struct {
@@ -502,13 +503,13 @@ func TestSQLRecordManagerGetTimeQueryError(t *testing.T) {
 	})
 	manager := mustSQLManager(t, db)
 
-	if _, err := manager.GetTime(context.Background()); !errors.Is(err, errTest) {
+	if _, err := manager.GetTime(t.Context()); !errors.Is(err, errTest) {
 		t.Fatalf("expected query error, got %v", err)
 	}
 }
 
 func TestSQLRecordManagerUpdateErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("get time", func(t *testing.T) {
 		db := openTestSQLDB(t)
@@ -557,7 +558,7 @@ func TestSQLRecordManagerUpdateErrors(t *testing.T) {
 }
 
 func TestSQLRecordManagerExistsErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("query", func(t *testing.T) {
 		db := openTestSQLDB(t)
@@ -600,7 +601,7 @@ func TestSQLRecordManagerExistsErrors(t *testing.T) {
 }
 
 func TestSQLRecordManagerDeleteKeysErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("empty keys", func(t *testing.T) {
 		db := openTestSQLDB(t)
@@ -621,7 +622,7 @@ func TestSQLRecordManagerDeleteKeysErrors(t *testing.T) {
 }
 
 func TestSQLRecordManagerListKeysErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("query", func(t *testing.T) {
 		db := openTestSQLDB(t)
@@ -680,7 +681,7 @@ func TestSQLRecordManagerCreateSchemaError(t *testing.T) {
 	db := openTestSQLDB(t)
 	testSQLMutateState(db, func(state *testSQLState) { state.execErrOn = "CREATE TABLE" })
 	manager := mustSQLManager(t, db)
-	if err := manager.CreateSchema(context.Background()); err == nil {
+	if err := manager.CreateSchema(t.Context()); err == nil {
 		t.Fatal("expected exec error")
 	}
 }

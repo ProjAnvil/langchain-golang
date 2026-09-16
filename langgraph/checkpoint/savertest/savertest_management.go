@@ -20,7 +20,7 @@ func putChain(t *testing.T, s checkpoint.Saver, tid, ns string, n int, runIDs []
 	ctx := context.Background()
 	out := make([]checkpoint.Config, 0, n)
 	var cfg checkpoint.Config
-	for i := 0; i < n; i++ {
+	for i := range n {
 		md := checkpoint.Metadata{Source: "loop", Step: i}
 		if len(runIDs) == n {
 			md.RunID = runIDs[i]

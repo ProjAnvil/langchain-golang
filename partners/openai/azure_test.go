@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +29,7 @@ func TestAzureChatModelInvoke(t *testing.T) {
 		modelconfig.WithModel("gpt-test"),
 	)
 
-	resp, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")})
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -57,7 +56,7 @@ func TestAzureChatModelUsesAPIKeyHeader(t *testing.T) {
 	defer server.Close()
 
 	model := NewAzureChatModel(server.URL, "dep", "2024-01-01", "secret")
-	if _, err := model.Invoke(context.Background(), []messages.Message{messages.Human("hi")}); err != nil {
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if gotAPIKey != "secret" {

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 
@@ -168,10 +169,7 @@ func imageSourceURL(b messages.ImageBlock) (string, error) {
 // imageDataURL builds a "data:<mime>;base64,<data>" URI, defaulting the media
 // type to image/jpeg when the block does not carry one.
 func imageDataURL(b messages.ImageBlock) string {
-	mime := b.MimeType
-	if mime == "" {
-		mime = "image/jpeg"
-	}
+	mime := cmp.Or(b.MimeType, "image/jpeg")
 	return "data:" + mime + ";base64," + b.Base64
 }
 

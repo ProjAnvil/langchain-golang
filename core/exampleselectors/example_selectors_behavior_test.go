@@ -77,10 +77,10 @@ func TestNewLengthBasedDefaults(t *testing.T) {
 	}
 
 	// The default formatter must be usable through the selector.
-	if err := selector.AddExample(context.Background(), Example{"b": 2, "a": 1}); err != nil {
+	if err := selector.AddExample(t.Context(), Example{"b": 2, "a": 1}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := selector.SelectExamples(context.Background(), nil)
+	got, err := selector.SelectExamples(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestLengthBasedSelectorAddExample(t *testing.T) {
 	}
 
 	t.Run("cancelled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		if err := selector.AddExample(ctx, Example{"a": 1}); err == nil {
 			t.Fatal("expected error for cancelled context")
@@ -116,7 +116,7 @@ func TestLengthBasedSelectorAddExample(t *testing.T) {
 	t.Run("formatter error propagates", func(t *testing.T) {
 		wantErr := errors.New("boom")
 		selector.Formatter = func(Example) (string, error) { return "", wantErr }
-		if err := selector.AddExample(context.Background(), Example{"a": 1}); !errors.Is(err, wantErr) {
+		if err := selector.AddExample(t.Context(), Example{"a": 1}); !errors.Is(err, wantErr) {
 			t.Fatalf("err = %v, want %v", err, wantErr)
 		}
 		selector.Formatter = KeyValueFormatter
@@ -124,7 +124,7 @@ func TestLengthBasedSelectorAddExample(t *testing.T) {
 
 	t.Run("stored example is cloned", func(t *testing.T) {
 		example := Example{"input": "happy"}
-		if err := selector.AddExample(context.Background(), example); err != nil {
+		if err := selector.AddExample(t.Context(), example); err != nil {
 			t.Fatal(err)
 		}
 		example["input"] = "mutated"
@@ -134,7 +134,7 @@ func TestLengthBasedSelectorAddExample(t *testing.T) {
 	})
 
 	t.Run("nil example is stored as nil", func(t *testing.T) {
-		if err := selector.AddExample(context.Background(), nil); err != nil {
+		if err := selector.AddExample(t.Context(), nil); err != nil {
 			t.Fatal(err)
 		}
 		if selector.Examples[len(selector.Examples)-1] != nil {
@@ -144,7 +144,7 @@ func TestLengthBasedSelectorAddExample(t *testing.T) {
 
 	t.Run("nil length falls back to default", func(t *testing.T) {
 		selector.Length = nil
-		if err := selector.AddExample(context.Background(), Example{"input": "x y"}); err != nil {
+		if err := selector.AddExample(t.Context(), Example{"input": "x y"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -158,8 +158,8 @@ func TestLengthBasedSelectorSelectExamples(t *testing.T) {
 		t.Helper()
 		selector, err := NewLengthBased([]Example{
 			{"input": "happy", "output": "sad"},  // length 2
-			{"input": "tall", "output": "short"},  // length 2
-			{"input": "fast", "output": "slow"},   // length 2
+			{"input": "tall", "output": "short"}, // length 2
+			{"input": "fast", "output": "slow"},  // length 2
 		}, formatter, maxLength)
 		if err != nil {
 			t.Fatal(err)
@@ -169,7 +169,7 @@ func TestLengthBasedSelectorSelectExamples(t *testing.T) {
 
 	t.Run("cancelled context", func(t *testing.T) {
 		selector := newSelector(t, 10)
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		if _, err := selector.SelectExamples(ctx, nil); err == nil {
 			t.Fatal("expected error for cancelled context")
@@ -178,7 +178,7 @@ func TestLengthBasedSelectorSelectExamples(t *testing.T) {
 
 	t.Run("input consumes entire budget", func(t *testing.T) {
 		selector := newSelector(t, 3)
-		got, err := selector.SelectExamples(context.Background(), map[string]string{"input": "a b c"})
+		got, err := selector.SelectExamples(t.Context(), map[string]string{"input": "a b c"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +189,7 @@ func TestLengthBasedSelectorSelectExamples(t *testing.T) {
 
 	t.Run("stops at first example that does not fit", func(t *testing.T) {
 		selector := newSelector(t, 3) // budget 3 fits one example of length 2, not two
-		got, err := selector.SelectExamples(context.Background(), nil)
+		got, err := selector.SelectExamples(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -203,7 +203,7 @@ func TestLengthBasedSelectorSelectExamples(t *testing.T) {
 
 	t.Run("all examples fit", func(t *testing.T) {
 		selector := newSelector(t, 100)
-		got, err := selector.SelectExamples(context.Background(), map[string]string{"input": "x"})
+		got, err := selector.SelectExamples(t.Context(), map[string]string{"input": "x"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -216,7 +216,7 @@ func TestLengthBasedSelectorSelectExamples(t *testing.T) {
 		// maxLength 2 minus length 1 for the (empty) joined input leaves
 		// budget 1, so no example of length 2 fits.
 		selector := newSelector(t, 2)
-		got, err := selector.SelectExamples(context.Background(), nil)
+		got, err := selector.SelectExamples(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +228,7 @@ func TestLengthBasedSelectorSelectExamples(t *testing.T) {
 	t.Run("nil length falls back to default", func(t *testing.T) {
 		selector := newSelector(t, 100)
 		selector.Length = nil
-		got, err := selector.SelectExamples(context.Background(), nil)
+		got, err := selector.SelectExamples(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -282,7 +282,7 @@ func (f *fakeVectorStore) SimilaritySearchWithScore(_ context.Context, _ string,
 func TestSemanticSimilaritySelectorAddExample(t *testing.T) {
 	t.Run("nil store", func(t *testing.T) {
 		selector := SemanticSimilaritySelector{}
-		if err := selector.AddExample(context.Background(), Example{"a": 1}); err == nil {
+		if err := selector.AddExample(t.Context(), Example{"a": 1}); err == nil {
 			t.Fatal("expected error for nil store")
 		}
 	})
@@ -293,7 +293,7 @@ func TestSemanticSimilaritySelectorAddExample(t *testing.T) {
 			Store:     &fakeVectorStore{},
 			Formatter: func(Example) (string, error) { return "", wantErr },
 		}
-		if err := selector.AddExample(context.Background(), Example{"a": 1}); !errors.Is(err, wantErr) {
+		if err := selector.AddExample(t.Context(), Example{"a": 1}); !errors.Is(err, wantErr) {
 			t.Fatalf("err = %v, want %v", err, wantErr)
 		}
 	})
@@ -301,7 +301,7 @@ func TestSemanticSimilaritySelectorAddExample(t *testing.T) {
 	t.Run("store error propagates", func(t *testing.T) {
 		wantErr := errors.New("store failed")
 		selector := SemanticSimilaritySelector{Store: &fakeVectorStore{addErr: wantErr}}
-		if err := selector.AddExample(context.Background(), Example{"a": 1}); !errors.Is(err, wantErr) {
+		if err := selector.AddExample(t.Context(), Example{"a": 1}); !errors.Is(err, wantErr) {
 			t.Fatalf("err = %v, want %v", err, wantErr)
 		}
 	})
@@ -310,7 +310,7 @@ func TestSemanticSimilaritySelectorAddExample(t *testing.T) {
 		store := &fakeVectorStore{}
 		selector := SemanticSimilaritySelector{Store: store}
 		example := Example{"input": "happy", "output": "sad"}
-		if err := selector.AddExample(context.Background(), example); err != nil {
+		if err := selector.AddExample(t.Context(), example); err != nil {
 			t.Fatal(err)
 		}
 		if len(store.added) != 1 {
@@ -334,7 +334,7 @@ func TestSemanticSimilaritySelectorAddExample(t *testing.T) {
 func TestSemanticSimilaritySelectorSelectExamples(t *testing.T) {
 	t.Run("nil store", func(t *testing.T) {
 		selector := SemanticSimilaritySelector{}
-		if _, err := selector.SelectExamples(context.Background(), nil); err == nil {
+		if _, err := selector.SelectExamples(t.Context(), nil); err == nil {
 			t.Fatal("expected error for nil store")
 		}
 	})
@@ -342,7 +342,7 @@ func TestSemanticSimilaritySelectorSelectExamples(t *testing.T) {
 	t.Run("store error propagates", func(t *testing.T) {
 		wantErr := errors.New("search failed")
 		selector := SemanticSimilaritySelector{Store: &fakeVectorStore{searchErr: wantErr}}
-		if _, err := selector.SelectExamples(context.Background(), nil); !errors.Is(err, wantErr) {
+		if _, err := selector.SelectExamples(t.Context(), nil); !errors.Is(err, wantErr) {
 			t.Fatalf("err = %v, want %v", err, wantErr)
 		}
 	})
@@ -350,7 +350,7 @@ func TestSemanticSimilaritySelectorSelectExamples(t *testing.T) {
 	t.Run("defaults k to 4 and joins input values", func(t *testing.T) {
 		store := &fakeVectorStore{}
 		selector := SemanticSimilaritySelector{Store: store}
-		if _, err := selector.SelectExamples(context.Background(), map[string]string{"input": "happy"}); err != nil {
+		if _, err := selector.SelectExamples(t.Context(), map[string]string{"input": "happy"}); err != nil {
 			t.Fatal(err)
 		}
 		if store.lastK != 4 {
@@ -364,7 +364,7 @@ func TestSemanticSimilaritySelectorSelectExamples(t *testing.T) {
 	t.Run("explicit k is used", func(t *testing.T) {
 		store := &fakeVectorStore{}
 		selector := SemanticSimilaritySelector{Store: store, K: 2}
-		if _, err := selector.SelectExamples(context.Background(), nil); err != nil {
+		if _, err := selector.SelectExamples(t.Context(), nil); err != nil {
 			t.Fatal(err)
 		}
 		if store.lastK != 2 {
@@ -380,7 +380,7 @@ func TestSemanticSimilaritySelectorSelectExamples(t *testing.T) {
 			{Metadata: map[string]any{}},
 		}}
 		selector := SemanticSimilaritySelector{Store: store}
-		got, err := selector.SelectExamples(context.Background(), nil)
+		got, err := selector.SelectExamples(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -389,7 +389,7 @@ func TestSemanticSimilaritySelectorSelectExamples(t *testing.T) {
 			t.Fatalf("examples = %v, want %v", got, want)
 		}
 		got[0]["input"] = "mutated"
-		again, err := selector.SelectExamples(context.Background(), nil)
+		again, err := selector.SelectExamples(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -401,7 +401,7 @@ func TestSemanticSimilaritySelectorSelectExamples(t *testing.T) {
 	t.Run("empty result set", func(t *testing.T) {
 		store := &fakeVectorStore{}
 		selector := SemanticSimilaritySelector{Store: store}
-		got, err := selector.SelectExamples(context.Background(), map[string]string{"input": "x"})
+		got, err := selector.SelectExamples(t.Context(), map[string]string{"input": "x"})
 		if err != nil {
 			t.Fatal(err)
 		}

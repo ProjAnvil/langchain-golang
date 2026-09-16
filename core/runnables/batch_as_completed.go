@@ -63,7 +63,7 @@ func BatchAsCompleted[I any, O any](
 		// by limit, not by batch size, mirroring ParallelMap.
 		var wg sync.WaitGroup
 		wg.Add(limit)
-		for w := 0; w < limit; w++ {
+		for range limit {
 			go func() {
 				defer wg.Done()
 				for i := range indexes {

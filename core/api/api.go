@@ -81,7 +81,7 @@ func Deprecated(deprecation Deprecation) Metadata {
 
 // IsInternalPath reports whether a LangChain import path is internal/private.
 func IsInternalPath(path string) bool {
-	for _, part := range strings.Split(path, "/") {
+	for part := range strings.SplitSeq(path, "/") {
 		if strings.HasPrefix(part, "_") && part != "_" {
 			return true
 		}
