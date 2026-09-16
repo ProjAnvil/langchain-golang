@@ -1,0 +1,75 @@
+# Bilingual documentation site (English by default, 简体中文 in a zh-CN nav
+# section). Content lives in docs/mkdocs; docs/usage keeps the original
+# GitHub-browsable copies of the five foundational guides.
+#
+# Local preview:  pip3 install --user -r requirements-docs.txt && python3 -m mkdocs serve
+# CI:             .github/workflows/docs.yml (build --strict + GitHub Pages)
+
+site_name: langchain-golang
+site_description: >-
+  A community Go port of LangChain and LangGraph — production-grade LLM agents
+  and applications in pure Go. Bilingual documentation (English + 简体中文).
+site_url: https://projanvil.github.io/langchain-golang/
+repo_url: https://github.com/ProjAnvil/langchain-golang
+repo_name: ProjAnvil/langchain-golang
+edit_uri: ""
+
+docs_dir: docs/mkdocs
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: info
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Runnable Composition (LCEL): composition.md
+  - Agents — CreateAgent: agents.md
+  - Streaming: streaming.md
+  - Graph Runtime: langgraph.md
+  - RAG Stack: rag-stack.md
+  - MCP Tools: mcp.md
+  - Google Gemini: gemini.md
+  - SQL Toolkit: sql-toolkit.md
+  - Fault Tolerance & Trace Privacy: fault-tolerance.md
+  - Document Loaders: loaders.md
+  - 简体中文:
+      - 首页: zh-CN/index.md
+      - 入门指南: zh-CN/getting-started.zh-CN.md
+      - Runnable 组合（LCEL）: zh-CN/composition.zh-CN.md
+      - 智能体 — CreateAgent: zh-CN/agents.zh-CN.md
+      - 流式输出: zh-CN/streaming.zh-CN.md
+      - 图运行时: zh-CN/langgraph.zh-CN.md
+      - RAG 栈: zh-CN/rag-stack.zh-CN.md
+      - MCP 工具: zh-CN/mcp.zh-CN.md
+      - Google Gemini: zh-CN/gemini.zh-CN.md
+      - SQL 工具箱: zh-CN/sql-toolkit.zh-CN.md
+      - 容错与追踪隐私: zh-CN/fault-tolerance.zh-CN.md
+      - 文档加载器: zh-CN/loaders.zh-CN.md

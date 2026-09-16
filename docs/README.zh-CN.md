@@ -19,12 +19,25 @@
 | [Agents —— `CreateAgent`](usage/agents.md) | system prompt、工具、middleware、结构化输出、interrupt、state/context schema |
 | [图运行时（langgraph/）](usage/langgraph.md) | StateGraph、checkpoint、Stream 模式、saver、join edge、函数式 API |
 | [流式输出](usage/streaming.md) | `Agent.StreamEvents`：逐 token 的模型增量 + 工具/节点生命周期事件 |
+| [RAG 栈](mkdocs/zh-CN/rag-stack.zh-CN.md) | 过滤 DSL、pgvector、Redis 向量存储、重排器、高级检索器 |
+| [MCP 工具](mkdocs/zh-CN/mcp.zh-CN.md) | 将 MCP 服务器接入 agent 工具、elicitation、HITL 门控 |
+| [Google Gemini](mkdocs/zh-CN/gemini.zh-CN.md) | 基于官方 genai SDK 的原生 Gemini 聊天模型 |
+| [SQL 工具箱](mkdocs/zh-CN/sql-toolkit.zh-CN.md) | 基于 `database/sql` 的只读 SQL agent 工具箱 |
+| [容错与追踪隐私](mkdocs/zh-CN/fault-tolerance.zh-CN.md) | 重试策略、节点错误处理器、TracePolicy 脱敏 |
+| [文档加载器](mkdocs/zh-CN/loaders.zh-CN.md) | HTML、Web、PDF 三件套加载器 |
+
+## 文档站
+
+同一批指南（外加双语首页）由 [`mkdocs/`](mkdocs/) 构建成 mkdocs-material
+站点——见仓库根目录的 [`mkdocs.yml`](../mkdocs.yml)。本地预览：
+`pip3 install --user -r requirements-docs.txt && python3 -m mkdocs serve`。
 
 ## 双语约定
 
 本仓库的文档为中英双语（英文 + 简体中文）：
 
-1. 英文文件为主文件；中文译文以同目录 `<name>.zh-CN.md` 姊妹文件的形式存放。
+1. 英文文件为主文件；中文译文以同目录 `<name>.zh-CN.md` 姊妹文件的形式存放
+   （`mkdocs/` 站点内容例外——其 zh-CN 版本位于 `mkdocs/zh-CN/` 子目录）。
 2. 两份文件顶部（标题行之下空一行后）互放语言切换行
    （`English | 简体中文`）。
 3. 新增或修改的文档内容必须在同一次变更中双语同步落笔——不接受先落英文版、

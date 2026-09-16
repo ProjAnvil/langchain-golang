@@ -19,13 +19,28 @@ supported features, scope, and known gaps, see the top-level
 | [Agents — `CreateAgent`](usage/agents.md) | System prompts, tools, middleware, structured output, interrupts, state/context schema |
 | [Graph runtime (langgraph/)](usage/langgraph.md) | StateGraph, checkpoints, Stream modes, savers, join edges, functional API |
 | [Streaming](usage/streaming.md) | `Agent.StreamEvents`: per-token model deltas + tool/node lifecycle events |
+| [RAG stack](mkdocs/rag-stack.md) | Filter DSL, pgvector, Redis vector store, rerankers, advanced retrievers |
+| [MCP tools](mkdocs/mcp.md) | MCP servers as agent tools, elicitation, HITL gating |
+| [Google Gemini](mkdocs/gemini.md) | Native Gemini chat model via the official genai SDK |
+| [SQL toolkit](mkdocs/sql-toolkit.md) | Read-only SQL agent toolkit over `database/sql` |
+| [Fault tolerance & trace privacy](mkdocs/fault-tolerance.md) | Retry policies, node error handlers, TracePolicy scrubbing |
+| [Document loaders](mkdocs/loaders.md) | HTML, web, and PDF loaders |
+
+## Documentation site
+
+The same guides (plus bilingual home pages) are built into an mkdocs-material
+site from [`mkdocs/`](mkdocs/) — see [`mkdocs.yml`](../mkdocs.yml) at the
+repository root. Preview locally with
+`pip3 install --user -r requirements-docs.txt && python3 -m mkdocs serve`.
 
 ## Bilingual convention
 
 Documentation in this repository is bilingual (English + Simplified Chinese):
 
 1. The English file is the primary document; the Chinese translation lives as a
-   sibling file named `<name>.zh-CN.md` in the same directory.
+   sibling file named `<name>.zh-CN.md` in the same directory (site content
+   under `mkdocs/` keeps its zh-CN versions in the `mkdocs/zh-CN/`
+   subdirectory).
 2. Both files carry a language-switch line (`English | 简体中文`) at the top,
    one blank line below the title, linking to each other.
 3. New or changed documentation must be written in both languages in the same

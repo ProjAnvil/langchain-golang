@@ -1,0 +1,3 @@
+# Documentation-site toolchain, pinned for reproducible builds
+# (.github/workflows/docs.yml and local `mkdocs serve`).
+mkdocs-material==9.7.7

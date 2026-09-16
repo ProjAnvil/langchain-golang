@@ -34,3 +34,6 @@ Thumbs.db
 
 # Profiles CLI binary (built at repo root by some go build invocations)
 /langchain-profiles
+
+# mkdocs site output (docs.yml builds it in CI)
+/site/

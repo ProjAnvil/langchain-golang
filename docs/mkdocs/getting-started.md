@@ -1,0 +1,171 @@
+# Getting started
+
+**Languages:** English | [简体中文](zh-CN/getting-started.zh-CN.md)
+
+This guide takes you from `go get` to a running agent in a few minutes. It
+mirrors the README's Quick start section but explains each piece.
+
+## Install
+
+```bash
+go get github.com/projanvil/langchain-golang@latest
+```
+
+Requires Go 1.26+ (v0.6.1 and earlier: Go 1.23+).
+
+## Your first agent
+
+An agent in LangChain is a **model ↔ tools loop**: the model decides what to
+say or which tool to call, the tool runs, the result goes back to the model,
+and the loop repeats until the model produces a final answer with no tool
+calls. `agents.CreateAgent` builds that loop.
+
+This example uses the in-tree `language.FakeChatModel` so it runs offline with
+no API key:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/projanvil/langchain-golang/core/language"
+	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/langchain/agents"
+)
+
+func main() {
+	model := language.NewFakeChatModel(
+		language.WithResponses(messages.AI("It's sunny in Shanghai.")),
+	)
+
+	agent, err := agents.CreateAgent(model, nil,
+		agents.WithAgentSystemPrompt("You are a helpful assistant."),
+		agents.WithAgentName("weather-agent"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	reply, err := agent.Invoke(context.Background(), []messages.Message{
+		messages.User("What's the weather?"),
+	})
+	if err != nil {
+		panic(err)
+	}
+	// reply is the full message history; the last entry is the assistant answer.
+	fmt.Println(reply[len(reply)-1].Content)
+	// Output: It's sunny in Shanghai.
+}
+```
+
+### What just happened
+
+- `CreateAgent(model, tools, opts...)` returns an `*Agent` whose `.Graph` is a
+  compiled model↔tools loop. `model` is any `language.ChatModel`; `tools` is a
+  slice of `core/tools.Tool` (here `nil`, so the model just answers).
+- `agent.Invoke(ctx, messages)` runs the loop to completion and returns the
+  final message history.
+- `WithAgentSystemPrompt` and `WithAgentName` are functional options — there are
+  ~15 of them covering middleware, structured output, persistence, recursion
+  limits, and more (see the [agents guide](agents.md)).
+
+## Using a real model
+
+For production, swap the `FakeChatModel` for a partner `ChatModel`. You have
+two ways to supply it:
+
+### 1. Construct it positionally
+
+```go
+import (
+	"context"
+
+	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/langchain/agents"
+	"github.com/projanvil/langchain-golang/partners/openai"
+)
+
+func realAgent() {
+	model := openai.NewChatModel(/* model="gpt-4o", settings... */)
+
+	agent, _ := agents.CreateAgent(model, nil,
+		agents.WithAgentSystemPrompt("You are a helpful assistant."),
+	)
+	// ... agent.Invoke(...)
+}
+```
+
+`partners/openai` self-registers into the `chatmodels` provider registry when
+imported (its `init()` runs the registration), so once imported the bare-string
+form below also works for `"openai:..."`.
+
+### 2. Resolve from a `"provider:model"` string
+
+```go
+import (
+	_ "github.com/projanvil/langchain-golang/partners/openai" // register the "openai" factory
+	"github.com/projanvil/langchain-golang/langchain/agents"
+)
+
+func stringAgent() {
+	// model is nil positionally; WithAgentModel resolves "openai:gpt-4o".
+	agent, _ := agents.CreateAgent(nil, nil,
+		agents.WithAgentModel("openai:gpt-4o"),
+		agents.WithAgentSystemPrompt("You are a helpful assistant."),
+	)
+	_ = agent
+}
+```
+
+### Environment variables
+
+Each partner reads its credentials from the environment:
+
+| Partner | Env vars |
+|---------|----------|
+| `partners/openai` | `OPENAI_API_KEY`, `OPENAI_BASE_URL` |
+| `partners/anthropic` | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` (or `ANTHROPIC_API_URL`) |
+| `partners/ollama` | `OLLAMA_HOST` (default `http://localhost:11434`) |
+
+> All three partners self-register an auto-resolving factory on import, so
+> `WithAgentModel("anthropic:...")` and `WithAgentModel("ollama:...")` resolve
+> end-to-end the same way as `"openai:..."` once the package is imported.
+
+### More OpenAI-compatible providers
+
+`partners/openaicompat` registers seven additional chat providers — `groq`,
+`mistralai`, `deepseek`, `xai`, `openrouter`, `fireworks`, `perplexity` — as
+thin factories over `partners/openai` on the Chat Completions API, each with
+its SDK-default base URL, default model, and env-derived credentials. One
+blank import activates all seven names for the `"provider:model"` form:
+
+```go
+import _ "github.com/projanvil/langchain-golang/partners/openaicompat"
+
+agent, _ := agents.CreateAgent(nil, nil,
+	agents.WithAgentModel("deepseek:deepseek-chat"),
+	agents.WithAgentSystemPrompt("You are a helpful assistant."),
+)
+```
+
+| Provider | API key env | Base URL override | Default model |
+|----------|-------------|-------------------|---------------|
+| `groq` | `GROQ_API_KEY` | `GROQ_API_BASE` | `openai/gpt-oss-20b` |
+| `mistralai` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `mistral-small` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_API_BASE` | `deepseek-chat` |
+| `xai` | `XAI_API_KEY` | `XAI_API_BASE` | `grok-4` |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_API_BASE` | `openrouter/auto` |
+| `fireworks` | `FIREWORKS_API_KEY` | `FIREWORKS_API_BASE` | `accounts/fireworks/models/llama-v3p1-8b-instruct` |
+| `perplexity` | `PPLX_API_KEY` | — | `sonar` |
+
+## Where to go next
+
+- [Composing runnables (LCEL)](composition.md) — chain prompts, models, and
+  parsers with `Pipe` / `Pipe3-6`, the Go equivalent of Python's `|`.
+- [Agents — `CreateAgent`](agents.md) — tools, middleware, structured output,
+  interrupts, and streaming.
+- [Graph runtime (langgraph/)](langgraph.md) — checkpoints, stream modes,
+  savers, join edges, functional API.
+- [Streaming](streaming.md) — per-token model deltas via `StreamEvents`.
