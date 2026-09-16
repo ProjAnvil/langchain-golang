@@ -19,7 +19,7 @@
 - commit 用 conventional 前缀（feat/fix/docs/chore/test，见 git log 既有风格）
 - 实施时启用 modern-go skill（用户指定）
 - push、打 tag、gh release 是外发动作：执行前须用户确认
-- 版本事实：v0.7.0 tag 已存在；HEAD 的嵌套 go.mod 已 pin 未发布的 v0.7.1（29cacb1）；v0.7.1 未发则嵌套模块无法解析依赖（见 Task 1）
+- 版本事实：v0.7.0 tag 已存在；HEAD 的嵌套 go.mod 已 pin 未发布的 v0.7.1（29cacb1）。嵌套模块带 replace 指令（`=> ../../../`），本地/CI 构建永远用本地 root，**不依赖** v0.7.1 是否发布；发 v0.7.1 是为了让后续嵌套 tag（v0.3.2+）对下游消费者可解析（见 Task 1）
 
 ---
 
@@ -27,17 +27,17 @@
 
 **Files:** 无代码变更（git tag + gh release）
 
-**Interfaces:** 无。产出 v0.7.1 tag 与 release，使 `langgraph/checkpoint/*/go.mod` 中 `langchain-golang v0.7.1` 引用可解析（否则 Task 5 的 `make test-sqlite/redis` 会因依赖 404 失败）。
+**Interfaces:** 无。产出 v0.7.1 tag 与 release，使后续嵌套模块 tag（v0.3.2+，其 go.mod pin v0.7.1）对下游消费者可解析。嵌套模块自身带 replace 指令（`=> ../../../`），本地与 CI 构建不受 v0.7.1 是否发布影响。
 
-- [ ] **Step 1: 验证嵌套模块当前确实被 v0.7.1 pin 卡住**
+- [ ] **Step 1: 信息性检查（确认 pin 与 replace 现状）**
 
 Run: `cd langgraph/checkpoint/redis && go list -m github.com/projanvil/langchain-golang`
-Expected: 报错（v0.7.1 not found）——若能解析（如本地 module cache 已有），仍按本任务走，保持发版节奏
+Expected: 输出 `v0.7.1 => ../../../`（replace 生效；不报错）
 
 - [ ] **Step 2: 确认 v0.7.1 内容**
 
 Run: `git log v0.7.0..29cacb1 --oneline`
-Expected: 3a24fdf（Go 1.26 现代化）、91b4ac9（anthropic 流式 usage 修复，实际在 v0.7.0 内则此处只有 2 条）、2f4dbd9/29cacb1（pin commits）。以实际输出为准写 release notes
+Expected: 恰 2 条——3a24fdf（Go 1.26 现代化）、29cacb1（嵌套 pin v0.7.1）
 
 - [ ] **Step 3: 打 tag（在 29cacb1 上，不含其后的 spec 文档提交）**
 
@@ -103,7 +103,7 @@ import (
 // field, a set value serializes on both the Responses and Chat Completions
 // paths.
 
-func parallelToolCallsModel(t *testing.T, baseURL string, chatCompletions bool, parallel *bool) ChatModel {
+func parallelToolCallsModel(t *testing.T, baseURL string, chatCompletions bool, choice language.ToolChoice, parallel *bool) ChatModel {
 	t.Helper()
 	tool, err := coretools.FromFunc("GenerateUsername", "Get a username.", func(ctx context.Context, args struct{ Name string }) (coretools.Result, error) {
 		return coretools.Result{Content: args.Name}, nil
@@ -118,7 +118,7 @@ func parallelToolCallsModel(t *testing.T, baseURL string, chatCompletions bool, 
 	if chatCompletions {
 		model = model.WithChatCompletions()
 	}
-	bound, err := model.BindToolsWithOptions([]coretools.Tool{tool}, language.BindToolsOptions{ParallelToolCalls: parallel})
+	bound, err := model.BindToolsWithOptions([]coretools.Tool{tool}, language.BindToolsOptions{ToolChoice: choice, ParallelToolCalls: parallel})
 	if err != nil {
 		t.Fatalf("BindToolsWithOptions: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestParallelToolCallsSerializedBothAPIs(t *testing.T) {
 			t.Run(tc.name+"/"+fmt.Sprint(want), func(t *testing.T) {
 				server, got := toolChoiceServer(t, tc.body)
 				value := want
-				model := parallelToolCallsModel(t, server.URL, tc.chatCompletions, &value)
+				model := parallelToolCallsModel(t, server.URL, tc.chatCompletions, "", &value)
 				if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 					t.Fatalf("Invoke: %v", err)
 				}
@@ -161,12 +161,40 @@ func TestParallelToolCallsOmittedWhenNil(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, got := toolChoiceServer(t, tc.body)
-			model := parallelToolCallsModel(t, server.URL, tc.chatCompletions, nil)
+			model := parallelToolCallsModel(t, server.URL, tc.chatCompletions, "", nil)
 			if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
 				t.Fatalf("Invoke: %v", err)
 			}
 			if _, present := (*got)["parallel_tool_calls"]; present {
 				t.Fatalf("parallel_tool_calls must be omitted when nil, got %v", (*got)["parallel_tool_calls"])
+			}
+		})
+	}
+}
+
+func TestParallelToolCallsCombinedWithToolChoice(t *testing.T) {
+	// spec §5.2 combination matrix: tool_choice and parallel_tool_calls must
+	// coexist in one payload on both API paths ("any" flattens to "required").
+	for _, tc := range []struct {
+		name            string
+		chatCompletions bool
+		body            string
+	}{
+		{"responses", false, toolChoiceResponsesBody},
+		{"chat completions", true, toolChoiceChatBody},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, got := toolChoiceServer(t, tc.body)
+			no := false
+			model := parallelToolCallsModel(t, server.URL, tc.chatCompletions, language.ToolChoiceAny, &no)
+			if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("hi")}); err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			if (*got)["tool_choice"] != "required" {
+				t.Fatalf("tool_choice = %v, want required (any→required)", (*got)["tool_choice"])
+			}
+			if (*got)["parallel_tool_calls"] != false {
+				t.Fatalf("parallel_tool_calls = %v, want false", (*got)["parallel_tool_calls"])
 			}
 		})
 	}
@@ -428,6 +456,7 @@ git commit -m "feat(anthropic): synthesize tool_choice.disable_parallel_tool_use
 package openaicompat
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -489,8 +518,6 @@ func TestCompatInheritsParallelToolCalls(t *testing.T) {
 }
 ```
 
-（注意补 `context` import。）
-
 - [ ] **Step 2: 运行**
 
 Run: `go test ./partners/openaicompat/ -run TestCompatInheritsParallelToolCalls -v`
@@ -513,7 +540,7 @@ git commit -m "test(openaicompat): prove ParallelToolCalls inherits via the open
 
 **Interfaces:** 无代码接口。产出 CI 门禁：root 测试 + 嵌套三模块 + lint，PR 与 main push 触发。
 
-- [ ] **Step 1: 写 `.golangci.yml`（v2 配置，保守默认集）**
+- [ ] **Step 1: 写 `.golangci.yml`（v2 配置；staticcheck 排除 QF quickfix 类——存量 46 条 QF 风格项不进门禁，其余存量告警在 Step 4 清账）**
 
 ```yaml
 version: "2"
@@ -523,6 +550,9 @@ linters:
     - copyloopvar
     - misspell
     - unconvert
+  settings:
+    staticcheck:
+      checks: ["all", "-QF*"]
   exclusions:
     rules:
       - path: _test\.go
@@ -582,26 +612,35 @@ jobs:
           go-version: '1.26.x'
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.1.6 # pinned; check golangci-lint.run for the current v2 patch before merging
+          version: v2.13.2 # pinned: first v2 line built with go≥1.26 (v2.1.6 is built with go1.24 and hard-fails on this repo); bump deliberately
 ```
 
-- [ ] **Step 3: 本地验证 lint 配置可运行**
+- [ ] **Step 3: 本地验证 lint 配置（必须用预编译产物——与 CI 同安装路径；`go run` 会用本地 go1.27 重编译从而掩盖 built-with 版本问题）**
 
-Run: `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run ./partners/openai/ ./partners/anthropic/ ./core/language/ 2>&1 | tail -5`
-Expected: 无输出（干净）或仅既有风格的告警；有新告警则修配置或修代码（不为此扩大 lint 集）
+```bash
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /tmp/gcl-bin v2.13.2
+/tmp/gcl-bin/golangci-lint run ./...
+```
 
-- [ ] **Step 4: 本地全量预演 CI 步骤**
+- [ ] **Step 4: lint 清账——修掉 Step 3 报出的全部存量告警（预计 ~40 条：errcheck 23、unused 8、govet 3、ineffassign 3、unconvert 3；QF* 已被配置排除）**
+
+规则：优先真实修复；确实不可处理的用显式忽略并写原因（`_ =` 或 `//nolint:errcheck // reason`），沿仓库既有风格（如 `_, _ = w.Write(...)`）。unused 告警逐条人工判断——若是 parity 占位（对应 Python 侧存在），保留并 `//nolint:unused // parity: ...`，否则删除。
+
+Run: `/tmp/gcl-bin/golangci-lint run ./...`
+Expected: 退出码 0，零告警（全仓，非单包）
+
+- [ ] **Step 5: 本地全量预演 CI 步骤**
 
 Run: `go test ./... && make vet-integration && make test-sqlite && make test-redis && make test-postgres`
 Expected: 全 PASS（postgres 首次下载 ~30MB 嵌入二进制）
 
-- [ ] **Step 5: README 加 CI badge（标题行下）**
+- [ ] **Step 6: README 加 CI badge（标题行下；仓库大小写用远端实际的 `ProjAnvil`），并把现有 "Go 1.23+" 徽章改为 "Go 1.26+"（与 go.mod floor 一致）**
 
 ```markdown
-[![CI](https://github.com/Projanvil/langchain-golang/actions/workflows/ci.yml/badge.svg)](https://github.com/Projanvil/langchain-golang/actions/workflows/ci.yml)
+[![CI](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml/badge.svg)](https://github.com/ProjAnvil/langchain-golang/actions/workflows/ci.yml)
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add .github/workflows/ci.yml .golangci.yml README.md
@@ -643,13 +682,13 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 - Anthropic streaming now yields a terminal usage-only chunk on `message_delta` (aligns usage accounting with invoke).
 
 ### Added
-- langgraph: interrupted-subgraph pause/resume across processes; durable pause writes (async/exit); per-run durability override and per-task subgraph checkpoints; graph-level default retry policy; semantic search for InMemoryStore (`index=` parity); graph visualization parity (`get_graph`, Mermaid options, xray, ASCII).
+- langgraph: interrupted-subgraph pause/resume across processes; durable pause writes (async/exit); per-run durability override and per-task subgraph checkpoints; graph-level default retry policy; semantic search for InMemoryStore (`index=` parity).
 - runnables/callbacks: StreamEvents (Runnable-level `astream_events`, v2 projection); chain lifecycle events across all combinators; Bind/Pick/Each/BatchAsCompleted and fallback error filtering.
 - agents: interrupt-based human-in-the-loop with cross-process approval; middleware tool/state auto-collection; tool-returned Commands and agent-hook jumps; `write_todos` state; per-call response_format/tool_choice/model_settings overrides; apply update-only Commands from `wrap_model_call` middleware.
 - tracers: LangSmith run-tree tracing with a batched background client.
 - partners/openaicompat: OpenAI-compatible provider registry (groq, mistralai, deepseek, xai, openrouter, fireworks, perplexity).
 - partners/openai: multimodal inputs, Responses reasoning effort, streaming usage, sampling params (top_p/stop/seed/penalties/logit_bias/n/logprobs), real tiktoken BPE token counting with the official image token formula, honest capability declarations.
-- partners/anthropic: usage cache token details, stop_sequences, count_tokens API-backed message counting, explicit errors for non-base64 data URIs.
+- partners/anthropic: usage cache token details, stop_sequences, explicit errors for non-base64 data URIs.
 - language/agents: bind_tools options with tool_choice (ToolStrategy forces "any").
 - standardtests: layered chat-model conformance suites (tool calling/choice, structured output, multimodal, streaming) wired to openai/anthropic/ollama.
 - prompts: Partial and FewShotChatMessagePromptTemplate.
@@ -660,13 +699,19 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 - Durable pause writes, run-id tree, minted message ids, tracer payload ownership (final-review fixes).
 
 ## [0.6.5] - 2026-08
-create_agent parity: return_direct, structured-output retry, routing, 9999 recursion default, dynamic model.
+create_agent parity: return_direct, structured-output retry, routing, 9999 recursion default, dynamic model; nested module pin refresh.
 
 ## [0.6.4] - 2026-08
-Go floor raised to 1.26; tiktoken-go/tokenizer v0.8.1.
+Graph visualization parity: `get_graph`, Mermaid options, xray, router probing, box-drawing ASCII.
 
 ## [0.6.3] - 2026-08
 Streaming robustness, bounded batch concurrency, constructor error returns (rectification batch).
+
+## [0.6.2] - 2026-08
+tiktoken-go/tokenizer v0.8.1; Go floor raised to 1.26.
+
+## [0.6.1] - 2026-08
+tiktoken-based token counting (tokenizer v0.7.0, go 1.23 floor); anthropic count_tokens API-backed message counting.
 
 ## [0.6.0] - 2026-08
 Initial public parity line: agents, graphs, checkpoint savers, partners (openai/anthropic/ollama/chroma), textsplitters, standardtests.
@@ -710,11 +755,12 @@ Thanks for contributing! New partner integrations are especially welcome (Google
 
 1. Fork the repository and create a feature branch (`git checkout -b feat/your-feature`).
 2. Make your change with tests.
-3. Ensure the full gate passes locally:
+3. Ensure the full gate passes locally (mirrors CI):
 
    ```bash
    go build ./... && go vet ./... && go test -race ./...
-   make test-sqlite test-redis   # nested checkpoint modules (offline)
+   make test-sqlite test-redis test-postgres   # nested checkpoint modules (offline; postgres downloads embedded binaries once)
+   /tmp/gcl-bin/golangci-lint run ./...        # prebuilt binary, same install path as CI
    ```
 
 4. Match the existing code style and Python-parity conventions.
@@ -743,10 +789,18 @@ Thanks for contributing! New partner integrations are especially welcome (Google
 See SECURITY.md. Do not open public issues for vulnerabilities.
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: README 的 `## Contributing` 节改为一段简述 + 链接到 CONTRIBUTING.md**
+
+```markdown
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide — conventions, testing, and PR expectations. New partner integrations are especially welcome (Google Gemini, AWS Bedrock, Pinecone, etc.).
+```
+
+- [ ] **Step 3: Commit**
 
 ```bash
-git add CONTRIBUTING.md
+git add CONTRIBUTING.md README.md
 git commit -m "docs: add CONTRIBUTING guide"
 ```
 
@@ -833,11 +887,11 @@ git commit -m "docs: add DIVERGENCES (design decisions) and SECURITY policy"
 Run: `go test ./... && make test-sqlite && make test-redis && make test-postgres && make vet-integration`
 Expected: 全 PASS
 
-- [ ] **Step 3: 【用户确认后】tag v0.8.0 并 push，使嵌套 pin 可解析**
+- [ ] **Step 3: 【用户确认后】tag v0.8.0 并 push（轻量 tag 不会被 `--follow-tags` 推送，须显式列出）**
 
 ```bash
 git tag v0.8.0
-git push origin main --follow-tags  # 或按用户发版习惯
+git push origin main v0.8.0
 ```
 
 - [ ] **Step 4: 嵌套 pin bump + 嵌套 tag v0.3.3**
@@ -849,6 +903,7 @@ go mod tidy 三个嵌套目录各自执行
 git add langgraph/checkpoint/*/go.mod langgraph/checkpoint/*/go.sum
 git commit -m "chore(langgraph/checkpoint): pin langchain-golang v0.8.0 in nested checkpoint modules"
 git tag langgraph/checkpoint/sqlite/v0.3.3 && git tag langgraph/checkpoint/redis/v0.3.3 && git tag langgraph/checkpoint/postgres/v0.3.3
+git push origin langgraph/checkpoint/sqlite/v0.3.3 langgraph/checkpoint/redis/v0.3.3 langgraph/checkpoint/postgres/v0.3.3  # 【用户确认后】轻量 tag 不走 --follow-tags，须显式 push
 ```
 
 - [ ] **Step 5: 【用户确认后】gh release**
@@ -865,6 +920,7 @@ CI 双版本绿（push 后看 Actions）；ParallelToolCalls 断言/组合矩阵
 
 ## Self-Review 记录
 
-- **Spec 覆盖**：§5.1→Task 5；§5.2→Task 2/3/4；§5.3→Task 8（Cleared as non-gaps 节）；§5.4→Task 6/7/8；发版→Task 1/9。无遗漏。
-- **占位符**：golangci-lint 版本号标注「merge 前核对」；CHANGELOG v0.6.x 日期有校正命令步骤。无 TBD。
+- **Spec 覆盖**：§5.1→Task 5；§5.2→Task 2/3/4（含组合矩阵：openai Task 2 `TestParallelToolCallsCombinedWithToolChoice` + anthropic Task 3 边界组合）；§5.3→Task 8（Cleared as non-gaps 节）；§5.4→Task 6/7/8；发版→Task 1/9。无遗漏。
+- **占位符**：无 TBD。CHANGELOG v0.6.x 日期有校正命令步骤。
 - **类型一致性**：`parallelToolCalls *bool` 字段名、`cloneAnyMap`、`toolChoiceServer`、`newTestServer`、`bindWithParallel`/`parallelToolCallsModel` 均与仓库现有代码对齐。
+- **Plan 审计修订（2026-09-16，subagent 实测验证）**：golangci-lint pin 改 v2.13.2（v2.1.6 预编译产物 go1.24 构建，在本仓库硬性报错；本地验证改预编译产物路径避免 `go run` 掩盖）；新增 lint 清账步骤（存量 86 条，QF* 46 条配置排除，余 ~40 条修复）；v0.7.1 前置理由更正（嵌套模块有 replace 指令，本地/CI 不受影响，发版为下游可解析性）；`--follow-tags` 不推轻量 tag 改显式 push（Task 1/9）；嵌套 v0.3.3 tag 补 push；CHANGELOG 史实修正（0.6.1 tokenizer v0.7.0+count_tokens、0.6.2 floor 1.26、0.6.4 仅 graph viz、从 0.7.0 移除错置两项）；Task 4 补 `context` import；README 徽章大小写 `ProjAnvil` + Go badge 1.23→1.26；CONTRIBUTING 门禁补 postgres + README 链接。
