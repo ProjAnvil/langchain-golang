@@ -14,6 +14,16 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 
 ## What's New
 
+<!-- TODO(release): finalize the v0.9.1 date when cutting the release — 2026-09-17 is a placeholder. -->
+
+**v0.9.1** — full parity catch-up release:
+
+- **RAG production stack**: declarative metadata-filter DSL (`SearchOptions` / `OptionSearcher`, langchain-postgres `SearchArgs` parity), **pgvector** and **Redis** (RediSearch) vector stores, **Cohere** / **Jina** rerankers, and ensemble / multi-query / parent-document / contextual-compression retrievers.
+- **Model & tool access layer**: native **Gemini** chat model (official genai SDK), an **MCP adapter** mirroring the `langchain.mcp` 1.4.0 snapshot (multi-server fleets, elicitation bridged to interrupts, HITL gating for destructive tools), and **HTML / web / PDF document loaders**.
+- **SQL toolkit**: read-only four-tool kit (`sql_db_query` / `sql_db_schema` / `sql_db_list_tables` / `sql_db_query_checker`) over `database/sql`, with SQLite + Postgres introspection and planner-based query checking, composed the modern `create_agent` way.
+- **examples/**: 12 runnable examples — agents, HITL, streaming, subgraph resume, fault tolerance, TracePolicy, full RAG chain, MCP, Gemini, SQL agent, advanced retrievers, middleware — offline-first with env-switchable real providers.
+- **Documentation site**: bilingual (EN + zh-CN) mkdocs-material site with six new guides, deployed to GitHub Pages by `docs.yml`.
+
 **v0.8.1** — fault-tolerance & trace-privacy parity:
 
 - **Node error handlers**: `NodePolicies.ErrorHandler` (langgraph 1.2.0 `error_handler=`) — recovery handlers receive state + a typed `NodeError` after retries are exhausted, return an update or a `Command`, and survive crashes (persisted ERROR write resumes into the handler).
@@ -79,16 +89,21 @@ A Pregel-style state graph executor mirroring Python's LangGraph 1.2.x:
 
 ### 🔌 Partner Integrations
 
-| Partner | Chat Model | Embeddings | Vector Store | Self-registered |
-|---------|:---:|:---:|:---:|:---:|
-| **OpenAI** | ✅ | ✅ | — | ✅ (`init()`) |
-| **Anthropic** | ✅ | — | — | ✅ (`init()`) |
-| **Google Gemini** | ✅ | — | — | ✅ (`init()`, via `partners/gemini` + the official genai SDK) |
-| **Ollama** | ✅ | ✅ | — | ✅ (`init()`) |
-| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | ✅ (`init()`, via `partners/openaicompat`) |
-| **Chroma** | — | — | ✅ | — |
+| Partner | Chat Model | Embeddings | Vector Store | Rerank | Self-registered |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| **OpenAI** | ✅ | ✅ | — | — | ✅ (`init()`) |
+| **Anthropic** | ✅ | — | — | — | ✅ (`init()`) |
+| **Google Gemini** | ✅ | — | — | — | ✅ (`init()`, via `partners/gemini` + the official genai SDK) |
+| **Ollama** | ✅ | ✅ | — | — | ✅ (`init()`) |
+| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | — | ✅ (`init()`, via `partners/openaicompat`) |
+| **Cohere** | — | — | — | ✅ | — (`partners/cohere`) |
+| **Jina** | — | — | — | ✅ | — (`partners/jina`) |
+| **Chroma** | — | — | ✅ | — | — |
+| **pgvector** | — | — | ✅ | — | — (`partners/pgvector`, root module) |
+| **Redis** | — | — | ✅ | — | — (`partners/redisvector`, root module) |
+| **MCP servers** | — | — | — | — | — (tool access via `partners/mcp`) |
 
-All eleven chat-model provider names self-register via `init()` (`partners/openai`, `partners/anthropic`, `partners/gemini`, `partners/ollama`, plus the seven OpenAI-compatible names in `partners/openaicompat`), so `WithAgentModel("openai:gpt-4o")` and `WithAgentModel("groq:openai/gpt-oss-20b")` resolve end-to-end once the package is blank-imported. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `OLLAMA_HOST`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, ...).
+All eleven chat-model provider names self-register via `init()` (`partners/openai`, `partners/anthropic`, `partners/gemini`, `partners/ollama`, plus the seven OpenAI-compatible names in `partners/openaicompat`), so `WithAgentModel("openai:gpt-4o")` and `WithAgentModel("groq:openai/gpt-oss-20b")` resolve end-to-end once the package is blank-imported. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `OLLAMA_HOST`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `COHERE_API_KEY`, `JINA_API_KEY`, `PGVECTOR_DSN`, ...).
 
 ---
 
@@ -226,6 +241,10 @@ state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
 
 ## Documentation
 
+The full guide set is also published as a bilingual
+[mkdocs-material site](https://projanvil.github.io/langchain-golang/) (built
+from [`docs/mkdocs/`](docs/mkdocs) by [`docs.yml`](.github/workflows/docs.yml)).
+
 | Guide | Description |
 |-------|-------------|
 | [Getting Started](docs/usage/getting-started.md) | Install, configure a provider, run your first agent |
@@ -233,6 +252,15 @@ state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
 | [Agents — CreateAgent](docs/usage/agents.md) | System prompts, tools, middleware, structured output, interrupts |
 | [Streaming](docs/usage/streaming.md) | Per-token model deltas + tool/node lifecycle events |
 | [Graph Runtime](docs/usage/langgraph.md) | Stream modes, DeltaChannel, checkpoint serde, SQLite/Postgres savers |
+| [RAG Stack](docs/mkdocs/rag-stack.md) | Filter DSL, pgvector, Redis vector store, rerankers, advanced retrievers |
+| [MCP Tools](docs/mkdocs/mcp.md) | MCP servers as agent tools, elicitation interrupts, HITL gating |
+| [Google Gemini](docs/mkdocs/gemini.md) | Native Gemini chat model via the official genai SDK |
+| [SQL Toolkit](docs/mkdocs/sql-toolkit.md) | Read-only SQL agent toolkit over `database/sql` |
+| [Fault Tolerance & Trace Privacy](docs/mkdocs/fault-tolerance.md) | Retry policies, node error handlers, TracePolicy scrubbing |
+| [Document Loaders](docs/mkdocs/loaders.md) | HTML, web, and PDF loaders |
+
+Runnable examples live under [`examples/`](examples) — one directory per
+topic, each with its own README.
 
 API reference: [pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang)
 
@@ -261,14 +289,17 @@ langchain-golang/
 │   ├── agents/                # CreateAgent + 17 middleware modules
 │   │   └── middleware/        # context-editing, summarization, retry, PII, shell, ...
 │   ├── chatmodels/            # provider registry (Resolve / RegisterProvider)
+│   ├── toolkits/              # SQL toolkit (read-only, database/sql)
 │   ├── tools/                 # ToolNode (concurrent dispatch)
 │   └── messages/              # langchain-level message helpers
-├── partners/                  # openai, anthropic, gemini, ollama, openaicompat (7 providers), chroma, mcp
+├── partners/                  # openai, anthropic, gemini, ollama, openaicompat (7 providers),
+│                              # chroma, pgvector, redisvector, cohere, jina, mcp
 ├── textsplitters/             # langchain_text_splitters port
 ├── standardtests/             # conformance suites
 ├── modelprofiles/             # model-profiles registry + CLI
 ├── cmd/langchain-profiles     # profiles refresh CLI
-├── docs/                      # bilingual usage guides (EN + zh-CN)
+├── examples/                  # 12 runnable examples (agents, RAG, MCP, SQL, ...)
+├── docs/                      # bilingual usage guides (EN + zh-CN) + mkdocs site source
 └── integration/               # integration tests
 ```
 
@@ -280,7 +311,7 @@ This is a **faithful port** — every design decision defaults to "what Python d
 
 - **langchain-core** 1.4.9
 - **langchain** v1 1.3.13
-- **langgraph** 1.2.10
+- **langgraph** 1.2.11
 - **langgraph-checkpoint** 4.2.0
 
 ### Key design decisions
@@ -322,7 +353,7 @@ make test-postgres     # embedded PostgreSQL saver
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide — conventions, testing, and PR expectations. New partner integrations are especially welcome (Google Gemini, AWS Bedrock, Pinecone, etc.).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide — conventions, testing, and PR expectations. New partner integrations are especially welcome (AWS Bedrock, Pinecone, Weaviate, etc.).
 
 **Python is authoritative**: when in doubt, check what the Python source does. Design decisions where this port deliberately diverges are documented in [DIVERGENCES.md](DIVERGENCES.md).
 

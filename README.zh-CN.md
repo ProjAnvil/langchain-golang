@@ -14,6 +14,16 @@
 
 ## 最新动态
 
+<!-- TODO(release)：定版 v0.9.1 时确认发布日期——2026-09-17 为占位。 -->
+
+**v0.9.1** —— full parity catch-up release：
+
+- **RAG 生产栈**：声明式元数据过滤 DSL（`SearchOptions` / `OptionSearcher`，对齐 langchain-postgres `SearchArgs`）、**pgvector** 与 **Redis**（RediSearch）向量存储、**Cohere** / **Jina** 重排器，以及 ensemble / multi-query / parent-document / contextual-compression 检索器。
+- **模型与工具接入层**：原生 **Gemini** 聊天模型（官方 genai SDK）、对齐 `langchain.mcp` 1.4.0 快照的 **MCP 适配器**（多服务器 fleet、elicitation 桥接 interrupt、破坏性工具 HITL 门控），以及 **HTML / Web / PDF 文档加载器**。
+- **SQL 工具箱**：基于 `database/sql` 的只读四工具（`sql_db_query` / `sql_db_schema` / `sql_db_list_tables` / `sql_db_query_checker`），SQLite + Postgres introspection、planner 校验，按现代 `create_agent` 方式组合。
+- **examples/**：12 个可运行示例——agents、HITL、流式、subgraph 恢复、容错、TracePolicy、RAG 全链路、MCP、Gemini、SQL agent、高级检索器、middleware——默认离线，环境变量切换真实 provider。
+- **文档站**：双语（EN + zh-CN）mkdocs-material 站点，含六篇新指南，由 `docs.yml` 部署到 GitHub Pages。
+
 **v0.8.1** —— 容错与追踪隐私 parity：
 
 - **节点级错误处理器**：`NodePolicies.ErrorHandler`（langgraph 1.2.0 `error_handler=`）——重试耗尽后恢复函数可读状态、收到类型化 `NodeError`，返回 update 或 `Command`；ERROR write 先行落盘，崩溃后 resume 重跑 handler 而非节点。
@@ -79,16 +89,21 @@ Python `create_agent` 的 Go 等价物，构建在 `langgraph/` 运行时之上�
 
 ### 🔌 Partner 集成
 
-| Partner | 聊天模型 | 嵌入 | 向量存储 | 自注册 |
-|---------|:---:|:---:|:---:|:---:|
-| **OpenAI** | ✅ | ✅ | — | ✅ (`init()`) |
-| **Anthropic** | ✅ | — | — | ✅ (`init()`) |
-| **Google Gemini** | ✅ | — | — | ✅（`init()`，经 `partners/gemini` + 官方 genai SDK） |
-| **Ollama** | ✅ | ✅ | — | ✅ (`init()`) |
-| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | ✅（`init()`，经 `partners/openaicompat`） |
-| **Chroma** | — | — | ✅ | — |
+| Partner | 聊天模型 | 嵌入 | 向量存储 | 重排 | 自注册 |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| **OpenAI** | ✅ | ✅ | — | — | ✅ (`init()`) |
+| **Anthropic** | ✅ | — | — | — | ✅ (`init()`) |
+| **Google Gemini** | ✅ | — | — | — | ✅（`init()`，经 `partners/gemini` + 官方 genai SDK） |
+| **Ollama** | ✅ | ✅ | — | — | ✅ (`init()`) |
+| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | — | ✅（`init()`，经 `partners/openaicompat`） |
+| **Cohere** | — | — | — | ✅ | —（`partners/cohere`） |
+| **Jina** | — | — | — | ✅ | —（`partners/jina`） |
+| **Chroma** | — | — | ✅ | — | — |
+| **pgvector** | — | — | ✅ | — | —（`partners/pgvector`，根模块） |
+| **Redis** | — | — | ✅ | — | —（`partners/redisvector`，根模块） |
+| **MCP 服务器** | — | — | — | — | —（工具接入经 `partners/mcp`） |
 
-全部十一个聊天模型 provider 名字都经 `init()` 自注册（`partners/openai`、`partners/anthropic`、`partners/gemini`、`partners/ollama`，加上 `partners/openaicompat` 里的七个 OpenAI 兼容名字），因此 blank import 后 `WithAgentModel("openai:gpt-4o")` 与 `WithAgentModel("groq:openai/gpt-oss-20b")` 均可端到端解析。通过环境变量配置（`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` / `GOOGLE_API_KEY`、`OLLAMA_HOST`、`GROQ_API_KEY`、`DEEPSEEK_API_KEY` 等）。
+全部十一个聊天模型 provider 名字都经 `init()` 自注册（`partners/openai`、`partners/anthropic`、`partners/gemini`、`partners/ollama`，加上 `partners/openaicompat` 里的七个 OpenAI 兼容名字），因此 blank import 后 `WithAgentModel("openai:gpt-4o")` 与 `WithAgentModel("groq:openai/gpt-oss-20b")` 均可端到端解析。通过环境变量配置（`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` / `GOOGLE_API_KEY`、`OLLAMA_HOST`、`GROQ_API_KEY`、`DEEPSEEK_API_KEY`、`COHERE_API_KEY`、`JINA_API_KEY`、`PGVECTOR_DSN` 等）。
 
 ---
 
@@ -226,6 +241,11 @@ state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
 
 ## 文档
 
+全部指南同时发布为双语
+[mkdocs-material 站点](https://projanvil.github.io/langchain-golang/)（由
+[`docs.yml`](.github/workflows/docs.yml) 从 [`docs/mkdocs/`](docs/mkdocs)
+构建）。
+
 | 指南 | 描述 |
 |------|------|
 | [入门指南](docs/usage/getting-started.zh-CN.md) | 安装、配置 provider、运行你的第一个智能体 |
@@ -233,6 +253,15 @@ state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
 | [智能体 — CreateAgent](docs/usage/agents.zh-CN.md) | 系统提示词、工具、中间件、结构化输出、中断 |
 | [流式输出](docs/usage/streaming.zh-CN.md) | 逐 token 模型增量 + 工具/节点生命周期事件 |
 | [图运行时](docs/usage/langgraph.zh-CN.md) | 流模式、DeltaChannel、checkpoint serde、SQLite/Postgres saver |
+| [RAG 栈](docs/mkdocs/zh-CN/rag-stack.zh-CN.md) | 过滤 DSL、pgvector、Redis 向量存储、重排器、高级检索器 |
+| [MCP 工具](docs/mkdocs/zh-CN/mcp.zh-CN.md) | 将 MCP 服务器接入智能体工具、elicitation 中断、HITL 门控 |
+| [Google Gemini](docs/mkdocs/zh-CN/gemini.zh-CN.md) | 基于官方 genai SDK 的原生 Gemini 聊天模型 |
+| [SQL 工具箱](docs/mkdocs/zh-CN/sql-toolkit.zh-CN.md) | 基于 `database/sql` 的只读 SQL 智能体工具箱 |
+| [容错与追踪隐私](docs/mkdocs/zh-CN/fault-tolerance.zh-CN.md) | 重试策略、节点错误处理器、TracePolicy 脱敏 |
+| [文档加载器](docs/mkdocs/zh-CN/loaders.zh-CN.md) | HTML、Web、PDF 三件套加载器 |
+
+可运行示例位于 [`examples/`](examples)——每个主题一个目录，均带自己的
+README。
 
 API 参考：[pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang)
 
@@ -261,14 +290,17 @@ langchain-golang/
 │   ├── agents/                # CreateAgent + 17 个中间件模块
 │   │   └── middleware/        # 上下文编辑、摘要、重试、PII、Shell...
 │   ├── chatmodels/            # provider 注册表（Resolve / RegisterProvider）
+│   ├── toolkits/              # SQL 工具箱（只读，基于 database/sql）
 │   ├── tools/                 # ToolNode（并发分发）
 │   └── messages/              # langchain 层消息辅助函数
-├── partners/                  # openai, anthropic, gemini, ollama, openaicompat（7 家 provider）, chroma, mcp
+├── partners/                  # openai, anthropic, gemini, ollama, openaicompat（7 家 provider）、
+│                              # chroma, pgvector, redisvector, cohere, jina, mcp
 ├── textsplitters/             # langchain_text_splitters 移植
 ├── standardtests/             # 一致性测试套件
 ├── modelprofiles/             # 模型配置注册表 + CLI
 ├── cmd/langchain-profiles     # profiles 刷新 CLI
-├── docs/                      # 双语使用指南（EN + zh-CN）
+├── examples/                  # 12 个可运行示例（agents、RAG、MCP、SQL 等）
+├── docs/                      # 双语使用指南（EN + zh-CN）+ mkdocs 站点源
 └── integration/               # 集成测试
 ```
 
@@ -280,7 +312,7 @@ langchain-golang/
 
 - **langchain-core** 1.4.9
 - **langchain** v1 1.3.13
-- **langgraph** 1.2.10
+- **langgraph** 1.2.11
 - **langgraph-checkpoint** 4.2.0
 
 ### 关键设计决策
@@ -322,7 +354,7 @@ make test-postgres     # 嵌入式 PostgreSQL saver
 
 ## 贡献
 
-欢迎贡献 —— 特别是新的 Partner 集成（Google Gemini、AWS Bedrock、Pinecone 等）。
+欢迎贡献 —— 特别是新的 Partner 集成（AWS Bedrock、Pinecone、Weaviate 等）。
 
 1. Fork 本仓库
 2. 创建功能分支（`git checkout -b feat/your-feature`）
