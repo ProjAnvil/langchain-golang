@@ -30,22 +30,24 @@ func TestRunVectorStoreBasicsWithMinimalStore(t *testing.T) {
 }
 
 // stubVectorStore is a vector store with canned responses and error injection.
-// It also implements the optional TextAdder, filtered-search, and MMR
-// interfaces.
+// It also implements the optional TextAdder, filtered-search, MMR, and
+// SearchOptions interfaces.
 type stubVectorStore struct {
-	addErr      error
-	addIDs      []string
-	getDocs     []documents.Document
-	getErr      error
-	searchRes   []vectorstores.SearchResult
-	searchErr   error
-	deleteErr   error
-	addTextsIDs []string
-	addTextsErr error
-	filterRes   []vectorstores.SearchResult
-	filterErr   error
-	mmrDocs     []documents.Document
-	mmrErr      error
+	addErr          error
+	addIDs          []string
+	getDocs         []documents.Document
+	getErr          error
+	searchRes       []vectorstores.SearchResult
+	searchErr       error
+	deleteErr       error
+	addTextsIDs     []string
+	addTextsErr     error
+	filterRes       []vectorstores.SearchResult
+	filterErr       error
+	mmrDocs         []documents.Document
+	mmrErr          error
+	optionSearchRes []documents.Document
+	optionSearchErr error
 }
 
 func (s stubVectorStore) AddDocuments(context.Context, []documents.Document) ([]string, error) {
@@ -132,6 +134,28 @@ func (s stubVectorStore) MaxMarginalRelevanceSearch(
 		return nil, s.mmrErr
 	}
 	return s.mmrDocs, nil
+}
+
+func (s stubVectorStore) SimilaritySearchWithOptions(
+	context.Context,
+	string,
+	vectorstores.SearchOptions,
+) ([]documents.Document, error) {
+	if s.optionSearchErr != nil {
+		return nil, s.optionSearchErr
+	}
+	return s.optionSearchRes, nil
+}
+
+func (s stubVectorStore) MMRSearchWithOptions(
+	context.Context,
+	string,
+	vectorstores.SearchOptions,
+) ([]documents.Document, error) {
+	if s.optionSearchErr != nil {
+		return nil, s.optionSearchErr
+	}
+	return s.optionSearchRes, nil
 }
 
 func TestRunVectorStoreBasicsFailures(t *testing.T) {
@@ -235,6 +259,41 @@ func TestRunVectorStoreBasicsFailures(t *testing.T) {
 		RunVectorStoreBasics(t, factory(stubVectorStore{
 			mmrDocs:     []documents.Document{documents.New("alpha beta", nil)},
 			addTextsIDs: textIDs,
+		}))
+	})
+
+	// The declarative-filter subtests run because stubVectorStore implements
+	// the SearchOptions interface.
+	matchingDocs := []documents.Document{
+		documents.New("alpha one", map[string]any{"group": "a"}).WithID("one"),
+		documents.New("alpha two", map[string]any{"group": "a"}).WithID("two"),
+	}
+	nonMatchingDoc := documents.New("alpha three", map[string]any{"group": "b"}).WithID("three")
+
+	expectConformanceFailure(t, "declarative filter search errors", func(t *testing.T) {
+		RunVectorStoreBasics(t, factory(stubVectorStore{
+			optionSearchErr: errConformanceStub,
+			addTextsIDs:     textIDs,
+		}))
+	})
+	expectConformanceFailure(t, "declarative filter search returns non-matching documents", func(t *testing.T) {
+		RunVectorStoreBasics(t, factory(stubVectorStore{
+			optionSearchRes: []documents.Document{matchingDocs[0], nonMatchingDoc},
+			addTextsIDs:     textIDs,
+		}))
+	})
+	expectConformanceFailure(t, "declarative filter search accepts invalid filters", func(t *testing.T) {
+		RunVectorStoreBasics(t, factory(stubVectorStore{
+			optionSearchRes: matchingDocs,
+			addTextsIDs:     textIDs,
+		}))
+	})
+	expectConformanceFailure(t, "declarative filter mmr search returns non-matching documents", func(t *testing.T) {
+		RunVectorStoreBasics(t, factory(stubVectorStore{
+			optionSearchRes: []documents.Document{matchingDocs[0], nonMatchingDoc},
+			addTextsIDs:     textIDs,
+			mmrDocs:         matchingDocs,
+			mmrErr:          nil,
 		}))
 	})
 }

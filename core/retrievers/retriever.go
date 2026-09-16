@@ -55,8 +55,10 @@ func WithSearchType(searchType string) RetrieverOption {
 }
 
 // WithSearchKwargs sets the keyword arguments passed to the underlying search
-// function. Recognized keys include "k", "fetch_k", "lambda_mult", and
-// "score_threshold".
+// function. Recognized keys include "k", "fetch_k", "lambda_mult",
+// "score_threshold", and "filter" (a declarative metadata filter DSL map,
+// forwarded to stores implementing vectorstores.OptionSearcher; mirrors the
+// filter kwarg Python's VectorStoreRetriever forwards to its store).
 func WithSearchKwargs(kwargs map[string]any) RetrieverOption {
 	return func(c *retrieverConfig) {
 		c.searchKwargs = kwargs
@@ -154,6 +156,23 @@ func (r VectorStoreRetriever) GetRelevantDocuments(
 	switch r.searchType {
 	case searchTypeSimilarity:
 		k := searchKwargInt(r.searchKwargs, "k", r.k)
+		filter, err := searchKwargFilter(r.searchKwargs)
+		if err != nil {
+			return nil, err
+		}
+		if filter != nil {
+			searcher, ok := r.store.(vectorstores.OptionSearcher)
+			if !ok {
+				return nil, fmt.Errorf(
+					"vector store %T does not support declarative filters",
+					r.store,
+				)
+			}
+			return searcher.SimilaritySearchWithOptions(ctx, query, vectorstores.SearchOptions{
+				K:      k,
+				Filter: filter,
+			})
+		}
 		return r.store.SimilaritySearch(ctx, query, k)
 	case searchTypeMMR:
 		return r.mmr(ctx, query)
@@ -171,13 +190,40 @@ func (r VectorStoreRetriever) GetRelevantDocuments(
 }
 
 func (r VectorStoreRetriever) mmr(ctx context.Context, query string) ([]documents.Document, error) {
+	k := searchKwargInt(r.searchKwargs, "k", r.k)
+	fetchK := searchKwargInt(r.searchKwargs, "fetch_k", 20)
+	lambdaMult := searchKwargFloat(r.searchKwargs, "lambda_mult", 0.5)
+	filter, err := searchKwargFilter(r.searchKwargs)
+	if err != nil {
+		return nil, err
+	}
+	if filter != nil {
+		// Prefer the legacy MMR capability when the store exposes it: its
+		// callback filter conveys lambda_mult, which SearchOptions does not
+		// carry. Stores implementing only OptionSearcher (server-side
+		// filtering) fall through to MMRSearchWithOptions, which applies the
+		// store's default lambda_mult (0.5).
+		if legacy, ok := r.store.(mmrSearcher); ok {
+			return legacy.MaxMarginalRelevanceSearch(ctx, query, k, fetchK, lambdaMult, func(doc documents.Document) bool {
+				return vectorstores.MatchFilter(doc, filter)
+			})
+		}
+		if searcher, ok := r.store.(vectorstores.OptionSearcher); ok {
+			return searcher.MMRSearchWithOptions(ctx, query, vectorstores.SearchOptions{
+				K:      k,
+				FetchK: fetchK,
+				Filter: filter,
+			})
+		}
+		return nil, fmt.Errorf(
+			"vector store %T does not support mmr search with declarative filters",
+			r.store,
+		)
+	}
 	searcher, ok := r.store.(mmrSearcher)
 	if !ok {
 		return nil, fmt.Errorf("vector store %T does not support mmr search", r.store)
 	}
-	k := searchKwargInt(r.searchKwargs, "k", r.k)
-	fetchK := searchKwargInt(r.searchKwargs, "fetch_k", 20)
-	lambdaMult := searchKwargFloat(r.searchKwargs, "lambda_mult", 0.5)
 	return searcher.MaxMarginalRelevanceSearch(ctx, query, k, fetchK, lambdaMult, nil)
 }
 
@@ -272,4 +318,25 @@ func searchKwargOptionalFloat(kwargs map[string]any, key string) (float64, bool)
 		}
 	}
 	return 0, false
+}
+
+// searchKwargFilter extracts and validates the declarative "filter" kwarg. It
+// returns nil when no (non-empty) filter is set so unfiltered searches keep
+// using the plain search paths.
+func searchKwargFilter(kwargs map[string]any) (map[string]any, error) {
+	value, ok := kwargs["filter"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	filter, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("search_kwargs %q must be a map[string]any, got %T", "filter", value)
+	}
+	if len(filter) == 0 {
+		return nil, nil
+	}
+	if err := vectorstores.ValidateFilter(filter); err != nil {
+		return nil, fmt.Errorf("invalid search_kwargs filter: %w", err)
+	}
+	return filter, nil
 }

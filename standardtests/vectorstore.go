@@ -2,6 +2,7 @@ package standardtests
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -18,6 +19,11 @@ type filterSearcher interface {
 
 type mmrSearcher interface {
 	MaxMarginalRelevanceSearch(context.Context, string, int, int, float64, vectorstores.Filter) ([]documents.Document, error)
+}
+
+type optionSearcher interface {
+	SimilaritySearchWithOptions(context.Context, string, vectorstores.SearchOptions) ([]documents.Document, error)
+	MMRSearchWithOptions(context.Context, string, vectorstores.SearchOptions) ([]documents.Document, error)
 }
 
 // RunVectorStoreBasics verifies behavior expected from every vector store
@@ -189,6 +195,119 @@ func RunVectorStoreBasics(t *testing.T, factory VectorStoreFactory) {
 		}
 		if len(docs) != 2 {
 			t.Fatalf("docs: got %d want 2", len(docs))
+		}
+	})
+
+	t.Run("optional declarative filter search", func(t *testing.T) {
+		store := factory(t)
+		searcher, ok := store.(optionSearcher)
+		if !ok {
+			t.Skip("vector store does not expose SearchOptions search")
+		}
+		_, err := store.AddDocuments(context.Background(), []documents.Document{
+			documents.New("alpha one", map[string]any{"group": "a", "page": 1}).WithID("one"),
+			documents.New("alpha two", map[string]any{"group": "a", "page": 2}).WithID("two"),
+			documents.New("alpha three", map[string]any{"group": "b", "page": 3}).WithID("three"),
+		})
+		if err != nil {
+			t.Fatalf("add documents: %v", err)
+		}
+
+		tests := []struct {
+			name    string
+			filter  map[string]any
+			wantIDs []string
+		}{
+			{
+				name:    "eq keeps only matching metadata values",
+				filter:  map[string]any{"group": map[string]any{vectorstores.FilterEq: "a"}},
+				wantIDs: []string{"one", "two"},
+			},
+			{
+				name:    "in matches list membership",
+				filter:  map[string]any{"group": map[string]any{vectorstores.FilterIn: []any{"b"}}},
+				wantIDs: []string{"three"},
+			},
+			{
+				name:    "gt compares numeric metadata",
+				filter:  map[string]any{"page": map[string]any{vectorstores.FilterGt: 2}},
+				wantIDs: []string{"three"},
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				docs, err := searcher.SimilaritySearchWithOptions(
+					context.Background(),
+					"alpha",
+					vectorstores.SearchOptions{K: 5, Filter: tt.filter},
+				)
+				if err != nil {
+					t.Fatalf("declarative filter search: %v", err)
+				}
+				gotIDs := make([]string, 0, len(docs))
+				for _, doc := range docs {
+					gotIDs = append(gotIDs, doc.ID)
+				}
+				slices.Sort(gotIDs)
+				if !slices.Equal(gotIDs, tt.wantIDs) {
+					t.Fatalf("filtered ids: got %v want %v", gotIDs, tt.wantIDs)
+				}
+			})
+		}
+	})
+
+	t.Run("optional declarative filter search rejects invalid filters", func(t *testing.T) {
+		store := factory(t)
+		searcher, ok := store.(optionSearcher)
+		if !ok {
+			t.Skip("vector store does not expose SearchOptions search")
+		}
+		_, err := searcher.SimilaritySearchWithOptions(
+			context.Background(),
+			"alpha",
+			vectorstores.SearchOptions{
+				K:      5,
+				Filter: map[string]any{"group": map[string]any{"$bogus": "a"}},
+			},
+		)
+		if err == nil {
+			t.Fatal("expected an error for an invalid declarative filter")
+		}
+	})
+
+	t.Run("optional declarative filter mmr search", func(t *testing.T) {
+		store := factory(t)
+		searcher, ok := store.(optionSearcher)
+		if !ok {
+			t.Skip("vector store does not expose SearchOptions search")
+		}
+		_, err := store.AddDocuments(context.Background(), []documents.Document{
+			documents.New("alpha one", map[string]any{"group": "a", "page": 1}).WithID("one"),
+			documents.New("alpha two", map[string]any{"group": "a", "page": 2}).WithID("two"),
+			documents.New("alpha three", map[string]any{"group": "b", "page": 3}).WithID("three"),
+		})
+		if err != nil {
+			t.Fatalf("add documents: %v", err)
+		}
+		docs, err := searcher.MMRSearchWithOptions(
+			context.Background(),
+			"alpha",
+			vectorstores.SearchOptions{
+				K:      2,
+				FetchK: 3,
+				Filter: map[string]any{"group": map[string]any{vectorstores.FilterEq: "a"}},
+			},
+		)
+		if err != nil {
+			t.Fatalf("declarative filter mmr search: %v", err)
+		}
+		if len(docs) != 2 {
+			t.Fatalf("docs: got %d want 2", len(docs))
+		}
+		for _, doc := range docs {
+			if doc.Metadata["group"] != "a" {
+				t.Fatalf("unexpected doc: %#v", doc)
+			}
 		}
 	})
 }

@@ -462,13 +462,84 @@ func cosine(a, b []float64) float64 {
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
+// matchesWhere evaluates chroma where clauses: field conditions (plain
+// equality or operator dicts) plus $and conjunctions. Values arrive as
+// decoded JSON, so numbers are float64.
 func matchesWhere(doc documents.Document, where map[string]any) bool {
-	for key, want := range where {
-		if doc.Metadata[key] != want {
-			return false
+	for key, condition := range where {
+		switch key {
+		case "$and":
+			subwheres, ok := condition.([]any)
+			if !ok {
+				return false
+			}
+			for _, sub := range subwheres {
+				subwhere, ok := sub.(map[string]any)
+				if !ok || !matchesWhere(doc, subwhere) {
+					return false
+				}
+			}
+		default:
+			if operators, ok := condition.(map[string]any); ok {
+				for operator, operand := range operators {
+					if !matchesWhereOperator(doc.Metadata[key], operator, operand) {
+						return false
+					}
+				}
+				continue
+			}
+			if !jsonValuesEqual(doc.Metadata[key], condition) {
+				return false
+			}
 		}
 	}
 	return true
+}
+
+func matchesWhereOperator(value any, operator string, operand any) bool {
+	switch operator {
+	case "$eq":
+		return jsonValuesEqual(value, operand)
+	case "$ne":
+		return value != nil && !jsonValuesEqual(value, operand)
+	case "$in", "$nin":
+		items, ok := operand.([]any)
+		if !ok || value == nil {
+			return false
+		}
+		for _, item := range items {
+			if jsonValuesEqual(value, item) {
+				return operator == "$in"
+			}
+		}
+		return operator == "$nin"
+	case "$gt", "$gte", "$lt", "$lte":
+		left, ok := value.(float64)
+		right, rightOK := operand.(float64)
+		if !ok || !rightOK {
+			return false
+		}
+		switch operator {
+		case "$gt":
+			return left > right
+		case "$gte":
+			return left >= right
+		case "$lt":
+			return left < right
+		case "$lte":
+			return left <= right
+		}
+	}
+	return false
+}
+
+func jsonValuesEqual(a, b any) bool {
+	left, leftOK := a.(float64)
+	right, rightOK := b.(float64)
+	if leftOK || rightOK {
+		return leftOK && rightOK && left == right
+	}
+	return a != nil && b != nil && a == b
 }
 
 func matchesWhereDocument(doc documents.Document, where map[string]any) bool {

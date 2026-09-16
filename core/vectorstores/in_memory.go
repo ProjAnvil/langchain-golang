@@ -289,6 +289,65 @@ func (s *InMemory) MaxMarginalRelevanceSearchByVector(
 	return docs, nil
 }
 
+// SimilaritySearchWithOptions implements OptionSearcher: the declarative
+// filter is evaluated client-side via MatchFilter, and ScoreThreshold is
+// applied to cosine relevance scores (see SimilaritySearchWithRelevanceScores
+// for the score conversion). An invalid filter fails loudly before searching.
+func (s *InMemory) SimilaritySearchWithOptions(
+	ctx context.Context,
+	query string,
+	opts SearchOptions,
+) ([]documents.Document, error) {
+	if err := ValidateFilter(opts.Filter); err != nil {
+		return nil, err
+	}
+	k := opts.K
+	if k <= 0 {
+		k = 4
+	}
+	results, err := s.SimilaritySearchWithScoreFilter(ctx, query, k, declarativeFilter(opts.Filter))
+	if err != nil {
+		return nil, err
+	}
+	docs := make([]documents.Document, 0, len(results))
+	for _, result := range results {
+		if opts.ScoreThreshold > 0 {
+			relevance := CosineRelevanceScore(1.0 - result.Score)
+			if relevance < opts.ScoreThreshold {
+				continue
+			}
+		}
+		docs = append(docs, result.Document)
+	}
+	return docs, nil
+}
+
+// MMRSearchWithOptions implements OptionSearcher: the declarative filter
+// restricts the MMR candidate prefetch. SearchOptions carries no lambda_mult,
+// so the Python SearchArgs default of 0.5 is used.
+func (s *InMemory) MMRSearchWithOptions(
+	ctx context.Context,
+	query string,
+	opts SearchOptions,
+) ([]documents.Document, error) {
+	if err := ValidateFilter(opts.Filter); err != nil {
+		return nil, err
+	}
+	return s.MaxMarginalRelevanceSearch(ctx, query, opts.K, opts.FetchK, 0.5, declarativeFilter(opts.Filter))
+}
+
+// declarativeFilter adapts the DSL to the client-side Filter callback. A nil or
+// empty filter maps to a nil Filter so unfiltered searches keep their exact
+// previous behavior.
+func declarativeFilter(filter map[string]any) Filter {
+	if len(filter) == 0 {
+		return nil
+	}
+	return func(doc documents.Document) bool {
+		return MatchFilter(doc, filter)
+	}
+}
+
 func (s *InMemory) similaritySearchWithScoreByVectorLocked(
 	queryVector []float64,
 	k int,
