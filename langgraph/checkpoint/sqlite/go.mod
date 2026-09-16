@@ -3,7 +3,7 @@ module github.com/projanvil/langchain-golang/langgraph/checkpoint/sqlite
 go 1.26
 
 require (
-	github.com/projanvil/langchain-golang v0.7.1
+	github.com/projanvil/langchain-golang v0.8.0
 	modernc.org/sqlite v1.38.2
 )
 
