@@ -197,6 +197,10 @@ type NodePolicies struct {
 	// compile-time default handler, and a handler's own failure never
 	// re-enters any handler (Python's recursion guard, langgraph 1.2.0).
 	ErrorHandler *ErrorHandlerPolicy
+	// Trace controls traced payloads for events emitted within this node
+	// (see TracePolicy): transforms apply on the emit side, before any
+	// tracer observes them.
+	Trace *TracePolicy
 }
 
 // TimeoutPolicy configures per-node attempt timeouts, mirroring Python's

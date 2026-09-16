@@ -66,6 +66,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/runtime"
@@ -1485,6 +1486,19 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// subgraph checkpoint namespacing; see plannedTaskIDKey).
 			taskCtx := context.WithValue(em.nodeContext(runCtx, t.node, rs.step+1),
 				plannedTaskIDKey{}, t.plannedID(*currentCfg, rs.step+1))
+			// Per-node TracePolicy (langgraph 1.2.11 trace_policy=): wrap the
+			// node context's callback manager so every event emitted within
+			// this node — from the node itself or runnables it invokes —
+			// carries transformed payloads before any tracer observes them.
+			// An empty manager (no handlers installed, e.g. the inert carrier
+			// subgraphs run under) is left untouched: events are dropped
+			// there anyway, and wrapping would flip its Empty() signal.
+			if tp := g.tracePolicy(t.node); tp != nil {
+				if parent, ok := callbacks.ManagerFromContext(taskCtx); ok && !parent.Empty() {
+					taskCtx = callbacks.ContextWithManager(taskCtx,
+						callbacks.NewPayloadPolicyManager(parent, tp.ProcessInputs, tp.ProcessOutputs))
+				}
+			}
 			var nodeErr *NodeError
 			var update map[string]any
 			var cmd *types.Command
@@ -2163,6 +2177,15 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 func (g *CompiledGraph) errorHandlerPolicy(node string) *ErrorHandlerPolicy {
 	if policies, ok := g.policies[node]; ok {
 		return policies.ErrorHandler
+	}
+	return nil
+}
+
+// tracePolicy returns the node's installed trace policy, or nil when the node
+// has none (nodes without a policy emit events untouched).
+func (g *CompiledGraph) tracePolicy(node string) *TracePolicy {
+	if policies, ok := g.policies[node]; ok {
+		return policies.Trace
 	}
 	return nil
 }
