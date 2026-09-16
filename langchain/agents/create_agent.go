@@ -96,6 +96,7 @@ import (
 	"sync/atomic"
 
 	"github.com/projanvil/langchain-golang/core/caches"
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/prompts"
@@ -1694,6 +1695,32 @@ func validateMiddlewareNames(mws []any) error {
 // collision-free ID (see mintAIMessageIDs), because the HITL decision revises
 // the committed AIMessage in place and MessagesReducer replaces messages by
 // ID — an ID-less revision would append a duplicate instead.
+// applyMiddlewareTracePolicy returns c with a payload-policy callback manager
+// installed when mw implements middleware.TracePolicyProvider with at least
+// one transform (langchain 1.3.15's middleware trace_policy, #38910): events
+// emitted by everything the middleware's wrap_model_call layer encloses —
+// inner middleware and the model itself — carry transformed payloads before
+// any tracer observes them. Nested middleware policies compose like onion
+// layers: the outermost policy is installed first and therefore applied last
+// at emit time. A context with no manager (or an empty one — no tracer to
+// protect) is returned unchanged, keeping its Empty() signal intact.
+func applyMiddlewareTracePolicy(c context.Context, mw any) context.Context {
+	provider, ok := mw.(middleware.TracePolicyProvider)
+	if !ok {
+		return c
+	}
+	cfg := provider.TracePolicy()
+	if cfg.ProcessInputs == nil && cfg.ProcessOutputs == nil {
+		return c
+	}
+	parent, ok := callbacks.ManagerFromContext(c)
+	if !ok || parent.Empty() {
+		return c
+	}
+	return callbacks.ContextWithManager(c,
+		callbacks.NewPayloadPolicyManager(parent, cfg.ProcessInputs, cfg.ProcessOutputs))
+}
+
 func buildModelNode(
 	resolveModel func(rt runtime.Runtime, state map[string]any) language.ChatModel,
 	toolList []coretools.Tool,
@@ -1876,10 +1903,11 @@ func buildModelNode(
 		// per-pair accumulator on each inner call (factory.py:311).
 		var mwCommands []*middleware.Command
 		for i := len(mws) - 1; i >= 0; i-- {
+			mw := mws[i]
 			if hook, ok := mws[i].(WrapModelCallResultHook); ok {
 				next := handler
 				handler = func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
-					result, err := hook.WrapModelCallResult(c, r, next)
+					result, err := hook.WrapModelCallResult(applyMiddlewareTracePolicy(c, mw), r, next)
 					if err != nil {
 						return middleware.ModelResponse{}, err
 					}
@@ -1904,7 +1932,7 @@ func buildModelNode(
 			}
 			next := handler
 			handler = func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
-				return hook.WrapModelCall(c, r, next)
+				return hook.WrapModelCall(applyMiddlewareTracePolicy(c, mw), r, next)
 			}
 		}
 

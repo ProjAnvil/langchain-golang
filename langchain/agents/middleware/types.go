@@ -196,6 +196,38 @@ type StateSchemaContributor interface {
 	StateSchema() []StateField
 }
 
+// TracePolicyConfig mirrors langgraph's TracePolicy transforms without
+// importing the graph package (which this package cannot import): a
+// middleware providing it controls traced payloads for everything inside its
+// wrap_model_call wrapping layer — langchain 1.3.15's middleware
+// trace_policy (#38910), applied on the emit side so every tracer (LangSmith,
+// console, a future OTel bridge) observes the scrubbed payloads.
+//
+// Fail-closed: a transform that panics drops the corresponding payload rather
+// than leaking it — a deliberate divergence from upstream's fail-open
+// behavior (see DIVERGENCES.md); the feature's motivation is PII/compliance.
+type TracePolicyConfig struct {
+	// ProcessInputs transforms start-kind event payloads (inputs). Nil leaves
+	// inputs untouched.
+	ProcessInputs func(value any) any
+	// ProcessOutputs transforms end-kind event payloads (outputs). Nil leaves
+	// outputs untouched.
+	ProcessOutputs func(value any) any
+}
+
+// TracePolicyProvider is the optional hook middleware implement to scrub
+// traced payloads before any tracer observes them (PII redaction at the emit
+// side; installed via callbacks.NewPayloadPolicyManager by the model node).
+// The policy covers everything the middleware's wrap_model_call layer
+// encloses — inner middleware and the model itself — and nested middleware
+// policies compose like onion layers: the outermost policy is installed into
+// the context first and therefore applied last.
+type TracePolicyProvider interface {
+	// TracePolicy returns the middleware's payload transforms. Both nil means
+	// no policy.
+	TracePolicy() TracePolicyConfig
+}
+
 func (c ToolCall) Clone() ToolCall {
 	return ToolCall{
 		Name: c.Name,
