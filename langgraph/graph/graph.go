@@ -905,6 +905,14 @@ type task struct {
 	id   string
 	node string
 	arg  map[string]any // nil means "use the shared graph state"
+	// runErrorHandler marks a resumed task whose node failed with a persisted
+	// ERROR write: the executor runs the node's error handler instead of the
+	// node function (crash recovery — Python langgraph 1.2.0 re-executes the
+	// handler, not the node; see planResume).
+	runErrorHandler bool
+	// resumeErrMsg carries the persisted error message for a runErrorHandler
+	// task (the reconstructed NodeError's Err).
+	resumeErrMsg string
 }
 
 // plannedID returns the task's deterministic planned identity: the resumed
@@ -1372,6 +1380,11 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			interrupts []types.Interrupt
 			consumed   []any
 			err        error
+			// nodeErr is non-nil when this task's failure went through the
+			// node's error handler (a fresh *NodeError failure, or a resumed
+			// handler task): it drives the pause/abort persistence of the
+			// ReservedError write below.
+			nodeErr *NodeError
 		}
 		outcomes := make([]outcome, len(active))
 
@@ -1411,6 +1424,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				continue
 			}
 			if _, resuming := resumeValues[t.id]; resuming {
+				execute[i] = true
+				continue
+			}
+			if t.runErrorHandler {
+				// A resumed handler task must re-run the handler, not replay
+				// some other run's cached writes for the same input.
 				execute[i] = true
 				continue
 			}
@@ -1466,7 +1485,53 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// subgraph checkpoint namespacing; see plannedTaskIDKey).
 			taskCtx := context.WithValue(em.nodeContext(runCtx, t.node, rs.step+1),
 				plannedTaskIDKey{}, t.plannedID(*currentCfg, rs.step+1))
-			update, cmd, interrupts, consumed, err := g.runTask(taskCtx, t, state, resumeValues[t.id])
+			var nodeErr *NodeError
+			var update map[string]any
+			var cmd *types.Command
+			var interrupts []types.Interrupt
+			var consumed []any
+			var err error
+			if t.runErrorHandler {
+				// Resumed handler task (crash recovery): run the handler with
+				// the persisted message instead of the node function —
+				// Python langgraph 1.2.0 re-executes the handler, not the
+				// node. Attempt is 0: the persisted write carries the message
+				// only. planResume only builds these tasks for nodes that
+				// still have a handler; the nil check is defensive.
+				ne := &NodeError{Node: t.node, Err: errors.New(t.resumeErrMsg)}
+				nodeErr = ne
+				if hp := g.errorHandlerPolicy(t.node); hp != nil {
+					result, herr := hp.Handler(state, ne)
+					update, cmd, err = normalizeErrorHandlerResult(result, herr, ne)
+				} else {
+					err = fmt.Errorf("graph: task %q carries a persisted error write but the compiled graph has no error handler for the node", t.node)
+				}
+			} else {
+				update, cmd, interrupts, consumed, err = g.runTask(taskCtx, t, state, resumeValues[t.id])
+				if ne, ok := errors.AsType[*NodeError](err); ok {
+					// The node's retries are exhausted and a handler is
+					// installed. Persist the task's ERROR write BEFORE
+					// running the handler, so a crash mid-handler resumes
+					// into a handler re-run instead of a node re-run
+					// (mirrors Python's committed task error write; the
+					// ReservedError slot exists in every saver). Under exit
+					// durability nothing persists mid-run — the pause/abort
+					// barriers below persist it when the run actually stops.
+					nodeErr = ne
+					runHandler := true
+					if checkpointing && cpSink.mode != DurabilityExit {
+						writes := []checkpoint.Write{{Channel: checkpoint.ReservedError, Value: ne.Err.Error()}}
+						if werr := cpSink.putWrites(ctx, *currentCfg, writes, t.plannedID(*currentCfg, rs.step+1)); werr != nil {
+							runHandler = false
+							err = fmt.Errorf("graph: persisting error write for thread %q: %w", opts.ThreadID, werr)
+						}
+					}
+					if runHandler {
+						result, herr := g.errorHandlerPolicy(t.node).Handler(state, ne)
+						update, cmd, err = normalizeErrorHandlerResult(result, herr, ne)
+					}
+				}
+			}
 			if sink != nil {
 				// Always emit node_end so start/end pairs are balanced per
 				// invocation, even on the error/interrupt paths. The pair
@@ -1474,7 +1539,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				// one start/end pair regardless of attempt count.
 				sink.EmitRawEvent(RawEvent{Kind: RawNodeEnd, Node: t.node})
 			}
-			outcomes[i] = outcome{update: update, cmd: cmd, interrupts: interrupts, consumed: consumed, err: err}
+			outcomes[i] = outcome{update: update, cmd: cmd, interrupts: interrupts, consumed: consumed, err: err, nodeErr: nodeErr}
 		})
 		resumeValues = nil
 
@@ -1536,6 +1601,30 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		}
 		for _, o := range outcomes {
 			if o.err != nil {
+				// Aborting with handler tasks in play: persist a pause-style
+				// checkpoint naming this superstep's tasks plus each handler
+				// task's ERROR write, so a later resume re-runs HANDLERS, not
+				// nodes (crash recovery). The mid-superstep putWrites in the
+				// task wrapper anchored on the planning checkpoint, which a
+				// fresh turn's input checkpoint does not name tasks for; this
+				// checkpoint does. Same shape as the in-node interrupt block
+				// above. Runs only when some task took the handler path —
+				// plain failures keep the bare abort, byte-for-byte.
+				if checkpointing && slices.ContainsFunc(outcomes, func(o outcome) bool { return o.nodeErr != nil }) {
+					next := plannedTasks(active)
+					stampDispatchIDs(next, active, *currentCfg, rs.step+1)
+					if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next); err != nil {
+						return Result{}, err
+					}
+					for i, o := range outcomes {
+						if o.nodeErr == nil {
+							continue
+						}
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), next[i].ID); err != nil {
+							return Result{}, fmt.Errorf("graph: persisting error write for thread %q: %w", opts.ThreadID, err)
+						}
+					}
+				}
 				return Result{}, o.err
 			}
 		}
@@ -1562,6 +1651,18 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				}
 				for i, o := range outcomes {
 					taskID := next[i].ID
+					if o.nodeErr != nil {
+						// The task failed and its handler produced this
+						// superstep's outcome; the ERROR write rides
+						// alongside the handler's completed writes so a
+						// resume (or time travel) sees both. planResume
+						// prefers completed writes — replay — over the ERROR
+						// write; only the ERROR write alone re-runs the
+						// handler.
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), taskID); err != nil {
+							return Result{}, err
+						}
+					}
 					if len(o.interrupts) > 0 {
 						if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptAndResumeWrites(o.interrupts, o.consumed), taskID); err != nil {
 							return Result{}, err
@@ -2015,6 +2116,10 @@ func (g *CompiledGraph) staticNext(ctx context.Context, nodeName string, state m
 //   - Backoff sleeps select on ctx.Done(): parent cancellation aborts the
 //     retry loop immediately and surfaces the PARENT's ctx error, not the
 //     node's error.
+//   - A terminal failure of a node with an installed ErrorHandlerPolicy is
+//     wrapped into a *NodeError so the run loop's task wrapper can run the
+//     handler (see errorHandlerPolicy); nodes without a handler keep the
+//     bare error, byte-for-byte identical to the pre-handler behavior.
 //
 // Events: the RawNodeStart/RawNodeEnd pair (in run's task wrapper) and the
 // debug task_result emission bracket the whole attempt loop, so exactly one
@@ -2037,6 +2142,9 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 			return update, cmd, nil, nil, nerr
 		}
 		if retry == nil || attempt >= retry.MaxAttempts || !retry.RetryOn(rerr) {
+			if g.errorHandlerPolicy(t.node) != nil {
+				rerr = &NodeError{Node: t.node, Attempt: attempt, Err: rerr}
+			}
 			return nil, nil, nil, nil, rerr
 		}
 		timer := time.NewTimer(retry.backoff(attempt))
@@ -2047,6 +2155,26 @@ func (g *CompiledGraph) runTask(ctx context.Context, t task, state map[string]an
 		case <-timer.C:
 		}
 	}
+}
+
+// errorHandlerPolicy returns the node's installed error handler policy, or
+// nil when the node has none (the only case in which task failures keep
+// their bare, unwrapped shape).
+func (g *CompiledGraph) errorHandlerPolicy(node string) *ErrorHandlerPolicy {
+	if policies, ok := g.policies[node]; ok {
+		return policies.ErrorHandler
+	}
+	return nil
+}
+
+// normalizeErrorHandlerResult applies node-result normalization to a
+// handler's return, wrapping handler failures so both the handler error and
+// the original NodeError stay matchable via errors.Is.
+func normalizeErrorHandlerResult(result any, herr error, ne *NodeError) (map[string]any, *types.Command, error) {
+	if herr != nil {
+		return nil, nil, fmt.Errorf("graph: error handler for node %q: %w (original: %w)", ne.Node, herr, ne.Err)
+	}
+	return normalizeNodeResult(result)
 }
 
 // runNode runs one node invocation. On an interrupt it additionally reports

@@ -84,6 +84,15 @@ func interruptWrites(interrupts []types.Interrupt) []checkpoint.Write {
 	return writes
 }
 
+// errorWrites builds the ReservedError pending write recording a task
+// failure's message, committed before the node's error handler runs
+// (mirrors Python's ERROR channel task write, langgraph 1.2.0 error_handler).
+// The write carries the message only — no attempt count — so a resumed
+// handler reconstructs a NodeError with Attempt 0.
+func errorWrites(ne *NodeError) []checkpoint.Write {
+	return []checkpoint.Write{{Channel: checkpoint.ReservedError, Value: ne.Err.Error()}}
+}
+
 // interruptAndResumeWrites builds a paused in-node task's pending writes:
 // each pending interrupt as a ReservedInterrupt write, plus — when the task
 // has already consumed resume values — ONE ReservedResume write whose value

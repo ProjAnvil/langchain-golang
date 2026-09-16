@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand"
 	"time"
@@ -190,6 +191,12 @@ type NodePolicies struct {
 	// Timeout caps a single node attempt's wall-clock and idle time (see
 	// TimeoutPolicy). Mirrors Python's langgraph.types.TimeoutPolicy.
 	Timeout *TimeoutPolicy
+	// ErrorHandler runs after the node's retries are exhausted — or
+	// immediately on failure when no RetryPolicy is installed (see
+	// ErrorHandlerPolicy). Deliberately per-node only: there is no
+	// compile-time default handler, and a handler's own failure never
+	// re-enters any handler (Python's recursion guard, langgraph 1.2.0).
+	ErrorHandler *ErrorHandlerPolicy
 }
 
 // TimeoutPolicy configures per-node attempt timeouts, mirroring Python's
@@ -287,3 +294,48 @@ func DefaultCacheKey(input map[string]any) (types.CacheKey, error) {
 	sum := sha256.Sum256(data)
 	return types.CacheKey{Key: hex.EncodeToString(sum[:])}, nil
 }
+
+// ErrorHandlerPolicy installs a recovery handler that runs after a node's
+// retries are exhausted (or immediately on failure when no RetryPolicy is
+// installed), mirroring Python langgraph 1.2.0's add_node(error_handler=)
+// (Fault Tolerance blog / langgraph 1.2.0 release notes).
+//
+// Scheduling semantics: the failing task's error is committed to the
+// checkpoint as a ReservedError write BEFORE the handler runs, then the
+// handler executes with the recovered outcome folded into the same
+// superstep's commit. A crash mid-handler therefore resumes into a HANDLER
+// re-run rather than a node re-run (see planResume's ReservedError
+// classification in resume.go).
+type ErrorHandlerPolicy struct {
+	// Handler receives the current state snapshot (the same pre-superstep
+	// view node functions see) and a typed NodeError. It may return a plain
+	// map[string]any state update or a *types.Command (normalized exactly
+	// like a node result), or an error, which propagates in place of the
+	// original failure with both errors matchable via errors.Is.
+	Handler func(state map[string]any, err *NodeError) (any, error)
+}
+
+// NodeError is the typed failure handed to an ErrorHandlerPolicy.Handler.
+type NodeError struct {
+	// Node is the failing node's name.
+	Node string
+	// Attempt is the 1-based attempt count that exhausted the retry budget.
+	// It is 0 when reconstructed on resume (the persisted write carries the
+	// message only).
+	Attempt int
+	// Err is the original error.
+	Err error
+}
+
+// Error renders "node %q attempt %d: %v", omitting the attempt segment when
+// Attempt is 0 (a resumed handler's reconstructed error).
+func (e *NodeError) Error() string {
+	if e.Attempt == 0 {
+		return fmt.Sprintf("node %q: %v", e.Node, e.Err)
+	}
+	return fmt.Sprintf("node %q attempt %d: %v", e.Node, e.Attempt, e.Err)
+}
+
+// Unwrap exposes the original error so errors.Is/As match through the
+// NodeError wrapper.
+func (e *NodeError) Unwrap() error { return e.Err }
