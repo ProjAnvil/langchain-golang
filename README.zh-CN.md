@@ -14,7 +14,6 @@
 
 ## 最新动态
 
-<!-- TODO(release)：定版 v0.9.1 时确认发布日期——2026-09-17 为占位。 -->
 
 **v0.9.1** —— full parity catch-up release：
 

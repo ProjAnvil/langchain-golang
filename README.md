@@ -14,7 +14,6 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 
 ## What's New
 
-<!-- TODO(release): finalize the v0.9.1 date when cutting the release — 2026-09-17 is a placeholder. -->
 
 **v0.9.1** — full parity catch-up release:
 

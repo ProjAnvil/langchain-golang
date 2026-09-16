@@ -4,6 +4,34 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-17
+
+Full parity catch-up release: the complete RAG stack, MCP tool integration, a native Gemini provider, document loaders, the SQL toolkit, runnable examples, and a bilingual docs site. (Milestones M1–M3 of the parity catch-up program, released together.)
+
+### Added — RAG stack
+- vectorstores: declarative filter capability interface — `SearchOptions` + optional `OptionSearcher` (zero changes to the base interface), an 11-operator `$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$between/$exists/$like` DSL matching Python's `SearchArgs.filter`, retriever kwargs pass-through, and in-memory/chroma adapters (af1b2af)
+- partners/pgvector: pgx/v5 vector store — per-collection tables with auto DDL + HNSW/IVFFlat indexes, cosine/L2/IP distances, jsonb filter SQL (fully parameterized), pgxmock unit tests + env-gated conformance (c6fb101)
+- partners/redisvector: RediSearch store — FT.CREATE vector schema, KNN search, declared-metadata JSON filtering, RESP2/RESP3 reply parsing, env-gated conformance against Redis Stack (933bd11)
+- retrievers: `DocumentCompressor` abstraction + `ContextualCompressionRetriever`; `MultiQueryRetriever` (model-generated query variants), `ParentDocumentRetriever` (child retrieval → parent reassembly via a BaseStore docstore), `EnsembleRetriever` (RRF fusion, Python rank semantics) (9af9be2, 1906b50)
+- partners/cohere & partners/jina: hosted rerank adapters (hand-written REST, zero SDK deps) (f118582)
+
+### Added — models & tools
+- partners/mcp: MCP adapter following langchain 1.4.0's `langchain.mcp` blueprint (mcp-go) — MCPConfig + ClientGroup connection models with namespaced tools, discovery cache modes, the four-quadrant result mapping (content blocks / structured artifact / error ToolMessage / transport raise), **elicitation bridged to LangGraph interrupts** (transport-independent, accept/decline/cancel), and destructiveHint-based HITL gating (f7d3e77)
+- langgraph: `graph.InterruptSupported` context probe for partner adapters (34b42bd)
+- partners/gemini: native Gemini chat model on the official genai SDK — tool calling + tool-choice mapping, structured output (responseJsonSchema), SSE streaming with terminal usage, multimodal inputs, provider self-registration; passes all five standardtests chat-model conformance layers (7b6533b)
+- documentloaders: HTML (goquery), Web (http + HTML extraction, Python-aligned headers/metadata), and PDF (ledongthuc/pdf) loaders with golden-file tests (8a6b385)
+
+### Added — toolkit, examples, docs
+- langchain/toolkits/sqltoolkit: the four SQL tools (query / list_tables / schema / checker) over database/sql with **read-only guardrails** (single SELECT/WITH only, comment-stripped lexical analysis, write keywords rejected; guardrails verified against real bypass attempts) and sqlite/postgres introspection (917c7a3)
+- examples/: 12 runnable examples — quickstart, HITL, streaming, subgraph resume, fault tolerance (retry + error handler), TracePolicy scrubbing, full RAG chain, MCP tools, Gemini agent, SQL agent, middleware suite, advanced retrievers (25ce7c3)
+- docs site: mkdocs-material bilingual site with six new bilingual guides (RAG stack, MCP, Gemini, SQL toolkit, fault tolerance, loaders) and a GitHub Pages workflow (5381a38)
+- CI: dependency pin alignment check keeping root and nested module pgx/go-redis versions in lockstep (8758bec)
+
+### Fixed
+- RRF rank base corrected to Python's 1-based semantics; Gemini stream double-Close panic and ctx registration leak; MCP adapter connection cleanup on partial startup failure; bounded waits on elicitation cancel; `$between` mixed-type validation; MMR double-embedding in pgvector/redisvector (audit fixes e70c9b7, 2d599a7, 12b9eae)
+
+**Full Changelog**: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...v0.9.1
+
 ## [0.8.1] - 2026-09-17
 
 ### Added
@@ -76,7 +104,8 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 ## [0.5.x] - 2026-08
 Early development line preceding the parity baseline.
 
-[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...v0.9.1
 [0.8.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.0...v0.7.1

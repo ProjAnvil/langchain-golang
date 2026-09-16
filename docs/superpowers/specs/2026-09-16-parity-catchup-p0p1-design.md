@@ -289,7 +289,7 @@ pgvector→retrieve→rerank→agent）、MCP tools、Gemini、SQL agent、常�
 - **依赖策略**：partners/pgvector、partners/redisvector 进 root module（pgx v5、
   go-redis v9 成为 root 直接依赖）；CI 增加 pin 对齐检查（与 langgraph/checkpoint/
   postgres、redis 嵌套模块的版本一致性，make 目标实现）
-- **版本节奏**：M0a→v0.8.0、M0b→v0.8.1（用户改号）、M1→v0.9.0、M2→v0.10.0、M3→v0.11.0；
+- **版本节奏**：M0a→v0.8.0、M0b→v0.8.1（用户改号）；**M1+M2+M3 合并为单次发布 v0.9.1（用户 2026-09-17 指示：完成全部 spec 后才发 0.9.1），表中 M1/M2/M3 的分版本号作废**；
   嵌套 checkpoint 模块随需 bump（沿用现有 pin 流程）；CHANGELOG 每版必更
 - **文档惯例**：新能力附双语 usage 文档进 docs/usage/；代码注释英文、Python parity
   出处标注（沿现有风格）
