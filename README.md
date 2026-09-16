@@ -304,20 +304,9 @@ make test-postgres     # embedded PostgreSQL saver
 
 ## Contributing
 
-Contributions welcome — especially new partner integrations (Google Gemini, AWS Bedrock, Pinecone, etc.).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide — conventions, testing, and PR expectations. New partner integrations are especially welcome (Google Gemini, AWS Bedrock, Pinecone, etc.).
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feat/your-feature`)
-3. Ensure `go build ./... && go vet ./... && go test -race ./...` passes
-4. Match the existing code style and Python-parity conventions
-5. Submit a pull request
-
-### Conventions
-
-- **Python is authoritative**: when in doubt, check what the Python source does
-- **Trust `go build/vet/test`**, not editor diagnostics (gopls may show false positives)
-- Every package should have compile-checked examples in `example_test.go`
-- Bilingual docs: add both `guide.md` and `guide.zh-CN.md`
+**Python is authoritative**: when in doubt, check what the Python source does. Design decisions where this port deliberately diverges are documented in [DIVERGENCES.md](DIVERGENCES.md).
 
 ---
 
