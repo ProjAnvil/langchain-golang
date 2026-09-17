@@ -507,6 +507,31 @@ func TestNewSQLToolkitValidation(t *testing.T) {
 			t.Fatal("expected error for negative sample rows")
 		}
 	})
+	t.Run("zero max query rows rejected", func(t *testing.T) {
+		db := openTestDB(t)
+		if _, err := NewSQLToolkit(t.Context(), db, SQLite, WithMaxQueryRows(0)); err == nil {
+			t.Fatal("expected error for zero max query rows")
+		}
+	})
+	t.Run("zero max schema length rejected", func(t *testing.T) {
+		db := openTestDB(t)
+		if _, err := NewSQLToolkit(t.Context(), db, SQLite, WithMaxSchemaLength(0)); err == nil {
+			t.Fatal("expected error for zero max schema length")
+		}
+	})
+	t.Run("unreachable database fails the ping", func(t *testing.T) {
+		// mode=rw refuses to create the file, so PingContext must fail.
+		db, err := sql.Open("sqlite", "file:/__sqltoolkit_missing_dir__/nope.db?mode=rw")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		if _, err := NewSQLToolkit(t.Context(), db, SQLite); err == nil {
+			t.Fatal("expected ping error for an unopenable database")
+		} else if !strings.Contains(err.Error(), "ping db") {
+			t.Fatalf("err = %v, want a wrapped ping failure", err)
+		}
+	})
 	t.Run("dialect accessor", func(t *testing.T) {
 		toolkit := newTestToolkit(t)
 		if got := toolkit.Dialect(); got != SQLite {
@@ -645,5 +670,85 @@ func TestAgentComposition(t *testing.T) {
 	}
 	if last := out[len(out)-1]; last.Content != "found the tables" {
 		t.Fatalf("final agent message = %q", last.Content)
+	}
+}
+
+// TestToolInputCoercionFailures covers stringArg's type-check branch through
+// every tool that reads a string argument: non-string inputs must come back
+// as "Error: ..." content (not tool failures), and nil values must be
+// tolerated as the empty string.
+func TestToolInputCoercionFailures(t *testing.T) {
+	toolkit := newTestToolkit(t)
+
+	t.Run("query tool rejects non-string", func(t *testing.T) {
+		tool := toolNamed(t, toolkit, QueryToolName)
+		result, err := tool.Invoke(t.Context(), map[string]any{"query": 42})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if !strings.HasPrefix(result.Content, "Error:") ||
+			!strings.Contains(result.Content, "query must be a string") {
+			t.Fatalf("content = %q, want a string-type error", result.Content)
+		}
+	})
+
+	t.Run("query tool nil input behaves like empty string", func(t *testing.T) {
+		tool := toolNamed(t, toolkit, QueryToolName)
+		result, err := tool.Invoke(t.Context(), map[string]any{"query": nil})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if !strings.HasPrefix(result.Content, "Error:") {
+			t.Fatalf("content = %q, want the guardrail rejection of an empty query", result.Content)
+		}
+	})
+
+	t.Run("schema tool rejects non-string", func(t *testing.T) {
+		tool := toolNamed(t, toolkit, SchemaToolName)
+		result, err := tool.Invoke(t.Context(), map[string]any{"table_names": []string{"users"}})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if !strings.HasPrefix(result.Content, "Error:") ||
+			!strings.Contains(result.Content, "table_names must be a string") {
+			t.Fatalf("content = %q, want a string-type error", result.Content)
+		}
+	})
+
+	t.Run("checker tool rejects non-string", func(t *testing.T) {
+		tool := toolNamed(t, toolkit, QueryCheckerToolName)
+		result, err := tool.Invoke(t.Context(), map[string]any{"query": 1.5})
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if !strings.HasPrefix(result.Content, "Error:") ||
+			!strings.Contains(result.Content, "query must be a string") {
+			t.Fatalf("content = %q, want a string-type error", result.Content)
+		}
+	})
+}
+
+// TestListTablesToolDatabaseFailure covers the list tool's error-as-content
+// branch when the underlying database breaks (here: closed underneath it).
+func TestListTablesToolDatabaseFailure(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:sqltoolkit_listfail?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	toolkit, err := NewSQLToolkit(t.Context(), db, SQLite)
+	if err != nil {
+		t.Fatalf("NewSQLToolkit: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	tool := toolNamed(t, toolkit, ListTablesToolName)
+	result, err := tool.Invoke(t.Context(), map[string]any{})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if !strings.HasPrefix(result.Content, "Error:") {
+		t.Fatalf("content = %q, want an Error: prefix for the broken database", result.Content)
 	}
 }
