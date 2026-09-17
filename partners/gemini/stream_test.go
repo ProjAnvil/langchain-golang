@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,8 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
+	"github.com/projanvil/langchain-golang/core/schema"
+	coretools "github.com/projanvil/langchain-golang/core/tools"
 )
 
 // newStreamServer serves SSE frames for streamGenerateContent requests.
@@ -297,5 +300,250 @@ func TestStreamCallbacks(t *testing.T) {
 	}
 	if output.UsageMetadata.TotalTokens != 4 {
 		t.Errorf("aggregated end usage: %+v", output.UsageMetadata)
+	}
+}
+
+// TestStreamUnconfiguredClient: a zero-value ChatModel fails Stream with the
+// client-configuration error before any request.
+func TestStreamUnconfiguredClient(t *testing.T) {
+	_, err := ChatModel{}.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err == nil || !strings.Contains(err.Error(), "client is not configured") {
+		t.Fatalf("zero-value stream err = %v, want unconfigured client", err)
+	}
+}
+
+// TestStreamRejectsUnknownRole: a malformed history fails Stream setup and
+// the error callback event is emitted.
+func TestStreamRejectsUnknownRole(t *testing.T) {
+	recorder := callbacks.NewRecorder()
+	server := newStreamServer(t) // never reached
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	odd := messages.Human("hi")
+	odd.Role = messages.Role("alien")
+	_, err := model.Stream(
+		t.Context(),
+		[]messages.Message{odd},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)),
+	)
+	if err == nil || !strings.Contains(err.Error(), `unexpected message role "alien"`) {
+		t.Fatalf("stream err = %v, want role error", err)
+	}
+	var errorEvents []callbacks.Event
+	for _, event := range recorder.Events() {
+		if event.Kind == callbacks.EventChatModelError {
+			errorEvents = append(errorEvents, event)
+		}
+	}
+	if len(errorEvents) != 1 {
+		t.Fatalf("error events: %+v", errorEvents)
+	}
+}
+
+// TestStreamRejectsMalformedToolSchema: a bound tool whose schema cannot
+// convert fails Stream setup the same way.
+func TestStreamRejectsMalformedToolSchema(t *testing.T) {
+	server := newStreamServer(t) // never reached
+	defer server.Close()
+
+	base, err := coretools.FromFunc("broken", "schema carrier",
+		func(context.Context) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("FromFunc() error = %v", err)
+	}
+	poisoned := &schemaOverrider{Tool: base, schema: schema.Schema{"type": "widget"}}
+	bound, err := NewChatModel(
+		modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"),
+	).BindTools([]coretools.Tool{poisoned})
+	if err != nil {
+		t.Fatalf("BindTools() error = %v", err)
+	}
+	_, err = bound.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err == nil || !strings.Contains(err.Error(), `tool "broken" schema`) {
+		t.Fatalf("stream err = %v, want tool schema error", err)
+	}
+}
+
+// TestStreamStartCallbackError: a failing OnChatModelStart handler aborts
+// Stream before any request.
+func TestStreamStartCallbackError(t *testing.T) {
+	server := newStreamServer(t) // never reached
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	_, err := model.Stream(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(callbackStubHandler{
+			failOn: callbacks.EventChatModelStart, err: errCallbackStub,
+		})),
+	)
+	if !errors.Is(err, errCallbackStub) {
+		t.Fatalf("stream start callback error should propagate: %v", err)
+	}
+}
+
+// TestStreamChunkCallbackError: a failing stream-chunk handler surfaces on
+// the Next call that tried to emit it.
+func TestStreamChunkCallbackError(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}`,
+		`{"candidates":[{"content":{"parts":[{"text":" world"}]}},"finishReason":"STOP"}]}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	stream, err := model.Stream(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(callbackStubHandler{
+			failOn: callbacks.EventChatModelStream, err: errCallbackStub,
+		})),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, _, err := stream.Next(t.Context()); err == nil {
+		t.Fatal("first Next must surface the chunk callback error")
+	}
+}
+
+// TestStreamEndCallbackError: a failing OnChatModelEnd handler surfaces on
+// the terminal Next call.
+func TestStreamEndCallbackError(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	stream, err := model.Stream(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(callbackStubHandler{
+			failOn: callbacks.EventChatModelEnd, err: errCallbackStub,
+		})),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, ok, err := stream.Next(t.Context()); err != nil || !ok {
+		t.Fatalf("content chunk: ok=%v err=%v", ok, err)
+	}
+	if _, _, err := stream.Next(t.Context()); !errors.Is(err, errCallbackStub) {
+		t.Fatalf("terminal Next err = %v, want end callback error", err)
+	}
+}
+
+// TestStreamModelVersionMetadataAndSilentFinish: responses carrying
+// modelVersion stamp the aggregate output's metadata; a finish-only response
+// with nothing to say ends the stream silently without yielding a chunk.
+func TestStreamModelVersionMetadataAndSilentFinish(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]},"finishReason":"STOP"}],"modelVersion":"gemini-test","responseId":"resp_s"}`,
+		`{"candidates":[{"finishReason":"STOP"}],"modelVersion":"gemini-test","responseId":"resp_s"}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	genaiStream := stream.(*genaiStream)
+	defer func() { _ = stream.Close() }()
+
+	chunks := drainStream(t, stream)
+	if len(chunks) != 1 || chunks[0].Content != "partial" {
+		t.Fatalf("chunks = %+v, want the single content chunk", chunks)
+	}
+	if genaiStream.output.ID != "resp_s" {
+		t.Fatalf("aggregate ID = %q, want resp_s", genaiStream.output.ID)
+	}
+	if genaiStream.output.ResponseMetadata["model"] != "gemini-test" ||
+		genaiStream.output.ResponseMetadata["model_provider"] != "gemini" {
+		t.Fatalf("aggregate metadata = %v", genaiStream.output.ResponseMetadata)
+	}
+}
+
+// TestStreamSkipsEmptyFrames: bookkeeping-only frames (nil parts, empty
+// candidates, empty text) yield no chunks but do not end the stream.
+func TestStreamSkipsEmptyFrames(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"role":"model","parts":[null,{"text":""}]}}]}`,
+		`{"candidates":[{}]}`,
+		`{"candidates":[{"content":{"parts":[{"text":"real"}]},"finishReason":"STOP"}]}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	chunks := drainStream(t, stream)
+	if len(chunks) != 1 || chunks[0].Content != "real" {
+		t.Fatalf("chunks = %+v, want only the real text chunk", chunks)
+	}
+}
+
+// TestStreamPendingUsageChunkCallbackError: the deferred terminal usage-only
+// chunk (usage arriving after the finish-carrying frame) goes through the
+// same chunk callback, and a failing handler surfaces there.
+func TestStreamPendingUsageChunkCallbackError(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}`,
+		`{"candidates":[],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":2,"totalTokenCount":10}}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	stream, err := model.Stream(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(callbackStubHandler{
+			failOn: callbacks.EventChatModelStream, err: errCallbackStub,
+		})),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	// The content chunk fails the callback first; the stream is dead after.
+	if _, _, err := stream.Next(t.Context()); !errors.Is(err, errCallbackStub) {
+		t.Fatalf("content chunk err = %v, want callback error", err)
+	}
+}
+
+// TestGenaiStreamPendingChunkCallbackError: with a healthy content chunk but
+// a failing stream handler, the failure lands exactly on the deferred
+// usage-only chunk's Next call.
+func TestGenaiStreamPendingChunkCallbackError(t *testing.T) {
+	s := &genaiStream{
+		cfg:    runnables.NewConfig(runnables.WithCallbacks(callbacks.NewManager(callbackStubHandler{failOn: callbacks.EventChatModelStream, err: errCallbackStub}))),
+		output: messages.AI(""),
+		pending: []messages.Message{func() messages.Message {
+			m := messages.AI("")
+			m.UsageMetadata = messages.UsageMetadata{TotalTokens: 3}
+			return m
+		}()},
+	}
+	if _, _, err := s.Next(t.Context()); !errors.Is(err, errCallbackStub) {
+		t.Fatalf("pending chunk err = %v, want callback error", err)
+	}
+}
+
+// TestGenaiStreamHandleResponseNil: a nil SSE response frame is skipped
+// without yielding and without touching the aggregate output.
+func TestGenaiStreamHandleResponseNil(t *testing.T) {
+	s := &genaiStream{output: messages.AI("")}
+	chunk, yield := s.handleResponse(nil)
+	if yield {
+		t.Fatalf("nil response must not yield, got %+v", chunk)
 	}
 }

@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,9 +12,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
+	"github.com/projanvil/langchain-golang/core/runnables"
+	"github.com/projanvil/langchain-golang/core/schema"
+	coretools "github.com/projanvil/langchain-golang/core/tools"
 )
 
 // newGeminiTestServer spins a fake Gemini API server. The handler runs before
@@ -322,5 +327,162 @@ func drainStream(t *testing.T, stream interface {
 			return chunks
 		}
 		chunks = append(chunks, chunk)
+	}
+}
+
+// callbackStubHandler fails events of a single kind, to exercise callback
+// error propagation (mirrors the anthropic adapter's callbacks tests).
+type callbackStubHandler struct {
+	failOn callbacks.EventKind
+	err    error
+}
+
+func (h callbackStubHandler) HandleEvent(_ context.Context, event callbacks.Event) error {
+	if event.Kind == h.failOn {
+		return h.err
+	}
+	return nil
+}
+
+var errCallbackStub = errors.New("stub callback failure")
+
+func geminiOKServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return newGeminiTestServer(t, func(*testing.T, *http.Request, map[string]any) {},
+		`{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
+}
+
+// TestInvokeStartCallbackError: a failing OnChatModelStart handler aborts the
+// invoke before any request is made.
+func TestInvokeStartCallbackError(t *testing.T) {
+	server := geminiOKServer(t)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	_, err := model.Invoke(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(callbackStubHandler{
+			failOn: callbacks.EventChatModelStart, err: errCallbackStub,
+		})),
+	)
+	if !errors.Is(err, errCallbackStub) {
+		t.Fatalf("start callback error should propagate: %v", err)
+	}
+}
+
+// TestInvokeEndCallbackError: a failing OnChatModelEnd handler surfaces after
+// a successful round trip.
+func TestInvokeEndCallbackError(t *testing.T) {
+	server := geminiOKServer(t)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	_, err := model.Invoke(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(callbackStubHandler{
+			failOn: callbacks.EventChatModelEnd, err: errCallbackStub,
+		})),
+	)
+	if !errors.Is(err, errCallbackStub) {
+		t.Fatalf("end callback error should propagate: %v", err)
+	}
+}
+
+// TestInvokeAPIErrorEmitsErrorEvent: a non-2xx response fails the invoke and
+// the error callback event carries the provider message.
+func TestInvokeAPIErrorEmitsErrorEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"code":400,"message":"invalid argument","status":"INVALID_ARGUMENT"}}`, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	_, err := model.Invoke(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)),
+	)
+	if err == nil || !strings.Contains(err.Error(), "generate content") {
+		t.Fatalf("invoke err = %v, want generate content failure", err)
+	}
+	var errorEvents []callbacks.Event
+	for _, event := range recorder.Events() {
+		if event.Kind == callbacks.EventChatModelError {
+			errorEvents = append(errorEvents, event)
+		}
+	}
+	if len(errorEvents) != 1 || errorEvents[0].Error == "" {
+		t.Fatalf("error events: %+v", errorEvents)
+	}
+}
+
+// TestInvokeRejectsUnknownRole: a message with an unrecognized role fails the
+// history build before any request is sent.
+func TestInvokeRejectsUnknownRole(t *testing.T) {
+	server := geminiOKServer(t)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"))
+	odd := messages.Human("hi")
+	odd.Role = messages.Role("alien")
+	_, err := model.Invoke(t.Context(), []messages.Message{odd})
+	if err == nil || !strings.Contains(err.Error(), `unexpected message role "alien"`) {
+		t.Fatalf("invoke err = %v, want role error", err)
+	}
+}
+
+// TestInvokeRejectsMalformedToolSchema: a bound tool whose schema cannot
+// convert fails request assembly naming the tool.
+func TestInvokeRejectsMalformedToolSchema(t *testing.T) {
+	server := geminiOKServer(t)
+	defer server.Close()
+
+	base, err := coretools.FromFunc("broken", "schema carrier",
+		func(context.Context) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("FromFunc() error = %v", err)
+	}
+	// Poison the args schema with a type the converter rejects; the tool
+	// interface carries it verbatim.
+	poisoned := &schemaOverrider{Tool: base, schema: schema.Schema{"type": "widget"}}
+	bound, err := NewChatModel(
+		modelconfig.WithBaseURL(server.URL), modelconfig.WithAPIKey("k"),
+	).BindTools([]coretools.Tool{poisoned})
+	if err != nil {
+		t.Fatalf("BindTools() error = %v", err)
+	}
+	_, err = bound.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
+	if err == nil || !strings.Contains(err.Error(), `tool "broken" schema`) {
+		t.Fatalf("invoke err = %v, want tool schema error", err)
+	}
+}
+
+// schemaOverrider wraps a tool, replacing its args schema (error injection).
+type schemaOverrider struct {
+	coretools.Tool
+	schema schema.Schema
+}
+
+func (s *schemaOverrider) ArgsSchema() schema.Schema { return s.schema }
+
+// TestInvokeZeroValueClient: a zero-value ChatModel (no constructor) reports
+// the missing client configuration on first use.
+func TestInvokeZeroValueClient(t *testing.T) {
+	_, err := ChatModel{}.Invoke(t.Context(), []messages.Message{messages.Human("hi")})
+	if err == nil || !strings.Contains(err.Error(), "client is not configured") {
+		t.Fatalf("zero-value invoke err = %v, want unconfigured client", err)
+	}
+}
+
+// TestBatchPropagatesError: a failing member fails Batch with the first error
+// encountered.
+func TestBatchPropagatesError(t *testing.T) {
+	model := ChatModel{} // unconfigured client: every member fails
+	_, err := model.Batch(t.Context(), [][]messages.Message{{messages.Human("a")}})
+	if err == nil || !strings.Contains(err.Error(), "client is not configured") {
+		t.Fatalf("batch err = %v, want unconfigured client", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
+	"google.golang.org/genai"
 )
 
 // TestBuildContentsMultimodal verifies image/audio blocks serialize as
@@ -240,5 +241,204 @@ func TestResponseToMessageThoughtPart(t *testing.T) {
 	}
 	if reasoning != 1 {
 		t.Errorf("reasoning blocks: %d (blocks: %+v)", reasoning, response.ContentBlocks)
+	}
+}
+
+// TestBlockToPartVariants: the remaining block kinds map — video bytes and
+// URLs, reasoning parts, and the streaming-only shapes are skipped on
+// requests — while unsupported blocks fail the conversion.
+func TestBlockToPartVariants(t *testing.T) {
+	part, err := blockToPart(messages.VideoBlock{Base64: "AAAA", MimeType: "video/mp4"})
+	if err != nil {
+		t.Fatalf("blockToPart(video) error = %v", err)
+	}
+	if part.InlineData == nil || part.InlineData.MIMEType != "video/mp4" {
+		t.Fatalf("video part = %+v", part)
+	}
+
+	part, err = blockToPart(messages.VideoBlock{URL: "https://example.test/clip.mp4", MimeType: "video/mp4"})
+	if err != nil {
+		t.Fatalf("blockToPart(video url) error = %v", err)
+	}
+	if part.FileData == nil || part.FileData.FileURI != "https://example.test/clip.mp4" {
+		t.Fatalf("video url part = %+v", part)
+	}
+
+	part, err = blockToPart(messages.ReasoningBlock{Reasoning: "thinking hard"})
+	if err != nil {
+		t.Fatalf("blockToPart(reasoning) error = %v", err)
+	}
+	if part.Text != "thinking hard" || !part.Thought {
+		t.Fatalf("reasoning part = %+v", part)
+	}
+
+	for _, block := range []messages.ContentBlock{
+		messages.ToolCallChunkBlock{ID: "1", Name: "f"},
+		messages.InvalidToolCallBlock{ID: "2"},
+	} {
+		part, err = blockToPart(block)
+		if err != nil || part != nil {
+			t.Fatalf("blockToPart(%T) = %+v, %v; want nil part", block, part, err)
+		}
+	}
+
+	if _, err := blockToPart(messages.PlainTextBlock{Text: "x"}); err == nil {
+		t.Fatal("blockToPart(unsupported) must fail")
+	}
+}
+
+// TestDataPartFallbacks: inline data without a MIME type gets the kind's
+// default; undecodable base64 and empty blocks fail with descriptive errors.
+func TestDataPartFallbacks(t *testing.T) {
+	cases := []struct {
+		kind string
+		want string
+	}{
+		{kind: "image", want: "image/png"},
+		{kind: "audio", want: "audio/wav"},
+		{kind: "video", want: "video/mp4"},
+		{kind: "file", want: "application/octet-stream"},
+	}
+	for _, tc := range cases {
+		part, err := dataPart(tc.kind, "", "NDI=", "")
+		if err != nil {
+			t.Fatalf("dataPart(%s, no mime) error = %v", tc.kind, err)
+		}
+		if part.InlineData.MIMEType != tc.want {
+			t.Fatalf("dataPart(%s) mime = %q, want %q", tc.kind, part.InlineData.MIMEType, tc.want)
+		}
+	}
+
+	if _, err := dataPart("image", "image/png", "%%not-base64%%", ""); err == nil {
+		t.Fatal("dataPart(bad base64) must fail")
+	}
+	if _, err := dataPart("image", "", "", ""); err == nil {
+		t.Fatal("dataPart(no data, no url) must fail")
+	}
+}
+
+// TestBuildContentsRejectsBadBlocks: malformed multimodal blocks fail the
+// history build for each message role (system / human / AI), and a tool
+// message whose media blocks fail surfaces the same way.
+func TestBuildContentsRejectsBadBlocks(t *testing.T) {
+	bad := []messages.ContentBlock{messages.ImageBlock{Base64: "%%"}}
+	if _, _, err := buildContents([]messages.Message{systemWithBlocks(bad)}); err == nil {
+		t.Fatal("system message with bad block must fail")
+	}
+	if _, _, err := buildContents([]messages.Message{humanWithBlocks(bad)}); err == nil {
+		t.Fatal("human message with bad block must fail")
+	}
+	if _, _, err := buildContents([]messages.Message{aiWithBlocks(bad)}); err == nil {
+		t.Fatal("AI message with bad block must fail")
+	}
+
+	tool := messages.Tool("call-1", "output")
+	tool = tool.WithContentBlocks([]messages.ContentBlock{messages.PlainTextBlock{Text: "?"}})
+	if _, _, err := buildContents([]messages.Message{tool}); err == nil {
+		t.Fatal("tool message with unsupported block must fail")
+	}
+
+	// Streaming-only blocks in a tool result are skipped, not fatal; media
+	// blocks ride alongside the functionResponse part.
+	toolOK := messages.Tool("call-1", "output")
+	toolOK = toolOK.WithContentBlocks([]messages.ContentBlock{
+		messages.ToolCallChunkBlock{ID: "1", Name: "f"},
+		messages.ImageBlock{Base64: "aW1hZ2VkYXRh", MimeType: "image/png"},
+	})
+	_, contents, err := buildContents([]messages.Message{toolOK})
+	if err != nil {
+		t.Fatalf("buildContents(tool with chunk block) error = %v", err)
+	}
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("contents = %+v, want inline-data + functionResponse parts", contents)
+	}
+	if contents[0].Parts[0].InlineData == nil || contents[0].Parts[1].FunctionResponse == nil {
+		t.Fatalf("parts = %+v", contents[0].Parts)
+	}
+
+	// A tool result without content still sends an empty response object.
+	empty := messages.Tool("call-2", "")
+	_, contents, err = buildContents([]messages.Message{empty})
+	if err != nil {
+		t.Fatalf("buildContents(empty tool) error = %v", err)
+	}
+	response := contents[0].Parts[0].FunctionResponse
+	if response.Name != "call-2" || response.Response == nil || len(response.Response) != 0 {
+		t.Fatalf("functionResponse = %+v, want empty object under the id fallback name", response)
+	}
+}
+
+func systemWithBlocks(blocks []messages.ContentBlock) messages.Message {
+	m := messages.System("sys")
+	return m.WithContentBlocks(blocks)
+}
+
+func humanWithBlocks(blocks []messages.ContentBlock) messages.Message {
+	m := messages.Human("hi")
+	return m.WithContentBlocks(blocks)
+}
+
+func aiWithBlocks(blocks []messages.ContentBlock) messages.Message {
+	m := messages.AI("hi")
+	return m.WithContentBlocks(blocks)
+}
+
+// TestResponseToMessageMediaParts: inline data parts decode into audio /
+// video / image blocks by MIME prefix; nil parts and function calls carrying
+// their own IDs pass through untouched; finishMessage lands in the metadata.
+func TestResponseToMessageMediaParts(t *testing.T) {
+	response := &genai.GenerateContentResponse{
+		Candidates: []*genai.Candidate{{
+			Content: &genai.Content{Role: "model", Parts: []*genai.Part{
+				nil,
+				{FunctionCall: &genai.FunctionCall{ID: "call_abc", Name: "search", Args: map[string]any{"q": "x"}}},
+				{InlineData: &genai.Blob{Data: []byte("aud"), MIMEType: "audio/wav"}},
+				{InlineData: &genai.Blob{Data: []byte("vid"), MIMEType: "video/mp4"}},
+				{InlineData: &genai.Blob{Data: []byte("img"), MIMEType: "image/png"}},
+				{InlineData: &genai.Blob{Data: []byte("???")}}, // no MIME type: skipped
+			}},
+			FinishReason:  genai.FinishReasonStop,
+			FinishMessage: "all done",
+		}},
+		ModelVersion: "gemini-test",
+		ResponseID:   "resp_9",
+	}
+	msg, err := responseToMessage(response)
+	if err != nil {
+		t.Fatalf("responseToMessage() error = %v", err)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].ID != "call_abc" {
+		t.Fatalf("tool calls = %+v, want the API-provided id", msg.ToolCalls)
+	}
+	var sawAudio, sawVideo, sawImage bool
+	for _, block := range msg.ContentBlocks {
+		switch b := block.(type) {
+		case messages.AudioBlock:
+			sawAudio = b.Base64 == base64.StdEncoding.EncodeToString([]byte("aud"))
+		case messages.VideoBlock:
+			sawVideo = b.Base64 == base64.StdEncoding.EncodeToString([]byte("vid"))
+		case messages.ImageBlock:
+			sawImage = b.Base64 == base64.StdEncoding.EncodeToString([]byte("img"))
+		}
+	}
+	if !sawAudio || !sawVideo || !sawImage {
+		t.Fatalf("media blocks = %#v, want audio+video+image", msg.ContentBlocks)
+	}
+	if msg.ResponseMetadata["finish_message"] != "all done" {
+		t.Fatalf("finish_message = %v", msg.ResponseMetadata["finish_message"])
+	}
+	if msg.ID != "resp_9" {
+		t.Fatalf("ID = %q, want resp_9", msg.ID)
+	}
+}
+
+// TestOrSyntheticCallID: an API-provided id passes through; a missing one is
+// synthesized from the per-message index.
+func TestOrSyntheticCallID(t *testing.T) {
+	if got := orSyntheticCallID("call_xyz", 3); got != "call_xyz" {
+		t.Fatalf("orSyntheticCallID(id) = %q", got)
+	}
+	if got := orSyntheticCallID("", 3); got != "call_3" {
+		t.Fatalf("orSyntheticCallID(missing) = %q, want call_3", got)
 	}
 }
