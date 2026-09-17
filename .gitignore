@@ -37,3 +37,6 @@ Thumbs.db
 
 # mkdocs site output (docs.yml builds it in CI)
 /site/
+
+# Per-package coverage profiles (make coverage)
+.coverage/

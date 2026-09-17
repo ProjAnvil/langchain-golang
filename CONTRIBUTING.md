@@ -37,6 +37,28 @@ Thanks for contributing! New partner integrations are especially welcome (Google
 - `make vet-integration` — type-check integration tests without network
 - `make check-dep-alignment` — verify the root go.mod pins of pgx/go-redis match the nested checkpoint modules (enforced in CI; keep versions in sync when bumping either side)
 
+### Coverage gate (95% red line)
+
+`make coverage` runs the **parity catch-up packages** with per-package
+coverprofiles, prints the per-package table plus the merged total, and
+**exits non-zero when any package falls below 95%** (`COVERAGE_THRESHOLD`,
+overridable per invocation, e.g. `make coverage COVERAGE_THRESHOLD=90`).
+`make coverage-html` re-runs the gate and renders the merged profile to
+`coverage.html`. CI enforces the same gate in the `coverage` job and posts
+the table to the job summary.
+
+The 95% red line applies to every package in `COVERAGE_PKGS` (Makefile):
+
+- `core/vectorstores`, `core/retrievers`, `core/documentloaders`, `core/callbacks`
+- `partners/pgvector`, `partners/redisvector`, `partners/cohere`, `partners/jina`, `partners/mcp`, `partners/gemini`
+- `langchain/toolkits/sqltoolkit`
+- `langgraph/graph`
+
+When touching these packages, check `make coverage` locally before pushing;
+if a change cannot reasonably reach 95% (e.g. a branch that needs a live
+server), call it out explicitly in the PR and add it to the e2e/integration
+suites instead.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md). Do not open public issues for vulnerabilities.
