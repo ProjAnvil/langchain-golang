@@ -114,6 +114,38 @@ func TestMatchFilter(t *testing.T) {
 		{"unknown operator", map[string]any{"group": map[string]any{"$bogus": "a"}}, map[string]any{"group": "a"}, false},
 		{"operator as field", map[string]any{"$and": "x"}, map[string]any{"$and": "x"}, false},
 		{"eq list value", map[string]any{"group": []any{"a"}}, map[string]any{"group": "a"}, false},
+		{"empty condition map", map[string]any{"page": map[string]any{}}, map[string]any{"page": 3}, false},
+		{
+			"condition with multiple operators",
+			map[string]any{"page": map[string]any{FilterGt: 1, FilterLt: 5}},
+			map[string]any{"page": 3},
+			false,
+		},
+		{"in not a list", map[string]any{"group": map[string]any{FilterIn: "a"}}, map[string]any{"group": "a"}, false},
+		{"nin not a list", map[string]any{"group": map[string]any{FilterNin: "a"}}, map[string]any{"group": "a"}, false},
+		{
+			// Bool elements are rejected by ValidateFilter, so they never
+			// contribute to $nin either (the field is "not in" the empty set).
+			"nin bool element ignored",
+			map[string]any{"ok": map[string]any{FilterNin: []any{true}}},
+			map[string]any{"ok": true},
+			true,
+		},
+		{"between wrong arity", map[string]any{"page": map[string]any{FilterBetween: []any{1}}}, map[string]any{"page": 1}, false},
+		{
+			"between low bound type mismatch",
+			map[string]any{"page": map[string]any{FilterBetween: []any{"a", 5}}},
+			map[string]any{"page": 3},
+			false,
+		},
+		{
+			"between high bound type mismatch",
+			map[string]any{"page": map[string]any{FilterBetween: []any{1, "c"}}},
+			map[string]any{"page": 3},
+			false,
+		},
+		{"exists non-bool operand", map[string]any{"group": map[string]any{FilterExists: "yes"}}, map[string]any{"group": 1}, false},
+		{"like non-string operand", map[string]any{"name": map[string]any{FilterLike: 42}}, map[string]any{"name": "x"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,6 +204,9 @@ func TestValidateFilterErrors(t *testing.T) {
 		{"unknown operator", map[string]any{"group": map[string]any{"$bogus": "a"}}},
 		{"eq list value", map[string]any{"group": []any{"a"}}},
 		{"eq map value", map[string]any{"group": map[string]any{"nested": "a"}}},
+		{"eq explicit list operand", map[string]any{"group": map[string]any{FilterEq: []any{"a"}}}},
+		{"ne explicit list operand", map[string]any{"group": map[string]any{FilterNe: []any{"a"}}}},
+		{"between not a list", map[string]any{"page": map[string]any{FilterBetween: "scalar"}}},
 		{"gt bool value", map[string]any{"page": map[string]any{FilterGt: true}}},
 		{"gt nil value", map[string]any{"page": map[string]any{FilterGt: nil}}},
 		{"gt list value", map[string]any{"page": map[string]any{FilterGt: []any{1}}}},
@@ -205,4 +240,89 @@ func TestValidateFilterErrorMessageMentionsOperator(t *testing.T) {
 	if !strings.Contains(err.Error(), "$bogus") {
 		t.Fatalf("error should mention the invalid operator: %v", err)
 	}
+}
+
+// matchOperator's default arm is unreachable through MatchFilter (matchCondition
+// rejects unknown operators first), so it is exercised directly.
+func TestMatchOperator_UnknownOperator(t *testing.T) {
+	if matchOperator("$bogus", "a", "a", true) {
+		t.Fatal("unknown operator must never match")
+	}
+}
+
+// switchOrder's default arm is unreachable through the comparison operators,
+// so it is exercised directly.
+func TestSwitchOrder_UnknownOperator(t *testing.T) {
+	if switchOrder("$bogus", 1) {
+		t.Fatal("unknown comparison operator must never match")
+	}
+}
+
+func TestNumericValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  float64
+	}{
+		{"int", 7, 7},
+		{"int8", int8(7), 7},
+		{"int16", int16(7), 7},
+		{"int32", int32(7), 7},
+		{"int64", int64(7), 7},
+		{"uint", uint(7), 7},
+		{"uint8", uint8(7), 7},
+		{"uint16", uint16(7), 7},
+		{"uint32", uint32(7), 7},
+		{"uint64", uint64(7), 7},
+		{"float32", float32(1.5), 1.5},
+		{"float64", 1.5, 1.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := numericValue(tt.value)
+			if !ok || got != tt.want {
+				t.Fatalf("numericValue(%v): got (%v, %v) want (%v, true)", tt.value, got, ok, tt.want)
+			}
+		})
+	}
+	t.Run("non_numeric", func(t *testing.T) {
+		if _, ok := numericValue("7"); ok {
+			t.Fatal("string must not be numeric")
+		}
+		if _, ok := numericValue(true); ok {
+			t.Fatal("bool must not be numeric")
+		}
+		if _, ok := numericValue(nil); ok {
+			t.Fatal("nil must not be numeric")
+		}
+	})
+}
+
+func TestToAnySlice(t *testing.T) {
+	t.Run("any_slice_passthrough", func(t *testing.T) {
+		got, ok := toAnySlice([]any{"a", 1})
+		if !ok || len(got) != 2 || got[0] != "a" || got[1] != 1 {
+			t.Fatalf("got %v ok %v", got, ok)
+		}
+	})
+	t.Run("typed_string_slice_widens", func(t *testing.T) {
+		got, ok := toAnySlice([]string{"a", "b"})
+		if !ok || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+			t.Fatalf("got %v ok %v", got, ok)
+		}
+	})
+	t.Run("typed_int_slice_widens", func(t *testing.T) {
+		got, ok := toAnySlice([]int{3, 4})
+		if !ok || len(got) != 2 || got[0] != 3 || got[1] != 4 {
+			t.Fatalf("got %v ok %v", got, ok)
+		}
+	})
+	t.Run("non_slice_rejected", func(t *testing.T) {
+		if got, ok := toAnySlice("scalar"); ok {
+			t.Fatalf("scalar must not widen, got %v", got)
+		}
+		if got, ok := toAnySlice(nil); ok {
+			t.Fatalf("nil must not widen, got %v", got)
+		}
+	})
 }

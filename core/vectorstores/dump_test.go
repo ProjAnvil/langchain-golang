@@ -119,6 +119,31 @@ func TestLoadInMemoryMalformedJSON(t *testing.T) {
 	}
 }
 
+// A record without its own "id" field falls back to the map key as the
+// document id.
+func TestLoadInMemoryRecordWithoutID(t *testing.T) {
+	testFile := filepath.Join(t.TempDir(), "no-id.json")
+	payload := `{"key-one": {"text": "alpha", "vector": [0.1, 0.2], "metadata": {"group": "a"}}}`
+	if err := os.WriteFile(testFile, []byte(payload), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	loaded, err := LoadInMemory(testFile, embeddings.NewFake(4))
+	if err != nil {
+		t.Fatalf("LoadInMemory: %v", err)
+	}
+	docs, err := loaded.GetByIDs(t.Context(), []string{"key-one"})
+	if err != nil {
+		t.Fatalf("GetByIDs: %v", err)
+	}
+	if len(docs) != 1 || docs[0].ID != "key-one" || docs[0].PageContent != "alpha" {
+		t.Fatalf("loaded doc: %+v", docs)
+	}
+	if docs[0].Metadata["group"] != "a" {
+		t.Fatalf("loaded metadata: %v", docs[0].Metadata)
+	}
+}
+
 // Dump error paths: encode failure (unmarshalable metadata), write failure
 // (path is a directory), and parent-dir creation failure (a path component
 // is an existing file). Also covers the stale-idSequence skip branch.
