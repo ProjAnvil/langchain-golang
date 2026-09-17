@@ -3,8 +3,10 @@ package cohere
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -23,6 +25,7 @@ type rerankServer struct {
 	lastPath string
 	lastAuth string
 	lastBody []byte
+	header   http.Header
 	results  []rerankResult
 	status   int
 }
@@ -40,6 +43,7 @@ func newRerankServer(t *testing.T, results ...rerankResult) *rerankServer {
 		server.lastPath = r.URL.Path
 		server.lastAuth = r.Header.Get("Authorization")
 		server.lastBody = append([]byte(nil), body...)
+		server.header = r.Header.Clone()
 		results := server.results
 		status := server.status
 		server.mu.Unlock()
@@ -58,6 +62,12 @@ func (s *rerankServer) requestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.requests
+}
+
+func (s *rerankServer) lastHeader(name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.header.Get(name)
 }
 
 func (s *rerankServer) decodeLastBody(t *testing.T) rerankRequest {
@@ -237,6 +247,116 @@ func TestRerankerRejectsOutOfRangeIndex(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("out-of-range result index must error")
+	}
+}
+
+// recordingTransport counts RoundTrips and replays a canned rerank response so
+// tests can prove a WithHTTPClient-injected client is the one making requests.
+type recordingTransport struct {
+	roundTrips int
+}
+
+func (t *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.roundTrips++
+	body := strings.NewReader(`{"id":"rerank-1","results":[{"index":0,"relevance_score":0.5}]}`)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(body),
+	}, nil
+}
+
+func TestRerankerWithHTTPClientUsesInjectedClient(t *testing.T) {
+	transport := &recordingTransport{}
+
+	reranker := New(
+		WithBaseURL("http://rerank.invalid"),
+		WithAPIKey("key"),
+		WithHTTPClient(&http.Client{Transport: transport}),
+	)
+	docs, err := reranker.CompressDocuments(
+		t.Context(),
+		[]documents.Document{documents.New("doc", nil)},
+		"q",
+	)
+	if err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if len(docs) != 1 || docs[0].PageContent != "doc" {
+		t.Fatalf("docs: got %v", docs)
+	}
+	if transport.roundTrips != 1 {
+		t.Fatalf("injected client must issue the request, got %d round trips", transport.roundTrips)
+	}
+}
+
+func TestRerankerWithHeaderSendsCustomHeaders(t *testing.T) {
+	server := newRerankServer(t, rerankResult{Index: 0, RelevanceScore: 0.5})
+
+	reranker := New(
+		WithBaseURL(server.URL),
+		WithAPIKey("key"),
+		WithHeader("X-Tenant", "acme"),
+		WithHeader("X-Trace-Id", "trace-7"),
+	)
+	if _, err := reranker.CompressDocuments(
+		t.Context(),
+		[]documents.Document{documents.New("doc", nil)},
+		"q",
+	); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if got := server.lastHeader("X-Tenant"); got != "acme" {
+		t.Fatalf("X-Tenant header: got %q want acme", got)
+	}
+	if got := server.lastHeader("X-Trace-Id"); got != "trace-7" {
+		t.Fatalf("X-Trace-Id header: got %q want trace-7", got)
+	}
+	if server.lastHeader("Authorization") != "Bearer key" {
+		t.Fatalf("custom headers must not replace authorization: %q", server.lastHeader("Authorization"))
+	}
+}
+
+func TestRerankerBlankBaseURLFallsBackToDefault(t *testing.T) {
+	reranker := New(WithBaseURL("  "))
+	if reranker.cfg.BaseURL != defaultBaseURL {
+		t.Fatalf("base URL: got %q want %q", reranker.cfg.BaseURL, defaultBaseURL)
+	}
+}
+
+// WithHeader must lazily create the header map when the config carries none.
+func TestRerankerWithHeaderInitializesNilHeaderMap(t *testing.T) {
+	reranker := &Reranker{}
+	WithHeader("X-Tenant", "acme")(reranker)
+	if reranker.cfg.Headers["X-Tenant"] != "acme" {
+		t.Fatalf("headers: got %v", reranker.cfg.Headers)
+	}
+}
+
+func TestRerankerBlankModelFallsBackToDefault(t *testing.T) {
+	reranker := New(WithModel("  "))
+	if reranker.cfg.Model != defaultModel {
+		t.Fatalf("model: got %q want %q", reranker.cfg.Model, defaultModel)
+	}
+}
+
+// A document built without metadata must still gain a relevance_score map, the
+// annotation must not panic on a nil Metadata field.
+func TestRerankerAnnotatesDocumentWithoutMetadata(t *testing.T) {
+	server := newRerankServer(t, rerankResult{Index: 0, RelevanceScore: 0.77})
+
+	reranker := New(WithBaseURL(server.URL), WithAPIKey("key"))
+	docs, err := reranker.CompressDocuments(t.Context(), []documents.Document{
+		{PageContent: "bare doc"},
+	}, "q")
+	if err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if len(docs) != 1 || docs[0].PageContent != "bare doc" {
+		t.Fatalf("docs: got %v", docs)
+	}
+	if got, ok := docs[0].Metadata["relevance_score"]; !ok || got != 0.77 {
+		t.Fatalf("relevance score metadata: got %v", docs[0].Metadata)
 	}
 }
 
