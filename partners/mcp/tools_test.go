@@ -6,11 +6,14 @@ package mcp
 // integration.
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	coremessages "github.com/projanvil/langchain-golang/core/messages"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	lctools "github.com/projanvil/langchain-golang/langchain/tools"
@@ -228,4 +231,188 @@ func TestToolNodeErrorIntegration(t *testing.T) {
 	if msgs[1].Content != "echo: ok" {
 		t.Fatalf("success message = %q", msgs[1].Content)
 	}
+}
+
+// TestLoadToolsListToolsFailure: a member whose listing call fails aborts
+// LoadTools with the wrapped server error.
+func TestLoadToolsListToolsFailure(t *testing.T) {
+	group, err := NewClientGroup(t.Context(), map[string]Client{
+		"broken": &fakeGroupClient{listErr: errors.New("catalog exploded")},
+	})
+	if err != nil {
+		t.Fatalf("NewClientGroup() error = %v", err)
+	}
+	defer group.Close()
+	_, err = group.LoadTools(t.Context())
+	if err == nil || !strings.Contains(err.Error(), `list tools on server "broken"`) {
+		t.Fatalf("LoadTools() err = %v, want wrapped listing error", err)
+	}
+}
+
+// TestLoadToolsMalformedToolSchema: a listed tool whose input schema cannot
+// decode aborts the load naming the tool and server.
+func TestLoadToolsMalformedToolSchema(t *testing.T) {
+	group, err := NewClientGroup(t.Context(), map[string]Client{
+		"srv": &fakeGroupClient{tools: []mcp.Tool{
+			{Name: "corrupt", RawInputSchema: []byte("not-json")},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewClientGroup() error = %v", err)
+	}
+	defer group.Close()
+	_, err = group.LoadTools(t.Context())
+	if err == nil || !strings.Contains(err.Error(), `tool "corrupt" on server "srv"`) {
+		t.Fatalf("LoadTools() err = %v, want schema adaption error", err)
+	}
+}
+
+// TestConvertInputSchemaVariants: the raw and typed schema paths round-trip,
+// and the malformed shapes fail where the code can see them.
+func TestConvertInputSchemaVariants(t *testing.T) {
+	// Raw schema decodes as-is.
+	raw, err := convertInputSchema(mcp.Tool{RawInputSchema: []byte(`{"type":"object","required":["a"]}`)})
+	if err != nil {
+		t.Fatalf("convertInputSchema(raw) error = %v", err)
+	}
+	if raw["type"] != "object" {
+		t.Fatalf("raw schema = %#v", raw)
+	}
+
+	// Raw "null" yields an empty (non-nil) schema map.
+	empty, err := convertInputSchema(mcp.Tool{RawInputSchema: []byte(`null`)})
+	if err != nil {
+		t.Fatalf("convertInputSchema(null) error = %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("null schema = %#v, want empty non-nil map", empty)
+	}
+
+	// Undecodable raw bytes fail.
+	if _, err := convertInputSchema(mcp.Tool{RawInputSchema: []byte("{oops")}); err == nil {
+		t.Fatal("convertInputSchema(bad raw) must fail")
+	}
+
+	// Typed schema without raw bytes marshals then decodes.
+	typed, err := convertInputSchema(mcp.Tool{InputSchema: mcp.ToolInputSchema{
+		Type:       "object",
+		Properties: map[string]any{"q": map[string]any{"type": "string"}},
+	}})
+	if err != nil {
+		t.Fatalf("convertInputSchema(typed) error = %v", err)
+	}
+	if typed["type"] != "object" {
+		t.Fatalf("typed schema = %#v", typed)
+	}
+
+	// A typed schema carrying unmarshalable property values fails encoding.
+	if _, err := convertInputSchema(mcp.Tool{InputSchema: mcp.ToolInputSchema{
+		Properties: map[string]any{"bad": make(chan int)},
+	}}); err == nil {
+		t.Fatal("convertInputSchema(unmarshalable) must fail")
+	}
+}
+
+// TestMapCallResultContentVariants: audio and embedded-resource contents map
+// onto the standardized blocks (and malformed resource variants are skipped
+// without failing the call).
+func TestMapCallResultContentVariants(t *testing.T) {
+	result := &mcp.CallToolResult{Content: []mcp.Content{
+		mcp.TextContent{Text: "line one"},
+		mcp.TextContent{Text: "line two"},
+		mcp.AudioContent{Data: "YXVkaW8=", MIMEType: "audio/wav"},
+		mcp.EmbeddedResource{Resource: &mcp.BlobResourceContents{
+			Blob:     "ZmlsZQ==",
+			MIMEType: "application/pdf",
+		}},
+		mcp.EmbeddedResource{Resource: &mcp.BlobResourceContents{Blob: "eA=="}}, // no MIME type: skipped
+		mcp.EmbeddedResource{Resource: &mcp.TextResourceContents{URI: "file:///x", MIMEType: "text/plain"}},
+	}}
+	out, err := mapCallResult(&Tool{name: "srv_media"}, result)
+	if err != nil {
+		t.Fatalf("mapCallResult() error = %v", err)
+	}
+	if out.Content != "line one\nline two" {
+		t.Fatalf("Content = %q, want joined text parts", out.Content)
+	}
+	artifact, ok := out.Artifact.(*ToolArtifact)
+	if !ok {
+		t.Fatalf("Artifact = %T, want *ToolArtifact", out.Artifact)
+	}
+	var audio coremessages.AudioBlock
+	var file coremessages.FileBlock
+	for _, block := range artifact.ContentBlocks {
+		switch b := block.(type) {
+		case coremessages.AudioBlock:
+			audio = b
+		case coremessages.FileBlock:
+			file = b
+		}
+	}
+	if audio.Base64 != "YXVkaW8=" || audio.MimeType != "audio/wav" {
+		t.Fatalf("audio block = %+v", audio)
+	}
+	if file.Base64 != "ZmlsZQ==" || file.MimeType != "application/pdf" {
+		t.Fatalf("file block = %+v", file)
+	}
+	if len(artifact.ContentBlocks) != 2 {
+		t.Fatalf("content blocks = %#v, want audio+file only", artifact.ContentBlocks)
+	}
+
+	// A structured-only result still carries the artifact; a text-only result
+	// with skipped resources carries none.
+	structured := &mcp.CallToolResult{
+		StructuredContent: map[string]any{"ok": true},
+		Content: []mcp.Content{
+			mcp.EmbeddedResource{Resource: &mcp.TextResourceContents{URI: "file:///y"}},
+		},
+	}
+	out, err = mapCallResult(&Tool{name: "srv_structured"}, structured)
+	if err != nil {
+		t.Fatalf("mapCallResult(structured) error = %v", err)
+	}
+	artifact, ok = out.Artifact.(*ToolArtifact)
+	if !ok || artifact.StructuredContent.(map[string]any)["ok"] != true {
+		t.Fatalf("structured artifact = %#v", out.Artifact)
+	}
+}
+
+// TestInvokeContextCanceled: canceling the invocation context while the
+// server handler is still running surfaces context.Canceled from Invoke (the
+// CallTool goroutine is released afterwards so nothing leaks).
+func TestInvokeContextCanceled(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv := server.NewMCPServer("slow", "1.0.0")
+	srv.AddTool(mcp.NewTool("stall"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		close(entered)
+		<-release // the handler outlives the caller's context on purpose
+		return mcp.NewToolResultText("finally"), nil
+	})
+
+	group, err := NewClientGroup(t.Context(), map[string]Client{
+		"slow": newInProcessClient(t, srv),
+	})
+	if err != nil {
+		t.Fatalf("NewClientGroup() error = %v", err)
+	}
+	defer group.Close()
+
+	tool, err := newTool(group.members["slow"], "slow", mcp.NewTool("stall"), true)
+	if err != nil {
+		t.Fatalf("newTool() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	invokeErr := make(chan error, 1)
+	go func() {
+		_, err := tool.Invoke(ctx, nil)
+		invokeErr <- err
+	}()
+	<-entered
+	cancel()
+	if err := <-invokeErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Invoke(canceled) err = %v, want context.Canceled", err)
+	}
+	close(release) // let the in-flight CallTool goroutine finish
 }

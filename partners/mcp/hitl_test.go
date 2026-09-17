@@ -4,6 +4,7 @@ package mcp
 // HumanInTheLoopMiddleware InterruptOn configs.
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -66,5 +67,24 @@ func TestInterruptOnConfigsFeedMiddleware(t *testing.T) {
 	}
 	if _, ok := mw.InterruptOn["srv_danger"]; !ok {
 		t.Fatalf("InterruptOn = %#v", mw.InterruptOn)
+	}
+}
+
+// TestInterruptOnConfigsSkipsNonMCPTools: tools that are not MCP adapters are
+// ignored rather than breaking the mapping.
+func TestInterruptOnConfigsSkipsNonMCPTools(t *testing.T) {
+	foreign, err := coretools.FromFunc("plain_tool", "a non-MCP tool",
+		func(context.Context) (any, error) { return "ok", nil })
+	if err != nil {
+		t.Fatalf("FromFunc() error = %v", err)
+	}
+	danger := loadOne(t, "srv", "srv_danger")
+
+	interruptOn := InterruptOnConfigs([]coretools.Tool{foreign, danger})
+	if len(interruptOn) != 1 {
+		t.Fatalf("InterruptOnConfigs() = %#v, want only the destructive MCP tool", interruptOn)
+	}
+	if _, ok := interruptOn["plain_tool"]; ok {
+		t.Fatal("non-MCP tool must not produce an InterruptOn entry")
 	}
 }
