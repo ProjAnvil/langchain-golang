@@ -530,6 +530,494 @@ func TestRelevanceScorePerMetric(t *testing.T) {
 	if got := cosine.relevanceScore(0.25); got != 0.75 {
 		t.Fatalf("cosine relevance: got %v", got)
 	}
+	ip := &Store{metric: DistanceIP}
+	if got := ip.relevanceScore(-1.5); got != 1.5 {
+		t.Fatalf("ip relevance: got %v", got)
+	}
+	l2 := &Store{metric: DistanceL2}
+	if got := l2.relevanceScore(0); got != 1 {
+		t.Fatalf("l2 relevance: got %v", got)
+	}
+}
+
+func TestRediSearchMetricMapping(t *testing.T) {
+	for metric, want := range map[DistanceMetric]string{
+		DistanceCosine: "COSINE",
+		DistanceL2:     "L2",
+		DistanceIP:     "IP",
+	} {
+		if got := metric.rediSearchMetric(); got != want {
+			t.Fatalf("metric %s: got %q want %q", metric, got, want)
+		}
+	}
+}
+
+// closableFakeClient extends fakeClient with a Close method so Close
+// ownership can be asserted.
+type closableFakeClient struct {
+	fakeClient
+	closed bool
+}
+
+func (c *closableFakeClient) Close() error {
+	c.closed = true
+	return nil
+}
+
+func TestNewConnectionOptions(t *testing.T) {
+	store := &Store{}
+	WithPassword("secret")(store)
+	WithUsername("alice")(store)
+	WithDB(3)(store)
+	WithDimension(16)(store)
+	if store.password != "secret" || store.username != "alice" || store.db != 3 || store.dimension != 16 {
+		t.Fatalf(
+			"connection options: password=%q username=%q db=%d dimension=%d",
+			store.password, store.username, store.db, store.dimension,
+		)
+	}
+}
+
+func TestNewRejectsBlankAddressWithoutClient(t *testing.T) {
+	_, err := New(t.Context(), "docs",
+		WithAddr("  "),
+		WithEmbedder(embeddings.NewFake(4)),
+	)
+	if err == nil {
+		t.Fatal("expected error for blank address without an injected client")
+	}
+}
+
+func TestStoreClose(t *testing.T) {
+	t.Run("owned_client_is_closed", func(t *testing.T) {
+		client := &closableFakeClient{}
+		store := &Store{client: client, ownsClient: true}
+		store.Close()
+		if !client.closed {
+			t.Fatal("owned client must be closed")
+		}
+	})
+
+	t.Run("injected_client_stays_open", func(t *testing.T) {
+		client := &closableFakeClient{}
+		store := &Store{client: client}
+		store.Close()
+		if client.closed {
+			t.Fatal("injected client must not be closed")
+		}
+	})
+}
+
+func TestAddTextsStoresDocuments(t *testing.T) {
+	store, client := newFakeStore(t, withDefaultSchema(
+		fakeReply{value: "OK"},
+		fakeReply{value: "OK"},
+	)...)
+
+	// A metadatas slice shorter than texts exercises metadataAt's out-of-range
+	// branch, and the missing id exercises newID.
+	ids, err := store.AddTexts(t.Context(),
+		[]string{"alpha one", "alpha two"},
+		[]map[string]any{{"group": "a"}},
+		[]string{"one"},
+	)
+	if err != nil {
+		t.Fatalf("AddTexts: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "one" || ids[1] == "" {
+		t.Fatalf("ids: %v", ids)
+	}
+
+	first := client.call(2)
+	if first[0] != "JSON.SET" || first[1] != "docs:one" {
+		t.Fatalf("first JSON.SET args: %v", first)
+	}
+	var payload storedDocument
+	if err := json.Unmarshal([]byte(client.call(2)[3].(string)), &payload); err != nil {
+		t.Fatalf("stored json: %v", err)
+	}
+	if payload.Metadata["group"] != "a" {
+		t.Fatalf("metadata: %#v", payload.Metadata)
+	}
+	second := client.call(3)
+	if second[0] != "JSON.SET" || second[1] != "docs:"+ids[1] {
+		t.Fatalf("second JSON.SET args: %v", second)
+	}
+	var payloadTwo storedDocument
+	if err := json.Unmarshal([]byte(second[3].(string)), &payloadTwo); err != nil {
+		t.Fatalf("stored json two: %v", err)
+	}
+	if payloadTwo.Metadata == nil {
+		t.Fatal("metadata should be an object, got nil")
+	}
+}
+
+// nanEmbedder yields NaN vectors so the JSON encode path fails (json.Marshal
+// rejects NaN).
+type nanEmbedder struct{}
+
+func (nanEmbedder) EmbedDocuments(context.Context, []string) ([][]float64, error) {
+	return [][]float64{{math.NaN()}}, nil
+}
+
+func (nanEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
+	return []float64{math.NaN()}, nil
+}
+
+// shortEmbedder returns fewer vectors than input texts to drive the
+// AddDocuments count-mismatch guard.
+type shortEmbedder struct{}
+
+func (shortEmbedder) EmbedDocuments(context.Context, []string) ([][]float64, error) {
+	return [][]float64{{0.1}}, nil
+}
+
+func (shortEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
+	return []float64{0.1}, nil
+}
+
+func TestAddDocumentsFailures(t *testing.T) {
+	t.Run("no_documents", func(t *testing.T) {
+		store := &Store{}
+		ids, err := store.AddDocuments(t.Context(), nil)
+		if err != nil || ids != nil {
+			t.Fatalf("AddDocuments with no docs: ids=%v err=%v", ids, err)
+		}
+	})
+
+	t.Run("missing_embedder", func(t *testing.T) {
+		store := &Store{}
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{documents.New("a", nil)}); err == nil {
+			t.Fatal("expected error for missing embedder")
+		}
+	})
+
+	t.Run("embedding_failure", func(t *testing.T) {
+		store, _ := newFakeStore(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := store.AddDocuments(ctx, []documents.Document{documents.New("a", nil)}); err == nil {
+			t.Fatal("expected embedding failure")
+		}
+	})
+
+	t.Run("embedding_count_mismatch", func(t *testing.T) {
+		store := &Store{embedder: shortEmbedder{}}
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{
+			documents.New("a", nil), documents.New("b", nil),
+		}); err == nil {
+			t.Fatal("expected embedding count mismatch error")
+		}
+	})
+
+	t.Run("encode_failure", func(t *testing.T) {
+		store := &Store{
+			client:    &fakeClient{},
+			embedder:  nanEmbedder{},
+			dimension: 1,
+		}
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{
+			documents.New("a", nil).WithID("one"),
+		}); err == nil {
+			t.Fatal("expected JSON encode failure for NaN embedding")
+		}
+	})
+
+	t.Run("store_failure", func(t *testing.T) {
+		store, _ := newFakeStore(t, withDefaultSchema(fakeReply{err: errors.New("redis is full")})...)
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{
+			documents.New("a", nil).WithID("one"),
+		}); err == nil {
+			t.Fatal("expected JSON.SET failure")
+		}
+	})
+}
+
+func TestDeleteWithNoIDs(t *testing.T) {
+	store, client := newFakeStore(t, indexAbsentReply...)
+	if err := store.Delete(t.Context(), nil); err != nil {
+		t.Fatalf("Delete with no ids: %v", err)
+	}
+	if client.callCount() != 2 { // FT.INFO, FT.CREATE from New only
+		t.Fatalf("DEL must not run, got %d calls", client.callCount())
+	}
+}
+
+func TestGetByIDsEdgeCases(t *testing.T) {
+	t.Run("no_ids", func(t *testing.T) {
+		store, _ := newFakeStore(t)
+		docs, err := store.GetByIDs(t.Context(), nil)
+		if err != nil || docs != nil {
+			t.Fatalf("GetByIDs with no ids: docs=%v err=%v", docs, err)
+		}
+	})
+
+	t.Run("non_nil_error_aborts", func(t *testing.T) {
+		store, _ := newFakeStore(t, withDefaultSchema(fakeReply{err: errors.New("connection lost")})...)
+		if _, err := store.GetByIDs(t.Context(), []string{"one"}); err == nil {
+			t.Fatal("expected non-nil error to abort")
+		}
+	})
+
+	t.Run("non_string_reply", func(t *testing.T) {
+		store, _ := newFakeStore(t, withDefaultSchema(fakeReply{value: int64(1)})...)
+		if _, err := store.GetByIDs(t.Context(), []string{"one"}); err == nil {
+			t.Fatal("expected text conversion failure")
+		}
+	})
+
+	t.Run("malformed_document_json", func(t *testing.T) {
+		store, _ := newFakeStore(t, withDefaultSchema(fakeReply{value: "not-json"})...)
+		if _, err := store.GetByIDs(t.Context(), []string{"one"}); err == nil {
+			t.Fatal("expected document decode failure")
+		}
+	})
+}
+
+func TestSimilaritySearchReturnsDocuments(t *testing.T) {
+	store, _ := newFakeStore(t, withDefaultSchema(searchReplyRESP2("0.25", "0.75"))...)
+
+	docs, err := store.SimilaritySearch(t.Context(), "alpha", 2)
+	if err != nil {
+		t.Fatalf("SimilaritySearch: %v", err)
+	}
+	if len(docs) != 2 || docs[0].ID != "one" || docs[0].PageContent != "alpha one" {
+		t.Fatalf("docs: %#v", docs)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := store.SimilaritySearch(ctx, "alpha", 2); err == nil {
+		t.Fatal("expected search failure to propagate")
+	}
+}
+
+// A zero K falls back to the langchain default of 4.
+func TestSimilaritySearchWithScoreDefaultsKToFour(t *testing.T) {
+	store, client := newFakeStore(t, withDefaultSchema(searchReplyRESP2("0.25", "0.75"))...)
+
+	if _, err := store.SimilaritySearchWithScore(t.Context(), "alpha", 0); err != nil {
+		t.Fatalf("SimilaritySearchWithScore: %v", err)
+	}
+	query := client.lastCall()[2].(string)
+	if query != "*=>[KNN 4 @embedding $BLOB AS __embedding_score]" {
+		t.Fatalf("KNN expression for zero k: got %q", query)
+	}
+}
+
+func TestKnnSearchByVectorFailures(t *testing.T) {
+	t.Run("filter_rendering_failure", func(t *testing.T) {
+		store, _ := newFakeStore(t)
+		store.metadataFields = map[string]MetadataFieldType{"group": MetadataTag}
+		if _, err := store.knnSearchByVector(t.Context(), []float64{0.1},
+			map[string]any{"undeclared": "a"}, 4); err == nil {
+			t.Fatal("expected filter rendering failure")
+		}
+	})
+
+	t.Run("search_error", func(t *testing.T) {
+		store, _ := newFakeStore(t, withDefaultSchema(fakeReply{err: errors.New("search blew up")})...)
+		if _, err := store.knnSearchByVector(t.Context(), make([]float64, 8), nil, 4); err == nil {
+			t.Fatal("expected search failure")
+		}
+	})
+}
+
+func TestEmbedQueryFailures(t *testing.T) {
+	t.Run("missing_embedder", func(t *testing.T) {
+		store := &Store{}
+		if _, err := store.embedQuery(t.Context(), "alpha"); err == nil {
+			t.Fatal("expected error for missing embedder")
+		}
+	})
+
+	t.Run("dimension_mismatch", func(t *testing.T) {
+		client := &fakeClient{replies: indexAbsentReply}
+		store, err := New(t.Context(), "docs",
+			WithClient(client),
+			WithEmbedder(embeddings.NewFake(8)),
+			WithDimension(4),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := store.SimilaritySearchWithScore(t.Context(), "alpha", 2); err == nil {
+			t.Fatal("expected query embedding dimension mismatch")
+		}
+	})
+}
+
+func TestParseSearchReplyEdgeCases(t *testing.T) {
+	validBody, _ := json.Marshal(storedDocument{Content: "alpha", Metadata: map[string]any{}, Embedding: []float64{0, 0, 0, 0, 0, 0, 0, 0}})
+
+	t.Run("empty_id_is_skipped", func(t *testing.T) {
+		hits, err := parseSearchReply(map[any]any{
+			"results": []any{map[any]any{"id": ""}},
+		}, "docs:")
+		if err != nil || len(hits) != 0 {
+			t.Fatalf("hits: %v err %v", hits, err)
+		}
+	})
+
+	t.Run("malformed_document_body", func(t *testing.T) {
+		if _, err := parseSearchReply(map[any]any{
+			"results": []any{map[any]any{
+				"id":               "docs:one",
+				"extra_attributes": map[any]any{"$": "not-json"},
+			}},
+		}, "docs:"); err == nil {
+			t.Fatal("expected document decode failure")
+		}
+	})
+
+	t.Run("malformed_score", func(t *testing.T) {
+		if _, err := parseSearchReply(map[any]any{
+			"results": []any{map[any]any{
+				"id":               "docs:one",
+				"extra_attributes": map[any]any{scoreAlias: "fast"},
+			}},
+		}, "docs:"); err == nil {
+			t.Fatal("expected score parse failure")
+		}
+	})
+
+	t.Run("resp3_without_results_key", func(t *testing.T) {
+		hits, err := parseSearchReply(map[any]any{"total_results": int64(0)}, "docs:")
+		if err != nil || hits != nil {
+			t.Fatalf("hits: %v err %v", hits, err)
+		}
+	})
+
+	t.Run("resp3_non_map_result_entry", func(t *testing.T) {
+		hits, err := parseSearchReply(map[any]any{
+			"results": []any{int64(42), map[any]any{
+				"id":     "docs:one",
+				"values": []any{scoreAlias, "0.5", "$", string(validBody)},
+			}},
+		}, "docs:")
+		if err != nil {
+			t.Fatalf("parseSearchReply: %v", err)
+		}
+		if len(hits) != 1 || hits[0].doc.ID != "one" || hits[0].score != 0.5 || hits[0].doc.PageContent != "alpha" {
+			t.Fatalf("hits: %#v", hits)
+		}
+	})
+
+	t.Run("resp2_array_too_short", func(t *testing.T) {
+		hits, err := parseSearchReply([]any{int64(1)}, "docs:")
+		if err != nil || hits != nil {
+			t.Fatalf("hits: %v err %v", hits, err)
+		}
+	})
+
+	t.Run("resp2_map_form", func(t *testing.T) {
+		hits, err := parseSearchReply([]any{int64(1), map[any]any{
+			"docs:one": map[any]any{scoreAlias: "0.5", "$": string(validBody)},
+			int64(42):  map[any]any{scoreAlias: "0.9"},
+		}}, "docs:")
+		if err != nil {
+			t.Fatalf("parseSearchReply: %v", err)
+		}
+		if len(hits) != 1 || hits[0].doc.ID != "one" || hits[0].score != 0.5 {
+			t.Fatalf("hits: %#v", hits)
+		}
+	})
+
+	t.Run("resp2_map_form_decode_failure", func(t *testing.T) {
+		if _, err := parseSearchReply([]any{int64(1), map[any]any{
+			"docs:one": map[any]any{"$": "not-json"},
+		}}, "docs:"); err == nil {
+			t.Fatal("expected decode failure")
+		}
+	})
+
+	t.Run("resp2_flat_with_non_string_id", func(t *testing.T) {
+		hits, err := parseSearchReply([]any{int64(2),
+			int64(42),
+			"docs:one", []any{scoreAlias, "0.5", "$", string(validBody)},
+		}, "docs:")
+		if err != nil {
+			t.Fatalf("parseSearchReply: %v", err)
+		}
+		if len(hits) != 1 || hits[0].doc.ID != "one" {
+			t.Fatalf("hits: %#v", hits)
+		}
+	})
+
+	t.Run("resp2_flat_id_without_fields", func(t *testing.T) {
+		hits, err := parseSearchReply([]any{int64(2), "docs:one"}, "docs:")
+		if err != nil {
+			t.Fatalf("parseSearchReply: %v", err)
+		}
+		if len(hits) != 1 || hits[0].doc.ID != "one" || hits[0].doc.PageContent != "" {
+			t.Fatalf("hits: %#v", hits)
+		}
+	})
+
+	t.Run("resp2_flat_id_with_non_array_fields", func(t *testing.T) {
+		hits, err := parseSearchReply([]any{int64(1), "docs:one", int64(7)}, "docs:")
+		if err != nil {
+			t.Fatalf("parseSearchReply: %v", err)
+		}
+		if len(hits) != 1 || hits[0].doc.ID != "one" {
+			t.Fatalf("hits: %#v", hits)
+		}
+	})
+
+	t.Run("unexpected_reply_type", func(t *testing.T) {
+		hits, err := parseSearchReply("OK", "docs:")
+		if err != nil || hits != nil {
+			t.Fatalf("hits: %v err %v", hits, err)
+		}
+	})
+}
+
+func TestMetadataHelpers(t *testing.T) {
+	if got := cloneMetadata(nil); got == nil || len(got) != 0 {
+		t.Fatalf("cloneMetadata(nil): got %#v want empty map", got)
+	}
+	original := map[string]any{"group": "a"}
+	cloned := cloneMetadata(original)
+	if cloned["group"] != "a" {
+		t.Fatalf("cloneMetadata: got %#v", cloned)
+	}
+	cloned["group"] = "b"
+	if original["group"] != "a" {
+		t.Fatal("cloneMetadata must deep-copy the map")
+	}
+
+	metadatas := []map[string]any{{"group": "a"}}
+	if got := metadataAt(metadatas, 0); got == nil || got["group"] != "a" {
+		t.Fatalf("metadataAt in range: got %v", got)
+	}
+	if got := metadataAt(metadatas, 1); got != nil {
+		t.Fatalf("metadataAt out of range: got %v", got)
+	}
+
+	if id := newID(); len(id) != 32 {
+		t.Fatalf("newID: got %q want 32 hex chars", id)
+	}
+}
+
+func TestIsValidAttributeName(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"lowercase", "group", true},
+		{"mixed_with_digits", "Page_2", true},
+		{"empty", "", false},
+		{"contains_space", "bad field", false},
+		{"contains_special", "bad!", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidAttributeName(tt.value); got != tt.want {
+				t.Fatalf("isValidAttributeName(%q): got %v want %v", tt.value, got, tt.want)
+			}
+		})
+	}
 }
 
 func equalArgs(got, want []any) bool {

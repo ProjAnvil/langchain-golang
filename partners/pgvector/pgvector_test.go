@@ -1,6 +1,8 @@
 package pgvector
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"testing"
@@ -586,6 +588,381 @@ func TestRelevanceScorePerMetric(t *testing.T) {
 	l2 := &Store{metric: DistanceL2}
 	if got := l2.relevanceScore(0); got != 1 {
 		t.Fatalf("l2 relevance: got %v", got)
+	}
+}
+
+func TestDistanceOperatorPerMetric(t *testing.T) {
+	for metric, want := range map[DistanceMetric]string{
+		DistanceCosine: "<=>",
+		DistanceL2:     "<->",
+		DistanceIP:     "<#>",
+	} {
+		if got := (&Store{metric: metric}).distanceOperator(); got != want {
+			t.Fatalf("metric %s: got %q want %q", metric, got, want)
+		}
+	}
+}
+
+// shortEmbedder returns fewer vectors than input texts to drive the
+// AddDocuments count-mismatch guard.
+type shortEmbedder struct{}
+
+func (shortEmbedder) EmbedDocuments(context.Context, []string) ([][]float64, error) {
+	return [][]float64{{0.1}}, nil
+}
+
+func (shortEmbedder) EmbedQuery(context.Context, string) ([]float64, error) {
+	return []float64{0.1}, nil
+}
+
+func TestNewConnectionOptions(t *testing.T) {
+	store := &Store{}
+	WithDSN("postgres://user:pass@host:5432/db")(store)
+	if store.dsn != "postgres://user:pass@host:5432/db" {
+		t.Fatalf("WithDSN: got %q", store.dsn)
+	}
+	WithURL("postgres://other/db")(store)
+	if store.dsn != "postgres://other/db" {
+		t.Fatalf("WithURL: got %q", store.dsn)
+	}
+}
+
+func TestNewRejectsUnparseableDSN(t *testing.T) {
+	_, err := New(t.Context(), "docs",
+		WithDSN("://missing-protocol"),
+		WithEmbedder(embeddings.NewFake(4)),
+	)
+	if err == nil {
+		t.Fatal("expected error for unparseable DSN")
+	}
+}
+
+// New must close a pool it created when the schema DDL fails, so a dead
+// endpoint does not leak the connection pool.
+func TestNewSchemaFailureClosesOwnedPool(t *testing.T) {
+	// Parseable DSN pointing at an unroutable local port: pgxpool.New
+	// succeeds (lazy), the first DDL Exec fails to connect.
+	_, err := New(t.Context(), "docs",
+		WithDSN("postgres://127.0.0.1:1/db?sslmode=disable&connect_timeout=2"),
+		WithEmbedder(embeddings.NewFake(4)),
+	)
+	if err == nil {
+		t.Fatal("expected schema initialization failure against a dead endpoint")
+	}
+}
+
+func TestNewSchemaDDLFailures(t *testing.T) {
+	t.Run("table_ddl_failure", func(t *testing.T) {
+		pool := newMockPool(t)
+		pool.ExpectExec(regexp.QuoteMeta(
+			`CREATE TABLE IF NOT EXISTS "docs" (id TEXT PRIMARY KEY, content TEXT NOT NULL, metadata JSONB, embedding vector(4))`,
+		)).WillReturnError(errors.New("permission denied"))
+		_, err := New(t.Context(), "docs", WithPool(pool), WithEmbedder(embeddings.NewFake(4)))
+		if err == nil {
+			t.Fatal("expected create table failure")
+		}
+	})
+
+	t.Run("index_ddl_failure", func(t *testing.T) {
+		pool := newMockPool(t)
+		pool.ExpectExec(regexp.QuoteMeta(
+			`CREATE TABLE IF NOT EXISTS "docs" (id TEXT PRIMARY KEY, content TEXT NOT NULL, metadata JSONB, embedding vector(4))`,
+		)).WillReturnResult(pgconn.NewCommandTag("CREATE TABLE"))
+		pool.ExpectExec(regexp.QuoteMeta(
+			`CREATE INDEX IF NOT EXISTS "docs_embedding_idx" ON "docs" USING hnsw (embedding vector_cosine_ops)`,
+		)).WillReturnError(errors.New("no index for you"))
+		_, err := New(t.Context(), "docs", WithPool(pool), WithEmbedder(embeddings.NewFake(4)))
+		if err == nil {
+			t.Fatal("expected create index failure")
+		}
+	})
+}
+
+func TestStoreClose(t *testing.T) {
+	t.Run("owned_pool_is_closed", func(t *testing.T) {
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock.NewPool: %v", err)
+		}
+		pool.ExpectClose()
+		store := &Store{pool: pool, ownsPool: true}
+		store.Close()
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Fatalf("pool must be closed: %v", err)
+		}
+	})
+
+	t.Run("injected_pool_stays_open", func(t *testing.T) {
+		store, pool := newTestStore(t, "langchain")
+		store.Close()
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Fatalf("injected pool must not be closed: %v", err)
+		}
+	})
+}
+
+func TestAddTextsInsertsDocuments(t *testing.T) {
+	store, pool := newTestStore(t, "langchain")
+	embedder := embeddings.NewFake(8)
+	vec0, _ := embedder.EmbedDocuments(t.Context(), []string{"alpha one"})
+	vec1, _ := embedder.EmbedDocuments(t.Context(), []string{"alpha two"})
+
+	insertSQL := regexp.QuoteMeta(`INSERT INTO "langchain" (id, content, metadata, embedding)`)
+	pool.ExpectExec(insertSQL).WithArgs(
+		"one", "alpha one", `{"group":"a"}`, formatVector(vec0[0]),
+	).WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	pool.ExpectExec(insertSQL).WithArgs(
+		"two", "alpha two", "null", formatVector(vec1[0]),
+	).WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+
+	// A metadatas slice shorter than texts exercises the out-of-range branch
+	// of metadataAt (the second document stores JSON null).
+	ids, err := store.AddTexts(t.Context(),
+		[]string{"alpha one", "alpha two"},
+		[]map[string]any{{"group": "a"}},
+		[]string{"one", "two"},
+	)
+	if err != nil {
+		t.Fatalf("AddTexts: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "one" || ids[1] != "two" {
+		t.Fatalf("ids: got %v", ids)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestAddDocumentsFailures(t *testing.T) {
+	t.Run("no_documents", func(t *testing.T) {
+		store := &Store{table: "docs"}
+		ids, err := store.AddDocuments(t.Context(), nil)
+		if err != nil || ids != nil {
+			t.Fatalf("AddDocuments with no docs: ids=%v err=%v", ids, err)
+		}
+	})
+
+	t.Run("missing_embedder", func(t *testing.T) {
+		store := &Store{table: "docs"}
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{documents.New("a", nil)}); err == nil {
+			t.Fatal("expected error for missing embedder")
+		}
+	})
+
+	t.Run("embedding_failure", func(t *testing.T) {
+		store, _ := newTestStore(t, "langchain")
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := store.AddDocuments(ctx, []documents.Document{documents.New("a", nil)}); err == nil {
+			t.Fatal("expected embedding failure")
+		}
+	})
+
+	t.Run("embedding_count_mismatch", func(t *testing.T) {
+		store := &Store{table: "docs", embedder: shortEmbedder{}}
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{
+			documents.New("a", nil), documents.New("b", nil),
+		}); err == nil {
+			t.Fatal("expected embedding count mismatch error")
+		}
+	})
+
+	t.Run("metadata_marshal_failure", func(t *testing.T) {
+		store := &Store{
+			table:     "docs",
+			embedder:  embeddings.NewFake(8),
+			dimension: 8,
+		}
+		_, err := store.AddDocuments(t.Context(), []documents.Document{
+			documents.New("a", map[string]any{"bad": make(chan int)}).WithID("one"),
+		})
+		if err == nil {
+			t.Fatal("expected metadata marshal failure")
+		}
+	})
+
+	t.Run("insert_failure", func(t *testing.T) {
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatalf("pgxmock.NewPool: %v", err)
+		}
+		pool.ExpectExec(regexp.QuoteMeta(`INSERT INTO "langchain"`)).
+			WillReturnError(errors.New("unique violation"))
+		store := &Store{
+			table:     "langchain",
+			pool:      pool,
+			embedder:  embeddings.NewFake(8),
+			dimension: 8,
+		}
+
+		if _, err := store.AddDocuments(t.Context(), []documents.Document{
+			documents.New("a", nil).WithID("one"),
+		}); err == nil {
+			t.Fatal("expected insert failure")
+		}
+	})
+}
+
+func TestDeleteEdgeCases(t *testing.T) {
+	store, pool := newTestStore(t, "langchain")
+
+	if err := store.Delete(t.Context(), nil); err != nil {
+		t.Fatalf("Delete with no ids: %v", err)
+	}
+
+	pool.ExpectExec(regexp.QuoteMeta(`DELETE FROM "langchain" WHERE id = ANY($1)`)).
+		WithArgs([]string{"one"}).
+		WillReturnError(errors.New("delete failed"))
+	if err := store.Delete(t.Context(), []string{"one"}); err == nil {
+		t.Fatal("expected delete failure")
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestDeleteWithFilterRefusesEmptyFilter(t *testing.T) {
+	store, _ := newTestStore(t, "langchain")
+	if err := store.DeleteWithFilter(t.Context(), map[string]any{}); err == nil {
+		t.Fatal("expected refusal to delete with an empty filter")
+	}
+}
+
+func TestGetByIDsEdgeCases(t *testing.T) {
+	store, pool := newTestStore(t, "langchain")
+
+	if docs, err := store.GetByIDs(t.Context(), nil); err != nil || docs != nil {
+		t.Fatalf("GetByIDs with no ids: docs=%v err=%v", docs, err)
+	}
+
+	pool.ExpectQuery(regexp.QuoteMeta(`SELECT id, content, metadata FROM "langchain"`)).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnError(errors.New("select failed"))
+	if _, err := store.GetByIDs(t.Context(), []string{"one"}); err == nil {
+		t.Fatal("expected query failure")
+	}
+
+	pool.ExpectQuery(regexp.QuoteMeta(`SELECT id, content, metadata FROM "langchain"`)).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "content", "metadata"}).
+			AddRow(struct{}{}, "alpha", nil))
+	if _, err := store.GetByIDs(t.Context(), []string{"one"}); err == nil {
+		t.Fatal("expected scan failure")
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestSimilaritySearchFailures(t *testing.T) {
+	t.Run("propagates_search_failure", func(t *testing.T) {
+		store, _ := newTestStore(t, "langchain")
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := store.SimilaritySearch(ctx, "alpha", 2); err == nil {
+			t.Fatal("expected embedding failure to propagate")
+		}
+	})
+
+	t.Run("query_embedding_failure", func(t *testing.T) {
+		store, _ := newTestStore(t, "langchain")
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := store.SimilaritySearchWithScore(ctx, "alpha", 2); err == nil {
+			t.Fatal("expected embedding failure")
+		}
+	})
+
+	t.Run("query_embedding_dimension_mismatch", func(t *testing.T) {
+		pool := newMockPool(t)
+		expectTable(pool, "docs", 4, `CREATE INDEX IF NOT EXISTS "docs_embedding_idx" ON "docs" USING hnsw (embedding vector_cosine_ops)`)
+		store, err := New(t.Context(), "docs",
+			WithPool(pool),
+			WithEmbedder(embeddings.NewFake(8)),
+			WithDimension(4),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := store.SimilaritySearchWithScore(t.Context(), "alpha", 2); err == nil {
+			t.Fatal("expected query embedding dimension mismatch")
+		}
+	})
+}
+
+// A zero K falls back to the langchain default of 4.
+func TestSimilaritySearchWithScoreDefaultsKToFour(t *testing.T) {
+	store, pool := newTestStore(t, "langchain")
+	embedder := embeddings.NewFake(8)
+	vec, _ := embedder.EmbedQuery(t.Context(), "alpha")
+
+	pool.ExpectQuery(regexp.QuoteMeta(
+		`SELECT id, content, metadata, embedding <=> $1::vector AS distance FROM "langchain" ORDER BY distance LIMIT $2`,
+	)).WithArgs(formatVector(vec), 4).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "content", "metadata", "distance"}))
+
+	if _, err := store.SimilaritySearchWithScore(t.Context(), "alpha", 0); err != nil {
+		t.Fatalf("SimilaritySearchWithScore: %v", err)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestEmbedQueryRequiresEmbedder(t *testing.T) {
+	store := &Store{}
+	if _, err := store.embedQuery(t.Context(), "alpha"); err == nil {
+		t.Fatal("expected error for missing embedder")
+	}
+}
+
+func TestSearchWithFilterSQLFailures(t *testing.T) {
+	t.Run("embedding_failure", func(t *testing.T) {
+		store, _ := newTestStore(t, "langchain")
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, _, err := store.searchWithFilterSQL(ctx, "alpha", nil, false); err == nil {
+			t.Fatal("expected embedding failure")
+		}
+	})
+
+	t.Run("filter_rendering_failure", func(t *testing.T) {
+		store, _ := newTestStore(t, "langchain")
+		_, _, err := store.searchWithFilterSQLByVector([]float64{1}, map[string]any{
+			"group": map[string]any{vectorstores.FilterIn: []any{}},
+		}, false)
+		if err == nil {
+			t.Fatal("expected filter rendering failure")
+		}
+	})
+}
+
+func TestDecodeMetadataMalformedJSON(t *testing.T) {
+	if got := decodeMetadata([]byte("not-json")); got != nil {
+		t.Fatalf("malformed metadata must decode to nil, got %v", got)
+	}
+	if got := decodeMetadata([]byte("null")); got != nil {
+		t.Fatalf("JSON null must decode to nil, got %v", got)
+	}
+}
+
+func TestParseVectorEdgeCases(t *testing.T) {
+	empty, err := parseVector("[]")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("parseVector []: got %v err %v", empty, err)
+	}
+	if _, err := parseVector("[1,oops]"); err == nil {
+		t.Fatal("expected parse failure for malformed vector text")
+	}
+}
+
+func TestMetadataAtBounds(t *testing.T) {
+	metadatas := []map[string]any{{"group": "a"}}
+	if got := metadataAt(metadatas, 0); got == nil || got["group"] != "a" {
+		t.Fatalf("metadataAt in range: got %v", got)
+	}
+	if got := metadataAt(metadatas, 1); got != nil {
+		t.Fatalf("metadataAt out of range: got %v", got)
 	}
 }
 
