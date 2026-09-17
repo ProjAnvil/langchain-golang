@@ -4,6 +4,18 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-17
+
+### Added
+- Test coverage gate: unit tests for all parity catch-up packages brought to ≥95% statement coverage each (merged 98.3%) — pgvector 99.8%, redisvector 99.2%, MCP 98.6%, Gemini 100%, SQL toolkit 97.7%, Cohere/Jina rerank 98.1%, vectorstores 99.4%.
+- `make coverage` / `make coverage-html` targets with a 95% red line over the tracked package list; a CI coverage job reports the per-package table to the job summary and fails below the threshold.
+- CONTRIBUTING: documented the coverage gate, tracked packages, and the exemption process.
+
+### Testing
+- Error-injection coverage across the new partners (driver/rows errors, HTTP 5xx and mid-stream failures, malformed responses, elicitation failure branches, SQL guard lexer token paths) — all offline via fakes and mocks; env-gated e2e suites unchanged.
+
+**Full Changelog**: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.1...v0.9.2
+
 ## [0.9.1] - 2026-09-17
 
 Full parity catch-up release: the complete RAG stack, MCP tool integration, a native Gemini provider, document loaders, the SQL toolkit, runnable examples, and a bilingual docs site. (Milestones M1–M3 of the parity catch-up program, released together.)
@@ -104,7 +116,8 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 ## [0.5.x] - 2026-08
 Early development line preceding the parity baseline.
 
-[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...v0.9.1
 [0.8.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.7.1...v0.8.0
