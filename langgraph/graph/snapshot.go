@@ -358,6 +358,24 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 	if len(deltaKeys) == 0 {
 		return nil
 	}
+	// Never-written short-circuit (Python langgraph #9141): ChannelVersions
+	// carries a key for every channel ever written and is copied forward
+	// through every checkpoint, so a delta key absent from the loaded
+	// checkpoint's versions was never written anywhere in its ancestry —
+	// no history walk can resolve it. Skip it instead of walking to the
+	// root.
+	if len(tup.Checkpoint.ChannelVersions) > 0 {
+		writable := deltaKeys[:0]
+		for _, key := range deltaKeys {
+			if _, everWritten := tup.Checkpoint.ChannelVersions[key]; everWritten {
+				writable = append(writable, key)
+			}
+		}
+		deltaKeys = writable
+		if len(deltaKeys) == 0 {
+			return nil
+		}
+	}
 	// Walk the parent chain. For each delta channel, collect pending writes
 	// (reversed — oldest first) and look for a snapshot blob seed.
 	collected := make(map[string][]any, len(deltaKeys))
