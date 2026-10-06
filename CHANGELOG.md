@@ -4,7 +4,11 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
-### Added — parity wave 2 / M4 core semantics (upstream: core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13)
+## [0.10.0] - 2026-10-06
+
+Core-semantics parity with the October 2026 upstream releases (langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13). Audited by an independent review pass before release; audit-driven hardening folded in (durable-serde safety for new state, Python-exact notice text, wired internal-call filtering).
+
+### Added
 - core/lcerrors: standard model error kinds (#39538) — `ModelErrorKind` classification (auth/permission/invalid-request/not-found/rate-limit/server/connection/timeout/context-overflow with 400-body sniffing), fine-grained `ErrModel*` sentinels (subsumed by `ErrProvider` for compatibility), `ProviderError.IsModelRetryable()` following Python's `is_retryable` defaults, and transport connection-refused/reset classification.
 - agents: `DefaultRetryOn` predicate (Python `default_retry_on`, #39538) is now the default `RetryOn` for ModelRetryMiddleware and ToolRetryMiddleware — classified model errors retry only when retryable; unclassified errors retry.
 - gemini: genai `APIError`s map onto the standard model error kinds (`errors.Is`-able sentinels, original error preserved in the chain).
@@ -128,7 +132,8 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 ## [0.5.x] - 2026-08
 Early development line preceding the parity baseline.
 
-[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...v0.9.1
 [0.8.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...v0.8.1

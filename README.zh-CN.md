@@ -15,6 +15,14 @@
 ## 最新动态
 
 
+**v0.10.0** — 与上游 2026 年 10 月发布线（langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13）的核心语义对齐：
+
+- **标准模型错误**：提供方失败的类型化分类（`lcerrors.ModelErrorKind`——认证、权限、非法请求、未找到、限流、服务端、连接、超时、上下文溢出含 400 响应体嗅探），支持 `errors.Is` 的哨兵错误、Python 的 `is_retryable` 默认值；retry 中间件默认不再重试不可重试的分类错误（`DefaultRetryOn`）。Gemini 的 SDK 错误映射到同一层级。
+- **HITL 保真**：审阅者编辑保留 AIMessage 上模型的原始调用，在执行时替换为编辑后的动作（附 Python 版编辑通知，注明实际执行内容）；拒绝理由成帧；return_direct 路由按实际执行的工具名判定。编辑状态为 JSON 原生形态，可经 sqlite/postgres 检查点持久化。
+- **Agent 健壮性**：无效工具调用以纠错性 error ToolMessage 应答（覆盖全历史范围）；中间件内部模型调用（工具选择、工具模拟）通过 `callbacks.WithInternalCall` 从 messages 流模式与 StreamEvents 中过滤。
+- **langgraph 正确性**：`interrupt(response_schema=...)` 上送期望恢复值的 schema（含持久化 serde 往返）；delta 通道在 run/resume/update 各路径均从祖先历史水合（累积值跨重启存活）；从未写入的通道跳过历史遍历；exit 持久化模式下 delta 计数器不再重复推进。
+
+**v0.9.1** — 全量补齐发布：
 **v0.9.1** —— full parity catch-up release：
 
 - **RAG 生产栈**：声明式元数据过滤 DSL（`SearchOptions` / `OptionSearcher`，对齐 langchain-postgres `SearchArgs`）、**pgvector** 与 **Redis**（RediSearch）向量存储、**Cohere** / **Jina** 重排器，以及 ensemble / multi-query / parent-document / contextual-compression 检索器。

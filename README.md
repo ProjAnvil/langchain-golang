@@ -15,6 +15,14 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 ## What's New
 
 
+**v0.10.0** — core-semantics parity with the October 2026 upstream releases (langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13):
+
+- **Standard model errors**: a typed classification of provider failures (`lcerrors.ModelErrorKind` — auth, permission, invalid request, not found, rate limit, server, connection, timeout, context-overflow with 400-body sniffing) with `errors.Is`-able sentinels, Python's `is_retryable` defaults, and retry middleware that stops retrying non-retryable classified errors (`DefaultRetryOn`). Gemini maps its SDK errors onto the same hierarchy.
+- **HITL fidelity**: reviewer edits keep the model's original call on the AIMessage and substitute the edited action at execution time (with the Python edit notice naming what actually ran); rejection reasons are framed; return-direct routing follows executed tool names. Edit state is JSON-native and survives sqlite/postgres checkpointing.
+- **Agent robustness**: invalid tool calls are answered with corrective error ToolMessages (full-history scope); middleware-internal model calls (tool selection, emulation) are filtered out of messages-mode streams and StreamEvents via `callbacks.WithInternalCall`.
+- **langgraph correctness**: `interrupt(response_schema=...)` surfaces the expected resume-value schema (durable serde round-trip included); delta channels hydrate from ancestor history on every run/resume/update path (accumulated values survive restarts), never-written channels skip the history walk, and delta counters stay accurate under exit durability.
+
+**v0.9.1** — full parity catch-up release:
 **v0.9.1** — full parity catch-up release:
 
 - **RAG production stack**: declarative metadata-filter DSL (`SearchOptions` / `OptionSearcher`, langchain-postgres `SearchArgs` parity), **pgvector** and **Redis** (RediSearch) vector stores, **Cohere** / **Jina** rerankers, and ensemble / multi-query / parent-document / contextual-compression retrievers.
