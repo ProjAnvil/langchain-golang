@@ -1230,12 +1230,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(rs, tup, opts.Resume, opts.Graph)
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, opts.Resume, opts.Graph)
 		if err != nil {
 			return Result{}, err
 		}
 	case tup != nil && len(input) == 0:
-		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(rs, tup, nil, "")
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, nil, "")
 		if err != nil {
 			return Result{}, err
 		}
@@ -1249,6 +1249,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// the per-channel cadence (S3). Cloned so rs.deltaCounters is
 		// independent of the (shared) loaded metadata map.
 		rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
+		// Hydrate sentinel delta channels from the ancestor history before
+		// the input applies, so a new turn continues the accumulated value
+		// (Python #8548/#9170).
+		g.hydrateDeltaChannels(ctx, tup, rs)
 		changed, err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}})
 		if err != nil {
 			return Result{}, err

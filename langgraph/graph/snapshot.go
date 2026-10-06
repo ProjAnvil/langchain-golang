@@ -170,6 +170,11 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	// channels, so the advanced counters end up zeroed in the saved metadata —
 	// but the advancement still runs for parity with the loop path.)
 	rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
+	// Hydrate sentinel delta channels from the ancestor history before the
+	// update applies, so an update writing a delta key snapshots the
+	// accumulated value plus the update, and an untouched delta key survives
+	// into the update checkpoint (Python #9165/#9142).
+	g.hydrateDeltaChannels(ctx, tup, rs)
 	if _, err := rs.applyWrites([]taskWrites{{node: asNode, update: values}}); err != nil {
 		return checkpoint.Config{}, err
 	}
@@ -316,10 +321,43 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 		}
 		deltaKeys = append(deltaKeys, key)
 	}
-	if len(deltaKeys) == 0 {
-		return
+	for key, channel := range g.rebuildDeltaChannels(ctx, tup, deltaKeys) {
+		if v, err := channel.Get(); err == nil {
+			values[key] = v
+		}
 	}
+}
 
+// hydrateDeltaChannels reconstructs sentinel delta channels into the run
+// state rs from the ancestor history of tup, so resumed/new-turn/update runs
+// continue the accumulated value instead of starting from empty (Python
+// langgraph hydrates delta channels on every state-restore path — #8548,
+// #9170, #9165). Channels absent from history stay absent.
+func (g *CompiledGraph) hydrateDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, rs *runState) {
+	var deltaKeys []string
+	for key, proto := range g.channelProtos {
+		if !channels.IsDelta(proto) {
+			continue
+		}
+		if _, present := rs.channels[key]; present {
+			continue
+		}
+		deltaKeys = append(deltaKeys, key)
+	}
+	for key, channel := range g.rebuildDeltaChannels(ctx, tup, deltaKeys) {
+		rs.channels[key] = channel
+	}
+}
+
+// rebuildDeltaChannels walks tup's ancestor chain and returns the
+// reconstructed delta channel OBJECTS for the given keys (seeded from the
+// nearest snapshot blob or plain value, then replayed with every collected
+// pending write, oldest first). Keys that never resolve to an available
+// value are omitted from the result.
+func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, deltaKeys []string) map[string]channels.Channel {
+	if len(deltaKeys) == 0 {
+		return nil
+	}
 	// Walk the parent chain. For each delta channel, collect pending writes
 	// (reversed — oldest first) and look for a snapshot blob seed.
 	collected := make(map[string][]any, len(deltaKeys))
@@ -336,7 +374,7 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 	for cursor != nil && cursor.CheckpointID != "" && len(remaining) > 0 {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		default:
 		}
 		ancestor, err := g.checkpointer.GetTuple(ctx, *cursor)
@@ -364,6 +402,7 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 		cursor = ancestor.ParentConfig
 	}
 
+	out := make(map[string]channels.Channel, len(deltaKeys))
 	// Reconstruct each delta channel from seed + collected writes.
 	for _, key := range deltaKeys {
 		proto := g.channelProtos[key]
@@ -390,11 +429,10 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 			delta.ReplayWrites(writes)
 		}
 		if delta.IsAvailable() {
-			if v, err := delta.Get(); err == nil {
-				values[key] = v
-			}
+			out[key] = delta
 		}
 	}
+	return out
 }
 
 // collectDeltaWrites scans writes for entries targeting any of the delta

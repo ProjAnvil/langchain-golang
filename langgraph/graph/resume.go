@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -224,13 +225,16 @@ type resumePlan struct {
 // interrupts whose NS it hits (strict NS addressing). All current entry
 // points pass "" (match by interrupt ID, or by interrupt NS for map resumes
 // — see resumeValuesFor).
-func (g *CompiledGraph) resumeFromTuple(rs *runState, tup *checkpoint.Tuple, resume any, graphNS string) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
+func (g *CompiledGraph) resumeFromTuple(ctx context.Context, rs *runState, tup *checkpoint.Tuple, resume any, graphNS string) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
 	// Seed deltaCounters from the loaded checkpoint so resume continues the
 	// per-channel cadence (S3). Cloned so rs.deltaCounters is independent of
 	// the (shared) loaded metadata map.
 	rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
+	// Hydrate sentinel delta channels from the ancestor history so the
+	// resumed run continues the accumulated value (Python #8548/#9170).
+	g.hydrateDeltaChannels(ctx, tup, rs)
 	plan, err := g.planResume(tup, resume, graphNS)
 	if err != nil {
 		return nil, nil, "", nil, err
