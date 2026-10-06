@@ -4,6 +4,18 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+### Added — parity wave 2 / M4 core semantics (upstream: core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13)
+- core/lcerrors: standard model error kinds (#39538) — `ModelErrorKind` classification (auth/permission/invalid-request/not-found/rate-limit/server/connection/timeout/context-overflow with 400-body sniffing), fine-grained `ErrModel*` sentinels (subsumed by `ErrProvider` for compatibility), `ProviderError.IsModelRetryable()` following Python's `is_retryable` defaults, and transport connection-refused/reset classification.
+- agents: `DefaultRetryOn` predicate (Python `default_retry_on`, #39538) is now the default `RetryOn` for ModelRetryMiddleware and ToolRetryMiddleware — classified model errors retry only when retryable; unclassified errors retry.
+- gemini: genai `APIError`s map onto the standard model error kinds (`errors.Is`-able sentinels, original error preserved in the chain).
+- langgraph: `Interrupt.ResponseSchema` + `graph.InterruptWithSchema` (#8886) — surfaced interrupts carry the JSON Schema of the expected resume value.
+- agents/middleware (HITL): edit decisions keep the model's original call on the AIMessage, record the reviewer's action in the `hitl_edited_tool_calls` state key, substitute it at execution time via `WrapToolCall` (tool re-resolution included), and prepend the edit notice (Python #40463 verbatim; `WithEditNotice("")` disables). After-tools return-direct routing now resolves EXECUTED tool names from tool messages.
+- callbacks/langgraph: `callbacks.WithInternalCall`/`IsInternalCall` context marking filters middleware-internal model calls out of messages-mode projections and StreamEvents chat-model events (#39252; mechanism divergence, see DIVERGENCES.md).
+
+### Fixed
+- agents: invalid tool calls are answered with error ToolMessages so the model receives corrective feedback (#40530); custom HITL rejection reasons are framed as user rejections (#39773).
+- langgraph: delta channels are hydrated from the ancestor history on the run/resume/new-turn/UpdateState paths, so resumed runs continue accumulated values and update checkpoints include ancestor state (#8548, #9170, #9165, #9142); never-written delta channels short-circuit the history walk via ChannelVersions (#9141); delta counters advance over registered-but-never-materialized protos and exit-durability flush no longer double-advances.
+
 ## [0.9.2] - 2026-09-17
 
 ### Added
