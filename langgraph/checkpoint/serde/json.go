@@ -159,11 +159,15 @@ func encodeRegistered(v any) (name string, payload any, ok bool, err error) {
 		if err != nil {
 			return "", nil, false, err
 		}
-		// "ns" is omitted when empty so pre-NS payloads keep their exact
-		// shape (and old decoders ignore it entirely).
+		// "ns" and "response_schema" are omitted when empty so pre-NS
+		// payloads keep their exact shape (and old decoders ignore them
+		// entirely).
 		payload := map[string]any{"value": value, "id": t.ID}
 		if t.NS != "" {
 			payload["ns"] = t.NS
+		}
+		if len(t.ResponseSchema) > 0 {
+			payload["response_schema"] = t.ResponseSchema
 		}
 		return nameInterrupt, payload, true, nil
 	case time.Time:
@@ -276,7 +280,8 @@ func decodeEnvelope(name string, payload any) (any, error) {
 		// "ns" is optional: interrupts persisted before NS stamping decode
 		// with NS == "".
 		ns, _ := m["ns"].(string)
-		return types.Interrupt{Value: value, ID: id, NS: ns}, nil
+		responseSchema, _ := m["response_schema"].(map[string]any)
+		return types.Interrupt{Value: value, ID: id, NS: ns, ResponseSchema: responseSchema}, nil
 	case nameTime:
 		s, ok := payload.(string)
 		if !ok {

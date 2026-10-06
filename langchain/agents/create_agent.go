@@ -1167,8 +1167,11 @@ func buildRouteAfterTools(toolsByName map[string]coretools.Tool, finalNode strin
 		clientCalls := 0
 		allReturnDirect := true
 		for _, call := range lastAI.ToolCalls {
+			// Python's executed_by_id maps only CLIENT-tool executions; a
+			// tool message naming anything else (or no message at all) falls
+			// back to the model's recorded call name (factory.py:2089-2095).
 			name, edited := executedByName[call.ID]
-			if !edited {
+			if _, isClient := toolsByName[name]; !edited || !isClient {
 				name = call.Name
 			}
 			tool, ok := toolsByName[name]
@@ -3514,12 +3517,14 @@ func fromMiddlewareToolCall(tc middleware.ToolCall) messages.ToolCall {
 }
 
 // repairInvalidToolCalls returns error ToolMessages answering the invalid
-// tool calls carried by newMessages that no ToolMessage in the history or in
-// newMessages already answers, mirroring Python langchain's
-// _patch_invalid_tool_calls (#40530). Calls without an ID cannot be answered
-// and are skipped. Go's messages reducer appends by ID-merge, so unlike
-// Python — which rewrites the full history via RemoveMessage — the repair
-// appends at the end of the turn's new messages.
+// tool calls carried by the history AND the turn's new messages that no
+// ToolMessage already answers, mirroring Python langchain's
+// _patch_invalid_tool_calls (#40530) — including its full-history scope, so
+// unanswered invalid calls left by older runs (threads loaded from
+// pre-repair checkpoints) are answered too. Calls without an ID cannot be
+// answered and are skipped. Go's messages reducer appends by ID-merge, so
+// unlike Python — which rewrites the full history via RemoveMessage — the
+// repairs append at the end of the turn's new messages.
 func repairInvalidToolCalls(history, newMessages []messages.Message) []messages.Message {
 	answered := map[string]bool{}
 	for _, m := range history {
@@ -3528,28 +3533,30 @@ func repairInvalidToolCalls(history, newMessages []messages.Message) []messages.
 		}
 	}
 	var repairs []messages.Message
-	for _, m := range newMessages {
-		if m.Role == messages.RoleTool && m.ToolCallID != "" {
-			answered[m.ToolCallID] = true
-		}
-		if m.Role != messages.RoleAI {
-			continue
-		}
-		for _, call := range m.InvalidToolCalls {
-			if call.ID == "" || answered[call.ID] {
+	for _, group := range [2][]messages.Message{history, newMessages} {
+		for _, m := range group {
+			if m.Role == messages.RoleTool && m.ToolCallID != "" {
+				answered[m.ToolCallID] = true
+			}
+			if m.Role != messages.RoleAI {
 				continue
 			}
-			answered[call.ID] = true
-			name := call.Name
-			if name == "" {
-				name = "unknown"
+			for _, call := range m.InvalidToolCalls {
+				if call.ID == "" || answered[call.ID] {
+					continue
+				}
+				answered[call.ID] = true
+				name := call.Name
+				if name == "" {
+					name = "unknown"
+				}
+				msg := messages.Tool(call.ID, fmt.Sprintf(
+					"Tool call %s with id %s could not be executed - arguments were malformed or truncated.",
+					name, call.ID))
+				msg.Name = name
+				msg.ResponseMetadata = map[string]any{"status": "error"}
+				repairs = append(repairs, msg)
 			}
-			msg := messages.Tool(call.ID, fmt.Sprintf(
-				"Tool call %s with id %s could not be executed - arguments were malformed or truncated.",
-				name, call.ID))
-			msg.Name = name
-			msg.ResponseMetadata = map[string]any{"status": "error"}
-			repairs = append(repairs, msg)
 		}
 	}
 	return repairs

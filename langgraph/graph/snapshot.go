@@ -362,8 +362,10 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 	// carries a key for every channel ever written and is copied forward
 	// through every checkpoint, so a delta key absent from the loaded
 	// checkpoint's versions was never written anywhere in its ancestry —
-	// no history walk can resolve it. Skip it instead of walking to the
-	// root.
+	// no history walk can resolve it. The filter only applies when versions
+	// are present: executor-produced checkpoints always carry versions for
+	// written channels, but synthetic tuples (and migration data) may pair
+	// writes with an empty versions map, and those must still walk.
 	if len(tup.Checkpoint.ChannelVersions) > 0 {
 		writable := deltaKeys[:0]
 		for _, key := range deltaKeys {

@@ -250,7 +250,8 @@ func TestCreateAgentHITLDecisionBranches(t *testing.T) {
 		want := "Note: a human reviewer replaced this tool call before it ran. " +
 			"The call recorded in your message is the one you produced, not the one that executed. " +
 			"This was intentional and authorized. Do not re-issue your original call." +
-			"\n\necho:edited"
+			` Executed instead: echo with arguments {"tool_input":"edited"}.` +
+			"\n\nTool response:\necho:edited"
 		if out[2].Content != want {
 			t.Fatalf("expected the substituted call to execute with the edit notice, got %q", out[2].Content)
 		}

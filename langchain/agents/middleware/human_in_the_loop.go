@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
@@ -60,10 +62,14 @@ type HumanDecisionFunc func(HITLRequest) ([]Decision, error)
 
 // EditedToolCallsStateKey is the agent-state key where the HITL middleware
 // records reviewer edits: a map from the original tool call ID to the edited
-// action. The WrapToolCall hook consults it to substitute the edited action
-// at execution time (Python langchain #40463 keeps the model's original call
-// on the AIMessage and records edits in a private state attr the tool node
-// consumes).
+// action, each action a JSON-native map {"name": string, "args": object} so
+// durable checkpoint savers (sqlite/postgres) can serialize the state. The
+// WrapToolCall hook consults it to substitute the edited action at execution
+// time (Python langchain #40463 keeps the model's original call on the
+// AIMessage and records edits in a private state attr the tool node
+// consumes). The key is rewritten on every review round — including as an
+// empty map when a round finds nothing to review — so an earlier turn's
+// edits can never leak into a later one (Python parity).
 const EditedToolCallsStateKey = "hitl_edited_tool_calls"
 
 // DefaultEditNotice is prepended to the ToolMessage of a tool call a human
@@ -385,7 +391,9 @@ func (m *HumanInTheLoopMiddleware) AfterModel(ctx context.Context, state map[str
 	}
 	lastAI, actionRequests, reviewConfigs, interruptIndices, ok := m.reviewableCalls(state)
 	if !ok {
-		return nil, nil
+		// Nothing to review this round: drop any earlier round's edits so
+		// they cannot apply to later tool calls (Python parity).
+		return clearStaleEditedToolCalls(state), nil
 	}
 	decisions, err := m.Decide(HITLRequest{ActionRequests: actionRequests, ReviewConfigs: reviewConfigs})
 	if err != nil {
@@ -412,7 +420,9 @@ func (m *HumanInTheLoopMiddleware) AfterModel(ctx context.Context, state map[str
 func (m *HumanInTheLoopMiddleware) AfterModelNode(ctx context.Context, state map[string]any) (map[string]any, error) {
 	lastAI, actionRequests, reviewConfigs, interruptIndices, ok := m.reviewableCalls(state)
 	if !ok {
-		return nil, nil
+		// Nothing to review this round: drop any earlier round's edits so
+		// they cannot apply to later tool calls (Python parity).
+		return clearStaleEditedToolCalls(state), nil
 	}
 	response := graphpkg.Interrupt(ctx, hitlRequestValue(HITLRequest{
 		ActionRequests: actionRequests,
@@ -493,7 +503,7 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 
 	revised := []messages.ToolCall{}
 	artificial := []messages.Message{}
-	edited := map[string]ToolCall{}
+	edited := map[string]any{}
 	decisionIdx := 0
 	interruptSet := map[int]bool{}
 	for _, idx := range interruptIndices {
@@ -514,10 +524,14 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 		if nextCall != nil {
 			if decision.Type == DecisionEdit {
 				// The AIMessage keeps the model's original call; the edited
-				// action is recorded in state and substituted at execution
-				// time by WrapToolCall (Python langchain #40463).
+				// action is recorded in state (JSON-native so durable savers
+				// can serialize it) and substituted at execution time by
+				// WrapToolCall (Python langchain #40463).
 				revised = append(revised, call)
-				edited[call.ID] = ToolCall{Name: nextCall.Name, Args: nextCall.Args, ID: nextCall.ID}
+				edited[call.ID] = map[string]any{
+					"name": nextCall.Name,
+					"args": cloneAnyMap(nextCall.Args),
+				}
 			} else {
 				revised = append(revised, *nextCall)
 			}
@@ -529,10 +543,9 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 	lastAI.ToolCalls = revised
 	out := []messages.Message{lastAI}
 	out = append(out, artificial...)
-	update := map[string]any{"messages": out}
-	if len(edited) > 0 {
-		update[EditedToolCallsStateKey] = edited
-	}
+	// The edited-calls key is ALWAYS written (even empty), so an earlier
+	// review round's edits cannot survive into a later one (Python parity).
+	update := map[string]any{"messages": out, EditedToolCallsStateKey: edited}
 	return update, nil
 }
 
@@ -543,13 +556,12 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 // applyHITLDecisions recorded, keyed by the original call ID (which edits
 // keep). Calls without an edit entry pass through untouched.
 func (m *HumanInTheLoopMiddleware) WrapToolCall(ctx context.Context, request ToolCallRequest, handler ToolHandler) (messages.Message, error) {
-	editedMap, _ := request.State[EditedToolCallsStateKey].(map[string]ToolCall)
-	edited, hit := editedMap[request.ToolCall.ID]
+	name, args, hit := editedActionFor(request.State, request.ToolCall.ID)
 	if !hit {
 		return handler(ctx, request)
 	}
 	replaced := request
-	replaced.ToolCall = ToolCall{ID: request.ToolCall.ID, Name: edited.Name, Args: cloneAnyMap(edited.Args)}
+	replaced.ToolCall = ToolCall{ID: request.ToolCall.ID, Name: name, Args: cloneAnyMap(args)}
 	msg, err := handler(ctx, replaced)
 	if err != nil {
 		return msg, err
@@ -557,15 +569,68 @@ func (m *HumanInTheLoopMiddleware) WrapToolCall(ctx context.Context, request Too
 	if msg.Role != messages.RoleTool {
 		return msg, nil
 	}
+	if m.EditNotice != nil && *m.EditNotice == "" {
+		return msg, nil
+	}
+	msg.Content = m.editNoticeText(name, args, msg.Content)
+	return msg, nil
+}
+
+// editNoticeText builds the full notice Python's _notice/_prepend_notice
+// produce (#40463): the (default or custom) edit notice, the executed-instead
+// line naming the reviewer's action, and — when the ToolMessage carries
+// content — a "Tool response:" header before it. A notice already present in
+// the content (double dispatch) is not prepended twice.
+func (m *HumanInTheLoopMiddleware) editNoticeText(name string, args map[string]any, content string) string {
 	notice := DefaultEditNotice
 	if m.EditNotice != nil {
-		if *m.EditNotice == "" {
-			return msg, nil
-		}
 		notice = *m.EditNotice
 	}
-	msg.Content = notice + "\n\n" + msg.Content
-	return msg, nil
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		argsJSON = []byte(fmt.Sprintf("%v", args))
+	}
+	notice = fmt.Sprintf("%s Executed instead: %s with arguments %s.", notice, name, argsJSON)
+	if content == "" {
+		return notice
+	}
+	notice += "\n\nTool response:"
+	if strings.Contains(content, notice) {
+		return content
+	}
+	return notice + "\n" + content
+}
+
+// editedActionFor decodes the EditedToolCallsStateKey entry for callID from
+// either shape the state can carry: the JSON-native map form (written by
+// applyHITLDecisions, and what durable savers decode back to) or the legacy
+// typed ToolCall form an in-memory saver may still hold by reference.
+func editedActionFor(state map[string]any, callID string) (name string, args map[string]any, ok bool) {
+	raw, _ := state[EditedToolCallsStateKey].(map[string]any)
+	entry, _ := raw[callID].(map[string]any)
+	if entry == nil {
+		legacy, _ := state[EditedToolCallsStateKey].(map[string]ToolCall)
+		call, hit := legacy[callID]
+		if !hit {
+			return "", nil, false
+		}
+		return call.Name, call.Args, true
+	}
+	name, _ = entry["name"].(string)
+	args, _ = entry["args"].(map[string]any)
+	return name, args, name != ""
+}
+
+// clearStaleEditedToolCalls returns an update clearing the edited-tool-calls
+// state when it holds stale entries, or nil when there is nothing to clear.
+func clearStaleEditedToolCalls(state map[string]any) map[string]any {
+	if raw, ok := state[EditedToolCallsStateKey].(map[string]any); ok && len(raw) > 0 {
+		return map[string]any{EditedToolCallsStateKey: map[string]any{}}
+	}
+	if legacy, ok := state[EditedToolCallsStateKey].(map[string]ToolCall); ok && len(legacy) > 0 {
+		return map[string]any{EditedToolCallsStateKey: map[string]any{}}
+	}
+	return nil
 }
 
 func processHumanDecision(decision Decision, call messages.ToolCall, config InterruptConfig) (*messages.ToolCall, *messages.Message, error) {

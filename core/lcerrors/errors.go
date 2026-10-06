@@ -103,6 +103,10 @@ var contextOverflowMarkers = []string{
 	"maximum context length",
 	"context window",
 	"prompt is too long",
+	// Python openai's remaining markers (base.py:682-684), lowercased here
+	// because the sniff lowercases the body.
+	"contextwindowexceedederror",
+	"input tokens exceed",
 }
 
 // ModelErrorKindForStatus classifies an HTTP status (plus response body for
