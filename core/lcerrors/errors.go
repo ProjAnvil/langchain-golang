@@ -165,7 +165,7 @@ var providerSubsumedSentinels = map[error]bool{
 // overflow) also match ErrProvider, preserving the pre-1.6 classification
 // surface while adding the standard kinds on top (#39538).
 func (e *ProviderError) Is(target error) bool {
-	if target == error(e.Err) {
+	if target == e.Err {
 		return true
 	}
 	return target == ErrProvider && providerSubsumedSentinels[e.Err]

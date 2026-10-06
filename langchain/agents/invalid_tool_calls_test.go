@@ -31,15 +31,16 @@ func TestCreateAgentRepairsInvalidToolCalls(t *testing.T) {
 		t.Fatalf("Invoke: %v", err)
 	}
 	// human, AI(invalid), error ToolMessage, AI(final)
-	var repaired *messages.Message
+	repairedIdx := -1
 	for i := range msgs {
 		if msgs[i].ToolCallID == "bad_1" {
-			repaired = &msgs[i]
+			repairedIdx = i
 		}
 	}
-	if repaired == nil {
+	if repairedIdx < 0 {
 		t.Fatalf("no ToolMessage answering the invalid call: %+v", msgs)
 	}
+	repaired := msgs[repairedIdx]
 	if repaired.Role != messages.RoleTool {
 		t.Fatalf("answering message role = %v, want tool", repaired.Role)
 	}

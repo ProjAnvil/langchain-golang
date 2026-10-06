@@ -134,9 +134,10 @@ func WithDescriptionPrefix(prefix string) HITLOption {
 // is interrupt-based only; the Go Decide callback remains the synchronous
 // alternative (NewHumanInTheLoopMiddleware) with identical decision
 // semantics.
-// WithEditNotice sets the notice prepended to the ToolMessage of a
-// reviewer-edited tool call. An empty string disables the notice; by default
-// DefaultEditNotice is used (Python langchain #40463).
+
+// WithEditNotice returns a HITLOption setting the notice prepended to the
+// ToolMessage of a reviewer-edited tool call. An empty string disables the
+// notice; by default DefaultEditNotice is used (Python langchain #40463).
 func WithEditNotice(notice string) HITLOption {
 	return func(m *HumanInTheLoopMiddleware) {
 		m.EditNotice = &notice

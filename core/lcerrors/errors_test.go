@@ -181,7 +181,7 @@ func TestProviderErrorModelSentinelsAndLegacyCompat(t *testing.T) {
 	}
 	// Connection kind is set by WrapTransport classification, not by status.
 	conn := fmt.Errorf("%w: %v", ErrModelConnection, fakeNetConnRefused{})
-	if !errors.Is(conn, ErrModelConnection) || !errors.Is(conn, ErrModelConnection) {
+	if !errors.Is(conn, ErrModelConnection) {
 		t.Fatal("connection sentinel")
 	}
 }
