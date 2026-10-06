@@ -2053,6 +2053,12 @@ func buildModelNode(
 			newMessages = append(newMessages, retryToolMsgs...)
 		}
 
+		// Repair invalid tool calls (Python langchain #40530): answer each
+		// unanswered invalid call on the new model output with an error
+		// ToolMessage so the model receives corrective feedback on its next
+		// turn instead of the call silently disappearing.
+		newMessages = append(newMessages, repairInvalidToolCalls(localMessages, newMessages)...)
+
 		update := map[string]any{"messages": newMessages}
 		for k, v := range baseUpdate {
 			update[k] = v
@@ -3491,4 +3497,46 @@ func toMiddlewareToolCall(tc messages.ToolCall) middleware.ToolCall {
 
 func fromMiddlewareToolCall(tc middleware.ToolCall) messages.ToolCall {
 	return messages.ToolCall{Name: tc.Name, Args: tc.Args, ID: tc.ID}
+}
+
+// repairInvalidToolCalls returns error ToolMessages answering the invalid
+// tool calls carried by newMessages that no ToolMessage in the history or in
+// newMessages already answers, mirroring Python langchain's
+// _patch_invalid_tool_calls (#40530). Calls without an ID cannot be answered
+// and are skipped. Go's messages reducer appends by ID-merge, so unlike
+// Python — which rewrites the full history via RemoveMessage — the repair
+// appends at the end of the turn's new messages.
+func repairInvalidToolCalls(history, newMessages []messages.Message) []messages.Message {
+	answered := map[string]bool{}
+	for _, m := range history {
+		if m.Role == messages.RoleTool && m.ToolCallID != "" {
+			answered[m.ToolCallID] = true
+		}
+	}
+	var repairs []messages.Message
+	for _, m := range newMessages {
+		if m.Role == messages.RoleTool && m.ToolCallID != "" {
+			answered[m.ToolCallID] = true
+		}
+		if m.Role != messages.RoleAI {
+			continue
+		}
+		for _, call := range m.InvalidToolCalls {
+			if call.ID == "" || answered[call.ID] {
+				continue
+			}
+			answered[call.ID] = true
+			name := call.Name
+			if name == "" {
+				name = "unknown"
+			}
+			msg := messages.Tool(call.ID, fmt.Sprintf(
+				"Tool call %s with id %s could not be executed - arguments were malformed or truncated.",
+				name, call.ID))
+			msg.Name = name
+			msg.ResponseMetadata = map[string]any{"status": "error"}
+			repairs = append(repairs, msg)
+		}
+	}
+	return repairs
 }
