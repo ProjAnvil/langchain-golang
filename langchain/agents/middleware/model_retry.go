@@ -27,7 +27,7 @@ type ModelRetryOption func(*ModelRetryMiddleware)
 func NewModelRetryMiddleware(opts ...ModelRetryOption) (*ModelRetryMiddleware, error) {
 	m := &ModelRetryMiddleware{
 		MaxRetries:    2,
-		RetryOn:       func(error) bool { return true },
+		RetryOn:       DefaultRetryOn,
 		OnFailure:     "continue",
 		BackoffFactor: 2,
 		InitialDelay:  time.Second,
@@ -39,7 +39,7 @@ func NewModelRetryMiddleware(opts ...ModelRetryOption) (*ModelRetryMiddleware, e
 		opt(m)
 	}
 	if m.RetryOn == nil {
-		m.RetryOn = func(error) bool { return true }
+		m.RetryOn = DefaultRetryOn
 	}
 	if m.Sleep == nil {
 		m.Sleep = time.Sleep
