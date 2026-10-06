@@ -369,7 +369,13 @@ func (s *checkpointSink) flushExit() error {
 	// saveCheckpoint calls already advanced — flushExit must NOT advance
 	// again: exit mode persists exactly one final checkpoint, and its
 	// counters must match what a sync run of the same graph produces.
-	newCounters := s.flushRS.deltaCounters
+	newCounters := maps.Clone(s.flushRS.deltaCounters)
+	if newCounters == nil {
+		// No saveCheckpoint advanced the counters yet (e.g. a flush context
+		// assembled without a loop save); start from empty so the snapshot
+		// resets below never write into a nil map.
+		newCounters = map[string][2]int{}
+	}
 	channelsToSnapshot := channels.DeltaChannelsToSnapshot(s.flushRS.channels, newCounters)
 	for k := range s.flushRS.deltaOverwriteChs {
 		channelsToSnapshot[k] = true
