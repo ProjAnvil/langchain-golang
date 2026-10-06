@@ -55,7 +55,13 @@ func newMessagesBridge(emitter *streamEmitter, node string, step int) *messagesB
 // with dedupe=True, so a final message already seen as stream chunks is not
 // delivered twice; one with an unseen or empty ID is, which is how
 // non-streaming models surface in messages mode).
-func (h *messagesBridge) HandleEvent(_ context.Context, event callbacks.Event) error {
+func (h *messagesBridge) HandleEvent(ctx context.Context, event callbacks.Event) error {
+	// Middleware-internal model calls are kept out of the messages
+	// projection (Python langchain #39252 InternalCallTransformer; Go
+	// marks them with a context token instead of metadata dicts).
+	if callbacks.IsInternalCall(ctx) {
+		return nil
+	}
 	switch event.Kind {
 	case callbacks.EventChatModelStream, callbacks.EventLLMStream:
 		chunk, ok := messageChunkMessage(event.Chunk)

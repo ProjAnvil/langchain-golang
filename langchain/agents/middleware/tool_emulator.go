@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -117,7 +118,10 @@ func (m *LLMToolEmulator) emulateViaStructured(
 	prompt := BuildToolEmulationPrompt(request)
 	input := []messages.Message{messages.Human(prompt)}
 
-	response, err := language.InvokeStructured(ctx, chatModel, input, sch)
+	// Internal bookkeeping model call: marked so its chat-model events stay
+	// out of messages-mode projections and StreamEvents (Python
+	// internal_call_metadata, #39252).
+	response, err := language.InvokeStructured(callbacks.WithInternalCall(ctx), chatModel, input, sch)
 	if err != nil {
 		return messages.Message{}, fmt.Errorf("tool emulator: structured output: %w", err)
 	}

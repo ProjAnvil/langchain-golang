@@ -215,8 +215,14 @@ type eventCollector struct {
 }
 
 // HandleEvent implements callbacks.Handler.
-func (c *eventCollector) HandleEvent(_ context.Context, event callbacks.Event) error {
+func (c *eventCollector) HandleEvent(ctx context.Context, event callbacks.Event) error {
 	if c.closed.Load() {
+		return nil
+	}
+	// Middleware-internal model calls stay out of StreamEvents, matching the
+	// raw event log filtering of Python langchain's InternalCallTransformer
+	// (#39252). Non-chat-model events pass through untouched.
+	if callbacks.IsInternalCall(ctx) && isChatModelEventKind(event.Kind) {
 		return nil
 	}
 	defer func() { _ = recover() }()
@@ -252,6 +258,12 @@ func (p *streamEventProjector) project(e callbacks.Event) StreamEvent {
 		}
 	}
 	return StreamEventFromCallback(e, p.registry.resolve(e.RunID, e.ParentID), agg)
+}
+
+// isChatModelEventKind reports whether kind belongs to a chat-model run's
+// lifecycle (used for internal-call filtering).
+func isChatModelEventKind(kind callbacks.EventKind) bool {
+	return isChatModelKind(kind)
 }
 
 func isChatModelKind(kind callbacks.EventKind) bool {

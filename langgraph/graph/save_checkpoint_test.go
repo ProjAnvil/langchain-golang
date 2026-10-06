@@ -170,8 +170,9 @@ func TestSaveCheckpointSnapshotsDeltaAtCadence(t *testing.T) {
 	}
 
 	// Find the step-0 loop checkpoint (cadence not yet fired): its metadata must
-	// carry the advanced counter {items:{1,1}} and it must OMIT items from
-	// ChannelValues (sentinel-only storage).
+	// carry the advanced counter {items:{1,2}} — every checkpoint save
+	// (input + loop) advances the superstep counter, Python-style — and it
+	// must OMIT items from ChannelValues (sentinel-only storage).
 	var step0 *checkpoint.Tuple
 	for i := range history {
 		if history[i].Metadata.Source == "loop" && history[i].Metadata.Step == 0 {
@@ -182,7 +183,7 @@ func TestSaveCheckpointSnapshotsDeltaAtCadence(t *testing.T) {
 	if step0 == nil {
 		t.Fatalf("did not find step-0 loop checkpoint in history of %d", len(history))
 	}
-	if got, want := step0.Metadata.CountersSinceDeltaSnapshot, map[string][2]int{"items": {1, 1}}; !reflect.DeepEqual(got, want) {
+	if got, want := step0.Metadata.CountersSinceDeltaSnapshot, map[string][2]int{"items": {1, 2}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("step-0 metadata counters = %v, want %v", got, want)
 	}
 	if _, present := step0.Checkpoint.ChannelValues["items"]; present {
@@ -204,7 +205,7 @@ func TestSaveCheckpointPersistsDeltaCountersAcrossResume(t *testing.T) {
 	ctx := t.Context()
 
 	// First run completes; latest checkpoint is step-1 loop with counters
-	// {items:{2,2}} (items stored as sentinel, value omitted).
+	// {items:{2,3}} (items stored as sentinel, value omitted).
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
@@ -222,7 +223,9 @@ func TestSaveCheckpointPersistsDeltaCountersAcrossResume(t *testing.T) {
 	}
 	// The new-turn input checkpoint is the one with source=input, step=1 (run 1's
 	// input checkpoint is step=-1). Its seeded-then-advanced counter must be
-	// {items:{3,3}}.
+	// {items:{3,4}} (seeded {2,3} — run 1's three checkpoint saves each
+	// advanced the superstep counter — then advanced once more by the input
+	// save, which also counts the items write).
 	var inputCP *checkpoint.Tuple
 	for i := range history {
 		if history[i].Metadata.Source == "input" && history[i].Metadata.Step == 1 {
@@ -233,9 +236,9 @@ func TestSaveCheckpointPersistsDeltaCountersAcrossResume(t *testing.T) {
 	if inputCP == nil {
 		t.Fatalf("did not find new-turn input checkpoint (source=input, step=1) in history of %d", len(history))
 	}
-	want := map[string][2]int{"items": {3, 3}}
+	want := map[string][2]int{"items": {3, 4}}
 	if got := inputCP.Metadata.CountersSinceDeltaSnapshot; !reflect.DeepEqual(got, want) {
-		t.Fatalf("new-turn input checkpoint counters = %v, want %v (seeded {2,2} then advanced)", got, want)
+		t.Fatalf("new-turn input checkpoint counters = %v, want %v (seeded {2,3} then advanced)", got, want)
 	}
 }
 

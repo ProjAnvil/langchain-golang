@@ -585,3 +585,50 @@ func TestUpdateStateSubgraphNamespace(t *testing.T) {
 			len(rootAfter), len(rootBefore))
 	}
 }
+
+// TestGetStateNoAnsweredInterruptsAfterResume verifies a completed resume
+// leaves no stale pending interrupts in GetState: once resume values answer
+// the interrupts and the tasks finish, the surfaced snapshot must be empty
+// (Python langgraph #9103 — Go's resume re-runs the task in the same invoke,
+// so an INTERRUPT+RESUME double pending write cannot occur by construction;
+// this test pins that invariant).
+func TestGetStateNoAnsweredInterruptsAfterResume(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		v := Interrupt(rt, "who?")
+		return map[string]any{"answer": v}, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	ctx := t.Context()
+
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	snap, err := cg.GetState(ctx, checkpoint.Config{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("GetState pre-resume: %v", err)
+	}
+	if len(snap.Interrupts) != 1 {
+		t.Fatalf("pre-resume interrupts = %d, want 1", len(snap.Interrupts))
+	}
+
+	if _, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t1", Resume: "me"}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	snap, err = cg.GetState(ctx, checkpoint.Config{ThreadID: "t1"})
+	if err != nil {
+		t.Fatalf("GetState post-resume: %v", err)
+	}
+	if len(snap.Interrupts) != 0 {
+		t.Fatalf("post-resume interrupts = %+v, want none (answered interrupts must not surface, #9103)", snap.Interrupts)
+	}
+	if snap.Values["answer"] != "me" {
+		t.Fatalf("answer = %v, want me", snap.Values["answer"])
+	}
+}

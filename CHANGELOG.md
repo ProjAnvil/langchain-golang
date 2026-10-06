@@ -4,6 +4,22 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-06
+
+Core-semantics parity with the October 2026 upstream releases (langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13). Audited by an independent review pass before release; audit-driven hardening folded in (durable-serde safety for new state, Python-exact notice text, wired internal-call filtering).
+
+### Added
+- core/lcerrors: standard model error kinds (#39538) — `ModelErrorKind` classification (auth/permission/invalid-request/not-found/rate-limit/server/connection/timeout/context-overflow with 400-body sniffing), fine-grained `ErrModel*` sentinels (subsumed by `ErrProvider` for compatibility), `ProviderError.IsModelRetryable()` following Python's `is_retryable` defaults, and transport connection-refused/reset classification.
+- agents: `DefaultRetryOn` predicate (Python `default_retry_on`, #39538) is now the default `RetryOn` for ModelRetryMiddleware and ToolRetryMiddleware — classified model errors retry only when retryable; unclassified errors retry.
+- gemini: genai `APIError`s map onto the standard model error kinds (`errors.Is`-able sentinels, original error preserved in the chain).
+- langgraph: `Interrupt.ResponseSchema` + `graph.InterruptWithSchema` (#8886) — surfaced interrupts carry the JSON Schema of the expected resume value, round-tripping through the durable checkpoint serde (resume values themselves are not validated against the schema; see DIVERGENCES.md).
+- agents/middleware (HITL): edit decisions keep the model's original call on the AIMessage, record the reviewer's action in the `hitl_edited_tool_calls` state key (JSON-native, durable-saver serializable; rewritten every review round so stale edits cannot leak), substitute it at execution time via `WrapToolCall` (tool re-resolution included; an edited name binding no tool fails loudly), and prepend the edit notice naming the executed action (Python #40463 text; `WithEditNotice("")` disables). After-tools return-direct routing resolves executed tool names from client-tool messages, falling back to the model's recorded name.
+- callbacks/langgraph: `callbacks.WithInternalCall`/`IsInternalCall` context marking filters middleware-internal model calls out of messages-mode projections and StreamEvents chat-model events (#39252; mechanism divergence, see DIVERGENCES.md); wired into the tool-selection and tool-emulator middleware model calls.
+
+### Fixed
+- agents: invalid tool calls are answered with error ToolMessages so the model receives corrective feedback (#40530); custom HITL rejection reasons are framed as user rejections (#39773).
+- langgraph: delta channels are hydrated from the ancestor history on the run/resume/new-turn/UpdateState paths, so resumed runs continue accumulated values and update checkpoints include ancestor state (#8548, #9170, #9165, #9142); never-written delta channels short-circuit the history walk via ChannelVersions (#9141); delta counters advance over registered-but-never-materialized protos and exit-durability flush no longer double-advances.
+
 ## [0.9.2] - 2026-09-17
 
 ### Added
@@ -116,7 +132,8 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 ## [0.5.x] - 2026-08
 Early development line preceding the parity baseline.
 
-[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...v0.9.1
 [0.8.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.0...v0.8.1

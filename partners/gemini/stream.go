@@ -137,7 +137,7 @@ func (s *genaiStream) Next(ctx context.Context) (messages.Message, bool, error) 
 			if item.err != nil {
 				s.finished = true
 				s.ended = true
-				err := fmt.Errorf("gemini %s: stream: %w", s.model, item.err)
+				err := mapGenerateError("stream", s.model, item.err)
 				_ = emit(ctx, s.cfg, callbacks.EventChatModelError, nil, nil, err)
 				return messages.Message{}, false, err
 			}

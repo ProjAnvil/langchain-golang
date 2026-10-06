@@ -1150,14 +1150,31 @@ func buildRouteAfterModel(structuredBindings map[string]OutputToolBinding, final
 func buildRouteAfterTools(toolsByName map[string]coretools.Tool, finalNode string) graphpkg.ConditionalEdge {
 	return func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		msgs, _ := state["messages"].([]messages.Message)
-		lastAI, _ := fetchLastAIAndToolMessages(msgs)
+		lastAI, toolMsgs := fetchLastAIAndToolMessages(msgs)
 		if lastAI == nil {
 			return graphpkg.To(ModelNodeName), nil
+		}
+		// Return-direct is evaluated against the tools that actually
+		// executed, not the model's recorded calls: a HITL edit may have
+		// substituted a different tool for a call (Python #40463 resolves
+		// executed names from the tool messages the same way).
+		executedByName := make(map[string]string, len(toolMsgs))
+		for _, m := range toolMsgs {
+			if m.ToolCallID != "" && m.Name != "" {
+				executedByName[m.ToolCallID] = m.Name
+			}
 		}
 		clientCalls := 0
 		allReturnDirect := true
 		for _, call := range lastAI.ToolCalls {
-			tool, ok := toolsByName[call.Name]
+			// Python's executed_by_id maps only CLIENT-tool executions; a
+			// tool message naming anything else (or no message at all) falls
+			// back to the model's recorded call name (factory.py:2089-2095).
+			name, edited := executedByName[call.ID]
+			if _, isClient := toolsByName[name]; !edited || !isClient {
+				name = call.Name
+			}
+			tool, ok := toolsByName[name]
 			if !ok {
 				continue
 			}
@@ -2052,6 +2069,12 @@ func buildModelNode(
 		case structuredRetry:
 			newMessages = append(newMessages, retryToolMsgs...)
 		}
+
+		// Repair invalid tool calls (Python langchain #40530): answer each
+		// unanswered invalid call on the new model output with an error
+		// ToolMessage so the model receives corrective feedback on its next
+		// turn instead of the call silently disappearing.
+		newMessages = append(newMessages, repairInvalidToolCalls(localMessages, newMessages)...)
 
 		update := map[string]any{"messages": newMessages}
 		for k, v := range baseUpdate {
@@ -3491,4 +3514,50 @@ func toMiddlewareToolCall(tc messages.ToolCall) middleware.ToolCall {
 
 func fromMiddlewareToolCall(tc middleware.ToolCall) messages.ToolCall {
 	return messages.ToolCall{Name: tc.Name, Args: tc.Args, ID: tc.ID}
+}
+
+// repairInvalidToolCalls returns error ToolMessages answering the invalid
+// tool calls carried by the history AND the turn's new messages that no
+// ToolMessage already answers, mirroring Python langchain's
+// _patch_invalid_tool_calls (#40530) — including its full-history scope, so
+// unanswered invalid calls left by older runs (threads loaded from
+// pre-repair checkpoints) are answered too. Calls without an ID cannot be
+// answered and are skipped. Go's messages reducer appends by ID-merge, so
+// unlike Python — which rewrites the full history via RemoveMessage — the
+// repairs append at the end of the turn's new messages.
+func repairInvalidToolCalls(history, newMessages []messages.Message) []messages.Message {
+	answered := map[string]bool{}
+	for _, m := range history {
+		if m.Role == messages.RoleTool && m.ToolCallID != "" {
+			answered[m.ToolCallID] = true
+		}
+	}
+	var repairs []messages.Message
+	for _, group := range [2][]messages.Message{history, newMessages} {
+		for _, m := range group {
+			if m.Role == messages.RoleTool && m.ToolCallID != "" {
+				answered[m.ToolCallID] = true
+			}
+			if m.Role != messages.RoleAI {
+				continue
+			}
+			for _, call := range m.InvalidToolCalls {
+				if call.ID == "" || answered[call.ID] {
+					continue
+				}
+				answered[call.ID] = true
+				name := call.Name
+				if name == "" {
+					name = "unknown"
+				}
+				msg := messages.Tool(call.ID, fmt.Sprintf(
+					"Tool call %s with id %s could not be executed - arguments were malformed or truncated.",
+					name, call.ID))
+				msg.Name = name
+				msg.ResponseMetadata = map[string]any{"status": "error"}
+				repairs = append(repairs, msg)
+			}
+		}
+	}
+	return repairs
 }

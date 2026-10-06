@@ -273,6 +273,20 @@ func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map
 		// from the innermost execute call(s) the wrapper delegates to.
 		var cmd *types.Command
 		next := func(ctx context.Context, req ToolCallRequest) (messages.Message, error) {
+			// A WrapToolCall hook may have replaced the call (HITL edit
+			// substitution, Python #40463): re-resolve the tool when the
+			// edited name binds a different one than the model produced. An
+			// edited name that binds nothing fails loudly — mirroring
+			// Python's ValueError in _apply_edit — rather than degrading to
+			// the generic invalid-tool ToolMessage.
+			if req.ToolCall.Name != call.Name {
+				req.Tool = n.byName[req.ToolCall.Name]
+				if req.Tool == nil {
+					return messages.Message{}, fmt.Errorf(
+						"reviewer edited tool call %q to %q, which is not an available tool. Available tools: %v",
+						call.ID, req.ToolCall.Name, n.toolNames())
+				}
+			}
 			outcome, err := n.execute(ctx, req)
 			if err == nil {
 				cmd = outcome.Command
@@ -321,12 +335,18 @@ func commandFromArtifact(artifact any) *types.Command {
 	return cmd
 }
 
-func (n *ToolNode) invalidToolMessage(call messages.ToolCall) messages.Message {
+// toolNames returns the sorted registered tool names.
+func (n *ToolNode) toolNames() []string {
 	available := make([]string, 0, len(n.byName))
 	for name := range n.byName {
 		available = append(available, name)
 	}
 	slices.Sort(available)
+	return available
+}
+
+func (n *ToolNode) invalidToolMessage(call messages.ToolCall) messages.Message {
+	available := n.toolNames()
 	content := fmt.Sprintf("Error: %s is not a valid tool, try one of [%s].", call.Name, strings.Join(available, ", "))
 	return errorToolMessage(call.ID, call.Name, content)
 }

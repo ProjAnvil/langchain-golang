@@ -1,6 +1,7 @@
 package serde
 
 import (
+	"encoding/json"
 	"reflect"
 	"strconv"
 	"testing"
@@ -412,5 +413,59 @@ func TestJSONSerializerMalformedEnvelopes(t *testing.T) {
 		if _, err := s.LoadsTyped("json+envelope", []byte(doc)); err == nil {
 			t.Fatalf("LoadsTyped(%s) succeeded, want error", doc)
 		}
+	}
+}
+
+// TestInterruptEnvelopeCarriesResponseSchema verifies the durable-saver
+// round-trip keeps ResponseSchema (langgraph #8886 parity on sqlite/postgres).
+func TestInterruptEnvelopeCarriesResponseSchema(t *testing.T) {
+	ser := NewJSONSerializer()
+	in := types.Interrupt{
+		Value: "pick one",
+		ID:    "ask-1",
+		NS:    "ask:task1",
+		ResponseSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"choice": map[string]any{"type": "string"}},
+			"required":   []any{"choice"},
+		},
+	}
+	typ, data, err := ser.DumpsTyped(in)
+	if err != nil {
+		t.Fatalf("DumpsTyped: %v", err)
+	}
+	out, err := ser.LoadsTyped(typ, data)
+	if err != nil {
+		t.Fatalf("LoadsTyped: %v", err)
+	}
+	got, ok := out.(types.Interrupt)
+	if !ok {
+		t.Fatalf("decoded %T, want types.Interrupt", out)
+	}
+	if got.ResponseSchema == nil || got.ResponseSchema["type"] != "object" {
+		t.Fatalf("ResponseSchema lost in round-trip: %+v", got)
+	}
+	if got.ID != "ask-1" || got.NS != "ask:task1" || got.Value != "pick one" {
+		t.Fatalf("other fields lost: %+v", got)
+	}
+
+	// Legacy payloads without the field decode with a nil schema.
+	typ2, data2, err := ser.DumpsTyped(types.Interrupt{Value: "v", ID: "i"})
+	if err != nil {
+		t.Fatalf("DumpsTyped legacy: %v", err)
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal(data2, &payload); err != nil {
+		t.Fatalf("unmarshal legacy payload: %v", err)
+	}
+	delete(payload, "response_schema")
+	raw, _ := json.Marshal(payload)
+	out2, err := ser.LoadsTyped(typ2, raw)
+	if err != nil {
+		t.Fatalf("LoadsTyped legacy: %v", err)
+	}
+	got2 := out2.(types.Interrupt)
+	if got2.ResponseSchema != nil {
+		t.Fatalf("legacy payload must decode with nil ResponseSchema: %+v", got2)
 	}
 }

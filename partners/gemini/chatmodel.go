@@ -2,12 +2,14 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/language"
+	"github.com/projanvil/langchain-golang/core/lcerrors"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
@@ -301,9 +303,26 @@ func (m ChatModel) generateContent(
 	}
 	response, err := client.Models.GenerateContent(ctx, m.config.Model, contents, config)
 	if err != nil {
-		return nil, fmt.Errorf("gemini %s: generate content: %w", m.config.Model, err)
+		return nil, mapGenerateError("generate content", m.config.Model, err)
 	}
 	return response, nil
+}
+
+// mapGenerateError classifies a genai SDK failure onto the standard model
+// error kinds (langchain-core #39538 parity): genai.APIError carries the HTTP
+// status; transport failures go through lcerrors.WrapTransport for
+// timeout/connection classification; anything else is wrapped unchanged. The
+// original error stays in the chain for errors.As introspection.
+func mapGenerateError(op, model string, err error) error {
+	if apiErr, ok := errors.AsType[genai.APIError](err); ok {
+		body := apiErr.Message
+		if apiErr.Status != "" {
+			body = apiErr.Status + ": " + body
+		}
+		return fmt.Errorf("gemini %s: %s: %w: %w",
+			model, op, lcerrors.NewProviderError("gemini", "generateContent", apiErr.Code, body, 0), err)
+	}
+	return fmt.Errorf("gemini %s: %s: %w", model, op, lcerrors.WrapTransport(err))
 }
 
 // buildGenerateContentConfig assembles the request's generationConfig /

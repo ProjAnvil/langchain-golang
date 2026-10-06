@@ -6,10 +6,23 @@ import (
 	"reflect"
 	"slices"
 	"time"
+
+	"github.com/projanvil/langchain-golang/core/lcerrors"
 )
 
 type RetryPredicate func(error) bool
 type FailureFormatter func(error) string
+
+// DefaultRetryOn mirrors Python langchain 1.4's default_retry_on (#39538):
+// classified model errors retry only when their kind is retryable (rate
+// limit, server failure, connection, timeout); unclassified errors retry.
+// It is the default RetryOn for ModelRetryMiddleware and ToolRetryMiddleware.
+func DefaultRetryOn(err error) bool {
+	if pe, ok := errors.AsType[*lcerrors.ProviderError](err); ok {
+		return pe.IsModelRetryable()
+	}
+	return true
+}
 
 // RetryOnErrorTypes builds a RetryPredicate that matches when an error (or any
 // error in its unwrap chain, mirroring Python exception chaining) has the same

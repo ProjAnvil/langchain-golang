@@ -1230,12 +1230,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(rs, tup, opts.Resume, opts.Graph)
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, opts.Resume, opts.Graph)
 		if err != nil {
 			return Result{}, err
 		}
 	case tup != nil && len(input) == 0:
-		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(rs, tup, nil, "")
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, nil, "")
 		if err != nil {
 			return Result{}, err
 		}
@@ -1249,6 +1249,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// the per-channel cadence (S3). Cloned so rs.deltaCounters is
 		// independent of the (shared) loaded metadata map.
 		rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
+		// Hydrate sentinel delta channels from the ancestor history before
+		// the input applies, so a new turn continues the accumulated value
+		// (Python #8548/#9170).
+		g.hydrateDeltaChannels(ctx, tup, rs)
 		changed, err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}})
 		if err != nil {
 			return Result{}, err
@@ -1939,7 +1943,7 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 	// checkpoint, then decide which delta channels snapshot now. Mirrors
 	// Python's _loop._put_checkpoint counter advancement + create_checkpoint
 	// channel_values assembly (langgraph/pregel/_loop.py:1111-1155).
-	newCounters := advanceDeltaCounters(rs.channels, rs.deltaCounters, rs.updatedChannels)
+	newCounters := advanceDeltaCounters(rs.protos, rs.deltaCounters, rs.updatedChannels)
 
 	// A channel snapshots when its cadence fires (DeltaChannelsToSnapshot) or
 	// it received an Overwrite since the last snapshot (deltaOverwriteChs).
@@ -2014,11 +2018,15 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 // every DeltaChannel's superstep counter increments unconditionally, the update
 // counter increments only when the channel is in updated. Missing prev entries
 // are treated as {0, 0}. Returns nil when there are no delta channels.
-func advanceDeltaCounters(chs map[string]channels.Channel, prev map[string][2]int, updated map[string]bool) map[string][2]int {
+func advanceDeltaCounters(protos map[string]channels.Channel, prev map[string][2]int, updated map[string]bool) map[string][2]int {
 	out := make(map[string][2]int)
-	for name, ch := range chs {
-		_, ok := channels.AsDelta(ch)
-		if !ok {
+	// Enumerate REGISTERED delta protos, not the materialized channel set:
+	// a delta channel that was never written is never materialized into
+	// rs.channels (lazy channelFor), but its superstep counter must still
+	// advance so the staleness bound can fire — Python materializes every
+	// registered channel at graph start.
+	for name, proto := range protos {
+		if !channels.IsDelta(proto) {
 			continue
 		}
 		u, s := 0, 0
@@ -2478,6 +2486,19 @@ type taskInterruptState struct {
 // CompiledGraph.Invoke/InvokeWithOptions; calling it otherwise panics with a
 // plain error.
 func Interrupt(ctx context.Context, value any) any {
+	return interruptWithSchema(ctx, value, nil)
+}
+
+// InterruptWithSchema behaves like Interrupt but records responseSchema on
+// the surfaced interrupt, telling consumers what shape of resume value the
+// node expects (Python langgraph 1.2.13 interrupt(response_schema=...),
+// #8886). The schema rides along on the persisted interrupt and is visible
+// on run results and GetState snapshots.
+func InterruptWithSchema(ctx context.Context, value any, responseSchema map[string]any) any {
+	return interruptWithSchema(ctx, value, responseSchema)
+}
+
+func interruptWithSchema(ctx context.Context, value any, responseSchema map[string]any) any {
 	st, ok := ctx.Value(interruptCtxKey{}).(*taskInterruptState)
 	if !ok {
 		panic("graph: Interrupt called outside of a graph node execution")
@@ -2492,9 +2513,10 @@ func Interrupt(ctx context.Context, value any) any {
 	}
 	st.counter++
 	panic(&types.GraphInterrupt{Interrupt: types.Interrupt{
-		Value: value,
-		ID:    fmt.Sprintf("%s-%d", st.nodeName, st.counter),
-		NS:    st.ns,
+		Value:          value,
+		ID:             fmt.Sprintf("%s-%d", st.nodeName, st.counter),
+		NS:             st.ns,
+		ResponseSchema: responseSchema,
 	}})
 }
 
