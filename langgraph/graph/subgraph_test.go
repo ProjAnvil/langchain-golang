@@ -740,7 +740,7 @@ func TestSubgraphInterruptPausesParent(t *testing.T) {
 				t.Fatalf("subgraph task persisted a %q channel write, want ReservedInterrupt only", w.Channel)
 			}
 			cp, ok := w.Value.(types.Interrupt)
-			if !ok || cp != intr {
+			if !ok || cp.ID != intr.ID || cp.NS != intr.NS || cp.Value != intr.Value {
 				t.Fatalf("subgraph task interrupt copy = %+v, want the verbatim interrupt %+v", w.Value, intr)
 			}
 			sawCopy = true

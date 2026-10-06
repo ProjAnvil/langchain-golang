@@ -92,6 +92,12 @@ type Interrupt struct {
 	// by NS as well as by ID. Interrupts persisted before this field existed
 	// deserialize with NS == "" and are matched by ID only.
 	NS string
+	// ResponseSchema is the JSON Schema of the value expected when resuming
+	// this interrupt, if the node provided one (Python langgraph 1.2.13
+	// interrupt(response_schema=...), #8886). nil when unset. Surfaced
+	// interrupts carry it so HITL consumers can render structured resume
+	// forms.
+	ResponseSchema map[string]any `json:"response_schema,omitempty"`
 }
 
 // GraphInterrupt is the sentinel error a node's execution stops with when it

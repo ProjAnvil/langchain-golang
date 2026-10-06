@@ -2478,6 +2478,19 @@ type taskInterruptState struct {
 // CompiledGraph.Invoke/InvokeWithOptions; calling it otherwise panics with a
 // plain error.
 func Interrupt(ctx context.Context, value any) any {
+	return interruptWithSchema(ctx, value, nil)
+}
+
+// InterruptWithSchema behaves like Interrupt but records responseSchema on
+// the surfaced interrupt, telling consumers what shape of resume value the
+// node expects (Python langgraph 1.2.13 interrupt(response_schema=...),
+// #8886). The schema rides along on the persisted interrupt and is visible
+// on run results and GetState snapshots.
+func InterruptWithSchema(ctx context.Context, value any, responseSchema map[string]any) any {
+	return interruptWithSchema(ctx, value, responseSchema)
+}
+
+func interruptWithSchema(ctx context.Context, value any, responseSchema map[string]any) any {
 	st, ok := ctx.Value(interruptCtxKey{}).(*taskInterruptState)
 	if !ok {
 		panic("graph: Interrupt called outside of a graph node execution")
@@ -2492,9 +2505,10 @@ func Interrupt(ctx context.Context, value any) any {
 	}
 	st.counter++
 	panic(&types.GraphInterrupt{Interrupt: types.Interrupt{
-		Value: value,
-		ID:    fmt.Sprintf("%s-%d", st.nodeName, st.counter),
-		NS:    st.ns,
+		Value:          value,
+		ID:             fmt.Sprintf("%s-%d", st.nodeName, st.counter),
+		NS:             st.ns,
+		ResponseSchema: responseSchema,
 	}})
 }
 
