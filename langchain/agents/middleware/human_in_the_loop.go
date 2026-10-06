@@ -58,10 +58,27 @@ type InterruptConfig struct {
 
 type HumanDecisionFunc func(HITLRequest) ([]Decision, error)
 
+// EditedToolCallsStateKey is the agent-state key where the HITL middleware
+// records reviewer edits: a map from the original tool call ID to the edited
+// action. The WrapToolCall hook consults it to substitute the edited action
+// at execution time (Python langchain #40463 keeps the model's original call
+// on the AIMessage and records edits in a private state attr the tool node
+// consumes).
+const EditedToolCallsStateKey = "hitl_edited_tool_calls"
+
+// DefaultEditNotice is prepended to the ToolMessage of a tool call a human
+// reviewer replaced via an edit decision (Python #40463, verbatim).
+const DefaultEditNotice = "Note: a human reviewer replaced this tool call before it ran. The call recorded in your message is the one you produced, not the one that executed. This was intentional and authorized. Do not re-issue your original call."
+
 type HumanInTheLoopMiddleware struct {
 	InterruptOn       map[string]InterruptConfig
 	DescriptionPrefix string
 	Decide            HumanDecisionFunc
+	// EditNotice is prepended to the ToolMessage content of a tool call a
+	// reviewer replaced via an edit decision. nil selects
+	// DefaultEditNotice; an empty string disables the notice entirely
+	// (WithEditNotice("")). Python langchain #40463.
+	EditNotice *string
 }
 
 func NewHumanInTheLoopMiddleware(interruptOn map[string]InterruptConfig, decide HumanDecisionFunc) *HumanInTheLoopMiddleware {
@@ -117,6 +134,15 @@ func WithDescriptionPrefix(prefix string) HITLOption {
 // is interrupt-based only; the Go Decide callback remains the synchronous
 // alternative (NewHumanInTheLoopMiddleware) with identical decision
 // semantics.
+// WithEditNotice sets the notice prepended to the ToolMessage of a
+// reviewer-edited tool call. An empty string disables the notice; by default
+// DefaultEditNotice is used (Python langchain #40463).
+func WithEditNotice(notice string) HITLOption {
+	return func(m *HumanInTheLoopMiddleware) {
+		m.EditNotice = &notice
+	}
+}
+
 func NewInterruptHumanInTheLoopMiddleware(interruptOn map[string]InterruptConfig, opts ...HITLOption) *HumanInTheLoopMiddleware {
 	m := NewHumanInTheLoopMiddleware(interruptOn, nil)
 	for _, opt := range opts {
@@ -466,6 +492,7 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 
 	revised := []messages.ToolCall{}
 	artificial := []messages.Message{}
+	edited := map[string]ToolCall{}
 	decisionIdx := 0
 	interruptSet := map[int]bool{}
 	for _, idx := range interruptIndices {
@@ -484,7 +511,15 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 			return nil, err
 		}
 		if nextCall != nil {
-			revised = append(revised, *nextCall)
+			if decision.Type == DecisionEdit {
+				// The AIMessage keeps the model's original call; the edited
+				// action is recorded in state and substituted at execution
+				// time by WrapToolCall (Python langchain #40463).
+				revised = append(revised, call)
+				edited[call.ID] = ToolCall{Name: nextCall.Name, Args: nextCall.Args, ID: nextCall.ID}
+			} else {
+				revised = append(revised, *nextCall)
+			}
 		}
 		if toolMessage != nil {
 			artificial = append(artificial, *toolMessage)
@@ -493,7 +528,43 @@ func (m *HumanInTheLoopMiddleware) applyHITLDecisions(lastAI messages.Message, i
 	lastAI.ToolCalls = revised
 	out := []messages.Message{lastAI}
 	out = append(out, artificial...)
-	return map[string]any{"messages": out}, nil
+	update := map[string]any{"messages": out}
+	if len(edited) > 0 {
+		update[EditedToolCallsStateKey] = edited
+	}
+	return update, nil
+}
+
+// WrapToolCall substitutes a reviewer-edited action for the tool call the
+// model produced and prepends the edit notice to the resulting ToolMessage
+// (Python langchain #40463). The AIMessage keeps the model's original call;
+// the edited action arrives through the EditedToolCallsStateKey state entry
+// applyHITLDecisions recorded, keyed by the original call ID (which edits
+// keep). Calls without an edit entry pass through untouched.
+func (m *HumanInTheLoopMiddleware) WrapToolCall(ctx context.Context, request ToolCallRequest, handler ToolHandler) (messages.Message, error) {
+	editedMap, _ := request.State[EditedToolCallsStateKey].(map[string]ToolCall)
+	edited, hit := editedMap[request.ToolCall.ID]
+	if !hit {
+		return handler(ctx, request)
+	}
+	replaced := request
+	replaced.ToolCall = ToolCall{ID: request.ToolCall.ID, Name: edited.Name, Args: cloneAnyMap(edited.Args)}
+	msg, err := handler(ctx, replaced)
+	if err != nil {
+		return msg, err
+	}
+	if msg.Role != messages.RoleTool {
+		return msg, nil
+	}
+	notice := DefaultEditNotice
+	if m.EditNotice != nil {
+		if *m.EditNotice == "" {
+			return msg, nil
+		}
+		notice = *m.EditNotice
+	}
+	msg.Content = notice + "\n\n" + msg.Content
+	return msg, nil
 }
 
 func processHumanDecision(decision Decision, call messages.ToolCall, config InterruptConfig) (*messages.ToolCall, *messages.Message, error) {

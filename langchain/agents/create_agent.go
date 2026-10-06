@@ -1150,14 +1150,28 @@ func buildRouteAfterModel(structuredBindings map[string]OutputToolBinding, final
 func buildRouteAfterTools(toolsByName map[string]coretools.Tool, finalNode string) graphpkg.ConditionalEdge {
 	return func(_ runtime.Runtime, state map[string]any) ([]any, error) {
 		msgs, _ := state["messages"].([]messages.Message)
-		lastAI, _ := fetchLastAIAndToolMessages(msgs)
+		lastAI, toolMsgs := fetchLastAIAndToolMessages(msgs)
 		if lastAI == nil {
 			return graphpkg.To(ModelNodeName), nil
+		}
+		// Return-direct is evaluated against the tools that actually
+		// executed, not the model's recorded calls: a HITL edit may have
+		// substituted a different tool for a call (Python #40463 resolves
+		// executed names from the tool messages the same way).
+		executedByName := make(map[string]string, len(toolMsgs))
+		for _, m := range toolMsgs {
+			if m.ToolCallID != "" && m.Name != "" {
+				executedByName[m.ToolCallID] = m.Name
+			}
 		}
 		clientCalls := 0
 		allReturnDirect := true
 		for _, call := range lastAI.ToolCalls {
-			tool, ok := toolsByName[call.Name]
+			name, edited := executedByName[call.ID]
+			if !edited {
+				name = call.Name
+			}
+			tool, ok := toolsByName[name]
 			if !ok {
 				continue
 			}

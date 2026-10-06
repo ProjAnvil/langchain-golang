@@ -273,6 +273,12 @@ func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map
 		// from the innermost execute call(s) the wrapper delegates to.
 		var cmd *types.Command
 		next := func(ctx context.Context, req ToolCallRequest) (messages.Message, error) {
+			// A WrapToolCall hook may have replaced the call (HITL edit
+			// substitution, Python #40463): re-resolve the tool when the
+			// edited name binds a different one than the model produced.
+			if req.ToolCall.Name != call.Name {
+				req.Tool = n.byName[req.ToolCall.Name]
+			}
 			outcome, err := n.execute(ctx, req)
 			if err == nil {
 				cmd = outcome.Command

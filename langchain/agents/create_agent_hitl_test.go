@@ -204,7 +204,7 @@ func TestMintAIMessageIDsMonotonicFactor(t *testing.T) {
 // TestCreateAgentHITLDecisionBranches (design §6.5): approve, edit, reject,
 // and respond each applied to the committed AI message on resume.
 func TestCreateAgentHITLDecisionBranches(t *testing.T) {
-	t.Run("edit rewrites args keeping the call id", func(t *testing.T) {
+	t.Run("edit substitutes the executed call keeping the recorded one", func(t *testing.T) {
 		var toolRuns int
 		model := &sequenceModel{responses: []messages.Message{
 			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{hitlEchoToolCall("call_1", "original")}},
@@ -242,11 +242,17 @@ func TestCreateAgentHITLDecisionBranches(t *testing.T) {
 		if out[1].ToolCalls[0].ID != "call_1" {
 			t.Fatalf("edit must keep the tool call id, got %q", out[1].ToolCalls[0].ID)
 		}
-		if out[1].ToolCalls[0].Args["tool_input"] != "edited" {
-			t.Fatalf("edit must rewrite the args, got %#v", out[1].ToolCalls[0].Args)
+		// The AIMessage keeps the model's original call; the reviewer's edit
+		// is substituted at execution time (Python #40463).
+		if out[1].ToolCalls[0].Args["tool_input"] != "original" {
+			t.Fatalf("AIMessage must keep the model's original args, got %#v", out[1].ToolCalls[0].Args)
 		}
-		if out[2].Content != "echo:edited" {
-			t.Fatalf("expected the edited call to execute, got %#v", out[2])
+		want := "Note: a human reviewer replaced this tool call before it ran. " +
+			"The call recorded in your message is the one you produced, not the one that executed. " +
+			"This was intentional and authorized. Do not re-issue your original call." +
+			"\n\necho:edited"
+		if out[2].Content != want {
+			t.Fatalf("expected the substituted call to execute with the edit notice, got %q", out[2].Content)
 		}
 		if toolRuns != 1 || len(model.invocations) != 2 {
 			t.Fatalf("expected one tool run and two model calls, got %d/%d", toolRuns, len(model.invocations))
@@ -791,5 +797,68 @@ func TestCreateAgentHITLMultipleInterruptMiddlewareRejected(t *testing.T) {
 		WithAgentMiddleware(hitl(), namedHitl{HumanInTheLoopMiddleware: decide, name: "hitl-decide"}),
 	); err != nil {
 		t.Fatalf("interrupt + decide HITL must compose: %v", err)
+	}
+}
+
+// TestCreateAgentHITLEditCrossToolReturnDirect covers Python #40463's
+// factory change end-to-end: a reviewer edit swaps the model's echo call for
+// a different (return-direct) tool; the ToolNode re-resolves the substituted
+// name, the ToolMessage carries the edit notice, and the after-tools routing
+// ends the run based on the EXECUTED tool's return-direct flag.
+func TestCreateAgentHITLEditCrossToolReturnDirect(t *testing.T) {
+	var echoRuns int
+	model := &sequenceModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{hitlEchoToolCall("call_1", "hi")}},
+		messages.AI("never reached"),
+	}}
+	echoTool := newHitlTestTool(t, &echoRuns)
+	finalTool, err := coretools.NewSimple("final_answer", "returns directly",
+		func(_ context.Context, input string) (coretools.Result, error) {
+			return coretools.Result{Content: "final:" + input}, nil
+		})
+	if err != nil {
+		t.Fatalf("final tool: %v", err)
+	}
+	finalTool = finalTool.WithReturnDirect()
+	saver := checkpoint.NewMemorySaver()
+	agent, err := CreateAgent(model, []coretools.Tool{echoTool, finalTool},
+		WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(map[string]middleware.InterruptConfig{
+			"echo": {AllowedDecisions: []middleware.DecisionType{middleware.DecisionEdit}},
+		})),
+		WithAgentCheckpointer(saver),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
+		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
+	if err != nil || len(interrupts) != 1 {
+		t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
+	}
+	values, _, err := agent.Resume(t.Context(), graphpkg.Options{
+		ThreadID: "t1",
+		Resume: middleware.HITLResponse{Decisions: []middleware.Decision{{
+			Type:         middleware.DecisionEdit,
+			EditedAction: &middleware.ToolCall{Name: "final_answer", Args: map[string]any{"input": "done"}},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	out, _ := values["messages"].([]messages.Message)
+	if len(out) != 3 { // human, AI(original call), substituted ToolMessage
+		t.Fatalf("expected 3 messages (return-direct ends the run), got %d: %#v", len(out), out)
+	}
+	if out[1].ToolCalls[0].Name != "echo" {
+		t.Fatalf("AIMessage must keep the model's original echo call: %#v", out[1].ToolCalls)
+	}
+	if !strings.Contains(out[2].Content, "final:done") || !strings.Contains(out[2].Content, "human reviewer replaced this tool call") {
+		t.Fatalf("substituted result must carry the edit notice and final tool output: %q", out[2].Content)
+	}
+	if echoRuns != 0 {
+		t.Fatalf("original echo tool must not have executed, ran %d times", echoRuns)
+	}
+	if len(model.invocations) != 1 {
+		t.Fatalf("return-direct edited tool must end the run without another model call, got %d", len(model.invocations))
 	}
 }
