@@ -1943,7 +1943,7 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 	// checkpoint, then decide which delta channels snapshot now. Mirrors
 	// Python's _loop._put_checkpoint counter advancement + create_checkpoint
 	// channel_values assembly (langgraph/pregel/_loop.py:1111-1155).
-	newCounters := advanceDeltaCounters(rs.channels, rs.deltaCounters, rs.updatedChannels)
+	newCounters := advanceDeltaCounters(rs.protos, rs.deltaCounters, rs.updatedChannels)
 
 	// A channel snapshots when its cadence fires (DeltaChannelsToSnapshot) or
 	// it received an Overwrite since the last snapshot (deltaOverwriteChs).
@@ -2018,11 +2018,15 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 // every DeltaChannel's superstep counter increments unconditionally, the update
 // counter increments only when the channel is in updated. Missing prev entries
 // are treated as {0, 0}. Returns nil when there are no delta channels.
-func advanceDeltaCounters(chs map[string]channels.Channel, prev map[string][2]int, updated map[string]bool) map[string][2]int {
+func advanceDeltaCounters(protos map[string]channels.Channel, prev map[string][2]int, updated map[string]bool) map[string][2]int {
 	out := make(map[string][2]int)
-	for name, ch := range chs {
-		_, ok := channels.AsDelta(ch)
-		if !ok {
+	// Enumerate REGISTERED delta protos, not the materialized channel set:
+	// a delta channel that was never written is never materialized into
+	// rs.channels (lazy channelFor), but its superstep counter must still
+	// advance so the staleness bound can fire — Python materializes every
+	// registered channel at graph start.
+	for name, proto := range protos {
+		if !channels.IsDelta(proto) {
 			continue
 		}
 		u, s := 0, 0
