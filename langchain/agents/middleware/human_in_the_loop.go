@@ -509,8 +509,11 @@ func processHumanDecision(decision Decision, call messages.ToolCall, config Inte
 		}
 		return &messages.ToolCall{ID: call.ID, Name: decision.EditedAction.Name, Args: cloneAnyMap(decision.EditedAction.Args)}, nil, nil
 	case DecisionReject:
-		content := decision.Message
-		if content == "" {
+		// A custom reason is framed as a user rejection when sent to the
+		// model (Python langchain #39773); without one, the model is told
+		// the tool was not executed and should not retry the call.
+		content := fmt.Sprintf("User rejected the tool call for `%s` with reason: %s", call.Name, decision.Message)
+		if decision.Message == "" {
 			content = fmt.Sprintf("User rejected the tool call for `%s` with id %s. The tool was not executed. Do not retry this tool call unless the user explicitly requests it.", call.Name, call.ID)
 		}
 		msg := errorToolMessage(call.ID, call.Name, content)

@@ -288,7 +288,7 @@ func TestCreateAgentHITLDecisionBranches(t *testing.T) {
 		if len(out) != 4 || out[2].Role != messages.RoleTool {
 			t.Fatalf("expected 4 final messages with a tool answer, got %#v", out)
 		}
-		if out[2].Content != "not allowed" || out[2].ResponseMetadata["status"] != "error" || out[2].ToolCallID != "call_1" {
+		if out[2].Content != "User rejected the tool call for `echo` with reason: not allowed" || out[2].ResponseMetadata["status"] != "error" || out[2].ToolCallID != "call_1" {
 			t.Fatalf("rejection tool message mismatch: %#v", out[2])
 		}
 		// The second model call saw the rejection copy in its input.
@@ -408,7 +408,7 @@ func TestCreateAgentHITLMixedBatch(t *testing.T) {
 	if len(out) != 5 {
 		t.Fatalf("expected 5 final messages, got %d: %#v", len(out), out)
 	}
-	if out[2].Content != "second denied" || out[2].ResponseMetadata["status"] != "error" || out[2].ToolCallID != "call_2" {
+	if out[2].Content != "User rejected the tool call for `echo` with reason: second denied" || out[2].ResponseMetadata["status"] != "error" || out[2].ToolCallID != "call_2" {
 		t.Fatalf("rejected call answer mismatch: %#v", out[2])
 	}
 	if out[3].Content != "echo:a" || out[3].ToolCallID != "call_1" {

@@ -102,3 +102,33 @@ func TestHumanInTheLoopMiddlewareDecisionCountMismatch(t *testing.T) {
 		t.Fatalf("expected mismatch error, got %v", err)
 	}
 }
+
+// TestProcessHumanDecisionRejectReasonFraming verifies a custom rejection
+// reason is framed as a user rejection when sent to the model, rather than
+// passed through raw (Python langchain #39773).
+func TestProcessHumanDecisionRejectReasonFraming(t *testing.T) {
+	call := messages.ToolCall{ID: "call_9", Name: "test_tool"}
+	config := InterruptConfig{AllowedDecisions: []DecisionType{DecisionApprove, DecisionEdit, DecisionReject}}
+
+	_, msg, err := processHumanDecision(Decision{Type: DecisionReject, Message: "Custom response message"}, call, config)
+	if err != nil {
+		t.Fatalf("processHumanDecision: %v", err)
+	}
+	want := "User rejected the tool call for `test_tool` with reason: Custom response message"
+	if msg.Content != want {
+		t.Fatalf("content = %q, want %q", msg.Content, want)
+	}
+	if msg.ResponseMetadata["status"] != "error" {
+		t.Fatalf("status = %v, want error", msg.ResponseMetadata["status"])
+	}
+
+	// No reason keeps the id-bearing default text.
+	_, msg, err = processHumanDecision(Decision{Type: DecisionReject}, call, config)
+	if err != nil {
+		t.Fatalf("processHumanDecision default: %v", err)
+	}
+	wantDefault := "User rejected the tool call for `test_tool` with id call_9. The tool was not executed. Do not retry this tool call unless the user explicitly requests it."
+	if msg.Content != wantDefault {
+		t.Fatalf("default content = %q, want %q", msg.Content, wantDefault)
+	}
+}
