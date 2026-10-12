@@ -96,21 +96,24 @@ Python `create_agent` 的 Go 等价物，构建在 `langgraph/` 运行时之上�
 
 ### 🔌 Partner 集成
 
-| Partner | 聊天模型 | 嵌入 | 向量存储 | 重排 | 自注册 |
-|---------|:---:|:---:|:---:|:---:|:---:|
-| **OpenAI** | ✅ | ✅ | — | — | ✅ (`init()`) |
-| **Anthropic** | ✅ | — | — | — | ✅ (`init()`) |
-| **Google Gemini** | ✅ | — | — | — | ✅（`init()`，经 `partners/gemini` + 官方 genai SDK） |
-| **Ollama** | ✅ | ✅ | — | — | ✅ (`init()`) |
-| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | — | ✅（`init()`，经 `partners/openaicompat`） |
-| **Cohere** | — | — | — | ✅ | —（`partners/cohere`） |
-| **Jina** | — | — | — | ✅ | —（`partners/jina`） |
-| **Chroma** | — | — | ✅ | — | — |
-| **pgvector** | — | — | ✅ | — | —（`partners/pgvector`，根模块） |
-| **Redis** | — | — | ✅ | — | —（`partners/redisvector`，根模块） |
-| **MCP 服务器** | — | — | — | — | —（工具接入经 `partners/mcp`） |
+| Partner | 聊天模型 | 嵌入 | 向量存储 | 重排 | 决策/工具 | 自注册 |
+|---------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **OpenAI** | ✅ | ✅ | — | — | ✅ Decisions（`partners/openai/decisions`）+ AutoMode/ModelRouter 中间件 | ✅ (`init()`) |
+| **Anthropic** | ✅ | — | — | — | — | ✅ (`init()`) |
+| **Google Gemini** | ✅ | — | — | — | — | ✅（`init()`，经 `partners/gemini` + 官方 genai SDK） |
+| **Ollama** | ✅ | ✅ | — | — | — | ✅ (`init()`) |
+| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | — | — | ✅（`init()`，经 `partners/openaicompat`） |
+| **TypeSafe（Jev）** | — | — | — | — | ✅ classifier + AutoMode/ModelRouter 中间件（`partners/typesafe`） | — |
+| **Exa** | — | — | — | — | ✅ search / find-similar 工具 + 检索器 | —（`partners/exa`） |
+| **Nomic** | — | ✅ | — | — | — | —（`partners/nomic`） |
+| **Cohere** | — | — | — | ✅ | — | —（`partners/cohere`） |
+| **Jina** | — | — | — | ✅ | — | —（`partners/jina`） |
+| **Chroma** | — | — | ✅ | — | — | — |
+| **pgvector** | — | — | ✅ | — | — | —（`partners/pgvector`，根模块） |
+| **Redis** | — | — | ✅ | — | — | —（`partners/redisvector`，根模块） |
+| **MCP 服务器** | — | — | — | — | — | —（工具接入经 `partners/mcp`） |
 
-全部十一个聊天模型 provider 名字都经 `init()` 自注册（`partners/openai`、`partners/anthropic`、`partners/gemini`、`partners/ollama`，加上 `partners/openaicompat` 里的七个 OpenAI 兼容名字），因此 blank import 后 `WithAgentModel("openai:gpt-4o")` 与 `WithAgentModel("groq:openai/gpt-oss-20b")` 均可端到端解析。通过环境变量配置（`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` / `GOOGLE_API_KEY`、`OLLAMA_HOST`、`GROQ_API_KEY`、`DEEPSEEK_API_KEY`、`COHERE_API_KEY`、`JINA_API_KEY`、`PGVECTOR_DSN` 等）。
+全部十一个聊天模型 provider 名字都经 `init()` 自注册（`partners/openai`、`partners/anthropic`、`partners/gemini`、`partners/ollama`，加上 `partners/openaicompat` 里的七个 OpenAI 兼容名字），因此 blank import 后 `WithAgentModel("openai:gpt-4o")` 与 `WithAgentModel("groq:openai/gpt-oss-20b")` 均可端到端解析。通过环境变量配置（`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` / `GOOGLE_API_KEY`、`OLLAMA_HOST`、`GROQ_API_KEY`、`DEEPSEEK_API_KEY`、`COHERE_API_KEY`、`JINA_API_KEY`、`TYPESAFE_API_KEY`、`EXA_API_KEY`、`NOMIC_API_KEY`、`PGVECTOR_DSN` 等）。
 
 ---
 

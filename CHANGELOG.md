@@ -4,6 +4,20 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+Parity wave 3 — upstream releases of 2026-10-08 (langchain-core 1.6.9 · langchain 1.4.4 · openai 1.7.0) plus the TypeSafe/Jev partner and provider catch-up. Spec/plan: `docs/superpowers/{specs,plans}/2026-10-12-parity-wave3*`; gap analysis: `reports/13-latest-release-port-gap.md`.
+
+### Added
+- partners/typesafe: TypeSafe classifier for the Jev decision model (#40542/#40570/#40659) — Noul/Choice/Score questions with probability/confidence answers, recursive state serialization (messages anywhere inside JSON), `/v1/systemone` client with Bearer auth, and a typed `APIError` layer embedding `lcerrors.ProviderError` (safe `Error()` that never leaks body/headers; `errors.Is` sentinels and `errors.As` both work); retry-after-ms/-after/HTTP-date parsing.
+- partners/typesafe/middleware: experimental `AutoModeMiddleware` (Noul risk gate, fail-closed, threshold 0.5, verbatim blocked notices) and `ModelRouterMiddleware` (Choice-based per-run model routing, JSON-native `model_route` state).
+- partners/openai/decisions: OpenAI Decisions API client (#41125) — Predicate/Choice/Score questions, OpenAI-shape message mapping, string/Human-sequence/JSON input assembly, `POST /decisions` with lcerrors mapping and answer normalization.
+- partners/openai/middleware: `AutoMode` (Decisions risk gate with with-images/text-only variants, 400/413 downgrade, verbatim notices) and `ModelRouter` (Choice routing with per-call model override via `WithModel`, omit-payload trace policy).
+- partners/exa: `exa_search_results_json` / `exa_find_similar_results_json` tools and `SearchRetriever`, REST-direct (exa 1.1.0 parameter surface).
+- partners/nomic: text embeddings via the Atlas API (nomic 1.0.1) — method-driven task_type defaults, explicit four-value validation, optional Matryoshka dimensionality.
+
+### Fixed
+- core/security: SSRF — IPv4-compatible (`::/96`, int>1) addresses now unwrap onto the IPv4 check path (`::127.0.0.1`, `::10.0.0.5`, `::169.254.169.254` previously bypassed loopback/private/metadata rules); NAT64 discovery prefix `64:ff9b:1::/48` joins the blocked ranges (langchain core #41151).
+- summarization: the summary step retries once on `ErrModelContextOverflow` with the middle of the history cut out (half the measured tokens, capped at 40% of `max_input_tokens`) (#41159).
+
 ## [0.10.0] - 2026-10-06
 
 Core-semantics parity with the October 2026 upstream releases (langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13). Audited by an independent review pass before release; audit-driven hardening folded in (durable-serde safety for new state, Python-exact notice text, wired internal-call filtering).

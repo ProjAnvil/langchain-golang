@@ -96,21 +96,24 @@ A Pregel-style state graph executor mirroring Python's LangGraph 1.2.x:
 
 ### 🔌 Partner Integrations
 
-| Partner | Chat Model | Embeddings | Vector Store | Rerank | Self-registered |
-|---------|:---:|:---:|:---:|:---:|:---:|
-| **OpenAI** | ✅ | ✅ | — | — | ✅ (`init()`) |
-| **Anthropic** | ✅ | — | — | — | ✅ (`init()`) |
-| **Google Gemini** | ✅ | — | — | — | ✅ (`init()`, via `partners/gemini` + the official genai SDK) |
-| **Ollama** | ✅ | ✅ | — | — | ✅ (`init()`) |
-| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | — | ✅ (`init()`, via `partners/openaicompat`) |
-| **Cohere** | — | — | — | ✅ | — (`partners/cohere`) |
-| **Jina** | — | — | — | ✅ | — (`partners/jina`) |
-| **Chroma** | — | — | ✅ | — | — |
-| **pgvector** | — | — | ✅ | — | — (`partners/pgvector`, root module) |
-| **Redis** | — | — | ✅ | — | — (`partners/redisvector`, root module) |
-| **MCP servers** | — | — | — | — | — (tool access via `partners/mcp`) |
+| Partner | Chat Model | Embeddings | Vector Store | Rerank | Decisions/Tools | Self-registered |
+|---------|:---:|:---:|:---:|:---:|:---:|:---:|
+| **OpenAI** | ✅ | ✅ | — | — | ✅ Decisions (`partners/openai/decisions`) + AutoMode/ModelRouter middleware | ✅ (`init()`) |
+| **Anthropic** | ✅ | — | — | — | — | ✅ (`init()`) |
+| **Google Gemini** | ✅ | — | — | — | — | ✅ (`init()`, via `partners/gemini` + the official genai SDK) |
+| **Ollama** | ✅ | ✅ | — | — | — | ✅ (`init()`) |
+| **Groq / Mistral / DeepSeek / xAI / OpenRouter / Fireworks / Perplexity** | ✅ | — | — | — | — | ✅ (`init()`, via `partners/openaicompat`) |
+| **TypeSafe (Jev)** | — | — | — | — | ✅ classifier + AutoMode/ModelRouter middleware (`partners/typesafe`) | — |
+| **Exa** | — | — | — | — | ✅ search / find-similar tools + retriever | — (`partners/exa`) |
+| **Nomic** | — | ✅ | — | — | — | — (`partners/nomic`) |
+| **Cohere** | — | — | — | ✅ | — | — (`partners/cohere`) |
+| **Jina** | — | — | — | ✅ | — | — (`partners/jina`) |
+| **Chroma** | — | — | ✅ | — | — | — |
+| **pgvector** | — | — | ✅ | — | — | — (`partners/pgvector`, root module) |
+| **Redis** | — | — | ✅ | — | — | — (`partners/redisvector`, root module) |
+| **MCP servers** | — | — | — | — | — | — (tool access via `partners/mcp`) |
 
-All eleven chat-model provider names self-register via `init()` (`partners/openai`, `partners/anthropic`, `partners/gemini`, `partners/ollama`, plus the seven OpenAI-compatible names in `partners/openaicompat`), so `WithAgentModel("openai:gpt-4o")` and `WithAgentModel("groq:openai/gpt-oss-20b")` resolve end-to-end once the package is blank-imported. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `OLLAMA_HOST`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `COHERE_API_KEY`, `JINA_API_KEY`, `PGVECTOR_DSN`, ...).
+All eleven chat-model provider names self-register via `init()` (`partners/openai`, `partners/anthropic`, `partners/gemini`, `partners/ollama`, plus the seven OpenAI-compatible names in `partners/openaicompat`), so `WithAgentModel("openai:gpt-4o")` and `WithAgentModel("groq:openai/gpt-oss-20b")` resolve end-to-end once the package is blank-imported. Configure via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `OLLAMA_HOST`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `COHERE_API_KEY`, `JINA_API_KEY`, `TYPESAFE_API_KEY`, `EXA_API_KEY`, `NOMIC_API_KEY`, `PGVECTOR_DSN`, ...).
 
 ---
 
