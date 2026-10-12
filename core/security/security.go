@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/http"
@@ -99,6 +100,11 @@ func ValidateResolvedIP(ip string, policy SSRFPolicy) error {
 	if parsed == nil {
 		return SSRFBlockedError{Reason: "invalid IP address"}
 	}
+	// Unwrap IPv4-compatible (::/96) addresses before the regular checks so
+	// they take the IPv4 path (Python parity: langchain core #41151).
+	if inner := extractIPv4Compatible(parsed); inner != nil {
+		parsed = inner
+	}
 	if policy.AllowedHosts != nil && policy.AllowedHosts[strings.ToLower(ip)] {
 		return nil
 	}
@@ -117,6 +123,27 @@ func ValidateResolvedIP(ip string, policy SSRFPolicy) error {
 		}
 	}
 	return nil
+}
+
+// extractIPv4Compatible returns the embedded IPv4 address when ip is an
+// IPv4-compatible IPv6 address: a 16-byte IPv6 that is not IPv4-mapped
+// (To4() == nil), whose first 12 bytes are zero (the ::/96 prefix), and whose
+// integer value exceeds 1 (excluding :: and ::1, which keep their IPv6
+// semantics). Python parity: langchain core #41151, _policy.py's
+// _IPV4_COMPATIBLE_PREFIX handling. Everything else returns nil.
+func extractIPv4Compatible(ip net.IP) net.IP {
+	if len(ip) != net.IPv6len || ip.To4() != nil {
+		return nil
+	}
+	for _, b := range ip[:12] {
+		if b != 0 {
+			return nil
+		}
+	}
+	if binary.BigEndian.Uint32(ip[12:16]) <= 1 {
+		return nil
+	}
+	return ip[12:16]
 }
 
 // ValidateSafeURL resolves a URL host and rejects it if any resolved IP is
@@ -277,7 +304,9 @@ func isPrivateOrReserved(ip net.IP) bool {
 	}
 	ipv6Blocked := []string{
 		"::1/128", "fc00::/7", "fe80::/10", "ff00::/8", "::ffff:0:0/96",
-		"64:ff9b::/96",
+		// NAT64 well-known and discovery prefixes (Python parity: core #41151
+		// unwraps the embedded IPv4 for both; Go blocks the whole ranges).
+		"64:ff9b::/96", "64:ff9b:1::/48",
 	}
 	blocked := ipv6Blocked
 	if ip.To4() != nil {

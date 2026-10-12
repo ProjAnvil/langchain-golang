@@ -180,6 +180,78 @@ func TestValidateResolvedIPRules(t *testing.T) {
 	}
 }
 
+// TestValidateResolvedIPIPv4Compatible pins the IPv4-compatible (::/96)
+// unwrapping fix (Python parity: langchain core #41151, _policy.py's
+// _IPV4_COMPATIBLE_PREFIX). Such addresses must take the regular IPv4 check
+// path instead of slipping past the IPv6 rules.
+func TestValidateResolvedIPIPv4Compatible(t *testing.T) {
+	policy := DefaultSSRFPolicy()
+
+	blocked := []struct {
+		ip     string
+		reason string
+	}{
+		{"::127.0.0.1", "localhost IP"},
+		{"::10.0.0.5", "private IP range"},
+		// Unwraps to 169.254.169.254, which hits the cloud metadata check
+		// first in ValidateResolvedIP's check order.
+		{"::169.254.169.254", "cloud metadata IP"},
+		// NAT64 discovery prefix /48 stays blocked via the CIDR list.
+		{"64:ff9b:1::7f00:1", "private IP range"},
+	}
+	for _, tc := range blocked {
+		err := ValidateResolvedIP(tc.ip, policy)
+		if err == nil || !strings.Contains(err.Error(), tc.reason) {
+			t.Fatalf("ValidateResolvedIP(%q) = %v, want block with reason %q", tc.ip, err, tc.reason)
+		}
+	}
+
+	// A public IPv4-compatible address unwraps to a public IPv4 and passes.
+	if err := ValidateResolvedIP("::0102:0304", policy); err != nil {
+		t.Fatalf("ValidateResolvedIP(\"::0102:0304\") = %v, want allowed", err)
+	}
+
+	// Negative controls: addresses that must keep their current verdicts.
+	if err := ValidateResolvedIP("::1", policy); err == nil ||
+		!strings.Contains(err.Error(), "localhost IP") {
+		t.Fatalf("ValidateResolvedIP(\"::1\") = %v, want loopback block", err)
+	}
+	if err := ValidateResolvedIP("::", policy); err == nil ||
+		!strings.Contains(err.Error(), "private IP range") {
+		t.Fatalf("ValidateResolvedIP(\"::\") = %v, want unspecified block", err)
+	}
+	// ::2 unwraps to 0.0.0.2 and lands in 0.0.0.0/8.
+	if err := ValidateResolvedIP("::2", policy); err == nil ||
+		!strings.Contains(err.Error(), "private IP range") {
+		t.Fatalf("ValidateResolvedIP(\"::2\") = %v, want 0.0.0.0/8 block", err)
+	}
+	// IPv4-mapped addresses keep going through To4().
+	if err := ValidateResolvedIP("::ffff:127.0.0.1", policy); err == nil ||
+		!strings.Contains(err.Error(), "localhost IP") {
+		t.Fatalf("ValidateResolvedIP(\"::ffff:127.0.0.1\") = %v, want mapped loopback block", err)
+	}
+	// NAT64 well-known prefix /96 keeps its whole-range block.
+	if err := ValidateResolvedIP("64:ff9b::7f00:1", policy); err == nil ||
+		!strings.Contains(err.Error(), "private IP range") {
+		t.Fatalf("ValidateResolvedIP(\"64:ff9b::7f00:1\") = %v, want NAT64 /96 block", err)
+	}
+}
+
+// TestValidateHostnameLiteralIPv6Compatible covers the literal-IP branch of
+// ValidateHostname for IPv4-compatible addresses: the literal is routed
+// through ValidateResolvedIP, so the unwrapping fix must block it there.
+func TestValidateHostnameLiteralIPv6Compatible(t *testing.T) {
+	policy := DefaultSSRFPolicy()
+	for _, host := range []string{
+		"::127.0.0.1",
+		"::a9fe:a9fe", // ::169.254.169.254
+	} {
+		if err := ValidateHostname(host, policy); err == nil {
+			t.Fatalf("ValidateHostname(%q) succeeded, want block", host)
+		}
+	}
+}
+
 func TestValidateSafeURLAndIsSafeURL(t *testing.T) {
 	policy := DefaultSSRFPolicy()
 
