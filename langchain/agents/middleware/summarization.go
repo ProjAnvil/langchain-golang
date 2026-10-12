@@ -2,9 +2,11 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/projanvil/langchain-golang/core/lcerrors"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/modelprofiles"
 )
@@ -123,7 +125,20 @@ func (m *SummarizationMiddleware) BeforeModel(ctx context.Context, state map[str
 		prompt := strings.ReplaceAll(m.summaryPrompt(), "{messages}", bufferString(trimmed))
 		s, err := m.Summarize(prompt, trimmed)
 		if err != nil {
-			return nil, err
+			if !errors.Is(err, lcerrors.ErrModelContextOverflow) {
+				return nil, err
+			}
+			// The summary call overflowed the model's context window: retry
+			// once with a truncated history (#41159). Any second failure
+			// (including another overflow) propagates unchanged.
+			retryPrompt, ok := m.overflowRetryPrompt(trimmed)
+			if !ok {
+				return nil, err
+			}
+			s, err = m.Summarize(retryPrompt, trimmed)
+			if err != nil {
+				return nil, err
+			}
 		}
 		summary = s
 	}
@@ -373,6 +388,31 @@ func bufferString(msgs []messages.Message) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// overflowRetryPrompt builds a smaller summary prompt after the summary call
+// overflowed the model's context window, mirroring Python's
+// _overflow_retry_prompt (#41159). It cuts the middle out of the formatted
+// history, keeping its start (where the objective is usually stated) and its
+// most recent part, within half of its token count and 40% of the model's
+// max_input_tokens when known — 40% rather than half absorbs up to 1.25x
+// usage-metadata scaling. Returns ok=false when nothing fits the budget.
+func (m *SummarizationMiddleware) overflowRetryPrompt(trimmed []messages.Message) (string, bool) {
+	formatted := bufferString(trimmed)
+	tokens := m.countTokens([]messages.Message{messages.Human(formatted)})
+	budget := tokens / 2
+	if maxInput, ok := m.maxInputTokens(); ok {
+		budget = min(budget, maxInput*2/5)
+	}
+	keepChars := len(formatted) * budget / max(tokens, 1)
+	if keepChars <= 0 {
+		return "", false
+	}
+	head := keepChars / 4
+	tail := keepChars - head
+	splice := formatted[:head] + "\n\n[... middle of conversation omitted ...]\n\n" + formatted[len(formatted)-tail:]
+	prompt := strings.ReplaceAll(m.summaryPrompt(), "{messages}", splice)
+	return strings.TrimRight(prompt, " \t\n\r"), true
 }
 
 // trimForSummary applies TrimTokensToSummarize to msgs before they're handed

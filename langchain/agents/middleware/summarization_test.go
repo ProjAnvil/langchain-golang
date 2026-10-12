@@ -1,9 +1,12 @@
 package middleware
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/lcerrors"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/modelprofiles"
 )
@@ -202,4 +205,190 @@ func TestSummarizationMiddlewareTrimDisabled(t *testing.T) {
 	if len(received) != 4 || received[0].Content != "a1" {
 		t.Fatalf("expected untrimmed messages when trimming disabled, got %#v", received)
 	}
+}
+
+// overflowTestMessages yields trimmed == [Human("abcdef"), AI("ghij")] under a
+// Keep{Messages: 1} policy, i.e. bufferString(trimmed) ==
+// "human: abcdef\nai: ghij\n" (23 chars).
+func overflowTestMessages() []messages.Message {
+	return []messages.Message{
+		messages.Human("abcdef"),
+		messages.AI("ghij"),
+		messages.Human("final"),
+	}
+}
+
+func TestSummarizationMiddlewareRetriesOnceOnContextOverflow(t *testing.T) {
+	var prompts []string
+	middleware := NewSummarizationMiddleware(func(prompt string, msgs []messages.Message) (string, error) {
+		prompts = append(prompts, prompt)
+		if len(prompts) == 1 {
+			return "", fmt.Errorf("wrap: %w", lcerrors.ErrModelContextOverflow)
+		}
+		if len(msgs) != 2 {
+			t.Fatalf("retry must receive the original trimmed messages, got %#v", msgs)
+		}
+		return "recovered summary", nil
+	})
+	middleware.Trigger = []TriggerClause{{Messages: 3}}
+	middleware.Keep = KeepPolicy{Messages: 1}
+	middleware.TokenCounter = func([]messages.Message) int { return 23 }
+	// Trailing whitespace makes the retry prompt's rstrip observable.
+	middleware.SummaryPrompt = "Summary:\n{messages}\n  \n"
+
+	update, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": overflowTestMessages()})
+	if err != nil {
+		t.Fatalf("before model: %v", err)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("expected exactly 2 summarizer calls, got %d", len(prompts))
+	}
+	if !strings.Contains(prompts[0], "abcdef") || !strings.Contains(prompts[0], "ghij") {
+		t.Fatalf("first prompt should carry the full history: %q", prompts[0])
+	}
+	// tokens = 23, budget = 23/2 = 11 (no model profile), keepChars = 11,
+	// head = 2, tail = 9; the splice's and template's trailing whitespace are
+	// trimmed like Python's .rstrip().
+	want := "Summary:\nhu\n\n[... middle of conversation omitted ...]\n\nai: ghij"
+	if prompts[1] != want {
+		t.Fatalf("retry prompt mismatch:\n got: %q\nwant: %q", prompts[1], want)
+	}
+	msgs := update["messages"].([]messages.Message)
+	if len(msgs) != 2 || msgs[0].Content != "recovered summary" || msgs[1].Content != "final" {
+		t.Fatalf("unexpected summary result: %#v", msgs)
+	}
+}
+
+func TestSummarizationMiddlewareSecondOverflowPropagates(t *testing.T) {
+	var calls int
+	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", lcerrors.NewProviderError("openai", "/responses", 400, "maximum context length is 4097 tokens", 0)
+		}
+		return "", lcerrors.NewProviderError("openai", "/responses", 400, "context_length_exceeded on retry", 0)
+	})
+	middleware.Trigger = []TriggerClause{{Messages: 3}}
+	middleware.Keep = KeepPolicy{Messages: 1}
+	middleware.TokenCounter = func([]messages.Message) int { return 23 }
+
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": overflowTestMessages()})
+	if err == nil {
+		t.Fatal("expected the second overflow error to propagate")
+	}
+	if calls != 2 {
+		t.Fatalf("expected exactly 2 summarizer calls, got %d", calls)
+	}
+	if !errors.Is(err, lcerrors.ErrModelContextOverflow) {
+		t.Fatalf("expected context overflow sentinel, got %v", err)
+	}
+	var providerErr *lcerrors.ProviderError
+	if !errors.As(err, &providerErr) || !strings.Contains(providerErr.Body, "on retry") {
+		t.Fatalf("expected the second error verbatim, got %v", err)
+	}
+}
+
+func TestSummarizationMiddlewareOverflowWithoutRetryBudgetPropagates(t *testing.T) {
+	var calls int
+	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+		calls++
+		return "", fmt.Errorf("wrap: %w", lcerrors.ErrModelContextOverflow)
+	})
+	middleware.Trigger = []TriggerClause{{Messages: 3}}
+	middleware.Keep = KeepPolicy{Messages: 1}
+	middleware.TokenCounter = func([]messages.Message) int { return 23 }
+	// max_input_tokens*2/5 == 0, so keepChars == 0 and no retry prompt exists.
+	middleware.Model = fakeProfileModel{profile: modelprofiles.Profile{"max_input_tokens": 1}}
+
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": overflowTestMessages()})
+	if err == nil {
+		t.Fatal("expected the first overflow error to propagate unchanged")
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 summarizer call, got %d", calls)
+	}
+	if !errors.Is(err, lcerrors.ErrModelContextOverflow) {
+		t.Fatalf("expected context overflow sentinel, got %v", err)
+	}
+}
+
+func TestSummarizationMiddlewareDoesNotRetryNonOverflowErrors(t *testing.T) {
+	var calls int
+	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+		calls++
+		return "", errors.New("boom")
+	})
+	middleware.Trigger = []TriggerClause{{Messages: 3}}
+	middleware.Keep = KeepPolicy{Messages: 1}
+	middleware.TokenCounter = func([]messages.Message) int { return 23 }
+
+	_, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": overflowTestMessages()})
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("expected the original error verbatim, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 summarizer call, got %d", calls)
+	}
+}
+
+func TestSummarizationMiddlewareOverflowRetryPromptBudgetPaths(t *testing.T) {
+	// bufferString(trimmed) == "human: abcdef\nai: ghij\n" (23 chars); the
+	// token counter reports a constant 23 tokens for the formatted history.
+	trimmed := []messages.Message{messages.Human("abcdef"), messages.AI("ghij")}
+	newMiddleware := func() *SummarizationMiddleware {
+		m := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+			return "unused", nil
+		})
+		m.TokenCounter = func([]messages.Message) int { return 23 }
+		m.SummaryPrompt = "Summary:\n{messages}\n  \n"
+		return m
+	}
+
+	t.Run("no profile halves the token count", func(t *testing.T) {
+		prompt, ok := newMiddleware().overflowRetryPrompt(trimmed)
+		if !ok {
+			t.Fatal("expected a retry prompt")
+		}
+		// budget = 23/2 = 11; keepChars = 23*11/23 = 11; head = 2; tail = 9.
+		want := "Summary:\nhu\n\n[... middle of conversation omitted ...]\n\nai: ghij"
+		if prompt != want {
+			t.Fatalf("retry prompt mismatch:\n got: %q\nwant: %q", prompt, want)
+		}
+	})
+
+	t.Run("profile caps the budget at 40 percent", func(t *testing.T) {
+		m := newMiddleware()
+		m.Model = fakeProfileModel{profile: modelprofiles.Profile{"max_input_tokens": 20}}
+		prompt, ok := m.overflowRetryPrompt(trimmed)
+		if !ok {
+			t.Fatal("expected a retry prompt")
+		}
+		// budget = min(11, 20*2/5 = 8) = 8; keepChars = 8; head = 2; tail = 6.
+		want := "Summary:\nhu\n\n[... middle of conversation omitted ...]\n\n ghij"
+		if prompt != want {
+			t.Fatalf("retry prompt mismatch:\n got: %q\nwant: %q", prompt, want)
+		}
+	})
+
+	t.Run("large profile leaves the half-budget path intact", func(t *testing.T) {
+		m := newMiddleware()
+		m.Model = fakeProfileModel{profile: modelprofiles.Profile{"max_input_tokens": 100}}
+		prompt, ok := m.overflowRetryPrompt(trimmed)
+		if !ok {
+			t.Fatal("expected a retry prompt")
+		}
+		// budget = min(11, 100*2/5 = 40) = 11, identical to the no-profile path.
+		want := "Summary:\nhu\n\n[... middle of conversation omitted ...]\n\nai: ghij"
+		if prompt != want {
+			t.Fatalf("retry prompt mismatch:\n got: %q\nwant: %q", prompt, want)
+		}
+	})
+
+	t.Run("zero budget yields no retry prompt", func(t *testing.T) {
+		m := newMiddleware()
+		m.Model = fakeProfileModel{profile: modelprofiles.Profile{"max_input_tokens": 1}}
+		if prompt, ok := m.overflowRetryPrompt(trimmed); ok {
+			t.Fatalf("expected no retry prompt, got %q", prompt)
+		}
+	})
 }
