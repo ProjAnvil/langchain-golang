@@ -4,6 +4,8 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-13
+
 Parity wave 3 — upstream releases of 2026-10-08 (langchain-core 1.6.9 · langchain 1.4.4 · openai 1.7.0) plus the TypeSafe/Jev partner and provider catch-up. Spec/plan: `docs/superpowers/{specs,plans}/2026-10-12-parity-wave3*`; gap analysis: `reports/13-latest-release-port-gap.md`.
 
 ### Added

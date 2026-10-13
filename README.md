@@ -15,6 +15,14 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 ## What's New
 
 
+**v0.11.0** — upstream releases of 2026-10-08 (core 1.6.9 · langchain 1.4.4 · openai 1.7.0) plus the TypeSafe/Jev partner and provider catch-up:
+
+- **TypeSafe (Jev) decision model**: `partners/typesafe` classifier (Noul/Choice/Score typed questions with probability/confidence answers, recursive state serialization, `/v1/systemone` client, safe typed errors embedding `lcerrors.ProviderError`) and experimental `AutoModeMiddleware` / `ModelRouterMiddleware`.
+- **OpenAI Decisions API**: `partners/openai/decisions` client (Predicate/Choice/Score, answer normalization, lcerrors mapping) with `AutoMode` / `ModelRouter` middleware — the two providers port 1:1, wired end-to-end through `CreateAgent`.
+- **SSRF hardening** (core #41151): IPv4-compatible (`::/96`) addresses unwrap onto the IPv4 check path — `::127.0.0.1`, `::10.0.0.5`, `::169.254.169.254` no longer bypass loopback/private/metadata rules; NAT64 discovery prefix `64:ff9b:1::/48` blocked.
+- **Summarization overflow recovery** (#41159): the summary step retries once on context overflow with the middle of the history cut out (half the measured tokens, capped at 40% of `max_input_tokens`).
+- **Provider catch-up**: **exa** search/find-similar tools + retriever and **nomic** embeddings (REST-direct). huggingface/qdrant deferred (large, demand-triggered).
+
 **v0.10.0** — core-semantics parity with the October 2026 upstream releases (langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13):
 
 - **Standard model errors**: a typed classification of provider failures (`lcerrors.ModelErrorKind` — auth, permission, invalid request, not found, rate limit, server, connection, timeout, context-overflow with 400-body sniffing) with `errors.Is`-able sentinels, Python's `is_retryable` defaults, and retry middleware that stops retrying non-retryable classified errors (`DefaultRetryOn`). Gemini maps its SDK errors onto the same hierarchy.

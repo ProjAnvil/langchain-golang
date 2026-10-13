@@ -15,6 +15,14 @@
 ## 最新动态
 
 
+**v0.11.0** — 追齐上游 2026-10-08 发布线（core 1.6.9 · langchain 1.4.4 · openai 1.7.0），并接入 TypeSafe/Jev 与 provider 扫尾：
+
+- **TypeSafe（Jev）决策模型**：`partners/typesafe` classifier（Noul/Choice/Score 类型化问答，带概率/置信度答案、递归 state 序列化、`/v1/systemone` 客户端、内嵌 `lcerrors.ProviderError` 的安全类型化错误）与实验性 `AutoModeMiddleware` / `ModelRouterMiddleware`。
+- **OpenAI Decisions API**：`partners/openai/decisions` 客户端（Predicate/Choice/Score、答案归一化、lcerrors 映射）与 `AutoMode` / `ModelRouter` 中间件——两个 provider 1:1 移植，端到端接入 `CreateAgent`。
+- **SSRF 加固**（core #41151）：IPv4-compatible（`::/96`）地址解包进 IPv4 检查路径——`::127.0.0.1`、`::10.0.0.5`、`::169.254.169.254` 不再绕过回环/内网/元数据规则；NAT64 discovery 前缀 `64:ff9b:1::/48` 封禁。
+- **Summarization 溢出恢复**（#41159）：摘要步骤在上下文溢出时截掉历史中段重试一次（预算为实测 token 一半、`max_input_tokens` 40% 封顶）。
+- **Provider 扫尾**：**exa** 搜索/找相似工具 + 检索器与 **nomic** embeddings（REST 直连）。huggingface/qdrant 延后（大包，按需求立项）。
+
 **v0.10.0** — 与上游 2026 年 10 月发布线（langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13）的核心语义对齐：
 
 - **标准模型错误**：提供方失败的类型化分类（`lcerrors.ModelErrorKind`——认证、权限、非法请求、未找到、限流、服务端、连接、超时、上下文溢出含 400 响应体嗅探），支持 `errors.Is` 的哨兵错误、Python 的 `is_retryable` 默认值；retry 中间件默认不再重试不可重试的分类错误（`DefaultRetryOn`）。Gemini 的 SDK 错误映射到同一层级。
