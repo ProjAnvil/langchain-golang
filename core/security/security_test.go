@@ -577,3 +577,32 @@ func TestRoundTripNilResolverUsesDefault(t *testing.T) {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 }
+
+// TestSSRFSafeTransportBlocksIPv4CompatibleLiteral pins the #41151 fix at the
+// transport layer: a URL whose host is an IPv4-compatible literal (or one that
+// resolves to one) must be rejected before any dial.
+func TestSSRFSafeTransportBlocksIPv4CompatibleLiteral(t *testing.T) {
+	transport := NewSSRFSafeTransport(DefaultSSRFPolicy(), nil, func(ctx context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("::127.0.0.1")}, nil
+	})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/x", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if _, err := transport.RoundTrip(req); err == nil {
+		t.Fatal("RoundTrip must block a host resolving to ::127.0.0.1")
+	} else {
+		var blocked SSRFBlockedError
+		if !errors.As(err, &blocked) {
+			t.Fatalf("expected SSRFBlockedError, got %T: %v", err, err)
+		}
+	}
+}
+
+// TestValidateSafeURLBlocksIPv4CompatibleMetadataHost covers the convenience
+// wrapper with the cloud-metadata address in IPv4-compatible form.
+func TestValidateSafeURLBlocksIPv4CompatibleMetadataHost(t *testing.T) {
+	if _, err := ValidateSafeURL("http://[::169.254.169.254]/latest/meta-data/", DefaultSSRFPolicy()); err == nil {
+		t.Fatal("ValidateSafeURL must block [::169.254.169.254]")
+	}
+}
