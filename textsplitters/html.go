@@ -3,6 +3,7 @@ package textsplitters
 import (
 	"cmp"
 	"html"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -351,9 +352,7 @@ func (s *HTMLSemanticPreservingSplitter) CreateDocuments(texts []string, metadat
 		}
 		for _, doc := range s.SplitText(text) {
 			docMetadata := cloneMetadata(metadata)
-			for key, value := range doc.Metadata {
-				docMetadata[key] = value
-			}
+			maps.Copy(docMetadata, doc.Metadata)
 			out = append(out, documents.New(doc.PageContent, docMetadata))
 		}
 	}

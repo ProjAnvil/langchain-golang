@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -96,12 +97,8 @@ func (m Manager) WithMetadata(metadata map[string]any) Manager {
 		return m
 	}
 	merged := make(map[string]any, len(m.metadata)+len(metadata))
-	for key, value := range m.metadata {
-		merged[key] = value
-	}
-	for key, value := range metadata {
-		merged[key] = value
-	}
+	maps.Copy(merged, m.metadata)
+	maps.Copy(merged, metadata)
 	m.metadata = merged
 	return m
 }
@@ -175,12 +172,8 @@ func (m Manager) prepareEvent(event Event) Event {
 	}
 	if len(m.metadata) > 0 || len(event.Metadata) > 0 {
 		metadata := make(map[string]any, len(m.metadata)+len(event.Metadata))
-		for key, value := range m.metadata {
-			metadata[key] = value
-		}
-		for key, value := range event.Metadata {
-			metadata[key] = value
-		}
+		maps.Copy(metadata, m.metadata)
+		maps.Copy(metadata, event.Metadata)
 		event.Metadata = metadata
 	}
 	return event
@@ -318,9 +311,7 @@ func (h *UsageMetadataHandler) Usage() map[string]messages.UsageMetadata {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make(map[string]messages.UsageMetadata, len(h.usage))
-	for key, value := range h.usage {
-		out[key] = value
-	}
+	maps.Copy(out, h.usage)
 	return out
 }
 
@@ -366,13 +357,7 @@ func (r *Recorder) Events() []Event {
 
 func cloneEvent(event Event) Event {
 	event.Tags = append([]string(nil), event.Tags...)
-	if event.Metadata != nil {
-		metadata := make(map[string]any, len(event.Metadata))
-		for key, value := range event.Metadata {
-			metadata[key] = value
-		}
-		event.Metadata = metadata
-	}
+	event.Metadata = maps.Clone(event.Metadata)
 	return event
 }
 

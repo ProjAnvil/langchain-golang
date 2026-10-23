@@ -135,11 +135,7 @@ func interruptAndResumeWrites(interrupts []types.Interrupt, consumed []any) []ch
 // ReservedTasks write per Command.Goto destination (normalized per D4).
 // Saver.PutWrites stamps each write with the task's planned ID.
 func completedTaskWrites(update map[string]any, cmd *types.Command) ([]checkpoint.Write, error) {
-	keys := make([]string, 0, len(update))
-	for k := range update {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(update))
 	writes := make([]checkpoint.Write, 0, len(keys))
 	for _, k := range keys {
 		writes = append(writes, checkpoint.Write{Channel: k, Value: update[k]})

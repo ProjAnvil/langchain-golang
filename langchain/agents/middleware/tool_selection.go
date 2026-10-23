@@ -1,12 +1,13 @@
 package middleware
 
 import (
-	"github.com/projanvil/langchain-golang/core/callbacks"
 	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
+
+	"github.com/projanvil/langchain-golang/core/callbacks"
 
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -301,9 +302,9 @@ func (m *LLMToolSelectorMiddleware) processSelectionResponse(selectedNames []str
 }
 
 func lastHumanMessage(msgs []messages.Message) (messages.Message, bool) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == messages.RoleHuman {
-			return msgs[i], true
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == messages.RoleHuman {
+			return msg, true
 		}
 	}
 	return messages.Message{}, false

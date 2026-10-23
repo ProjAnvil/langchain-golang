@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 )
@@ -88,7 +87,8 @@ func (s *MemorySaver) List(ctx context.Context, cfg Config, opts ListOptions) ([
 		}
 		ids = append(ids, id)
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(ids)))
+	slices.Sort(ids)
+	slices.Reverse(ids)
 	if opts.Limit > 0 && len(ids) > opts.Limit {
 		ids = ids[:opts.Limit]
 	}

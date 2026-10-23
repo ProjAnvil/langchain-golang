@@ -94,9 +94,7 @@ func (p PromptTemplate) Partial(values map[string]any) (PromptTemplate, error) {
 	if partials == nil {
 		partials = map[string]any{}
 	}
-	for key, value := range values {
-		partials[key] = value
-	}
+	maps.Copy(partials, values)
 	return NewPromptTemplateWithPartials(p.name, p.template, partials)
 }
 
@@ -137,9 +135,7 @@ func mergePartialAndUserValues(partials map[string]any, values map[string]any) m
 			merged[key] = fn()
 		}
 	}
-	for key, value := range values {
-		merged[key] = value
-	}
+	maps.Copy(merged, values)
 	return merged
 }
 
@@ -461,9 +457,7 @@ func (p ChatPromptTemplate) Partial(values map[string]any) ChatPromptTemplate {
 	if partials == nil {
 		partials = map[string]any{}
 	}
-	for key, value := range values {
-		partials[key] = value
-	}
+	maps.Copy(partials, values)
 	out := p
 	out.partials = partials
 	return out

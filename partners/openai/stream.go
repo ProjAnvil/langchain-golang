@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -577,9 +578,7 @@ func (s *responseStream) emitOutputItemFinish(ctx context.Context, index int, it
 
 func contentBlockFromOutputItem(item outputItem, index int) messages.ContentBlock {
 	m := make(map[string]any, len(item.Raw)+2)
-	for key, value := range item.Raw {
-		m[key] = value
-	}
+	maps.Copy(m, item.Raw)
 	if m["type"] == nil {
 		m["type"] = item.Type
 	}

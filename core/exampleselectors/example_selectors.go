@@ -182,8 +182,6 @@ func cloneExample(example Example) Example {
 		return nil
 	}
 	out := make(Example, len(example))
-	for key, value := range example {
-		out[key] = value
-	}
+	maps.Copy(out, example)
 	return out
 }

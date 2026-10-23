@@ -263,8 +263,7 @@ func isTimeoutError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		return netErr.Timeout()
 	}
 	return false
@@ -301,10 +300,7 @@ func parseRetryAfter(header http.Header) time.Duration {
 		if parseErr != nil && spec.name == retryAfterHeader {
 			// HTTP-date form (email.utils parsedate_to_datetime analog).
 			if deadline, dateErr := http.ParseTime(raw); dateErr == nil {
-				delta := time.Until(deadline).Milliseconds()
-				if delta < 0 {
-					delta = 0
-				}
+				delta := max(time.Until(deadline).Milliseconds(), 0)
 				return time.Duration(delta) * time.Millisecond
 			}
 			continue

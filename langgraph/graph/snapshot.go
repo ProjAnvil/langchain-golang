@@ -344,9 +344,7 @@ func (g *CompiledGraph) hydrateDeltaChannels(ctx context.Context, tup *checkpoin
 		}
 		deltaKeys = append(deltaKeys, key)
 	}
-	for key, channel := range g.rebuildDeltaChannels(ctx, tup, deltaKeys) {
-		rs.channels[key] = channel
-	}
+	maps.Copy(rs.channels, g.rebuildDeltaChannels(ctx, tup, deltaKeys))
 }
 
 // rebuildDeltaChannels walks tup's ancestor chain and returns the
@@ -462,8 +460,8 @@ func collectDeltaWrites(writes []checkpoint.Write, deltaKeys []string, collected
 		if !remaining[key] {
 			continue
 		}
-		for i := len(writes) - 1; i >= 0; i-- {
-			w := writes[i]
+		for _, w := range slices.Backward(writes) {
+
 			if w.Channel == key {
 				collected[key] = append(collected[key], w.Value)
 			}

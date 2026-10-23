@@ -2,6 +2,7 @@ package prebuilt
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/langchain/tools"
@@ -129,9 +130,7 @@ func mergeCommand(merged, cmd *types.Command) *types.Command {
 			Resume: cmd.Resume,
 		}
 	}
-	for k, v := range cmd.Update {
-		merged.Update[k] = v
-	}
+	maps.Copy(merged.Update, cmd.Update)
 	if cmd.Graph != "" {
 		merged.Graph = cmd.Graph
 	}

@@ -11,10 +11,7 @@ import (
 // default max_workers), which also caps parallel node execution when
 // max_concurrency is not configured.
 func defaultSuperstepParallelism() int {
-	workers := runtime.GOMAXPROCS(0) + 4
-	workers = min(workers, 32)
-	workers = max(workers, 1)
-	return workers
+	return max(1, min(32, runtime.GOMAXPROCS(0)+4))
 }
 
 // superstepBound resolves the effective worker count for a superstep of
@@ -24,9 +21,7 @@ func superstepBound(maxConcurrency, count int) int {
 	if limit <= 0 {
 		limit = defaultSuperstepParallelism()
 	}
-	limit = min(limit, count)
-	limit = max(limit, 1)
-	return limit
+	return max(1, min(limit, count))
 }
 
 // runSuperstepBounded invokes fn(i, t) for every active[i] with at most
@@ -47,14 +42,12 @@ func runSuperstepBounded(active []task, execute []bool, limit int, fn func(i int
 	}
 	indexes := make(chan int)
 	var wg sync.WaitGroup
-	wg.Add(limit)
 	for range limit {
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range indexes {
 				fn(i, active[i])
 			}
-		}()
+		})
 	}
 	for i := range active {
 		if execute[i] {

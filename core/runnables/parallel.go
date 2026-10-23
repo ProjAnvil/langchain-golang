@@ -14,12 +14,7 @@ import (
 // fan-out gets a large batch rate-limited or banned rather than served
 // faster.
 func DefaultParallelism() int {
-	workers := runtime.GOMAXPROCS(0) + 4
-	if workers > 32 {
-		workers = 32
-	}
-	workers = max(workers, 1)
-	return workers
+	return max(1, min(32, runtime.GOMAXPROCS(0)+4))
 }
 
 // ParallelMap invokes fn for every input with bounded concurrency and
@@ -60,9 +55,7 @@ func ParallelMap[I, O any](
 		}
 		return outputs, errors.Join(errs...)
 	}
-	if limit > len(inputs) {
-		limit = len(inputs)
-	}
+	limit = min(limit, len(inputs))
 
 	errs := make([]error, len(inputs))
 	// Fixed worker pool over an index channel: goroutine count is bounded by
@@ -70,10 +63,8 @@ func ParallelMap[I, O any](
 	// so no locking is needed on outputs/errs.
 	indexes := make(chan int)
 	var wg sync.WaitGroup
-	wg.Add(limit)
 	for range limit {
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range indexes {
 				if ctx.Err() != nil {
 					errs[i] = context.Cause(ctx)
@@ -81,7 +72,7 @@ func ParallelMap[I, O any](
 				}
 				outputs[i], errs[i] = fn(ctx, inputs[i])
 			}
-		}()
+		})
 	}
 dispatch:
 	for i := range inputs {

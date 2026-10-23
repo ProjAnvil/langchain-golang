@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 )
@@ -80,17 +81,13 @@ func derefHelper(obj any, fullSchema map[string]any, processing map[string]bool,
 			// Mixed $ref: merge resolved with additional (additional wins).
 			merged := map[string]any{}
 			if rm, ok := resolved.(map[string]any); ok {
-				for k, val := range rm {
-					merged[k] = val
-				}
+				maps.Copy(merged, rm)
 			}
 			procAdditional, err := derefDictProps(additional, fullSchema, processing, skip)
 			if err != nil {
 				return nil, err
 			}
-			for k, val := range procAdditional {
-				merged[k] = val
-			}
+			maps.Copy(merged, procAdditional)
 			return merged, nil
 		}
 		return derefDictProps(v, fullSchema, processing, skip)

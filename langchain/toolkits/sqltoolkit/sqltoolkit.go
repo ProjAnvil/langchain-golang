@@ -197,7 +197,7 @@ func (t *Toolkit) newSchemaTool() (tools.Func, error) {
 				return tools.Result{Content: "Error: " + err.Error()}, nil
 			}
 			var tables []string
-			for _, name := range strings.Split(tableNames, ",") {
+			for name := range strings.SplitSeq(tableNames, ",") {
 				if name != "" {
 					tables = append(tables, name)
 				}

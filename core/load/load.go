@@ -3,6 +3,7 @@ package load
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -92,8 +93,6 @@ func cloneMap(values map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
+	maps.Copy(out, values)
 	return out
 }

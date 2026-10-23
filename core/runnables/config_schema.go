@@ -40,9 +40,7 @@ func mergeConfigSchemas(runnables ...any) schema.Schema {
 		if !ok {
 			continue
 		}
-		for key, prop := range schemaProperties(configurable) {
-			properties[key] = prop
-		}
+		maps.Copy(properties, schemaProperties(configurable))
 		for _, key := range schemaRequired(configurable) {
 			requiredSet[key] = true
 		}

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"maps"
 	"sync"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
@@ -86,9 +87,7 @@ func (h *messagesBridge) HandleEvent(ctx context.Context, event callbacks.Event)
 // chunks and shields them from consumer mutation).
 func (h *messagesBridge) emit(message messages.Message) {
 	metadata := make(map[string]any, len(h.metadata))
-	for key, value := range h.metadata {
-		metadata[key] = value
-	}
+	maps.Copy(metadata, h.metadata)
 	h.emitter.emit(StreamMessages, MessageChunk{Message: message, Metadata: metadata})
 }
 

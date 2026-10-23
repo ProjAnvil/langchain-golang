@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/projanvil/langchain-golang/core/chathistory"
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -312,21 +313,21 @@ func streamOutputValue(chunks []any) any {
 		return chunks[0]
 	}
 	messagesOut := make([]messages.Message, 0, len(chunks))
-	text := ""
+	var text strings.Builder
 	for _, chunk := range chunks {
 		switch typed := chunk.(type) {
 		case string:
-			text += typed
+			text.WriteString(typed)
 		case messages.Message:
 			messagesOut = append(messagesOut, typed)
 		default:
 			return chunks
 		}
 	}
-	if text != "" && len(messagesOut) == 0 {
-		return text
+	if text.String() != "" && len(messagesOut) == 0 {
+		return text.String()
 	}
-	if len(messagesOut) > 0 && text == "" {
+	if len(messagesOut) > 0 && text.String() == "" {
 		return messagesOut
 	}
 	return chunks

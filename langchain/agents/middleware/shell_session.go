@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"strings"
@@ -54,9 +55,7 @@ func NewShellSession(workspace string, shell []string, env map[string]string) *S
 		argv = []string{"/bin/sh"}
 	}
 	envCopy := map[string]string{}
-	for k, v := range env {
-		envCopy[k] = v
-	}
+	maps.Copy(envCopy, env)
 	return &ShellSession{workspace: workspace, shell: argv, env: envCopy}
 }
 

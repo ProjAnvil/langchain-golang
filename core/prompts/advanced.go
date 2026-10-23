@@ -380,9 +380,7 @@ func cloneMapAny(input map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
+	maps.Copy(out, input)
 	return out
 }
 
@@ -408,17 +406,12 @@ func promptWithTemplateVariables(prefix *PromptTemplate, suffix PromptTemplate) 
 }
 
 func validatePromptVariables(got []string, want []string) error {
-	got = append([]string(nil), got...)
-	want = append([]string(nil), want...)
-	sortStrings(got)
-	sortStrings(want)
-	if len(got) != len(want) {
+	got = slices.Clone(got)
+	want = slices.Clone(want)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
 		return fmt.Errorf("got input_variables=%v, but based on prefix/suffix expected %v", got, want)
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return fmt.Errorf("got input_variables=%v, but based on prefix/suffix expected %v", got, want)
-		}
 	}
 	return nil
 }
@@ -432,14 +425,4 @@ func takePromptValues(values map[string]any, variables []string) map[string]any 
 		}
 	}
 	return out
-}
-
-func sortStrings(values []string) {
-	for i := 0; i < len(values); i++ {
-		for j := i + 1; j < len(values); j++ {
-			if values[j] < values[i] {
-				values[i], values[j] = values[j], values[i]
-			}
-		}
-	}
 }

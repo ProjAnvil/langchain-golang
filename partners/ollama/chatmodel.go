@@ -3,6 +3,7 @@ package ollama
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"time"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
@@ -234,9 +235,7 @@ func (m ChatModel) buildRequest(input []messages.Message, stream bool) chatReque
 
 func (m ChatModel) buildOptions() map[string]any {
 	options := map[string]any{}
-	for key, value := range m.options {
-		options[key] = value
-	}
+	maps.Copy(options, m.options)
 	if m.config.Temperature != nil {
 		options["temperature"] = *m.config.Temperature
 	}

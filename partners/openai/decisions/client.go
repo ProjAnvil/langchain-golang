@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -136,11 +137,7 @@ func (c *Client) payload(req Request) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(req.Questions))
-	for name := range req.Questions {
-		names = append(names, name)
-	}
-	slices.Sort(names)
+	names := slices.Sorted(maps.Keys(req.Questions))
 	questions := make([]any, 0, len(names))
 	for _, name := range names {
 		question := req.Questions[name]

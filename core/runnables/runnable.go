@@ -2,6 +2,7 @@ package runnables
 
 import (
 	"context"
+	"maps"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -39,6 +40,7 @@ func NewConfig(opts ...Option) Config {
 }
 
 // Clone returns a copy of the config with independent slice and map fields.
+// Nil metadata and configurable maps become writable empty maps.
 func (cfg Config) Clone() Config {
 	out := cfg
 	out.Tags = append([]string(nil), cfg.Tags...)
@@ -145,11 +147,7 @@ func cloneConfigMap(input map[string]any) map[string]any {
 	if input == nil {
 		return map[string]any{}
 	}
-	out := make(map[string]any, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
-	return out
+	return maps.Clone(input)
 }
 
 // Runnable is the Go equivalent of the LangChain Runnable contract.

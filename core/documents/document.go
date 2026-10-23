@@ -1,5 +1,7 @@
 package documents
 
+import "maps"
+
 // Document is the shared representation for retrievers, vector stores, loaders,
 // and transformers.
 type Document struct {
@@ -51,8 +53,6 @@ func cloneMetadata(metadata map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(metadata))
-	for key, value := range metadata {
-		out[key] = value
-	}
+	maps.Copy(out, metadata)
 	return out
 }

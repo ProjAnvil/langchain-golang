@@ -60,10 +60,7 @@ func MaximalMarginalRelevance(query []float64, embeddings [][]float64, lambdaMul
 	if lambdaMult > 1 {
 		lambdaMult = 1
 	}
-	limit := k
-	if len(embeddings) < limit {
-		limit = len(embeddings)
-	}
+	limit := min(len(embeddings), k)
 	queryScores := make([]float64, len(embeddings))
 	best := 0
 	for i, embedding := range embeddings {

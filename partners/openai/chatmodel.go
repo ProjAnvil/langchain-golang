@@ -171,7 +171,7 @@ func (m ChatModel) BindToolsWithOptions(boundTools []tools.Tool, opts language.B
 	next := m
 	next.boundTools = append([]tools.Tool(nil), boundTools...)
 	if opts.ToolChoice != "" {
-		next.toolChoice = ptrToolChoice(toolChoiceFromCore(opts.ToolChoice))
+		next.toolChoice = new(toolChoiceFromCore(opts.ToolChoice))
 	}
 	if opts.ParallelToolCalls != nil {
 		next.parallelToolCalls = opts.ParallelToolCalls
@@ -193,10 +193,6 @@ func toolChoiceFromCore(choice language.ToolChoice) ToolChoice {
 		// Any other string names the specific tool to force.
 		return ToolChoiceFunction(string(choice))
 	}
-}
-
-func ptrToolChoice(choice ToolChoice) *ToolChoice {
-	return &choice
 }
 
 // WithChatCompletions returns a copy of the model that targets the Chat

@@ -21,7 +21,7 @@ func paragraphSplitter(
 ) ([]documents.Document, error) {
 	out := make([]documents.Document, 0, len(docs))
 	for _, doc := range docs {
-		for _, part := range strings.Split(doc.PageContent, "\n\n") {
+		for part := range strings.SplitSeq(doc.PageContent, "\n\n") {
 			if part == "" {
 				continue
 			}

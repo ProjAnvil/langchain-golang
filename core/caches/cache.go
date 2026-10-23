@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -130,9 +131,7 @@ func cloneMap(input map[string]any) map[string]any {
 		return nil
 	}
 	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, input)
 	return cloned
 }
 

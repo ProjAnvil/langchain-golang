@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -557,9 +558,7 @@ func cloneAnyMap(input map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, input)
 	return cloned
 }
 

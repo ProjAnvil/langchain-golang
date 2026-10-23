@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,9 +256,7 @@ func fewShotConfig(overrides map[string]any) map[string]any {
 		"prefix":   "Answer.",
 		"suffix":   "Q: {{.q}}\nA:",
 	}
-	for key, value := range overrides {
-		config[key] = value
-	}
+	maps.Copy(config, overrides)
 	return config
 }
 

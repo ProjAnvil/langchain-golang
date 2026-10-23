@@ -36,9 +36,7 @@ func (s *InMemory) Dump(path string) error {
 			continue
 		}
 		metadata := map[string]any{}
-		for key, value := range doc.Metadata {
-			metadata[key] = value
-		}
+		maps.Copy(metadata, doc.Metadata)
 		records[id] = inMemoryDumpRecord{
 			ID:       id,
 			Vector:   append([]float64(nil), s.vectors[id]...),

@@ -592,8 +592,7 @@ func TestSSRFSafeTransportBlocksIPv4CompatibleLiteral(t *testing.T) {
 	if _, err := transport.RoundTrip(req); err == nil {
 		t.Fatal("RoundTrip must block a host resolving to ::127.0.0.1")
 	} else {
-		var blocked SSRFBlockedError
-		if !errors.As(err, &blocked) {
+		if _, ok := errors.AsType[SSRFBlockedError](err); !ok {
 			t.Fatalf("expected SSRFBlockedError, got %T: %v", err, err)
 		}
 	}

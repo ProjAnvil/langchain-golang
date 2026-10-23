@@ -362,7 +362,7 @@ func isErrorType(t reflect.Type) bool {
 // isAnyReturn reports whether t is tools.Result or the empty interface. It
 // returns true for `any`, false for Result, and an error for anything else.
 func isAnyReturn(t reflect.Type) (bool, error) {
-	if t == reflect.TypeOf(Result{}) {
+	if t == reflect.TypeFor[Result]() {
 		return false, nil
 	}
 	if t.Kind() == reflect.Interface && t.NumMethod() == 0 {

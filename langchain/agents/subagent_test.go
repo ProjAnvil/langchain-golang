@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,9 +16,9 @@ import (
 // lastAIText returns the text of the last AI message in msgs, or "" if none.
 // Used by the subagent tool helper to surface a nested agent's final answer.
 func lastAIText(msgs []messages.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == messages.RoleAI {
-			return messages.Text(msgs[i])
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == messages.RoleAI {
+			return messages.Text(msg)
 		}
 	}
 	return ""

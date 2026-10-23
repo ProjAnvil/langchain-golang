@@ -151,13 +151,14 @@ func matchMarkdownSyntaxCode(line string) (string, bool) {
 }
 
 func resolveMarkdownSyntaxCodeChunk(currentLine string, lines *[]string) string {
-	chunk := currentLine
+	var chunk strings.Builder
+	chunk.WriteString(currentLine)
 	for len(*lines) > 0 {
 		rawLine := (*lines)[0]
 		*lines = (*lines)[1:]
-		chunk += rawLine
+		chunk.WriteString(rawLine)
 		if _, ok := matchMarkdownSyntaxCode(rawLine); ok {
-			return chunk
+			return chunk.String()
 		}
 	}
 	return ""

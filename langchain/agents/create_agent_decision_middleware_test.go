@@ -134,11 +134,11 @@ func TestCreateAgentOpenAIAutoModeBlocksRiskyToolEndToEnd(t *testing.T) {
 
 func TestCreateAgentOpenAIModelRouterSwapsModelEndToEnd(t *testing.T) {
 	server := decisionsServer(t, map[string]any{
-		"name":         "model_route",
-		"type":         "choice",
-		"choice":       "routed",
+		"name":          "model_route",
+		"type":          "choice",
+		"choice":        "routed",
 		"probabilities": []map[string]any{{"value": "routed", "probability": 1.0}},
-		"confidence":   1.0,
+		"confidence":    1.0,
 	})
 	base := &sequenceModel{responses: []messages.Message{messages.AI("base-model-answer")}}
 	routed := &sequenceModel{responses: []messages.Message{messages.AI("routed-model-answer")}}
@@ -202,10 +202,10 @@ func TestCreateAgentTypeSafeAutoModeBlocksRiskyToolEndToEnd(t *testing.T) {
 func TestCreateAgentTypeSafeModelRouterSwapsModelEndToEnd(t *testing.T) {
 	server := typeSafeServer(t, map[string]any{
 		"model_route": map[string]any{
-			"type":         "choice",
-			"choice":       "routed",
+			"type":          "choice",
+			"choice":        "routed",
 			"probabilities": map[string]any{"routed": 1.0},
-			"confidence":   1.0,
+			"confidence":    1.0,
 		},
 	})
 	base := &sequenceModel{responses: []messages.Message{messages.AI("base-model-answer")}}

@@ -122,10 +122,7 @@ func planEmbeddingBatches(tokenCounts []int, chunkSize int) [][2]int {
 	for i := 0; i < len(tokenCounts); {
 		batchTokenCount := 0
 		batchEnd := i
-		limit := i + chunkSize
-		if limit > len(tokenCounts) {
-			limit = len(tokenCounts)
-		}
+		limit := min(i+chunkSize, len(tokenCounts))
 		for j := i; j < limit; j++ {
 			if batchTokenCount+tokenCounts[j] > maxTokensPerEmbeddingRequest {
 				if batchEnd == i {
@@ -252,10 +249,7 @@ func (e Embeddings) lenSafeEmbedDocuments(
 			continue
 		}
 		for start := 0; start < len(ids); start += ctxLength {
-			end := start + ctxLength
-			if end > len(ids) {
-				end = len(ids)
-			}
+			end := min(start+ctxLength, len(ids))
 			chunks = append(chunks, embeddingChunk{textIndex: i, ids: ids[start:end], asTokens: true})
 		}
 	}

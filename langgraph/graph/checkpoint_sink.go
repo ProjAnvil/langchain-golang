@@ -40,6 +40,7 @@ type checkpointSink struct {
 	exitDeltaWrites    []exitDeltaWrite
 	hasPersistedParent bool
 	initialCfg         checkpoint.Config
+	exitAnchorID       string
 	// exit mode: current superstep (updated by the invoke loop)
 	currentStep int
 	// exitPauseFlushed records that a pause checkpoint (and its pending
@@ -103,9 +104,15 @@ func newCheckpointSink(saver checkpoint.Saver, mode Durability, ctx context.Cont
 		s.workerDone = make(chan struct{})
 		go s.worker()
 	}
-	if mode == DurabilityExit && tup != nil {
-		s.hasPersistedParent = true
-		s.initialCfg = tup.Config
+	if mode == DurabilityExit {
+		if tup != nil {
+			s.hasPersistedParent = true
+			s.initialCfg = tup.Config
+		} else if saver != nil {
+			// Reserve before loop checkpoint IDs so a later flush cannot
+			// create an anchor that shadows the final checkpoint as latest.
+			s.exitAnchorID = checkpoint.NewID(int(checkpointSeq.Add(1)))
+		}
 	}
 	return s
 }
@@ -401,7 +408,7 @@ func (s *checkpointSink) flushExit() error {
 	} else if len(pending) > 0 {
 		stubCp := checkpoint.Checkpoint{
 			V:               1,
-			ID:              checkpoint.NewID(0),
+			ID:              s.exitAnchorID,
 			ChannelValues:   map[string]any{},
 			ChannelVersions: map[string]int64{},
 			VersionsSeen:    map[string]map[string]int64{},

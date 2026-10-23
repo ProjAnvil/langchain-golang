@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -471,10 +472,7 @@ func searchRanked(picks []searchCandidate, queryVec []float64, offset, limit int
 				cmp.Compare(a.Key, b.Key),
 			)
 		})
-		n := limit - len(kept)
-		if n > len(scoreless) {
-			n = len(scoreless)
-		}
+		n := min(limit-len(kept), len(scoreless))
 		for _, item := range scoreless[:n] {
 			kept = append(kept, scored{score: 0, item: item})
 		}
@@ -504,10 +502,7 @@ func cloneItem(item *Item) Item {
 // shorter vector (zip(strict=False)) while the norms use the full vectors, and
 // a zero-norm vector scores 0 instead of dividing by zero.
 func cosineSimilarity(a, b []float64) float64 {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
+	n := min(len(b), len(a))
 	var dot, normA, normB float64
 	for i := range n {
 		dot += a[i] * b[i]
@@ -599,9 +594,7 @@ func cloneValue(m map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
 

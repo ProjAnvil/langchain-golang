@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -113,7 +114,7 @@ func (m *ToolCallLimitMiddleware) AfterModel(ctx context.Context, state map[stri
 
 	if m.ExitBehavior == "end" {
 		if otherTools := m.otherPendingTools(lastAI.ToolCalls); len(otherTools) > 0 {
-			return nil, fmt.Errorf("cannot end execution with other tool calls pending. Found calls to: %s", stringsJoin(otherTools, ", "))
+			return nil, fmt.Errorf("cannot end execution with other tool calls pending. Found calls to: %s", strings.Join(otherTools, ", "))
 		}
 		artificialMessages = append(artificialMessages, messages.AI(buildFinalToolLimitMessage(finalThreadCount+len(blocked), finalRunCount, m.ThreadLimit, m.RunLimit, m.ToolName)))
 		update["messages"] = artificialMessages
@@ -197,9 +198,7 @@ func mapStringIntFromState(state map[string]any, key string) map[string]int {
 	}
 	switch counts := state[key].(type) {
 	case map[string]int:
-		for name, count := range counts {
-			out[name] = count
-		}
+		maps.Copy(out, counts)
 	case map[string]any:
 		for name, value := range counts {
 			out[name] = intFromAny(value)
@@ -242,5 +241,5 @@ func buildFinalToolLimitMessage(threadCount, runCount int, threadLimit, runLimit
 	if runLimit != nil && runCount > *runLimit {
 		limits = append(limits, fmt.Sprintf("run limit exceeded (%d/%d calls)", runCount, *runLimit))
 	}
-	return fmt.Sprintf("%s call limit reached: %s.", toolDesc, stringsJoin(limits, " and "))
+	return fmt.Sprintf("%s call limit reached: %s.", toolDesc, strings.Join(limits, " and "))
 }

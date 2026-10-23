@@ -1,6 +1,7 @@
 package runnables
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 
@@ -128,5 +129,53 @@ func TestMergeConfigMutationSafety(t *testing.T) {
 	}
 	if out.Configurable["m"] == "MUTATED" {
 		t.Error("configurable affected by mutation")
+	}
+}
+
+func TestMergeConfigVersionMapsAreIndependent(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		base     map[string]any
+		incoming map[string]any
+		want     map[string]any
+	}{
+		{name: "nil incoming", incoming: map[string]any{"lc_versions": map[string]any(nil)}},
+		{
+			name: "nil base", base: map[string]any{"lc_versions": map[string]any(nil)},
+			incoming: map[string]any{"other": true},
+		},
+		{
+			name: "both nil", base: map[string]any{"lc_versions": map[string]any(nil)},
+			incoming: map[string]any{"lc_versions": map[string]any(nil)},
+		},
+		{
+			name: "base only", base: map[string]any{"lc_versions": map[string]any{"core": "1"}},
+			incoming: map[string]any{"other": true},
+			want:     map[string]any{"core": "1"},
+		},
+		{
+			name: "incoming only", incoming: map[string]any{"lc_versions": map[string]any{"partner": "2"}},
+			want: map[string]any{"partner": "2"},
+		},
+		{
+			name: "overlapping versions", base: map[string]any{"lc_versions": map[string]any{"core": "1"}},
+			incoming: map[string]any{"lc_versions": map[string]any{"core": "2", "partner": "3"}},
+			want:     map[string]any{"core": "2", "partner": "3"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := MergeConfig(Config{Metadata: tc.base}, Config{Metadata: tc.incoming})
+			versions, ok := out.Metadata["lc_versions"].(map[string]any)
+			if !ok || versions == nil || !maps.Equal(versions, tc.want) {
+				t.Fatalf("lc_versions = %#v, want non-nil map with entries %#v", out.Metadata["lc_versions"], tc.want)
+			}
+			versions["changed"] = true
+			for _, metadata := range []map[string]any{tc.base, tc.incoming} {
+				source, _ := metadata["lc_versions"].(map[string]any)
+				if _, exists := source["changed"]; exists {
+					t.Fatal("merged version map aliases an input map")
+				}
+			}
+		})
 	}
 }

@@ -1,10 +1,11 @@
 package middleware
 
 import (
-	"github.com/projanvil/langchain-golang/core/callbacks"
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/projanvil/langchain-golang/core/callbacks"
 
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"

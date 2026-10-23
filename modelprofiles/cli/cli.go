@@ -271,9 +271,7 @@ func ModelDataToProfile(modelData map[string]any) Profile {
 // not mutated.
 func ApplyOverrides(profile Profile, overrides ...Profile) Profile {
 	merged := make(Profile, len(profile))
-	for key, value := range profile {
-		merged[key] = value
-	}
+	maps.Copy(merged, profile)
 	for _, override := range overrides {
 		for key, value := range override {
 			if value != nil {
@@ -326,9 +324,7 @@ func ParseAugmentations(data []byte) (providerAug Profile, modelAugs map[string]
 	for key, value := range overrides {
 		if table, isTable := value.(map[string]any); isTable {
 			profile := Profile{}
-			for k, v := range table {
-				profile[k] = v
-			}
+			maps.Copy(profile, table)
 			modelAugs[key] = profile
 		} else {
 			providerAug[key] = value

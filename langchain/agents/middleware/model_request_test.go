@@ -17,7 +17,7 @@ func TestModelRequestCreatesWithVariousSystemInputs(t *testing.T) {
 	}{
 		{
 			name:           "system message",
-			systemMessage:  ptr(messages.System("You are helpful")),
+			systemMessage:  new(messages.System("You are helpful")),
 			expectMessage:  true,
 			expectedPrompt: "You are helpful",
 		},
@@ -90,13 +90,13 @@ func TestModelRequestSystemPromptWithContentBlocks(t *testing.T) {
 func TestModelRequestOverrideSystemMessageAndPrompt(t *testing.T) {
 	original, err := NewModelRequest(ModelRequest{
 		Model:         "fake",
-		SystemMessage: ptr(messages.System("Original")),
+		SystemMessage: new(messages.System("Original")),
 	})
 	if err != nil {
 		t.Fatalf("new model request: %v", err)
 	}
 
-	withMessage, err := original.Override(WithSystemMessage(ptr(messages.System("New"))))
+	withMessage, err := original.Override(WithSystemMessage(new(messages.System("New"))))
 	if err != nil {
 		t.Fatalf("override system message: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestModelRequestOverrideSystemMessageAndPrompt(t *testing.T) {
 func TestModelRequestOverrideSystemPromptToNone(t *testing.T) {
 	original, err := NewModelRequest(ModelRequest{
 		Model:         "fake",
-		SystemMessage: ptr(messages.System("Original")),
+		SystemMessage: new(messages.System("Original")),
 	})
 	if err != nil {
 		t.Fatalf("new model request: %v", err)
@@ -144,7 +144,7 @@ func TestModelRequestCannotSetBothSystemPromptAndSystemMessage(t *testing.T) {
 	_, err := NewModelRequest(ModelRequest{
 		Model:         "fake",
 		SystemPrompt:  "String prompt",
-		SystemMessage: ptr(messages.System("Message prompt")),
+		SystemMessage: new(messages.System("Message prompt")),
 	})
 	if err == nil {
 		t.Fatal("expected constructor error")
@@ -159,7 +159,7 @@ func TestModelRequestCannotSetBothSystemPromptAndSystemMessage(t *testing.T) {
 	}
 	_, err = request.Override(
 		WithSystemPrompt("String prompt"),
-		WithSystemMessage(ptr(messages.System("Message prompt"))),
+		WithSystemMessage(new(messages.System("Message prompt"))),
 	)
 	if err == nil {
 		t.Fatal("expected override error")
@@ -167,8 +167,4 @@ func TestModelRequestCannotSetBothSystemPromptAndSystemMessage(t *testing.T) {
 	if !strings.Contains(err.Error(), "cannot specify both") {
 		t.Fatalf("unexpected override error: %v", err)
 	}
-}
-
-func ptr[T any](value T) *T {
-	return &value
 }

@@ -21,6 +21,7 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -361,8 +362,8 @@ func TestCreateAgentHITLCrossProcessCheckpointRoundTrip(t *testing.T) {
 	// each Put's parent link resolves.
 	saver2 := checkpoint.NewMemorySaver()
 	var roundTripped types.Interrupt
-	for i := len(restored) - 1; i >= 0; i-- {
-		wt := restored[i]
+	for _, wt := range slices.Backward(restored) {
+
 		cp := checkpoint.Checkpoint{
 			V:               wt.CP.V,
 			ID:              wt.CP.ID,

@@ -3,6 +3,7 @@ package outputparser
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -271,8 +272,6 @@ func cloneArgs(args map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(args))
-	for key, value := range args {
-		out[key] = value
-	}
+	maps.Copy(out, args)
 	return out
 }

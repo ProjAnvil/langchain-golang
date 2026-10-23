@@ -48,9 +48,7 @@ func BatchAsCompleted[I any, O any](
 		if limit <= 0 {
 			limit = DefaultParallelism()
 		}
-		if limit > len(inputs) {
-			limit = len(inputs)
-		}
+		limit = min(limit, len(inputs))
 
 		type outcome struct {
 			index  int
@@ -63,10 +61,8 @@ func BatchAsCompleted[I any, O any](
 		// Fixed worker pool over an index channel: goroutine count is bounded
 		// by limit, not by batch size, mirroring ParallelMap.
 		var wg sync.WaitGroup
-		wg.Add(limit)
 		for range limit {
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				for i := range indexes {
 					var result BatchResult[O]
 					if err := context.Cause(ctx); err != nil {
@@ -81,7 +77,7 @@ func BatchAsCompleted[I any, O any](
 						return
 					}
 				}
-			}()
+			})
 		}
 
 		// Dispatch indexes to the workers; on cancellation, report the cause
@@ -114,7 +110,7 @@ func BatchAsCompleted[I any, O any](
 			wg.Wait()
 		}()
 
-		for received := 0; received < len(inputs); received++ {
+		for range inputs {
 			out := <-results
 			if !yield(out.index, out.result) {
 				return

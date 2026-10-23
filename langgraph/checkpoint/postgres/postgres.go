@@ -164,7 +164,7 @@ func splitChannelValues(values map[string]any) (inline, blobs map[string]any) {
 // composite channel value with NO version anywhere is inlined into the
 // checkpoint JSON as a serde typed envelope instead (see doc.go). The
 // checkpoints row upserts.
-func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (checkpoint.Config, error) {
+func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (result checkpoint.Config, retErr error) {
 	stored := cp
 	if len(newVersions) > 0 {
 		stored.ChannelVersions = maps.Clone(cp.ChannelVersions)
@@ -219,14 +219,16 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 	}
 	batch.Queue(upsertCheckpointSQL, cfg.ThreadID, cfg.CheckpointNS, cp.ID, parent, string(cpJSON), string(mdJSON))
 	br := s.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() {
+		closeBatchWithError(br, &retErr, fmt.Sprintf("put checkpoint %q", cp.ID))
+		if retErr != nil {
+			result = checkpoint.Config{}
+		}
+	}()
 	for range batch.Len() {
 		if _, err := br.Exec(); err != nil {
 			return checkpoint.Config{}, fmt.Errorf("postgres saver: put checkpoint %q: %w", cp.ID, err)
 		}
-	}
-	if err := br.Close(); err != nil {
-		return checkpoint.Config{}, fmt.Errorf("postgres saver: put checkpoint %q: %w", cp.ID, err)
 	}
 	return checkpoint.Config{ThreadID: cfg.ThreadID, CheckpointNS: cfg.CheckpointNS, CheckpointID: cp.ID}, nil
 }
@@ -235,7 +237,7 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 // rule (base.py:363-367): an all-reserved batch UPSERTs under the reserved
 // negative idx (re-invocation overwrites); any other batch INSERTs with
 // ON CONFLICT DO NOTHING at the positional idx (first write wins).
-func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
+func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) (retErr error) {
 	if len(writes) == 0 {
 		return nil // no-op, matching Python's executemany with an empty batch
 	}
@@ -260,14 +262,11 @@ func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []c
 		batch.Queue(query, cfg.ThreadID, cfg.CheckpointNS, cpID, taskID, taskPath, idx, w.Channel, typ, data)
 	}
 	br := s.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	defer closeBatchWithError(br, &retErr, fmt.Sprintf("put writes for checkpoint %q", cpID))
 	for range batch.Len() {
 		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("postgres saver: put writes for checkpoint %q: %w", cpID, err)
 		}
-	}
-	if err := br.Close(); err != nil {
-		return fmt.Errorf("postgres saver: put writes for checkpoint %q: %w", cpID, err)
 	}
 	return nil
 }
@@ -476,12 +475,12 @@ func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]ch
 }
 
 // DeleteThread implements checkpoint.Saver.
-func (s *Saver) DeleteThread(ctx context.Context, threadID string) error {
+func (s *Saver) DeleteThread(ctx context.Context, threadID string) (retErr error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres saver: delete thread %q: %w", threadID, err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackWithError(ctx, tx, &retErr)
 	for _, table := range []string{"checkpoints", "checkpoint_blobs", "checkpoint_writes"} {
 		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE thread_id = $1`, threadID); err != nil {
 			return fmt.Errorf("postgres saver: delete thread %q: %w", threadID, err)
@@ -499,7 +498,7 @@ func (s *Saver) DeleteThread(ctx context.Context, threadID string) error {
 // DeltaChannel warning on the Saver interface (base/__init__.py:340-346)
 // applies: deleting a run can sever a live thread's delta-channel ancestor
 // history — documented only, mirroring Python.
-func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
+func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) (retErr error) {
 	if len(runIDs) == 0 {
 		return nil
 	}
@@ -507,7 +506,7 @@ func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
 	if err != nil {
 		return fmt.Errorf("postgres saver: delete for runs: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackWithError(ctx, tx, &retErr)
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM checkpoint_writes WHERE (thread_id, checkpoint_ns, checkpoint_id) IN (SELECT thread_id, checkpoint_ns, checkpoint_id FROM checkpoints WHERE metadata->>'run_id' = ANY($1))`,
 		runIDs); err != nil {
@@ -528,12 +527,12 @@ func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
 // replaced across all three tables (blobs are keyed by thread too, so the
 // copy needs its own blob rows), preserving checkpoint IDs, namespaces,
 // parent links, and writes. A nonexistent source inserts nothing.
-func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error {
+func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) (retErr error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres saver: copy thread %q -> %q: %w", srcThreadID, dstThreadID, err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackWithError(ctx, tx, &retErr)
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata)
 		 SELECT $1, checkpoint_ns, checkpoint_id, parent_checkpoint_id, checkpoint, metadata FROM checkpoints WHERE thread_id = $2
@@ -575,7 +574,7 @@ func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string)
 // DeltaChannel warning on the Saver interface (base/__init__.py:387-413)
 // applies: naive keep_latest can sever delta-channel ancestor history —
 // documented only, mirroring Python.
-func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) error {
+func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) (retErr error) {
 	switch strategy {
 	case checkpoint.PruneKeepLatest, checkpoint.PruneDeleteAll:
 	default:
@@ -585,7 +584,7 @@ func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoi
 	if err != nil {
 		return fmt.Errorf("postgres saver: prune: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackWithError(ctx, tx, &retErr)
 	const keepLatestPerNS = `(SELECT checkpoint_ns, MAX(checkpoint_id) FROM checkpoints WHERE thread_id = $1 GROUP BY checkpoint_ns)`
 	for _, threadID := range threadIDs {
 		if strategy == checkpoint.PruneDeleteAll {
@@ -611,6 +610,18 @@ func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoi
 		return fmt.Errorf("postgres saver: prune: %w", err)
 	}
 	return nil
+}
+
+func closeBatchWithError(batch pgx.BatchResults, retErr *error, operation string) {
+	if err := batch.Close(); err != nil {
+		*retErr = errors.Join(*retErr, fmt.Errorf("postgres saver: %s: %w", operation, err))
+	}
+}
+
+func rollbackWithError(ctx context.Context, tx pgx.Tx, retErr *error) {
+	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		*retErr = errors.Join(*retErr, fmt.Errorf("postgres saver: rollback: %w", err))
+	}
 }
 
 // resolveCheckpointID resolves cfg to a stored checkpoint ID — cfg's own ID,

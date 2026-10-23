@@ -282,10 +282,7 @@ func TestRetryPolicyBackoffJitterEnabled(t *testing.T) {
 		MaxInterval:     40 * time.Millisecond,
 	}
 	for attempt := 1; attempt <= 20; attempt++ {
-		base := time.Duration(float64(p.InitialInterval) * math.Pow(p.BackoffFactor, float64(attempt-1)))
-		if base > p.MaxInterval {
-			base = p.MaxInterval
-		}
+		base := min(time.Duration(float64(p.InitialInterval)*math.Pow(p.BackoffFactor, float64(attempt-1))), p.MaxInterval)
 		got := p.backoff(attempt)
 		if got < base {
 			t.Fatalf("backoff(%d) = %v, want >= clamped base %v", attempt, got, base)

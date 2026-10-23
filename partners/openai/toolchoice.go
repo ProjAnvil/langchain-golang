@@ -1,5 +1,7 @@
 package openai
 
+import "maps"
+
 // ToolChoice constrains which tool the model must call, mirroring Python
 // ChatOpenAI.bind_tools(tool_choice=...) (chat_models/base.py:2268-2294).
 // Construct it with one of the ToolChoice* helpers and attach it with
@@ -48,8 +50,6 @@ func responsesToolChoice(value any) any {
 		return value
 	}
 	out := map[string]any{"type": "function"}
-	for key, val := range fn {
-		out[key] = val
-	}
+	maps.Copy(out, fn)
 	return out
 }

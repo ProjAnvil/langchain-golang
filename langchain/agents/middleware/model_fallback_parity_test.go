@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/language"
@@ -64,17 +65,13 @@ func requestBlocksHaveCacheControl(req ModelRequest) bool {
 		return true
 	}
 	if req.SystemMessage != nil {
-		for _, block := range req.SystemMessage.ContentBlocks {
-			if blockHasCacheControl(block) {
-				return true
-			}
+		if slices.ContainsFunc(req.SystemMessage.ContentBlocks, blockHasCacheControl) {
+			return true
 		}
 	}
 	for _, msg := range req.Messages {
-		for _, block := range msg.ContentBlocks {
-			if blockHasCacheControl(block) {
-				return true
-			}
+		if slices.ContainsFunc(msg.ContentBlocks, blockHasCacheControl) {
+			return true
 		}
 	}
 	return false

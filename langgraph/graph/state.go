@@ -167,9 +167,7 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 		if rs.seen[w.node] == nil {
 			rs.seen[w.node] = map[string]int64{}
 		}
-		for key, v := range rs.versions {
-			rs.seen[w.node][key] = v
-		}
+		maps.Copy(rs.seen[w.node], rs.versions)
 	}
 
 	var nextVersion int64 = 1
@@ -185,11 +183,7 @@ func (rs *runState) applyWrites(writes []taskWrites) (bool, error) {
 	grouped := map[string][]any{}
 	var writtenOrder []string
 	for _, w := range writes {
-		keys := make([]string, 0, len(w.update))
-		for k := range w.update {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
+		keys := slices.Sorted(maps.Keys(w.update))
 		for _, k := range keys {
 			if _, ok := grouped[k]; !ok {
 				writtenOrder = append(writtenOrder, k)

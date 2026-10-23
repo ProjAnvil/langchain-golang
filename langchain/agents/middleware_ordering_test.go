@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -148,12 +149,7 @@ func indexOrFatal(t *testing.T, log []string, want string) int {
 }
 
 func hasEvent(log []string, want string) bool {
-	for _, e := range log {
-		if e == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(log, want)
 }
 
 // aiWithToolCall builds an AI message that requests one tool call (drives the

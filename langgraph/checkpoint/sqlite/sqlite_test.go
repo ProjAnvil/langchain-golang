@@ -187,7 +187,7 @@ func TestConcurrentAccess(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		list, err := s.List(ctx, checkpoint.Config{ThreadID: fmt.Sprintf("thread-%d", g)}, checkpoint.ListOptions{})
 		if err != nil {
 			t.Fatalf("List thread-%d: %v", g, err)

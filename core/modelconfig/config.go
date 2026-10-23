@@ -1,6 +1,7 @@
 package modelconfig
 
 import (
+	"maps"
 	"net/http"
 	"time"
 )
@@ -146,24 +147,19 @@ func WithExtra(name string, value any) Option {
 	}
 }
 
-// Clone returns a defensive copy.
+// Clone returns a defensive copy with independent maps and scalar pointers.
+// Nil Headers and Extra maps become writable empty maps.
 func (cfg Config) Clone() Config {
 	out := cfg
 	out.Headers = make(map[string]string, len(cfg.Headers))
-	for key, value := range cfg.Headers {
-		out.Headers[key] = value
-	}
+	maps.Copy(out.Headers, cfg.Headers)
 	out.Extra = make(map[string]any, len(cfg.Extra))
-	for key, value := range cfg.Extra {
-		out.Extra[key] = value
-	}
+	maps.Copy(out.Extra, cfg.Extra)
 	if cfg.Temperature != nil {
-		value := *cfg.Temperature
-		out.Temperature = &value
+		out.Temperature = new(*cfg.Temperature)
 	}
 	if cfg.MaxTokens != nil {
-		value := *cfg.MaxTokens
-		out.MaxTokens = &value
+		out.MaxTokens = new(*cfg.MaxTokens)
 	}
 	return out
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,7 +268,7 @@ func newExitSinkWithState(t *testing.T, saver checkpoint.Saver) *checkpointSink 
 	}}}); err != nil {
 		t.Fatalf("applyWrites() error = %v", err)
 	}
-	sink := &checkpointSink{saver: saver, mode: DurabilityExit}
+	sink := newCheckpointSink(saver, DurabilityExit, t.Context(), nil)
 	sink.setFlushContext(t.Context(), Options{ThreadID: "t"}, rs,
 		checkpoint.Config{ThreadID: "t", CheckpointID: "final"}, checkpoint.Metadata{Source: "loop", Step: 0})
 	sink.accumulateExitWrites([]checkpoint.Write{{Channel: "x", Value: 1}}, "task-1")
@@ -294,6 +296,43 @@ func TestFlushExitSuccess(t *testing.T) {
 	}
 	if tup.Config.CheckpointID != "final" {
 		t.Fatalf("final checkpoint ID = %q, want %q", tup.Config.CheckpointID, "final")
+	}
+}
+
+func TestCheckpointSinkExitAnchorPrecedesFinalAcrossMilliseconds(t *testing.T) {
+	saver := checkpoint.NewMemorySaver()
+	sink := newExitSinkWithState(t, saver)
+	finalID := checkpoint.NewID(int(checkpointSeq.Add(1)))
+	sink.flushCfg.CheckpointID = finalID
+	prefix, _, _ := strings.Cut(finalID, "-")
+	finalMillis, err := strconv.ParseInt(prefix, 10, 64)
+	if err != nil {
+		t.Fatalf("checkpoint timestamp: %v", err)
+	}
+	for time.Now().UnixMilli() <= finalMillis {
+		timer := time.NewTimer(time.Until(time.UnixMilli(finalMillis + 1)))
+		select {
+		case <-timer.C:
+		case <-t.Context().Done():
+			timer.Stop()
+			t.Fatal("test context canceled while waiting for checkpoint clock boundary")
+		}
+	}
+	if err := sink.flushExit(); err != nil {
+		t.Fatalf("flushExit: %v", err)
+	}
+	tuples, err := saver.List(t.Context(), checkpoint.Config{ThreadID: "t"}, checkpoint.ListOptions{})
+	if err != nil || len(tuples) != 2 {
+		t.Fatalf("List: %d checkpoints, err=%v, want final and anchor", len(tuples), err)
+	}
+	if tuples[0].Config.CheckpointID != finalID {
+		t.Fatalf("latest checkpoint = %q, want final %q", tuples[0].Config.CheckpointID, finalID)
+	}
+	if tuples[0].ParentConfig == nil || *tuples[0].ParentConfig != tuples[1].Config {
+		t.Fatalf("final parent = %#v, want persisted anchor %#v", tuples[0].ParentConfig, tuples[1].Config)
+	}
+	if tuples[0].Checkpoint.ChannelValues["x"] != 1 {
+		t.Fatalf("final state = %#v, want x=1", tuples[0].Checkpoint.ChannelValues)
 	}
 }
 

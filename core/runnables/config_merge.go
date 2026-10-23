@@ -1,6 +1,9 @@
 package runnables
 
-import "slices"
+import (
+	"maps"
+	"slices"
+)
 
 // MergeConfig merges multiple Config values into one using the same semantics
 // as Python's merge_configs:
@@ -27,11 +30,7 @@ func MergeConfig(configs ...Config) Config {
 			for _, t := range cfg.Tags {
 				tagSet[t] = struct{}{}
 			}
-			out.Tags = make([]string, 0, len(tagSet))
-			for t := range tagSet {
-				out.Tags = append(out.Tags, t)
-			}
-			slices.Sort(out.Tags)
+			out.Tags = slices.Sorted(maps.Keys(tagSet))
 		}
 
 		// Metadata: last-writer-wins; lc_versions accumulates.
@@ -40,9 +39,7 @@ func MergeConfig(configs ...Config) Config {
 		}
 
 		// Configurable: last-writer-wins per key.
-		for key, value := range cfg.Configurable {
-			out.Configurable[key] = value
-		}
+		maps.Copy(out.Configurable, cfg.Configurable)
 
 		// Scalar fields: last non-empty wins.
 		if cfg.Name != "" {
@@ -68,12 +65,8 @@ func MergeConfig(configs ...Config) Config {
 // from multiple packages coexist. This mirrors Python's _merge_metadata_dicts.
 func mergeMetadataMaps(base, incoming map[string]any) map[string]any {
 	merged := make(map[string]any, len(base)+len(incoming))
-	for k, v := range base {
-		merged[k] = v
-	}
-	for k, v := range incoming {
-		merged[k] = v
-	}
+	maps.Copy(merged, base)
+	maps.Copy(merged, incoming)
 
 	// Accumulate lc_versions if both sides are maps.
 	baseVersions, baseOK := toStringAnyMap(base["lc_versions"])
@@ -81,26 +74,14 @@ func mergeMetadataMaps(base, incoming map[string]any) map[string]any {
 	switch {
 	case baseOK && incomingOK:
 		acc := make(map[string]any, len(baseVersions)+len(incomingVersions))
-		for k, v := range baseVersions {
-			acc[k] = v
-		}
-		for k, v := range incomingVersions {
-			acc[k] = v
-		}
+		maps.Copy(acc, baseVersions)
+		maps.Copy(acc, incomingVersions)
 		merged["lc_versions"] = acc
 	case incomingOK:
-		acc := make(map[string]any, len(incomingVersions))
-		for k, v := range incomingVersions {
-			acc[k] = v
-		}
-		merged["lc_versions"] = acc
+		merged["lc_versions"] = cloneConfigMap(incomingVersions)
 	case baseOK:
 		if _, alreadySet := incoming["lc_versions"]; !alreadySet {
-			acc := make(map[string]any, len(baseVersions))
-			for k, v := range baseVersions {
-				acc[k] = v
-			}
-			merged["lc_versions"] = acc
+			merged["lc_versions"] = cloneConfigMap(baseVersions)
 		}
 	}
 	return merged

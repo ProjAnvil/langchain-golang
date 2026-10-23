@@ -229,9 +229,7 @@ func CloneSchema(input schema.Schema) schema.Schema {
 		return nil
 	}
 	out := make(schema.Schema, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
+	maps.Copy(out, input)
 	return out
 }
 
@@ -371,8 +369,8 @@ func RenderSimpleMustache(template string, data map[string]any) string {
 			tag = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(match, "}}}"), "{{{"))
 			unescaped = true
 		}
-		if strings.HasPrefix(tag, "&") {
-			tag = strings.TrimSpace(strings.TrimPrefix(tag, "&"))
+		if after, ok := strings.CutPrefix(tag, "&"); ok {
+			tag = strings.TrimSpace(after)
 			unescaped = true
 		}
 		name, ok := normalizeMustacheVariableTag(tag)
@@ -421,8 +419,8 @@ func normalizeMustacheVariableTag(tag string) (string, bool) {
 	if tag == "" {
 		return "", false
 	}
-	if strings.HasPrefix(tag, "&") {
-		tag = strings.TrimSpace(strings.TrimPrefix(tag, "&"))
+	if after, ok := strings.CutPrefix(tag, "&"); ok {
+		tag = strings.TrimSpace(after)
 	}
 	switch tag[0] {
 	case '#', '^', '/', '!', '>', '<', '=':
@@ -452,8 +450,6 @@ func cloneMap(values map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
+	maps.Copy(out, values)
 	return out
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"reflect"
 	"sync/atomic"
 	"time"
@@ -368,9 +369,7 @@ func cloneState(state map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(state))
-	for k, v := range state {
-		out[k] = v
-	}
+	maps.Copy(out, state)
 	return out
 }
 
@@ -400,9 +399,7 @@ func normalizeEmpty(v any) any {
 func (e *streamEmitter) emitPause(state map[string]any, interrupts []types.Interrupt) {
 	e.emit(StreamUpdates, map[string]any{checkpoint.ReservedInterrupt: interrupts})
 	merged := make(map[string]any, len(state)+1)
-	for k, v := range state {
-		merged[k] = v
-	}
+	maps.Copy(merged, state)
 	merged[checkpoint.ReservedInterrupt] = interrupts
 	e.emit(StreamValues, merged)
 }

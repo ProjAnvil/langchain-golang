@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -152,8 +153,8 @@ func completePartialJSON(text string) (string, bool) {
 	if inString {
 		builder.WriteRune('"')
 	}
-	for i := len(stack) - 1; i >= 0; i-- {
-		builder.WriteRune(stack[i])
+	for _, s := range slices.Backward(stack) {
+		builder.WriteRune(s)
 	}
 	return builder.String(), true
 }

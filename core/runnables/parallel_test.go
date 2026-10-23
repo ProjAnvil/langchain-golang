@@ -154,6 +154,36 @@ func TestParallelMapCancelSkipsUnstarted(t *testing.T) {
 	}
 }
 
+func TestParallelMapPreservesCancellationCause(t *testing.T) {
+	for _, limit := range []int{1, 8} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			cause := errors.New("batch canceled by caller")
+			ctx, cancel := context.WithCancelCause(t.Context())
+			cancel(cause)
+			var calls atomic.Int32
+			outputs, err := ParallelMap(ctx, Config{MaxConcurrency: limit}, []int{1, 2, 3},
+				func(_ context.Context, n int) (int, error) {
+					calls.Add(1)
+					return n, nil
+				})
+			if !errors.Is(err, cause) {
+				t.Fatalf("err = %v, want cancellation cause %v", err, cause)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("invoked %d inputs after cancellation, want 0", got)
+			}
+			if len(outputs) != 3 {
+				t.Fatalf("len(outputs) = %d, want 3", len(outputs))
+			}
+			for i, output := range outputs {
+				if output != 0 {
+					t.Fatalf("outputs[%d] = %d, want zero value", i, output)
+				}
+			}
+		})
+	}
+}
+
 func TestFuncBatchHonorsMaxConcurrency(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	fn := NewFunc(

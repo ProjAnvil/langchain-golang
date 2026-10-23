@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+
 	// Register decoders so image.DecodeConfig can size jpeg/png/gif inputs,
 	// the Go equivalent of Python's PIL-backed sizing.
 	_ "image/gif"

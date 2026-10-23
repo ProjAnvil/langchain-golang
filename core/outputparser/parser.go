@@ -281,10 +281,7 @@ func extractJSONMarkdown(text string) string {
 	}
 	endObj := strings.LastIndex(trimmed, "}")
 	endArr := strings.LastIndex(trimmed, "]")
-	end := endObj
-	if endArr > end {
-		end = endArr
-	}
+	end := max(endArr, endObj)
 	if end >= start {
 		return strings.TrimSpace(trimmed[start : end+1])
 	}

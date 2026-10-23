@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -94,7 +95,7 @@ func buildLimitExceededMessage(threadCount, runCount int, threadLimit, runLimit 
 	if runLimit != nil && runCount >= *runLimit {
 		limits = append(limits, fmt.Sprintf("run limit (%d/%d)", runCount, *runLimit))
 	}
-	return fmt.Sprintf("Model call limits exceeded: %s", stringsJoin(limits, ", "))
+	return fmt.Sprintf("Model call limits exceeded: %s", strings.Join(limits, ", "))
 }
 
 func intFromState(state map[string]any, key string) int {
@@ -113,15 +114,4 @@ func intFromState(state map[string]any, key string) int {
 	default:
 		return 0
 	}
-}
-
-func stringsJoin(values []string, separator string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	out := values[0]
-	for _, value := range values[1:] {
-		out += separator + value
-	}
-	return out
 }

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -237,9 +238,7 @@ func (t *LangChainTracer) startTrace(run *Run) {
 	run.SessionName = t.opts.Project
 	if len(run.Metadata) > 0 {
 		metadata := make(map[string]any, len(run.Metadata))
-		for key, value := range run.Metadata {
-			metadata[key] = value
-		}
+		maps.Copy(metadata, run.Metadata)
 		run.Extra = map[string]any{"metadata": metadata}
 	}
 	t.orderMap[run.ID] = runOrder{traceID: run.TraceID, dottedOrder: run.DottedOrder}

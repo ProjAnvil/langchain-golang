@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -169,9 +170,7 @@ func writeConformanceChatLine(
 	done bool,
 ) {
 	message := map[string]any{"role": "assistant", "content": ""}
-	for key, value := range overrides {
-		message[key] = value
-	}
+	maps.Copy(message, overrides)
 	line := map[string]any{
 		"model":      "llama3",
 		"created_at": "t1",

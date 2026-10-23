@@ -305,9 +305,7 @@ func sortedMapKeys[V any](values map[string]V) []string {
 
 func cloneProfile(profile Profile) Profile {
 	out := make(Profile, len(profile))
-	for key, value := range profile {
-		out[key] = value
-	}
+	maps.Copy(out, profile)
 	return out
 }
 

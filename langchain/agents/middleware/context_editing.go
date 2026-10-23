@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -213,11 +214,11 @@ func contextEditingCleared(message messages.Message) bool {
 }
 
 func findOriginatingToolCall(msgs []messages.Message, toolCallID string) (int, messages.ToolCall, bool) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != messages.RoleAI {
+	for i, msg := range slices.Backward(msgs) {
+		if msg.Role != messages.RoleAI {
 			continue
 		}
-		for _, call := range msgs[i].ToolCalls {
+		for _, call := range msg.ToolCalls {
 			if call.ID == toolCallID {
 				return i, call, true
 			}

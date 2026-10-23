@@ -3,6 +3,7 @@ package textsplitters
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -423,8 +424,6 @@ func runeLen(text string) int {
 
 func cloneMetadata(metadata map[string]any) map[string]any {
 	out := make(map[string]any, len(metadata))
-	for key, value := range metadata {
-		out[key] = value
-	}
+	maps.Copy(out, metadata)
 	return out
 }

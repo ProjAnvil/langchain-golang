@@ -1,18 +1,73 @@
 package postgres
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"maps"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint/serde"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
+
+type failingBatchClose struct {
+	pgx.BatchResults
+	err error
+}
+
+func (b failingBatchClose) Close() error { return b.err }
+
+type failingRollback struct {
+	pgx.Tx
+	err error
+}
+
+func (tx failingRollback) Rollback(context.Context) error { return tx.err }
+
+func TestCloseBatchWithErrorPreservesBothFailures(t *testing.T) {
+	primary := errors.New("operation failed")
+	closeErr := errors.New("close failed")
+	for _, initial := range []error{nil, primary} {
+		got := initial
+		closeBatchWithError(failingBatchClose{err: closeErr}, &got, "put checkpoint")
+		if !errors.Is(got, closeErr) || (initial != nil && !errors.Is(got, initial)) {
+			t.Fatalf("cleanup error = %v, want both %v and %v", got, initial, closeErr)
+		}
+		if !strings.Contains(got.Error(), "postgres saver: put checkpoint") {
+			t.Fatalf("close error lost operation context: %v", got)
+		}
+	}
+	got := primary
+	closeBatchWithError(failingBatchClose{}, &got, "put checkpoint")
+	if got != primary {
+		t.Fatalf("successful close changed operation error: %v", got)
+	}
+}
+
+func TestRollbackWithErrorIgnoresClosedTransactions(t *testing.T) {
+	primary := errors.New("operation failed")
+	rollbackErr := errors.New("rollback failed")
+	for _, err := range []error{nil, pgx.ErrTxClosed, fmt.Errorf("wrapped: %w", pgx.ErrTxClosed)} {
+		got := primary
+		rollbackWithError(t.Context(), failingRollback{err: err}, &got)
+		if got != primary {
+			t.Fatalf("expected rollback result %v changed operation error: %v", err, got)
+		}
+	}
+	got := primary
+	rollbackWithError(t.Context(), failingRollback{err: rollbackErr}, &got)
+	if !errors.Is(got, primary) || !errors.Is(got, rollbackErr) {
+		t.Fatalf("rollback error = %v, want operation and rollback failures", got)
+	}
+}
 
 // newTestSaver builds a Saver with only the serde wired up — enough for the
 // encode/decode unit tests, which never touch the pool.

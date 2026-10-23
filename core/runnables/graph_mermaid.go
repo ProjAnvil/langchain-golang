@@ -293,19 +293,13 @@ func commonIDPrefix(source, target string) string {
 // curve), all other keys untouched.
 func mergeFrontmatterConfig(user map[string]any, curve string) map[string]any {
 	out := make(map[string]any, len(user)+1)
-	for key, value := range user {
-		out[key] = value
-	}
+	maps.Copy(out, user)
 	userConfig, _ := user["config"].(map[string]any)
 	config := make(map[string]any, len(userConfig)+1)
-	for key, value := range userConfig {
-		config[key] = value
-	}
+	maps.Copy(config, userConfig)
 	userFlowchart, _ := userConfig["flowchart"].(map[string]any)
 	flowchart := make(map[string]any, len(userFlowchart)+1)
-	for key, value := range userFlowchart {
-		flowchart[key] = value
-	}
+	maps.Copy(flowchart, userFlowchart)
 	flowchart["curve"] = curve
 	config["flowchart"] = flowchart
 	out["config"] = config
@@ -449,10 +443,7 @@ func wrapMermaidLabelWords(label string, n int) string {
 	}
 	chunks := make([]string, 0, (len(words)+n-1)/n)
 	for i := 0; i < len(words); i += n {
-		end := i + n
-		if end > len(words) {
-			end = len(words)
-		}
+		end := min(i+n, len(words))
 		chunks = append(chunks, strings.Join(words[i:end], " "))
 	}
 	return strings.Join(chunks, "&nbsp<br>&nbsp")

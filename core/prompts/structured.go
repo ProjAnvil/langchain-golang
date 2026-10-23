@@ -2,6 +2,7 @@ package prompts
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -48,8 +49,6 @@ func cloneSchema(input schema.Schema) schema.Schema {
 		return nil
 	}
 	out := make(schema.Schema, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
+	maps.Copy(out, input)
 	return out
 }

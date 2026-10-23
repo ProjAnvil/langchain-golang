@@ -3,6 +3,7 @@ package language
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
@@ -442,9 +443,7 @@ func cloneMetadata(metadata map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(metadata))
-	for key, value := range metadata {
-		out[key] = value
-	}
+	maps.Copy(out, metadata)
 	return out
 }
 
@@ -453,8 +452,6 @@ func cloneProfile(profile modelprofiles.Profile) modelprofiles.Profile {
 		return nil
 	}
 	out := make(modelprofiles.Profile, len(profile))
-	for key, value := range profile {
-		out[key] = value
-	}
+	maps.Copy(out, profile)
 	return out
 }

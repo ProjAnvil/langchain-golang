@@ -182,8 +182,8 @@ func (m *Middleware) formatViolationMessage(content string, result Result) strin
 }
 
 func lastMessageIndex(msgs []messages.Message, role messages.Role) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == role {
+	for i, msg := range slices.Backward(msgs) {
+		if msg.Role == role {
 			return i
 		}
 	}

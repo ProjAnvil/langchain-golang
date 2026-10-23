@@ -81,6 +81,55 @@ func TestRecorderReturnsCopies(t *testing.T) {
 	}
 }
 
+func TestRecorderPreservesMetadataNilness(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{name: "nil"},
+		{name: "empty", metadata: map[string]any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := NewRecorder()
+			if err := recorder.HandleEvent(t.Context(), Event{Metadata: tc.metadata}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.metadata != nil {
+				tc.metadata["changed"] = true
+			}
+			got := recorder.Events()[0].Metadata
+			if (got == nil) != (tc.metadata == nil) || len(got) != 0 {
+				t.Fatalf("recorded metadata = %#v, want independent empty map with nilness preserved", got)
+			}
+		})
+	}
+}
+
+func TestManagerWithMetadataDoesNotMutateParent(t *testing.T) {
+	recorder := NewRecorder()
+	base := NewManager(recorder).WithMetadata(map[string]any{"source": "parent"})
+	incoming := map[string]any{"source": "child", "extra": true}
+	child := base.WithMetadata(incoming)
+	incoming["source"] = "changed"
+
+	if err := base.Emit(t.Context(), Event{Kind: EventToolStart}); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Emit(t.Context(), Event{Kind: EventToolStart}); err != nil {
+		t.Fatal(err)
+	}
+	events := recorder.Events()
+	if len(events) != 2 {
+		t.Fatalf("recorded %d events, want 2", len(events))
+	}
+	if events[0].Metadata["source"] != "parent" || len(events[0].Metadata) != 1 {
+		t.Fatalf("parent metadata changed: %#v", events[0].Metadata)
+	}
+	if events[1].Metadata["source"] != "child" || events[1].Metadata["extra"] != true {
+		t.Fatalf("child metadata = %#v, want copied last-writer-wins entries", events[1].Metadata)
+	}
+}
+
 func TestManagerAppliesInheritedConfig(t *testing.T) {
 	recorder := NewRecorder()
 	manager := NewManager(recorder).

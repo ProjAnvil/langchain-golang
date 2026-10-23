@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -136,9 +137,7 @@ type Router[I any, O any] struct {
 // NewRouter creates a router runnable.
 func NewRouter[I any, O any](runnables map[string]Runnable[I, O]) Router[I, O] {
 	copied := make(map[string]Runnable[I, O], len(runnables))
-	for key, runnable := range runnables {
-		copied[key] = runnable
-	}
+	maps.Copy(copied, runnables)
 	return Router[I, O]{Runnables: copied}
 }
 
@@ -441,9 +440,7 @@ type Parallel[I any] struct {
 // NewParallel creates a parallel runnable.
 func NewParallel[I any](steps map[string]Runnable[I, any]) Parallel[I] {
 	copied := make(map[string]Runnable[I, any], len(steps))
-	for key, step := range steps {
-		copied[key] = step
-	}
+	maps.Copy(copied, steps)
 	return Parallel[I]{Steps: copied}
 }
 

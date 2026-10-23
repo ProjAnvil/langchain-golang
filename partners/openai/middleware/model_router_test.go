@@ -10,6 +10,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
+
 	// Registers the "openai" chatmodels factory for the string-model test.
 	_ "github.com/projanvil/langchain-golang/partners/openai"
 )
@@ -22,7 +23,7 @@ func choiceResponse(choice string) string {
 
 func routerChoices(fast, powerful any) map[string]ModelChoice {
 	return map[string]ModelChoice{
-		"fast":    {Model: fast, Criteria: "Simple, well-scoped tasks."},
+		"fast":     {Model: fast, Criteria: "Simple, well-scoped tasks."},
 		"powerful": {Model: powerful, Criteria: "Complex tasks requiring deeper reasoning."},
 	}
 }
@@ -319,7 +320,7 @@ func TestModelRouterStringModelResolved(t *testing.T) {
 	server := newDecisionsServer(t, rec)
 	mw := &ModelRouter{
 		Choices: map[string]ModelChoice{
-			"fast":    {Model: "openai:gpt-4o-mini", Criteria: "Simple tasks."},
+			"fast":     {Model: "openai:gpt-4o-mini", Criteria: "Simple tasks."},
 			"powerful": {Model: "openai:gpt-4o", Criteria: "Complex tasks."},
 		},
 		Instructions: "Which model?",

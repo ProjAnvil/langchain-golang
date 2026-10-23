@@ -196,8 +196,8 @@ func passesLuhn(cardNumber string) bool {
 		return false
 	}
 	checksum := 0
-	for i := len(digits) - 1; i >= 0; i-- {
-		value := digits[i]
+	for i, value := range slices.Backward(digits) {
+
 		if (len(digits)-1-i)%2 == 1 {
 			value *= 2
 			if value > 9 {

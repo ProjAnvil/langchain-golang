@@ -227,10 +227,7 @@ func IndexDocuments(
 		indexStart:    indexStart,
 	}
 	for start := 0; start < len(docs); start += batchSize {
-		end := start + batchSize
-		if end > len(docs) {
-			end = len(docs)
-		}
+		end := min(start+batchSize, len(docs))
 		if err := indexBatch(ctx, docs[start:end], recordManager, dest, options, cleanupBatchSize, &state); err != nil {
 			return state.result, err
 		}

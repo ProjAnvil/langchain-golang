@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-func ptr(s string) *string { return &s }
-
 func TestPredicateToAPI(t *testing.T) {
 	p := Predicate{Instructions: "Is this request urgent?"}
 	got := p.toAPI("urgent")
@@ -24,10 +22,10 @@ func TestChoiceToAPI(t *testing.T) {
 	c := Choice{
 		Instructions: "Which department should handle this?",
 		Choices: []ChoiceOption{
-			{Value: "billing", Description: ptr("Payments, invoices, and refunds.")},
+			{Value: "billing", Description: new("Payments, invoices, and refunds.")},
 			{Value: "technical"},
 			{Value: true},
-			{Value: false, Description: ptr("Everything else.")},
+			{Value: false, Description: new("Everything else.")},
 		},
 	}
 	got := c.toAPI("department")
@@ -52,7 +50,7 @@ func TestScoreToAPI(t *testing.T) {
 		Instructions: "How frustrated does the customer appear?",
 		Levels: []ScoreLevel{
 			L("Calm"),
-			{Label: "Concerned", Description: ptr("Mild frustration is showing.")},
+			{Label: "Concerned", Description: new("Mild frustration is showing.")},
 			{Label: "Angry"},
 		},
 	}

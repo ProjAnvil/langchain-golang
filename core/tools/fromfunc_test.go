@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/schema"
@@ -407,12 +408,7 @@ func TestFromFunc_UntaggedFieldUsesGoName(t *testing.T) {
 // containsString reports whether s contains target. Keeps the test file
 // dependency-free.
 func containsString(s []string, target string) bool {
-	for _, v := range s {
-		if v == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s, target)
 }
 
 func TestFromFunc_RejectsInvalidMapArg(t *testing.T) {

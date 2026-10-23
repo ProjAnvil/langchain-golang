@@ -3,6 +3,8 @@ package runnables
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -108,10 +110,7 @@ func TestBatchAsCompletedYieldsErrorsPerInput(t *testing.T) {
 		return i, nil
 	}, schema.Integer(""), schema.Integer(""))
 
-	results := map[int]BatchResult[int]{}
-	for index, result := range BatchAsCompleted(t.Context(), runnable, []int{0, 1, 2, 3}) {
-		results[index] = result
-	}
+	results := maps.Collect(BatchAsCompleted(t.Context(), runnable, []int{0, 1, 2, 3}))
 	if len(results) != 4 {
 		t.Fatalf("yielded %d results, want 4", len(results))
 	}
@@ -153,10 +152,7 @@ func TestBatchAsCompletedCanceledContextYieldsEveryIndex(t *testing.T) {
 		return i, nil
 	}, schema.Integer(""), schema.Integer(""))
 
-	results := map[int]BatchResult[int]{}
-	for index, result := range BatchAsCompleted(ctx, runnable, []int{0, 1, 2, 3}, WithMaxConcurrency(1)) {
-		results[index] = result
-	}
+	results := maps.Collect(BatchAsCompleted(ctx, runnable, []int{0, 1, 2, 3}, WithMaxConcurrency(1)))
 	if len(results) != 4 {
 		t.Fatalf("yielded %d results, want one per input (4)", len(results))
 	}
@@ -172,5 +168,39 @@ func TestBatchAsCompletedEmptyInputs(t *testing.T) {
 
 	for _, result := range BatchAsCompleted(t.Context(), runnable, nil) {
 		t.Fatalf("unexpected yield: %#v", result)
+	}
+}
+
+func TestBatchAsCompletedPreservesCancellationCause(t *testing.T) {
+	for _, limit := range []int{1, 8} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			cause := errors.New("batch canceled by caller")
+			ctx, cancel := context.WithCancelCause(t.Context())
+			cancel(cause)
+			var calls atomic.Int32
+			runnable := NewFunc(func(_ context.Context, i int, _ ...Option) (int, error) {
+				calls.Add(1)
+				return i, nil
+			}, schema.Integer(""), schema.Integer(""))
+
+			seen := make([]bool, 3)
+			for index, result := range BatchAsCompleted(ctx, runnable, []int{1, 2, 3}, WithMaxConcurrency(limit)) {
+				if index < 0 || index >= len(seen) || seen[index] {
+					t.Fatalf("unexpected or duplicate result index %d", index)
+				}
+				seen[index] = true
+				if !errors.Is(result.Err, cause) || result.Output != 0 {
+					t.Fatalf("result[%d] = %#v, want zero output and cancellation cause %v", index, result, cause)
+				}
+			}
+			for i, yielded := range seen {
+				if !yielded {
+					t.Fatalf("input %d did not yield a result", i)
+				}
+			}
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("invoked %d inputs after cancellation, want 0", got)
+			}
+		})
 	}
 }

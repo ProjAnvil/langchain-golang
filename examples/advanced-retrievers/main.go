@@ -17,9 +17,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/documents"
@@ -46,7 +47,7 @@ func (r keywordRetriever) GetRelevantDocuments(_ context.Context, query string) 
 	for _, doc := range r.docs {
 		content := strings.ToLower(doc.PageContent)
 		score := 0
-		for _, term := range strings.Fields(strings.ToLower(query)) {
+		for term := range strings.FieldsSeq(strings.ToLower(query)) {
 			if strings.Contains(content, term) {
 				score++
 			}
@@ -55,7 +56,7 @@ func (r keywordRetriever) GetRelevantDocuments(_ context.Context, query string) 
 			hits = append(hits, scored{doc, score})
 		}
 	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
+	slices.SortStableFunc(hits, func(a, b scored) int { return cmp.Compare(b.score, a.score) })
 	out := make([]documents.Document, 0, len(hits))
 	for i, h := range hits {
 		if i == 3 { // keep the top-3, like the dense side's k

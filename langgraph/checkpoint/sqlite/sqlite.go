@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"strings"
 	"time"
@@ -109,11 +110,12 @@ func New(path string, serde checkpoint.Serializer) (*Saver, error) {
 	// and gives `:memory:` a single, stable database.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(setupSQL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlite: setup %q: %w", path, err)
+		err = fmt.Errorf("sqlite: setup %q: %w", path, err)
+		closeWithError(db, &err)
+		return nil, err
 	}
 	if err := ensureTaskPathColumn(db); err != nil {
-		db.Close()
+		closeWithError(db, &err)
 		return nil, err
 	}
 	return &Saver{db: db, serde: serde}, nil
@@ -122,12 +124,12 @@ func New(path string, serde checkpoint.Serializer) (*Saver, error) {
 // ensureTaskPathColumn adds the task_path column to writes tables created
 // before the M5 schema evolution (Python added task_path in migration v9;
 // Go sqlite savers created before M5 lack it).
-func ensureTaskPathColumn(db *sql.DB) error {
+func ensureTaskPathColumn(db *sql.DB) (retErr error) {
 	rows, err := db.Query(`PRAGMA table_info(writes)`)
 	if err != nil {
 		return fmt.Errorf("sqlite: inspect writes schema: %w", err)
 	}
-	defer rows.Close()
+	defer closeWithError(rows, &retErr)
 	for rows.Next() {
 		var cid int
 		var name, typ string
@@ -215,16 +217,16 @@ func (s *Saver) List(ctx context.Context, cfg checkpoint.Config, opts checkpoint
 	for rows.Next() {
 		r, err := scanCheckpointRow(rows)
 		if err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("sqlite: list thread %q: %w", cfg.ThreadID, err)
+			return nil, fmt.Errorf("sqlite: list thread %q: %w", cfg.ThreadID, errors.Join(err, rows.Close()))
 		}
 		raw = append(raw, r)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		return nil, fmt.Errorf("sqlite: list thread %q: %w", cfg.ThreadID, errors.Join(err, rows.Close()))
+	}
+	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("sqlite: list thread %q: %w", cfg.ThreadID, err)
 	}
-	rows.Close()
 
 	out := make([]checkpoint.Tuple, 0, len(raw))
 	for _, r := range raw {
@@ -281,7 +283,7 @@ func (s *Saver) Put(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Ch
 // INSERT OR IGNORE with the positional idx (first write wins). Reserved
 // channels keep their negative idx even in mixed batches, like Python's
 // `WRITES_IDX_MAP.get(channel, idx)`.
-func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
+func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) (retErr error) {
 	cpID, err := s.resolveCheckpointID(ctx, cfg)
 	if err != nil {
 		return err
@@ -294,12 +296,12 @@ func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []c
 	if err != nil {
 		return fmt.Errorf("sqlite: put writes for checkpoint %q: %w", cpID, err)
 	}
-	defer tx.Rollback()
+	defer rollbackWithError(tx, &retErr)
 	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("sqlite: put writes for checkpoint %q: %w", cpID, err)
 	}
-	defer stmt.Close()
+	defer closeWithError(stmt, &retErr)
 	for i, w := range writes {
 		idx := i
 		if reserved, ok := reservedWriteIdx[w.Channel]; ok {
@@ -320,12 +322,12 @@ func (s *Saver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []c
 }
 
 // DeleteThread implements checkpoint.Saver.
-func (s *Saver) DeleteThread(ctx context.Context, threadID string) error {
+func (s *Saver) DeleteThread(ctx context.Context, threadID string) (retErr error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlite: delete thread %q: %w", threadID, err)
 	}
-	defer tx.Rollback()
+	defer rollbackWithError(tx, &retErr)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM checkpoints WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("sqlite: delete thread %q: %w", threadID, err)
 	}
@@ -346,7 +348,7 @@ func (s *Saver) DeleteThread(ctx context.Context, threadID string) error {
 // interface (base/__init__.py:340-346) applies: deleting a run can sever a
 // live thread's delta-channel ancestor history — documented only, mirroring
 // Python.
-func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
+func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) (retErr error) {
 	if len(runIDs) == 0 {
 		return nil
 	}
@@ -361,7 +363,7 @@ func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
 	if err != nil {
 		return fmt.Errorf("sqlite: delete for runs: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackWithError(tx, &retErr)
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM writes WHERE (thread_id, checkpoint_ns, checkpoint_id) IN (SELECT thread_id, checkpoint_ns, checkpoint_id FROM checkpoints WHERE json_extract(metadata, '$.run_id') IN (`+in+`))`,
 		args...); err != nil {
@@ -382,12 +384,12 @@ func (s *Saver) DeleteForRuns(ctx context.Context, runIDs []string) error {
 // replaced, preserving checkpoint IDs, namespaces, parent links, and writes
 // (Python's copy_thread must carry the complete parent chain,
 // base/__init__.py:361-371). A nonexistent source inserts nothing.
-func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) error {
+func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string) (retErr error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlite: copy thread %q -> %q: %w", srcThreadID, dstThreadID, err)
 	}
-	defer tx.Rollback()
+	defer rollbackWithError(tx, &retErr)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) SELECT ?, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata FROM checkpoints WHERE thread_id = ?`,
 		dstThreadID, srcThreadID); err != nil {
@@ -411,7 +413,7 @@ func (s *Saver) CopyThread(ctx context.Context, srcThreadID, dstThreadID string)
 // pre-prune table. The DeltaChannel warning on the Saver interface
 // (base/__init__.py:387-413) applies: naive keep_latest can sever
 // delta-channel ancestor history — documented only, mirroring Python.
-func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) error {
+func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoint.PruneStrategy) (retErr error) {
 	switch strategy {
 	case checkpoint.PruneKeepLatest, checkpoint.PruneDeleteAll:
 	default:
@@ -421,7 +423,7 @@ func (s *Saver) Prune(ctx context.Context, threadIDs []string, strategy checkpoi
 	if err != nil {
 		return fmt.Errorf("sqlite: prune: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackWithError(tx, &retErr)
 	const keepLatestPerNS = `(SELECT checkpoint_ns, MAX(checkpoint_id) FROM checkpoints WHERE thread_id = ? GROUP BY checkpoint_ns)`
 	for _, threadID := range threadIDs {
 		if strategy == checkpoint.PruneDeleteAll {
@@ -546,12 +548,12 @@ func (s *Saver) finishTuple(ctx context.Context, ns string, r rawCheckpointRow) 
 
 // loadWrites returns the pending writes recorded against a checkpoint,
 // ordered by (task_id, idx) exactly like Python's `SqliteSaver`.
-func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]checkpoint.Write, error) {
+func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) (_ []checkpoint.Write, retErr error) {
 	rows, err := s.db.QueryContext(ctx, selectWritesSQL, threadID, ns, cpID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: load writes for checkpoint %q: %w", cpID, err)
 	}
-	defer rows.Close()
+	defer closeWithError(rows, &retErr)
 
 	var out []checkpoint.Write
 	for rows.Next() {
@@ -572,6 +574,18 @@ func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]ch
 		return nil, fmt.Errorf("sqlite: load writes for checkpoint %q: %w", cpID, err)
 	}
 	return out, nil
+}
+
+func closeWithError(closer io.Closer, retErr *error) {
+	if err := closer.Close(); err != nil {
+		*retErr = errors.Join(*retErr, fmt.Errorf("sqlite: close: %w", err))
+	}
+}
+
+func rollbackWithError(tx interface{ Rollback() error }, retErr *error) {
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		*retErr = errors.Join(*retErr, fmt.Errorf("sqlite: rollback: %w", err))
+	}
 }
 
 // encodeValue runs one channel value / write value through the serde.

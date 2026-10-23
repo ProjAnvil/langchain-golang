@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -117,9 +118,9 @@ func ExampleCreateAgent_subagent() {
 				return coretools.Result{}, err
 			}
 			msgs, _ := state["messages"].([]messages.Message)
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].Role == messages.RoleAI {
-					return coretools.Result{Content: messages.Text(msgs[i])}, nil
+			for _, msg := range slices.Backward(msgs) {
+				if msg.Role == messages.RoleAI {
+					return coretools.Result{Content: messages.Text(msg)}, nil
 				}
 			}
 			return coretools.Result{}, fmt.Errorf("weather agent produced no output")

@@ -4,6 +4,14 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+### Fixed
+- langgraph: reserve exit-durability delta anchor IDs before loop checkpoint IDs so an anchor created across a millisecond boundary cannot shadow the final checkpoint as the latest state or lose the next turn's delta input.
+- runnables: make batch lifecycle tests verify independent per-run start/end pairs under controlled concurrency instead of assuming globally serial callback events.
+- checkpoint/sqlite and checkpoint/postgres: preserve operation errors together with unexpected close/rollback failures instead of discarding cleanup errors; already-finished transactions remain a normal cleanup outcome.
+
+### Changed
+- Modernize Go 1.26 collection, iteration, pointer, and worker-pool idioms across modules while preserving public APIs, JSON formats, copy semantics, and nil/empty container behavior.
+
 ## [0.11.0] - 2026-10-13
 
 Parity wave 3 — upstream releases of 2026-10-08 (langchain-core 1.6.9 · langchain 1.4.4 · openai 1.7.0) plus the TypeSafe/Jev partner and provider catch-up. Spec/plan: `docs/superpowers/{specs,plans}/2026-10-12-parity-wave3*`; gap analysis: `reports/13-latest-release-port-gap.md`.

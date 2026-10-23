@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -73,21 +74,16 @@ func (r *ModelRouter) resolve() (*modelRouterResolved, error) {
 			r.resolveErr = fmt.Errorf("`instructions` must not be empty") //nolint:staticcheck // ST1005: Python-aligned message
 			return
 		}
-		routes := make([]string, 0, len(r.Choices))
-		for route := range r.Choices {
-			routes = append(routes, route)
-		}
 		// Stable wire order: Go map iteration is randomized while Python
 		// preserves insertion order (DIVERGENCES #8).
-		slices.Sort(routes)
+		routes := slices.Sorted(maps.Keys(r.Choices))
 		options := make([]decisions.ChoiceOption, 0, len(routes))
 		models := make(map[string]any, len(routes))
 		for _, route := range routes {
 			choice := r.Choices[route]
-			criteria := choice.Criteria
 			// Python maps route -> criteria; an empty criteria string is
 			// still an explicit (empty) description on the wire.
-			options = append(options, decisions.ChoiceOption{Value: route, Description: &criteria})
+			options = append(options, decisions.ChoiceOption{Value: route, Description: new(choice.Criteria)})
 			model, err := routerModel(choice.Model)
 			if err != nil {
 				r.resolveErr = err
@@ -293,9 +289,7 @@ func routerRouteValue(response decisions.Response) any {
 		return nil
 	}
 	probabilities := make(map[string]float64, len(answer.Probabilities))
-	for key, value := range answer.Probabilities {
-		probabilities[key] = value
-	}
+	maps.Copy(probabilities, answer.Probabilities)
 	return map[string]any{
 		"choice":        routerChoiceString(answer.Choice),
 		"probabilities": probabilities,

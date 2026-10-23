@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
@@ -250,11 +251,7 @@ func (s *ChatModelStream) finish(output messages.Message) {
 }
 
 func (s *ChatModelStream) sweepToolChunks() {
-	indexes := make([]int, 0, len(s.toolChunks))
-	for index := range s.toolChunks {
-		indexes = append(indexes, index)
-	}
-	slices.Sort(indexes)
+	indexes := slices.Sorted(maps.Keys(s.toolChunks))
 	for _, index := range indexes {
 		chunk := s.toolChunks[index]
 		call := messages.ToolCall{ID: chunk.ID, Name: chunk.Name}
@@ -285,11 +282,7 @@ func (s *ChatModelStream) orderedBlocks() []messages.ContentBlock {
 	if len(s.blocks) == 0 {
 		return nil
 	}
-	indexes := make([]int, 0, len(s.blocks))
-	for index := range s.blocks {
-		indexes = append(indexes, index)
-	}
-	slices.Sort(indexes)
+	indexes := slices.Sorted(maps.Keys(s.blocks))
 	blocks := make([]messages.ContentBlock, 0, len(indexes))
 	for _, index := range indexes {
 		blocks = append(blocks, messages.ParseContentBlock(cloneBlockMap(s.blocks[index])))
@@ -309,19 +302,19 @@ func toolCallFromMap(m map[string]any) messages.ToolCall {
 
 func joinIndexedStrings(values map[int]string) string {
 	indexes := slices.Sorted(maps.Keys(values))
-	var out string
+	var out strings.Builder
 	for _, index := range indexes {
-		out += values[index]
+		out.WriteString(values[index])
 	}
-	return out
+	return out.String()
 }
 
 func joinStrings(values []string) string {
-	var out string
+	var out strings.Builder
 	for _, value := range values {
-		out += value
+		out.WriteString(value)
 	}
-	return out
+	return out.String()
 }
 
 func cloneEvent(event Event) Event {
@@ -361,9 +354,7 @@ func cloneBlockMap(m map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
 
@@ -384,8 +375,6 @@ func cloneMap(in map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
+	maps.Copy(out, in)
 	return out
 }

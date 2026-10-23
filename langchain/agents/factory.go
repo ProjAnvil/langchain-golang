@@ -2,6 +2,7 @@ package agents
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -34,8 +35,8 @@ type ModelInfo struct {
 }
 
 func FetchLastAIAndToolMessages(batch []messages.Message) (*messages.Message, []messages.Message) {
-	for i := len(batch) - 1; i >= 0; i-- {
-		if batch[i].Role != messages.RoleAI {
+	for i, aiMessage := range slices.Backward(batch) {
+		if aiMessage.Role != messages.RoleAI {
 			continue
 		}
 
@@ -46,7 +47,6 @@ func FetchLastAIAndToolMessages(batch []messages.Message) (*messages.Message, []
 			}
 		}
 
-		aiMessage := batch[i]
 		return &aiMessage, toolMessages
 	}
 

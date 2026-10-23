@@ -446,8 +446,8 @@ func (m *HumanInTheLoopMiddleware) reviewableCalls(state map[string]any) (lastAI
 		return messages.Message{}, nil, nil, nil, false
 	}
 	lastIdx := -1
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == messages.RoleAI {
+	for i, msg := range slices.Backward(msgs) {
+		if msg.Role == messages.RoleAI {
 			lastIdx = i
 			break
 		}

@@ -3,6 +3,7 @@ package middleware
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -193,11 +194,7 @@ func (d DockerExecutionPolicy) BuildCommand(command []string, workspace string) 
 	if d.ReadOnlyRootfs {
 		args = append(args, "--read-only")
 	}
-	envKeys := make([]string, 0, len(d.Env))
-	for k := range d.Env {
-		envKeys = append(envKeys, k)
-	}
-	slices.Sort(envKeys)
+	envKeys := slices.Sorted(maps.Keys(d.Env))
 	for _, k := range envKeys {
 		args = append(args, "-e", k+"="+d.Env[k])
 	}
@@ -295,11 +292,7 @@ func (c CodexSandboxExecutionPolicy) BuildCommand(command []string, _ string) []
 	if platform, err := c.ResolvePlatform(); err == nil {
 		args = append(args, platform)
 	}
-	keys := make([]string, 0, len(c.ConfigOverrides))
-	for k := range c.ConfigOverrides {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(c.ConfigOverrides))
 	for _, k := range keys {
 		args = append(args, "-c", k+"="+formatCodexOverride(c.ConfigOverrides[k]))
 	}

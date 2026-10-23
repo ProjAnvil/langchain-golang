@@ -123,12 +123,3 @@ func TestIntFromState(t *testing.T) {
 		}
 	}
 }
-
-func TestStringsJoin(t *testing.T) {
-	if got := stringsJoin(nil, ", "); got != "" {
-		t.Fatalf("empty join mismatch: %q", got)
-	}
-	if got := stringsJoin([]string{"a", "b", "c"}, "|"); got != "a|b|c" {
-		t.Fatalf("join mismatch: %q", got)
-	}
-}

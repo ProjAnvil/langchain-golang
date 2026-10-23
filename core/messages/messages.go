@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -451,13 +452,13 @@ func Trim(values []Message, maxChars int, fromEnd bool) []Message {
 	out := []Message{}
 	total := 0
 	if fromEnd {
-		for i := len(values) - 1; i >= 0; i-- {
-			size := len(Text(values[i]))
+		for _, value := range slices.Backward(values) {
+			size := len(Text(value))
 			if total+size > maxChars {
 				break
 			}
 			total += size
-			out = append([]Message{Clone(values[i])}, out...)
+			out = append([]Message{Clone(value)}, out...)
 		}
 		return out
 	}
@@ -590,9 +591,7 @@ func cloneMap[M ~map[string]any](values M) M {
 		return nil
 	}
 	out := make(M, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
+	maps.Copy(out, values)
 	return out
 }
 

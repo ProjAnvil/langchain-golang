@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/lcerrors"
@@ -220,8 +221,8 @@ func (m *SummarizationMiddleware) keepStart(msgs []messages.Message) int {
 // starts with orphaned tool responses.
 func (m *SummarizationMiddleware) tokenBudgetCutoff(msgs []messages.Message, budget int) int {
 	total := 0
-	for i := len(msgs) - 1; i >= 0; i-- {
-		total += m.countTokens([]messages.Message{msgs[i]})
+	for i, msg := range slices.Backward(msgs) {
+		total += m.countTokens([]messages.Message{msg})
 		if total > budget {
 			return findSafeCutoffPoint(msgs, i+1)
 		}

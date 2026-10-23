@@ -98,7 +98,7 @@ func goldenQuestions() map[string]Question {
 		"zeta": Predicate{Instructions: "Is this urgent?"},
 		"alpha": Choice{
 			Instructions: "Which department?",
-			Choices:      []ChoiceOption{{Value: "billing", Description: ptr("Payments.")}, {Value: "technical"}},
+			Choices:      []ChoiceOption{{Value: "billing", Description: new("Payments.")}, {Value: "technical"}},
 		},
 		"mid": Score{
 			Instructions: "How frustrated?",

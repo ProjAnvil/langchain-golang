@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,9 +198,7 @@ func WithShellRedactionRules(rules ...ResolvedRedactionRule) ShellToolOption {
 func WithShellEnv(env map[string]string) ShellToolOption {
 	return func(m *ShellToolMiddleware) {
 		m.Env = map[string]string{}
-		for key, value := range env {
-			m.Env[key] = value
-		}
+		maps.Copy(m.Env, env)
 	}
 }
 

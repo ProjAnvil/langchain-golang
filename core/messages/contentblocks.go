@@ -1,6 +1,9 @@
 package messages
 
-import "slices"
+import (
+	"maps"
+	"slices"
+)
 
 // This file mirrors langchain_core/messages/content.py: a sealed ContentBlock
 // interface with concrete typed structs replacing the old map[string]any.
@@ -540,9 +543,7 @@ func BlockToMap(b ContentBlock) map[string]any {
 		return out
 	case NonStandardContentBlock:
 		out := map[string]any{}
-		for k, val := range v.Value {
-			out[k] = val
-		}
+		maps.Copy(out, v.Value)
 		out["type"] = v.Type
 		return out
 	default:

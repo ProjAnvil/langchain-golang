@@ -460,9 +460,7 @@ func cloneGraphMetadata(metadata map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(metadata))
-	for key, value := range metadata {
-		out[key] = value
-	}
+	maps.Copy(out, metadata)
 	return out
 }
 

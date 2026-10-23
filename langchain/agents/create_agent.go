@@ -90,7 +90,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -918,9 +920,7 @@ func systemPromptResolver(options AgentOptions) func(ctx context.Context) string
 	return func(ctx context.Context) string {
 		vars := cloneStringAnyMap(buildVars)
 		if perInvoke, ok := PromptVarsFromContext(ctx); ok {
-			for k, v := range perInvoke {
-				vars[k] = v
-			}
+			maps.Copy(vars, perInvoke)
 		}
 		rendered, err := template.Format(vars)
 		if err != nil {
@@ -950,9 +950,7 @@ func cloneStringAnyMap(m map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
 
@@ -1209,8 +1207,8 @@ func buildRouteStructuredOnly(finalNode string) graphpkg.ConditionalEdge {
 // `_fetch_last_ai_and_tool_messages` (factory.py:1819-1837). A nil first
 // return means no AIMessage exists in msgs.
 func fetchLastAIAndToolMessages(msgs []messages.Message) (*messages.Message, []messages.Message) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != messages.RoleAI {
+	for i, ai := range slices.Backward(msgs) {
+		if ai.Role != messages.RoleAI {
 			continue
 		}
 		after := msgs[i+1:]
@@ -1220,7 +1218,7 @@ func fetchLastAIAndToolMessages(msgs []messages.Message) (*messages.Message, []m
 				toolMsgs = append(toolMsgs, m)
 			}
 		}
-		ai := msgs[i]
+
 		return &ai, toolMsgs
 	}
 	return nil, nil
@@ -1286,9 +1284,7 @@ func validateDeclaredJumpTargets(mws []any) error {
 
 func cloneMapState(state map[string]any) map[string]any {
 	out := make(map[string]any, len(state))
-	for k, v := range state {
-		out[k] = v
-	}
+	maps.Copy(out, state)
 	return out
 }
 
@@ -1919,11 +1915,11 @@ func buildModelNode(
 		// materialize on success), whereas Python additionally clears its
 		// per-pair accumulator on each inner call (factory.py:311).
 		var mwCommands []*middleware.Command
-		for i := len(mws) - 1; i >= 0; i-- {
-			if hook, ok := mws[i].(WrapModelCallResultHook); ok {
+		for _, mw := range slices.Backward(mws) {
+			if hook, ok := mw.(WrapModelCallResultHook); ok {
 				next := handler
 				handler = func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
-					result, err := hook.WrapModelCallResult(applyMiddlewareTracePolicy(c, mws[i]), r, next)
+					result, err := hook.WrapModelCallResult(applyMiddlewareTracePolicy(c, mw), r, next)
 					if err != nil {
 						return middleware.ModelResponse{}, err
 					}
@@ -1942,13 +1938,13 @@ func buildModelNode(
 				}
 				continue
 			}
-			hook, ok := mws[i].(WrapModelCallHook)
+			hook, ok := mw.(WrapModelCallHook)
 			if !ok {
 				continue
 			}
 			next := handler
 			handler = func(c context.Context, r middleware.ModelRequest) (middleware.ModelResponse, error) {
-				return hook.WrapModelCall(applyMiddlewareTracePolicy(c, mws[i]), r, next)
+				return hook.WrapModelCall(applyMiddlewareTracePolicy(c, mw), r, next)
 			}
 		}
 
@@ -2077,9 +2073,7 @@ func buildModelNode(
 		newMessages = append(newMessages, repairInvalidToolCalls(localMessages, newMessages)...)
 
 		update := map[string]any{"messages": newMessages}
-		for k, v := range baseUpdate {
-			update[k] = v
-		}
+		maps.Copy(update, baseUpdate)
 		if err := applyModelNodeCommands(update, mwCommands); err != nil {
 			return nil, err
 		}
@@ -2626,14 +2620,10 @@ func toolChoiceKey(choice any) string {
 func mergedBindSettings(eff effectiveFormat, requestSettings, initialSettings map[string]any) map[string]any {
 	merged := map[string]any{}
 	if eff.provider != nil {
-		for k, v := range eff.provider.ToModelKwargs() {
-			merged[k] = v
-		}
+		maps.Copy(merged, eff.provider.ToModelKwargs())
 	}
 	if !reflect.DeepEqual(requestSettings, initialSettings) {
-		for k, v := range requestSettings {
-			merged[k] = v
-		}
+		maps.Copy(merged, requestSettings)
 	}
 	return merged
 }
@@ -3180,8 +3170,8 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, prep
 	// middleware list orders identically under streaming and non-streaming
 	// model-call wrapping.
 	transform := func(text string) string { return text }
-	for i := len(mws) - 1; i >= 0; i-- {
-		if hook, ok := mws[i].(middleware.WrapModelStreamHook); ok {
+	for _, mw := range slices.Backward(mws) {
+		if hook, ok := mw.(middleware.WrapModelStreamHook); ok {
 			transform = hook.TransformModelStream(transform)
 		}
 	}
@@ -3475,8 +3465,8 @@ func dispatchThroughMiddleware(
 			Store:    r.Store,
 		})
 	}
-	for i := len(hooks) - 1; i >= 0; i-- {
-		hook := hooks[i]
+	for _, hook := range slices.Backward(hooks) {
+
 		inner := handler
 		handler = func(c context.Context, r middleware.ToolCallRequest) (messages.Message, error) {
 			return hook.WrapToolCall(c, r, inner)

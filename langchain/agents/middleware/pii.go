@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -109,8 +110,8 @@ func (m *PIIMiddleware) BeforeModel(ctx context.Context, state map[string]any) (
 	}
 	if m.ApplyToToolResults {
 		lastAI := -1
-		for i := len(next) - 1; i >= 0; i-- {
-			if next[i].Role == messages.RoleAI {
+		for i, n := range slices.Backward(next) {
+			if n.Role == messages.RoleAI {
 				lastAI = i
 				break
 			}

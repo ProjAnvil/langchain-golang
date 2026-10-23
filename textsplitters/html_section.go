@@ -2,6 +2,8 @@ package textsplitters
 
 import (
 	"html"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -122,9 +124,7 @@ func (s *HTMLSectionSplitter) CreateDocuments(texts []string, metadatas []map[st
 				}
 			}
 			merged := cloneMetadata(source)
-			for key, value := range chunkMetadata {
-				merged[key] = value
-			}
+			maps.Copy(merged, chunkMetadata)
 			out = append(out, documents.New(chunk.PageContent, merged))
 		}
 	}
@@ -360,8 +360,8 @@ func findHTMLTagEnd(s string) int {
 }
 
 func inWhitespacePreservingTag(stack []*htmlNode) bool {
-	for j := len(stack) - 1; j >= 0; j-- {
-		switch stack[j].name {
+	for _, s := range slices.Backward(stack) {
+		switch s.name {
 		case "pre", "textarea":
 			return true
 		}
@@ -411,16 +411,16 @@ func renameLargeFontSizeElements(node *htmlNode) {
 // hasLargeFontSize reports whether an inline style declares a font-size in px
 // larger than 20, matching the Python XSLT transform's numeric comparison.
 func hasLargeFontSize(style string) bool {
-	idx := strings.Index(style, "font-size:")
-	if idx < 0 {
+	_, after, ok := strings.Cut(style, "font-size:")
+	if !ok {
 		return false
 	}
-	rest := style[idx+len("font-size:"):]
-	px := strings.Index(rest, "px")
-	if px < 0 {
+	rest := after
+	before0, _, ok0 := strings.Cut(rest, "px")
+	if !ok0 {
 		return false
 	}
-	value, err := strconv.ParseFloat(strings.TrimSpace(rest[:px]), 64)
+	value, err := strconv.ParseFloat(strings.TrimSpace(before0), 64)
 	if err != nil {
 		return false
 	}

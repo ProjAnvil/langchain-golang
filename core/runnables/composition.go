@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/projanvil/langchain-golang/core/schema"
 )
@@ -77,9 +78,7 @@ type Assign struct {
 // NewAssign creates an assign runnable.
 func NewAssign(steps map[string]Runnable[map[string]any, any]) Assign {
 	copied := make(map[string]Runnable[map[string]any, any], len(steps))
-	for key, step := range steps {
-		copied[key] = step
-	}
+	maps.Copy(copied, steps)
 	return Assign{Steps: copied}
 }
 
@@ -378,9 +377,7 @@ func cloneMap(input map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
+	maps.Copy(out, input)
 	return out
 }
 

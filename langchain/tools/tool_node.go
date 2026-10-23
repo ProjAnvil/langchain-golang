@@ -23,6 +23,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -161,9 +162,7 @@ func NewToolNode(toolList []Tool, opts ...ToolNodeOption) (*ToolNode, error) {
 // ToolsByName returns a copy of the registered tools keyed by name.
 func (n *ToolNode) ToolsByName() map[string]Tool {
 	out := make(map[string]Tool, len(n.byName))
-	for name, t := range n.byName {
-		out[name] = t
-	}
+	maps.Copy(out, n.byName)
 	return out
 }
 
@@ -172,9 +171,9 @@ func (n *ToolNode) ToolsByName() map[string]Tool {
 // tool calls is found. This mirrors the state inspection performed by
 // Python's `tools_condition` routing helper.
 func PendingToolCalls(msgs []messages.Message) []messages.ToolCall {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == messages.RoleAI {
-			return msgs[i].ToolCalls
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == messages.RoleAI {
+			return msg.ToolCalls
 		}
 	}
 	return nil

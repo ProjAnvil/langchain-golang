@@ -3,6 +3,7 @@ package textsplitters
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -48,13 +49,7 @@ func TestAdditionalPythonLanguageSeparators(t *testing.T) {
 			if len(separators) == 0 || separators[0] != tt.first || separators[len(separators)-1] != "" {
 				t.Fatalf("separators: %#v", separators)
 			}
-			found := false
-			for _, separator := range separators {
-				if separator == tt.contains {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(separators, tt.contains)
 			if !found {
 				t.Fatalf("missing separator %q in %#v", tt.contains, separators)
 			}

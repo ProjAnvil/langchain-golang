@@ -86,13 +86,7 @@ func (m *ProviderToolSearchMiddleware) prepareRequest(request ModelRequest) (Mod
 		}
 	}
 
-	needsSearch := false
-	for _, entry := range request.Tools {
-		if m.isDeferredTool(entry) {
-			needsSearch = true
-			break
-		}
-	}
+	needsSearch := slices.ContainsFunc(request.Tools, m.isDeferredTool)
 	if !needsSearch {
 		return request, nil
 	}

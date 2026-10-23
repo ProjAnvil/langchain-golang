@@ -21,6 +21,9 @@ Thanks for contributing! New partner integrations are especially welcome (Google
 
 - **Python is authoritative**: this is a port of LangChain/LangGraph. When in doubt, check what the Python source does and cite the file:line in a comment.
 - **Zero breaking changes to shipped interfaces** within a minor: add optional capability interfaces (see `core/vectorstores` `TextAdder` or `core/retrievers` searcher interfaces for the pattern) instead of widening existing ones.
+- Use Go 1.26 standard-library idioms such as typed slice/map operations, `WaitGroup.Go`, and `new(value)` instead of handwritten equivalents or pointer helpers. Consult the Modern Go Guidelines CLI for the module's Go version.
+- Treat `go fix -diff ./...` as a review aid, not a blanket rewrite. Run it separately in each nested module; preserve nil versus empty containers, copy depth, JSON wire formats, cancellation, and stable ordering.
+- Test concurrent work by per-run lifecycle and result invariants, not by a global event order that the API does not guarantee. Reproduce timing bugs with controlled synchronization or explicit clock boundaries.
 - **Trust `go build/vet/test`**, not editor diagnostics (gopls may show false positives).
 - Every package should have compile-checked examples in `example_test.go`.
 - Bilingual docs: add both `guide.md` and `guide.zh-CN.md` under `docs/usage/` for new user-facing features.

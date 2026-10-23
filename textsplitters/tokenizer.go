@@ -115,10 +115,7 @@ func (s *TokenTextSplitter) SplitText(text string) ([]string, error) {
 	}
 	out := []string{}
 	for start := 0; start < len(tokens); start += step {
-		end := start + s.cfg.ChunkSize
-		if end > len(tokens) {
-			end = len(tokens)
-		}
+		end := min(start+s.cfg.ChunkSize, len(tokens))
 		chunk, err := s.tokenizer.Decode(tokens[start:end])
 		if err != nil {
 			return nil, fmt.Errorf("decode tokens: %w", err)
@@ -159,10 +156,7 @@ func splitTokenIDs(tokens []int, decode func([]int) (string, error), tokensPerCh
 	}
 	out := []string{}
 	for start := 0; start < len(tokens); start += step {
-		end := start + tokensPerChunk
-		if end > len(tokens) {
-			end = len(tokens)
-		}
+		end := min(start+tokensPerChunk, len(tokens))
 		chunk, err := decode(tokens[start:end])
 		if err != nil {
 			return nil, fmt.Errorf("decode token IDs: %w", err)

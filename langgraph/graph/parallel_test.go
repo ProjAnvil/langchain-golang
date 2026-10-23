@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -8,6 +9,25 @@ import (
 	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
+
+func TestRunSuperstepBoundedExecutesSelectedTasksOnce(t *testing.T) {
+	for _, limit := range []int{1, 2, 8} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			active := make([]task, 4)
+			execute := []bool{true, false, true, false}
+			calls := make([]atomic.Int32, len(active))
+			runSuperstepBounded(active, execute, limit, func(i int, _ task) {
+				calls[i].Add(1)
+			})
+			want := []int32{1, 0, 1, 0}
+			for i, count := range want {
+				if got := calls[i].Load(); got != count {
+					t.Fatalf("task %d executed %d times, want %d", i, got, count)
+				}
+			}
+		})
+	}
+}
 
 // TestSuperstepMaxConcurrencyBoundsParallelNodes runs a wide single-superstep
 // fan-out and asserts Options.MaxConcurrency actually caps how many nodes

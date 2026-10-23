@@ -1,6 +1,11 @@
 package outputs
 
-import "github.com/projanvil/langchain-golang/core/messages"
+import (
+	"maps"
+	"strings"
+
+	"github.com/projanvil/langchain-golang/core/messages"
+)
 
 // Generation is a single text generation.
 type Generation struct {
@@ -62,20 +67,20 @@ func messageText(message messages.Message) string {
 	if message.Content != "" {
 		return message.Content
 	}
-	text := ""
+	var text strings.Builder
 	for _, block := range message.ContentBlocks {
 		switch b := block.(type) {
 		case messages.TextBlock:
-			text += b.Text
+			text.WriteString(b.Text)
 		case messages.NonStandardContentBlock:
 			if b.Type == "" || b.Type == "text" {
 				if value, ok := b.Value["text"].(string); ok {
-					text += value
+					text.WriteString(value)
 				}
 			}
 		}
 	}
-	return text
+	return text.String()
 }
 
 func MergeMaps(base map[string]any, overlays ...map[string]any) map[string]any {
@@ -102,8 +107,6 @@ func cloneMap(values map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
+	maps.Copy(out, values)
 	return out
 }

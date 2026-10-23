@@ -182,9 +182,9 @@ func latestHumanMessage(state map[string]any) (messages.Message, bool) {
 	if !ok {
 		return messages.Message{}, false
 	}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == messages.RoleHuman {
-			return msgs[i], true
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == messages.RoleHuman {
+			return msg, true
 		}
 	}
 	return messages.Message{}, false

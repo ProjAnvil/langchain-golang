@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
@@ -221,7 +222,21 @@ func TestFuncInstallsManagerInContext(t *testing.T) {
 
 func TestFuncBatchMintsPerElementRuns(t *testing.T) {
 	recorder, withCallbacks := chainRecorder()
-	outputs, err := chainUpper().Batch(t.Context(), []string{"a", "b"}, withCallbacks)
+	var started atomic.Int32
+	ready := make(chan struct{})
+	fn := NewFunc(func(ctx context.Context, input string, _ ...Option) (string, error) {
+		if started.Add(1) == 2 {
+			close(ready)
+		}
+		select {
+		case <-ready:
+			return strings.ToUpper(input), nil
+		case <-ctx.Done():
+			return "", context.Cause(ctx)
+		}
+	}, schema.String(""), schema.String(""))
+	outputs, err := fn.Batch(t.Context(), []string{"a", "b"}, withCallbacks,
+		WithMaxConcurrency(2), WithParentID("batch-parent"))
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
@@ -229,15 +244,40 @@ func TestFuncBatchMintsPerElementRuns(t *testing.T) {
 		t.Fatalf("outputs %v", outputs)
 	}
 	events := recorder.Events()
-	chainAssertSequence(t, events,
-		"chain_start:func", "chain_end:func",
-		"chain_start:func", "chain_end:func",
-	)
-	if events[0].RunID == events[2].RunID {
-		t.Fatal("parallel elements must get distinct run ids")
+	if len(events) != 4 {
+		t.Fatalf("got %d events, want 2 start/end pairs", len(events))
 	}
-	if events[1].Output != "A" || events[3].Output != "B" {
-		t.Fatalf("element outputs: %v %v", events[1].Output, events[3].Output)
+	starts := map[string]callbacks.Event{}
+	ended := map[string]bool{}
+	wantOutputs := map[string]string{"a": "A", "b": "B"}
+	for _, event := range events {
+		if event.RunID == "" || event.Name != "func" || event.ParentID != "batch-parent" {
+			t.Fatalf("unexpected run fields: %#v", event)
+		}
+		switch event.Kind {
+		case callbacks.EventChainStart:
+			if _, exists := starts[event.RunID]; exists {
+				t.Fatalf("duplicate start for run %q", event.RunID)
+			}
+			starts[event.RunID] = event
+		case callbacks.EventChainEnd:
+			start, exists := starts[event.RunID]
+			if !exists || ended[event.RunID] {
+				t.Fatalf("end without a unique preceding start: %#v", event)
+			}
+			input, ok := start.Input.(string)
+			want, present := wantOutputs[input]
+			if !ok || !present || event.Output != want {
+				t.Fatalf("run input/output = %#v/%#v, remaining expected pairs = %v", start.Input, event.Output, wantOutputs)
+			}
+			delete(wantOutputs, input)
+			ended[event.RunID] = true
+		default:
+			t.Fatalf("unexpected batch event: %#v", event)
+		}
+	}
+	if len(starts) != 2 || len(ended) != 2 || len(wantOutputs) != 0 {
+		t.Fatalf("incomplete batch lifecycles: starts=%v ends=%v missing=%v", starts, ended, wantOutputs)
 	}
 }
 
