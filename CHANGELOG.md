@@ -4,6 +4,8 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-24
+
 ### Fixed
 - langgraph: reserve exit-durability delta anchor IDs before loop checkpoint IDs so an anchor created across a millisecond boundary cannot shadow the final checkpoint as the latest state or lose the next turn's delta input.
 - runnables: make batch lifecycle tests verify independent per-run start/end pairs under controlled concurrency instead of assuming globally serial callback events.
@@ -11,6 +13,11 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ### Changed
 - Modernize Go 1.26 collection, iteration, pointer, and worker-pool idioms across modules while preserving public APIs, JSON formats, copy semantics, and nil/empty container behavior.
+- Publish checkpoint/sqlite and checkpoint/postgres v0.3.8 with the root module pinned to v0.11.1.
+
+### Testing
+- Add deterministic checkpoint clock-boundary and concurrent batch lifecycle regressions, cleanup-error fault injection, and stable-ranking coverage.
+- Validate the root and nested checkpoint modules with build, vet, race, and lint checks, plus offline integration type checks and the existing per-package coverage gate.
 
 ## [0.11.0] - 2026-10-13
 

@@ -14,6 +14,11 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 
 ## What's New
 
+**v0.11.1** — checkpoint reliability fixes and Go 1.26 modernization:
+
+- **Reliable exit durability**: delta anchors can no longer shadow the final checkpoint across a millisecond boundary, preserving latest-state queries and subsequent turns.
+- **Explicit saver cleanup errors**: SQLite and PostgreSQL preserve both operation and unexpected close/rollback failures; updated saver modules are available as **v0.3.8**.
+- **Behavior-preserving cleanup**: modern standard-library collection, iterator, pointer, and worker-pool idioms, with deterministic concurrency regressions and unchanged public APIs and JSON formats.
 
 **v0.11.0** — upstream releases of 2026-10-08 (core 1.6.9 · langchain 1.4.4 · openai 1.7.0) plus the TypeSafe/Jev partner and provider catch-up:
 
