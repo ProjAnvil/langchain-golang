@@ -252,6 +252,94 @@ func TestPutWritesResolvesLatestCheckpoint(t *testing.T) {
 	}
 }
 
+// TestGetTupleIncludesPendingWritesMidGraph pins the langgraph-redis #220
+// parity ("get_tuple pending writes"): a mid-graph checkpoint — one written
+// mid-run, with a parent checkpoint behind it and pending writes recorded
+// against it by in-flight tasks — is returned by GetTuple WITH its pending
+// writes, next to the checkpoint, metadata, and parent config, exactly like
+// the sqlite/postgres savers. The writes are ordered by (task_path, task_id,
+// idx), the order live execution applies a superstep's tasks in, regardless
+// of the order they were persisted in.
+func TestGetTupleIncludesPendingWritesMidGraph(t *testing.T) {
+	ctx := t.Context()
+	s, _ := newSaver(t)
+
+	thread := checkpoint.Config{ThreadID: "t-mid"}
+	first, err := s.Put(ctx, thread, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{Step: 0}, nil)
+	if err != nil {
+		t.Fatalf("Put first: %v", err)
+	}
+	// The mid-graph checkpoint: written by the first superstep's commit, with
+	// the initial checkpoint as its parent.
+	mid, err := s.Put(ctx, first, sampleCheckpoint(checkpoint.NewID(2)), checkpoint.Metadata{Source: "loop", Step: 1}, nil)
+	if err != nil {
+		t.Fatalf("Put mid: %v", err)
+	}
+
+	// Two tasks of the second superstep record pending writes against `mid`.
+	// Persist them in REVERSE task order to prove GetTuple sorts by
+	// (task_path, task_id, idx) rather than storage order.
+	if err := s.PutWrites(ctx, mid,
+		[]checkpoint.Write{
+			{Channel: "messages", Value: "tool-result-b"},
+			{Channel: "__error__", Value: "boom"},
+		}, "task-2", "node_b"); err != nil {
+		t.Fatalf("PutWrites(node_b): %v", err)
+	}
+	if err := s.PutWrites(ctx, mid,
+		[]checkpoint.Write{{Channel: "messages", Value: "tool-result-a"}}, "task-1", "node_a"); err != nil {
+		t.Fatalf("PutWrites(node_a): %v", err)
+	}
+
+	tup, err := s.GetTuple(ctx, mid)
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple(mid): tup=%v err=%v", tup, err)
+	}
+	if len(tup.PendingWrites) != 3 {
+		t.Fatalf("mid PendingWrites = %d writes, want 3: %+v", len(tup.PendingWrites), tup.PendingWrites)
+	}
+	wantOrder := []struct {
+		taskID, taskPath, channel, value string
+	}{
+		{"task-1", "node_a", "messages", "tool-result-a"},
+		// Within node_b, the reserved __error__ write takes the negative idx
+		// slot (-1), so it sorts ahead of the positional messages write.
+		{"task-2", "node_b", "__error__", "boom"},
+		{"task-2", "node_b", "messages", "tool-result-b"},
+	}
+	for i, want := range wantOrder {
+		w := tup.PendingWrites[i]
+		if w.TaskID != want.taskID || w.TaskPath != want.taskPath || w.Channel != want.channel {
+			t.Fatalf("PendingWrites[%d] = {task %s path %s channel %s}, want {task %s path %s channel %s}",
+				i, w.TaskID, w.TaskPath, w.Channel, want.taskID, want.taskPath, want.channel)
+		}
+		if w.Value != want.value {
+			t.Fatalf("PendingWrites[%d].Value = %v, want %v", i, w.Value, want.value)
+		}
+	}
+
+	// The tuple stays whole: checkpoint body, metadata, and parent config
+	// come back alongside the pending writes.
+	if tup.Checkpoint.ID != mid.CheckpointID {
+		t.Fatalf("mid tuple checkpoint = %q, want the mid checkpoint %q", tup.Checkpoint.ID, mid.CheckpointID)
+	}
+	if tup.Metadata.Step != 1 {
+		t.Fatalf("mid tuple metadata step = %d, want 1", tup.Metadata.Step)
+	}
+	if tup.ParentConfig == nil || tup.ParentConfig.CheckpointID != first.CheckpointID {
+		t.Fatalf("mid tuple parent = %+v, want %q", tup.ParentConfig, first.CheckpointID)
+	}
+
+	// The writes belong to `mid` only: the parent tuple carries none.
+	parent, err := s.GetTuple(ctx, first)
+	if err != nil || parent == nil {
+		t.Fatalf("GetTuple(first): tup=%v err=%v", parent, err)
+	}
+	if len(parent.PendingWrites) != 0 {
+		t.Fatalf("first PendingWrites = %+v, want none", parent.PendingWrites)
+	}
+}
+
 // TestPutMergesNewVersionsIntoNilChannelVersions covers the branch where the
 // checkpoint has no ChannelVersions map but newVersions must be recorded: a
 // fresh map is allocated and merged.
