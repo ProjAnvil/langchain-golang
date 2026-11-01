@@ -386,6 +386,82 @@ func TestGetGraphInterruptMetadata(t *testing.T) {
 	}
 }
 
+// fakeToolBound is a duck-typed stand-in for a ToolNode-like object: it
+// carries its tool names without the graph package knowing the concrete type
+// (the test-package analog of *langchain/tools.ToolNode, which the graph
+// package cannot import).
+type fakeToolBound struct{ names []string }
+
+func (f fakeToolBound) ToolNames() []string { return f.names }
+
+// TestGetGraphToolsMetadata covers the `__tools` node metadata stamped from
+// a node's bound object (#9449): a bound implementing
+// interface{ ToolNames() []string } with a non-empty result lists its tool
+// names in order, on both the builder and the compiled export, and it merges
+// with `__interrupt` when both apply.
+func TestGetGraphToolsMetadata(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNodeWithBound("tools", noopNode, fakeToolBound{names: []string{"search_api", "calculator"}})
+	g.AddNode("plain", noopNode)
+	g.AddNodeWithBound("empty", noopNode, fakeToolBound{})
+	g.AddNodeWithBound("opaque", noopNode, struct{ X int }{X: 1})
+	g.AddEdge(types.START, "tools")
+	g.AddEdge("tools", "plain")
+	g.AddEdge("plain", "empty")
+	g.AddEdge("empty", "opaque")
+	g.AddEdge("opaque", types.END)
+
+	cg, err := g.Compile(WithInterruptAfter("tools"))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	graph := cg.GetGraph()
+	for _, node := range graph.Nodes {
+		switch node.ID {
+		case "tools":
+			// Both stamps apply: interrupt metadata from the compile option,
+			// tool names from the bound object (Python stamps them in the
+			// same metadata dict).
+			if v, ok := node.Metadata["__interrupt"]; !ok || v != "after" {
+				t.Errorf("tools __interrupt = %v, %v; want \"after\"", v, ok)
+			}
+			names, ok := node.Metadata["__tools"].([]string)
+			if !ok || len(names) != 2 || names[0] != "search_api" || names[1] != "calculator" {
+				t.Errorf("tools __tools = %#v; want [search_api calculator] in order", node.Metadata["__tools"])
+			}
+		case "plain", "empty", "opaque":
+			// No bound (or an empty/duck-type-mismatched one): no __tools and
+			// no metadata at all.
+			if _, ok := node.Metadata["__tools"]; ok {
+				t.Errorf("%s unexpectedly carries __tools: %v", node.ID, node.Metadata)
+			}
+			if node.ID == "empty" && len(node.Metadata) != 0 {
+				t.Errorf("empty-bound node metadata = %v; want none", node.Metadata)
+			}
+		}
+	}
+
+	// The builder export carries __tools too (the bound object exists from
+	// registration time, unlike compile-time interrupt boundaries).
+	builder := g.GetGraph()
+	for _, node := range builder.Nodes {
+		if node.ID == "tools" {
+			names, ok := node.Metadata["__tools"].([]string)
+			if !ok || len(names) != 2 {
+				t.Errorf("builder tools __tools = %#v; want [search_api calculator]", node.Metadata["__tools"])
+			}
+		}
+	}
+
+	// Mermaid labels render the tool list (with_styles only), mirroring
+	// Python's draw_mermaid behavior for __tools.
+	mermaid := cg.DrawMermaid()
+	if want := "tools(tools<hr/><small><em>__interrupt = after\n__tools = search_api, calculator</em></small>)"; !strings.Contains(mermaid, want) {
+		t.Errorf("DrawMermaid() missing %q:\n%s", want, mermaid)
+	}
+}
+
 // compileSubgraph is a test helper building START -> x -> y -> END.
 func compileSubgraph(t *testing.T, nameX, nameY string) *CompiledGraph {
 	t.Helper()

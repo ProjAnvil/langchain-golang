@@ -100,6 +100,34 @@ func newEchoTool(t *testing.T) coretools.Tool {
 	return tool
 }
 
+// TestCreateAgentToolsNodeMetadata verifies the tools node's export metadata
+// (#9449): CreateAgent registers its ToolNode with the underlying
+// *tools.ToolNode as the bound object, so GetGraph lists the agent's tool
+// names in `__tools` metadata.
+func TestCreateAgentToolsNodeMetadata(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{messages.AI("done")}}
+
+	agent, err := CreateAgent(model, []coretools.Tool{newEchoTool(t)})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	var found bool
+	for _, node := range agent.Graph.GetGraph().Nodes {
+		if node.ID != ToolsNodeName {
+			continue
+		}
+		found = true
+		names, ok := node.Metadata["__tools"].([]string)
+		if !ok || len(names) != 1 || names[0] != "echo" {
+			t.Fatalf("tools node __tools = %#v; want [echo]", node.Metadata["__tools"])
+		}
+	}
+	if !found {
+		t.Fatal("exported graph has no tools node")
+	}
+}
+
 func TestCreateAgentToolLoop(t *testing.T) {
 	model := &sequenceModel{responses: []messages.Message{
 		{

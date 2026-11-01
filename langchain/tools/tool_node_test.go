@@ -61,6 +61,31 @@ func TestNewToolNodeValidation(t *testing.T) {
 	}
 }
 
+// TestToolNodeToolNames pins ToolNames' contract: registration order is
+// preserved (Python's tools_by_name is an insertion-ordered dict, and
+// draw_graph lists it with list()), the result is a copy, and a mutation of
+// the returned slice never feeds back into the node.
+func TestToolNodeToolNames(t *testing.T) {
+	echo := echoTool(t, "echo", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, nil
+	})
+	upper := echoTool(t, "upper", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, nil
+	})
+	node, err := NewToolNode([]Tool{upper, echo})
+	if err != nil {
+		t.Fatalf("NewToolNode: %v", err)
+	}
+	names := node.ToolNames()
+	if len(names) != 2 || names[0] != "upper" || names[1] != "echo" {
+		t.Fatalf("ToolNames() = %v, want [upper echo] (registration order)", names)
+	}
+	names[0] = "mutated"
+	if got := node.ToolNames(); got[0] != "upper" {
+		t.Fatalf("ToolNames() returned the backing slice: mutating the copy changed it to %v", got)
+	}
+}
+
 func TestPendingToolCallsAndHasPendingToolCalls(t *testing.T) {
 	if HasPendingToolCalls(nil) {
 		t.Fatal("expected no pending tool calls for empty message list")

@@ -131,6 +131,7 @@ func (g *StateGraph) GetGraph(opts ...GetGraphOption) runnables.Graph {
 		entry:        g.entry,
 		entryRouter:  g.entryRouter,
 		entryPathMap: g.entryPathMap,
+		bounds:       g.nodeBounds,
 		probe:        options.ProbeRouters,
 	})
 	expandSubgraphs(&out, g.subgraphs, options)
@@ -156,6 +157,7 @@ func (g *CompiledGraph) GetGraph(opts ...GetGraphOption) runnables.Graph {
 		entry:           g.entry,
 		entryRouter:     g.entryRouter,
 		entryPathMap:    g.entryPathMap,
+		bounds:          g.nodeBounds,
 		interruptBefore: g.interruptBefore,
 		interruptAfter:  g.interruptAfter,
 		probe:           options.ProbeRouters,
@@ -191,6 +193,10 @@ type exportParams struct {
 	entry        string
 	entryRouter  ConditionalEdge
 	entryPathMap map[string]string
+	// bounds records the object each node wraps ("bound", Python's node.bound
+	// analog), for nodes registered via AddNodeWithBound: GetGraph duck-types
+	// it for `__tools` export metadata (#9449).
+	bounds map[string]any
 	// interruptBefore/interruptAfter are the compiled interrupt boundaries
 	// (nil on the builder): nodes in either get `__interrupt` metadata.
 	interruptBefore map[string]bool
@@ -214,7 +220,7 @@ func exportGraph(p exportParams) runnables.Graph {
 			ID:       name,
 			Name:     name,
 			Type:     "node",
-			Metadata: interruptMetadata(name, p.interruptBefore, p.interruptAfter),
+			Metadata: nodeMetadata(name, p.bounds[name], p.interruptBefore, p.interruptAfter),
 		})
 	}
 	addEdge := func(source, target, label string, conditional bool) {
@@ -272,6 +278,42 @@ func interruptMetadata(name string, before, after map[string]bool) map[string]an
 		return nil
 	}
 	return map[string]any{"__interrupt": value}
+}
+
+// nodeMetadata returns the exported metadata for a node: the `__interrupt`
+// boundary stamp plus the `__tools` stamp when the node's bound object lists
+// tool names. Python assembles one metadata dict per node in draw_graph
+// (pregel/_draw.py:225-236), stamping __interrupt first and __tools second;
+// the keys are distinct so both can coexist. Nil when neither applies.
+func nodeMetadata(name string, bound any, before, after map[string]bool) map[string]any {
+	metadata := interruptMetadata(name, before, after)
+	if names, ok := boundToolNames(bound); ok {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["__tools"] = names
+	}
+	return metadata
+}
+
+// boundToolNames extracts a node's tool-name listing from its bound object,
+// the Go analog of Python's duck-typed `tools_by_name` lookup in draw_graph
+// (#9449: `getattr(node.bound, "tools_by_name", None)` + non-empty Mapping
+// check). Any object implementing interface{ ToolNames() []string } with a
+// non-empty result contributes its names in order — the graph package stays
+// decoupled from the concrete ToolNode type, exactly like Python's core not
+// importing from langgraph-prebuilt. The slice is defensively cloned
+// (Python's list(tools_by_name) copy).
+func boundToolNames(bound any) ([]string, bool) {
+	lister, ok := bound.(interface{ ToolNames() []string })
+	if !ok {
+		return nil, false
+	}
+	names := lister.ToolNames()
+	if len(names) == 0 {
+		return nil, false
+	}
+	return slices.Clone(names), true
 }
 
 // edgeSet indexes edges by source/target for dedup (Python's add_edge

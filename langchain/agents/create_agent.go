@@ -830,11 +830,13 @@ func CreateAgent(model language.ChatModel, toolList []coretools.Tool, opts ...Ag
 	}
 
 	if len(toolList) > 0 {
-		toolNode, err := newToolsNode(toolList, options.Middleware, logger, options.Store)
+		toolsNode, toolNode, err := newToolsNode(toolList, options.Middleware, logger, options.Store)
 		if err != nil {
 			return nil, err
 		}
-		g.AddNode(ToolsNodeName, toolNode)
+		// Register the ToolNode as the node's bound object so GetGraph lists
+		// its tool names in `__tools` metadata (#9449).
+		g.AddNodeWithBound(ToolsNodeName, toolsNode, toolNode)
 		// tools -> (model | exit): exit when every executed client-side tool
 		// call targeted a return-direct tool, mirroring Python's
 		// `_make_tools_to_model_edge` (factory.py:1623-1649, 1921-1947).
@@ -3319,7 +3321,10 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, prep
 // edges). Command Resume and non-empty Graph are rejected: the Go tools node
 // cannot forward them (Python's langgraph supports both; documented
 // divergence).
-func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s store.Store) (graphpkg.NodeFunc, error) {
+// It also returns the underlying *agenttools.ToolNode, which the caller
+// registers as the node's bound object so graph export stamps the node's
+// `__tools` metadata with its tool names (#9449).
+func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s store.Store) (graphpkg.NodeFunc, *agenttools.ToolNode, error) {
 	nodeOpts := make([]agenttools.ToolNodeOption, 0, 2)
 	if wrap := composeToolCallWrapper(mws, logger); wrap != nil {
 		nodeOpts = append(nodeOpts, agenttools.WithToolCallWrapper(wrap))
@@ -3329,7 +3334,7 @@ func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s s
 	}
 	toolNode, err := agenttools.NewToolNode(toolList, nodeOpts...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	return func(rt runtime.Runtime, state map[string]any) (any, error) {
@@ -3364,10 +3369,10 @@ func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s s
 			return nil, err
 		}
 		if len(gotoDests) > 0 {
-			return &types.Command{Update: update, Goto: gotoDests}, nil
+				return &types.Command{Update: update, Goto: gotoDests}, nil
 		}
 		return update, nil
-	}, nil
+	}, toolNode, nil
 }
 
 // applyToolNodeCommands merges the Commands returned by tools (via

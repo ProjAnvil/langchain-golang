@@ -126,6 +126,11 @@ type StateGraph struct {
 	channelProtos map[string]channels.Channel
 	edges         map[string][]string
 	conditional   map[string]ConditionalEdge
+	// nodeBounds records the object each node wraps ("bound", Python's
+	// node.bound analog) for nodes registered via AddNodeWithBound, keyed by
+	// node name, so GetGraph can duck-type export metadata (e.g. `__tools`,
+	// #9449). Absent for plain AddNode registrations.
+	nodeBounds map[string]any
 	// pathMaps holds the static path maps registered via
 	// AddConditionalEdgesWithPathMap (keyed by source node); they make the
 	// otherwise opaque routers enumerable for graph export (GetGraph) and
@@ -178,6 +183,7 @@ func NewStateGraph() *StateGraph {
 		edges:         map[string][]string{},
 		conditional:   map[string]ConditionalEdge{},
 		pathMaps:      map[string]map[string]string{},
+		nodeBounds:    map[string]any{},
 		subgraphs:     map[string]*CompiledGraph{},
 	}
 }
@@ -220,6 +226,26 @@ func (g *StateGraph) AddNodeWithPolicies(name string, fn NodeFunc, policies Node
 	}
 	g.nodes[name] = fn
 	g.policies[name] = policies
+	return g
+}
+
+// AddNodeWithBound registers a node together with the object it wraps
+// ("bound" — the Go analog of Python's `node.bound`: Python's add_node
+// receives the runnable object itself, while Go nodes are opaque NodeFuncs).
+// The bound object participates only in graph export (GetGraph/DrawMermaid):
+// when it implements interface{ ToolNames() []string } with a non-empty
+// result, the exported node carries `__tools` metadata listing its tool names
+// (#9449, mirroring Python's duck-typed tools_by_name lookup in draw_graph).
+// Execution is exactly AddNode — bound is never invoked. A nil bound is
+// accepted and equivalent to AddNode.
+//
+// See prebuilt.AddToolNode for the ToolNode convenience wrapper.
+func (g *StateGraph) AddNodeWithBound(name string, fn NodeFunc, bound any) *StateGraph {
+	prev := g.err
+	g.AddNodeWithPolicies(name, fn, NodePolicies{})
+	if g.err == prev {
+		g.nodeBounds[name] = bound
+	}
 	return g
 }
 
@@ -643,6 +669,7 @@ func (g *StateGraph) Compile(opts ...CompileOption) (*CompiledGraph, error) {
 		edges:           g.edges,
 		conditional:     g.conditional,
 		pathMaps:        g.pathMaps,
+		nodeBounds:      g.nodeBounds,
 		joins:           joins,
 		joinsByParent:   joinsByParent,
 		entry:           g.entry,
@@ -668,6 +695,9 @@ type CompiledGraph struct {
 	channelProtos map[string]channels.Channel
 	edges         map[string][]string
 	conditional   map[string]ConditionalEdge
+	// nodeBounds carries the builder's bound-object registrations
+	// (AddNodeWithBound) through Compile, for graph export (see StateGraph).
+	nodeBounds map[string]any
 	// pathMaps/entryPathMap are the static path maps registered on the
 	// builder (AddConditionalEdgesWithPathMap /
 	// SetConditionalEntryPointWithPathMap), kept for graph export (GetGraph).

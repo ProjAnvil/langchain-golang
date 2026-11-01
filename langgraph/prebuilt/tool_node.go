@@ -30,6 +30,16 @@ func WithMessagesKey(key string) ToolNodeOption {
 	return func(c *toolNodeConfig) { c.messagesKey = key }
 }
 
+// AddToolNode registers a ToolNode graph node under name and carries the
+// ToolNode itself as the node's bound object, so graph export lists its tool
+// names in the node's `__tools` metadata (#9449) — the Go analog of Python's
+// get_graph() duck-typing a ToolNode's tools_by_name. Execution is identical
+// to g.AddNode(name, ToolNode(node, opts...)); the bound object is used only
+// by GetGraph/DrawMermaid. opts are the ToolNodeOptions for ToolNode.
+func AddToolNode(g *graph.StateGraph, name string, node *tools.ToolNode, opts ...ToolNodeOption) *graph.StateGraph {
+	return g.AddNodeWithBound(name, ToolNode(node, opts...), node)
+}
+
 // ToolNode returns a graph.NodeFunc that runs the tool calls of the last AI
 // message in state[messagesKey] through node (a langchain/tools.ToolNode)
 // and returns map[string]any{messagesKey: resultMessages}.

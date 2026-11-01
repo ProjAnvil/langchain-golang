@@ -98,7 +98,11 @@ type ToolCallOutcome struct {
 // execution behavior of Python's `langchain.tools.ToolNode`. See the package
 // doc comment for what is intentionally out of scope.
 type ToolNode struct {
-	byName           map[string]Tool
+	byName map[string]Tool
+	// names is the registered tool names in toolList order — the Go analog
+	// of Python's insertion-ordered tools_by_name dict, listed by ToolNames
+	// (graph export shows it as `__tools` node metadata, #9449).
+	names            []string
 	handleToolErrors HandleToolErrors
 	wrap             ToolCallWrapper
 	store            store.Store
@@ -135,6 +139,7 @@ func NewToolNode(toolList []Tool, opts ...ToolNodeOption) (*ToolNode, error) {
 		return nil, fmt.Errorf("tool_node: at least one tool is required")
 	}
 	byName := make(map[string]Tool, len(toolList))
+	names := make([]string, 0, len(toolList))
 	for _, t := range toolList {
 		if t == nil {
 			return nil, fmt.Errorf("tool_node: tool must not be nil")
@@ -147,9 +152,10 @@ func NewToolNode(toolList []Tool, opts ...ToolNodeOption) (*ToolNode, error) {
 			return nil, fmt.Errorf("tool_node: duplicate tool name %q", name)
 		}
 		byName[name] = t
+		names = append(names, name)
 	}
 
-	n := &ToolNode{byName: byName, handleToolErrors: DefaultHandleToolErrors}
+	n := &ToolNode{byName: byName, names: names, handleToolErrors: DefaultHandleToolErrors}
 	for _, opt := range opts {
 		opt(n)
 	}
@@ -164,6 +170,14 @@ func (n *ToolNode) ToolsByName() map[string]Tool {
 	out := make(map[string]Tool, len(n.byName))
 	maps.Copy(out, n.byName)
 	return out
+}
+
+// ToolNames returns the registered tool names in registration order, the Go
+// analog of Python's `list(tools_by_name)`. Graph export lists these as a
+// node's `__tools` metadata (langgraph #9449), so deep agents show which
+// tools their tools node runs. The result is a copy.
+func (n *ToolNode) ToolNames() []string {
+	return slices.Clone(n.names)
 }
 
 // PendingToolCalls returns the tool calls attached to the most recent AI

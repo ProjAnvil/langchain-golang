@@ -101,6 +101,56 @@ func TestToolNodeExecutesPendingToolCalls(t *testing.T) {
 	}
 }
 
+// TestAddToolNodeStampsToolsMetadata covers AddToolNode's export behavior
+// (#9449): the registered node carries `__tools` metadata listing the
+// ToolNode's tool names in registration order, while a node registered via
+// plain AddNode(ToolNode(...)) carries none (Go nodes are opaque funcs — the
+// bound object must ride along at registration).
+func TestAddToolNodeStampsToolsMetadata(t *testing.T) {
+	echo := funcTool(t, "echo", func(_ context.Context, _ map[string]any) (tools.Result, error) {
+		return tools.Result{}, nil
+	})
+	upper := funcTool(t, "upper", func(_ context.Context, _ map[string]any) (tools.Result, error) {
+		return tools.Result{}, nil
+	})
+	toolNode, err := tools.NewToolNode([]tools.Tool{upper, echo})
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	g := graph.NewStateGraph()
+	AddToolNode(g, "tools", toolNode)
+	g.AddNode("plain", ToolNode(toolNode))
+	g.AddEdge(types.START, "tools")
+	g.AddEdge("tools", "plain")
+	g.AddEdge("plain", types.END)
+	compiled, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	cg := compiled.GetGraph()
+	var gotStamped, gotPlain bool
+	for _, node := range cg.Nodes {
+		switch node.ID {
+		case "tools":
+			names, ok := node.Metadata["__tools"].([]string)
+			if !ok || len(names) != 2 || names[0] != "upper" || names[1] != "echo" {
+				t.Fatalf("tools __tools = %#v; want [upper echo] in registration order", node.Metadata["__tools"])
+			}
+			gotStamped = true
+		case "plain":
+			if _, ok := node.Metadata["__tools"]; ok {
+				t.Fatalf("plain AddNode node unexpectedly carries __tools: %v", node.Metadata)
+			}
+			gotPlain = true
+		}
+	}
+	if !gotStamped || !gotPlain {
+		t.Fatalf("exported nodes missing: stamped=%v plain=%v", gotStamped, gotPlain)
+	}
+}
+
 // TestToolNodeWithMessagesKey verifies the WithMessagesKey variant: tool
 // results land under the configured key instead of "messages".
 func TestToolNodeWithMessagesKey(t *testing.T) {
