@@ -321,18 +321,8 @@ func snapshotTask(pt checkpoint.PlannedTask, writes []checkpoint.Write) Snapshot
 // (graph/graph.go's checkpointing block after the superstep commit, via
 // checkpointSink.putWrites), matching Python pregel's per-task put_writes.
 func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, values map[string]any) {
-	// Collect the delta channel keys that are absent from values.
-	var deltaKeys []string
-	for key, proto := range g.channelProtos {
-		if !channels.IsDelta(proto) {
-			continue
-		}
-		if _, present := values[key]; present {
-			continue
-		}
-		deltaKeys = append(deltaKeys, key)
-	}
-	for key, channel := range g.rebuildDeltaChannels(ctx, tup, deltaKeys, nil) {
+	present := func(key string) bool { _, ok := values[key]; return ok }
+	for key, channel := range g.rebuildDeltaChannels(ctx, tup, g.walkKeys(g.channelProtos, tup.Checkpoint.ChannelVersions, present), nil) {
 		if v, err := channel.Get(); err == nil {
 			values[key] = v
 		}
@@ -350,17 +340,42 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 // planResume.replayWrites, so seeding them here would double-count
 // (Python #9114). nil includes every write.
 func (g *CompiledGraph) hydrateDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, rs *runState, skipTaskIDs map[string]bool) {
-	var deltaKeys []string
-	for key, proto := range g.channelProtos {
-		if !channels.IsDelta(proto) {
+	present := func(key string) bool { _, ok := rs.channels[key]; return ok }
+	maps.Copy(rs.channels, g.rebuildDeltaChannels(ctx, tup, g.walkKeys(g.channelProtos, tup.Checkpoint.ChannelVersions, present), skipTaskIDs))
+}
+
+// walkKeys returns the registered channel keys absent from the starting view
+// whose reconstruction needs the ancestor walk (#9302 mirrors Python's
+// _delta_channels_to_replay):
+//
+//   - a DeltaChannel with nothing stored here always walks (the
+//     never-written filter inside rebuildDeltaChannels bounds it);
+//   - a plain BinaryOperator reducer with a recorded version but nothing
+//     stored was written as a DeltaChannel before its annotation changed:
+//     a BinaryOperator stores its value at every version, so one with a
+//     version and no value is an ex-delta sentinel and is rebuilt the same
+//     way. The version must be recorded strictly — a plain field that was
+//     never written reads empty, not walked.
+//
+// present reports whether the starting view (GetState's projected values, or
+// the channels a run state already materialized) already carries the key.
+func (g *CompiledGraph) walkKeys(protos map[string]channels.Channel, versions map[string]int64, present func(string) bool) []string {
+	var keys []string
+	for key, proto := range protos {
+		if present(key) {
 			continue
 		}
-		if _, present := rs.channels[key]; present {
+		if channels.IsDelta(proto) {
+			keys = append(keys, key)
 			continue
 		}
-		deltaKeys = append(deltaKeys, key)
+		if channels.IsBinaryOperator(proto) {
+			if _, everWritten := versions[key]; everWritten {
+				keys = append(keys, key)
+			}
+		}
 	}
-	maps.Copy(rs.channels, g.rebuildDeltaChannels(ctx, tup, deltaKeys, skipTaskIDs))
+	return keys
 }
 
 // rebuildDeltaChannels walks tup's ancestor chain and returns the
@@ -449,19 +464,17 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 	}
 
 	out := make(map[string]channels.Channel, len(deltaKeys))
-	// Reconstruct each delta channel from seed + collected writes.
+	// Reconstruct each channel from seed + collected writes.
 	for _, key := range deltaKeys {
 		proto := g.channelProtos[key]
-		delta, ok := channels.AsDelta(proto.FromCheckpoint(nil))
-		if !ok {
-			continue
+		var seed any
+		hasSeed := false
+		if s, ok := seeded[key]; ok {
+			seed, hasSeed = s, true
 		}
-		// Apply the seed if one was found.
-		if seed, hasSeed := seeded[key]; hasSeed {
-			deltaCh := proto.FromCheckpoint(seed)
-			if d, ok := channels.AsDelta(deltaCh); ok {
-				delta = d
-			}
+		ch := proto.FromCheckpoint(nil)
+		if hasSeed {
+			ch = proto.FromCheckpoint(seed)
 		}
 		// Replay collected writes (oldest-to-newest). collectDeltaWrites
 		// already stored them in arrival order (oldest first within each
@@ -470,12 +483,25 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 		writes := collected[key]
 		if len(writes) > 0 {
 			// Reverse: we walked newest-to-oldest, so writes are in reverse
-			// chronological order. ReplayWrites expects oldest-first.
+			// chronological order.
 			slices.Reverse(writes)
-			delta.ReplayWrites(writes)
+			if d, ok := channels.AsDelta(ch); ok {
+				d.ReplayWrites(writes)
+			} else {
+				// A plain reducer (an ex-DeltaChannel, #9302): one Update per
+				// write — the writes span many supersteps, and a single
+				// batched call would reject a second Overwrite and drop the
+				// writes after one. On a reducer error, keep the last good
+				// value (mirrors DeltaChannel.ReplayWrites keeping its base).
+				for _, w := range writes {
+					if _, err := ch.Update([]any{w}); err != nil {
+						break
+					}
+				}
+			}
 		}
-		if delta.IsAvailable() {
-			out[key] = delta
+		if ch.IsAvailable() {
+			out[key] = ch
 		}
 	}
 	return out

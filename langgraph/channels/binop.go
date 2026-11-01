@@ -73,8 +73,23 @@ func (c *binaryOperator) Checkpoint() (any, bool) {
 }
 
 func (c *binaryOperator) FromCheckpoint(value any) Channel {
+	// A thread written while this field was a DeltaChannel stores snapshot
+	// blobs: unwrap one to its inner value instead of restoring the blob
+	// struct as the channel's value (#9302, mirrors Python's
+	// BinaryOperatorAggregate.from_checkpoint unwrapping _DeltaSnapshot).
+	if inner, ok := asDeltaSnapshot(value); ok {
+		value = inner
+	}
 	if value == nil {
 		return &binaryOperator{op: c.op}
 	}
 	return &binaryOperator{op: c.op, value: value, set: true}
+}
+
+// IsBinaryOperator reports whether ch is a binaryOperator (the channel behind
+// StateGraph.AddReducer). The checkpoint walk uses it to recognize plain
+// reducers that were DeltaChannels when the thread was written (#9302).
+func IsBinaryOperator(ch Channel) bool {
+	_, ok := ch.(*binaryOperator)
+	return ok
 }
