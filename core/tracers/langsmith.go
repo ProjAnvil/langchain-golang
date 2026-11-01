@@ -53,7 +53,10 @@ const (
 // mirrors the normalized destination dict Python's SDK accepts and forwards
 // on each run payload: {"kind": "AGENT", "id": ..., "environment": ...}.
 type AgentAddress struct {
-	// Kind is always "AGENT": the only destination kind the tracer accepts.
+	// Kind is the destination kind; NewAgentAddress sets "AGENT". Nothing
+	// enforces it — Python's ensure_agent validation (AGENT-only kinds and
+	// an environment whitelist) is not replicated, so a hand-built address
+	// posts as-is.
 	Kind string `json:"kind"`
 	// ID names the agent (Python's agent_id).
 	ID string `json:"id"`
