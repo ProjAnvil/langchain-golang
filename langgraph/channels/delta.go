@@ -69,6 +69,12 @@ type DeltaChannel struct {
 	snapshotFrequency int
 	value             any
 	set               bool // value is not MISSING
+	// messagesDelta marks the channel as created by NewMessagesDeltaChannel
+	// (MessagesReducer semantics). It is the Go stand-in for Python's
+	// `spec.reducer is _messages_delta_reducer` identity check — Go function
+	// values are not comparable, so the canonical constructor records the
+	// binding instead (#9275). Preserved by FromCheckpoint.
+	messagesDelta bool
 }
 
 // NewDeltaChannel returns a DeltaChannel with the given batch reducer.
@@ -89,6 +95,30 @@ func NewDeltaChannel(reducer BatchReducer, typFactory func() any, snapshotFreque
 		snapshotFrequency: snapshotFrequency,
 	}
 }
+
+// NewMessagesDeltaChannel returns a DeltaChannel that folds each superstep's
+// writes through MessagesReducer in one batch, the Go analog of Python's
+// `DeltaChannel(_messages_delta_reducer)` (langgraph/pregel/_messages.py):
+// ID-aware message merging (append, replace-by-ID, RemoveMessage tombstoning)
+// in a batching-invariant fold. typFactory should return the channel's empty
+// value, normally `func() any { return []messages.Message{} }`.
+//
+// The returned channel reports IsMessagesDelta()==true, which is how the
+// graph layer recognizes "the messages delta reducer": Go function values are
+// not comparable, so a hand-built NewDeltaChannel(BatchFromReducer(
+// MessagesReducer), ...) is NOT recognized — mirroring Python, where only the
+// exact `_messages_delta_reducer` object (not deepagents' own copy) gates the
+// missing-ID stamping (#9275).
+func NewMessagesDeltaChannel(typFactory func() any, snapshotFrequency int) *DeltaChannel {
+	c := NewDeltaChannel(BatchFromReducer(MessagesReducer), typFactory, snapshotFrequency)
+	c.messagesDelta = true
+	return c
+}
+
+// IsMessagesDelta reports whether the channel was created by
+// NewMessagesDeltaChannel, i.e. its reducer is the canonical messages delta
+// reducer. Gates message-ID stamping in the graph layer (#9275).
+func (c *DeltaChannel) IsMessagesDelta() bool { return c.messagesDelta }
 
 // Update applies a whole superstep's writes for this key. It mirrors Python's
 // DeltaChannel.update: if any write is an Overwrite, the last one acts as a
@@ -201,6 +231,7 @@ func (c *DeltaChannel) FromCheckpoint(value any) Channel {
 		reducer:           c.reducer,
 		typ:               c.typ,
 		snapshotFrequency: c.snapshotFrequency,
+		messagesDelta:     c.messagesDelta,
 	}
 	if value == nil {
 		// MISSING / sentinel: start empty.

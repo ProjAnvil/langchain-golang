@@ -1225,6 +1225,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			return Result{}, fmt.Errorf("graph: Options.Graph must not be %q (a resume applies within the graph it targets; to resume the parent of a subgraph, resume the parent thread)", types.ParentGraph)
 		}
 	}
+	// #9275: stamp message IDs onto the input BEFORE it is applied and
+	// persisted (Python stamps input_writes before the input applies,
+	// _loop.py), so this run reads the message IDs that are saved with it —
+	// the live applyWrites below and persistDeltaInputWrites both use the
+	// stamped copy. The caller's map and messages are never mutated.
+	input = g.ensureMessageIDs(input)
 	var replayWrites []taskWrites
 	forceDegraded := opts.forceResume && tup == nil
 	switch {
@@ -1605,6 +1611,19 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			if err := g.cache.Set(ctx, storeNS[i], storeKey[i], writes, storeTTL[i]); err != nil {
 				return Result{}, fmt.Errorf("graph: node %q cache set: %w", active[i].node, err)
 			}
+		}
+
+		// #9275: give messages written to a messages delta channel their IDs
+		// before any use of the outcome — the streamed updates chunk, the
+		// in-node-interrupt pause persistence, the commit's applyWrites and
+		// the task-writes persistence below, and the exit accumulator (which
+		// receives these same writes through putWrites) all derive from this
+		// one stamped map. Python stamps in put_writes, before the writes are
+		// saved, kept or applied; the cache pass above deliberately stores the
+		// unstamped original, as Python's cache does. The caller's map and
+		// messages are never mutated; a changed write is a replaced copy.
+		for i := range outcomes {
+			outcomes[i].update = g.ensureMessageIDs(outcomes[i].update)
 		}
 
 		// Join barrier arrivals: each completed parent task implicitly

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/projanvil/langchain-golang/core/messages"
 )
 
 // deltaListReducer is a batch reducer that concatenates existing (a slice)
@@ -601,5 +603,71 @@ func TestDeltaReplayWritesEndsWithOverwrite(t *testing.T) {
 	})
 	if got := get(t, delta); !reflect.DeepEqual(got, []int{9}) {
 		t.Fatalf("replay ending with Overwrite Get() = %v, want [9]", got)
+	}
+}
+
+// TestNewMessagesDeltaChannelIdentity pins the #9275 identity gate: only the
+// canonical messages-delta constructor reports IsMessagesDelta (Go function
+// values are not comparable, so NewDeltaChannel(BatchFromReducer(
+// MessagesReducer), ...) built by hand stays unrecognized — mirroring Python,
+// where only the exact _messages_delta_reducer object is stamped), and the
+// flag survives FromCheckpoint so per-run channel copies keep the gate.
+func TestNewMessagesDeltaChannelIdentity(t *testing.T) {
+	ch := NewMessagesDeltaChannel(func() any { return []int{} }, 100)
+	if !ch.IsMessagesDelta() {
+		t.Fatal("NewMessagesDeltaChannel(...).IsMessagesDelta() = false, want true")
+	}
+	restored, ok := ch.FromCheckpoint(nil).(*DeltaChannel)
+	if !ok {
+		t.Fatal("FromCheckpoint(nil) did not return a *DeltaChannel")
+	}
+	if !restored.IsMessagesDelta() {
+		t.Fatal("IsMessagesDelta() lost across FromCheckpoint, want preserved")
+	}
+	if _, ok := restored.SnapshotBlob(); ok {
+		t.Fatal("empty restored channel unexpectedly available for SnapshotBlob")
+	}
+
+	handmade := NewDeltaChannel(BatchFromReducer(MessagesReducer), func() any { return []int{} }, 100)
+	if handmade.IsMessagesDelta() {
+		t.Fatal("hand-built BatchFromReducer(MessagesReducer) channel reports IsMessagesDelta, want false (only the canonical constructor gates)")
+	}
+	if plain := NewDeltaChannel(deltaListReducer, intSliceFactory, 100); plain.IsMessagesDelta() {
+		t.Fatal("non-messages DeltaChannel reports IsMessagesDelta, want false")
+	}
+}
+
+// TestMessagesDeltaChannelReducerSemantics pins that the messages delta
+// channel folds writes with MessagesReducer semantics (add_messages): appends
+// verbatim, replaces by ID, and honors RemoveMessage tombstones — the
+// batching-invariant fold behind DeltaChannel(_messages_delta_reducer).
+func TestMessagesDeltaChannelReducerSemantics(t *testing.T) {
+	ch := NewMessagesDeltaChannel(func() any { return []messages.Message{} }, 1000)
+	if _, err := ch.Update([]any{
+		[]messages.Message{messages.Human("a")},
+		[]messages.Message{{Role: messages.RoleHuman, Content: "a2", ID: "id-a"}},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if _, err := ch.Update([]any{
+		[]messages.Message{{Role: messages.RoleHuman, Content: "replaced", ID: "id-a"}},
+	}); err != nil {
+		t.Fatalf("Update() (replace) error = %v", err)
+	}
+	if _, err := ch.Update([]any{
+		[]messages.RemoveMessage{{ID: "id-a"}},
+	}); err != nil {
+		t.Fatalf("Update() (remove) error = %v", err)
+	}
+	got, err := ch.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	msgs, ok := got.([]messages.Message)
+	if !ok || len(msgs) != 1 {
+		t.Fatalf("Get() = %#v, want one message", got)
+	}
+	if msgs[0].Content != "a" {
+		t.Fatalf("remaining message = %#v, want the appended one", msgs[0])
 	}
 }

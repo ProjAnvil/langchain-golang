@@ -175,6 +175,11 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	// accumulated value plus the update, and an untouched delta key survives
 	// into the update checkpoint (Python #9165/#9142).
 	g.hydrateDeltaChannels(ctx, tup, rs, nil)
+	// #9275: stamp message IDs onto the values BEFORE the update applies, so
+	// the force-snapshot persists (and GetState replays) the IDs this update
+	// reads — Python's update_state stamps the writes it then applies. The
+	// caller's map and messages are never mutated.
+	values = g.ensureMessageIDs(values)
 	if _, err := rs.applyWrites([]taskWrites{{node: asNode, update: values}}); err != nil {
 		return checkpoint.Config{}, err
 	}
