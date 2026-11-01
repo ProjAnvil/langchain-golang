@@ -261,12 +261,14 @@ func TestDeltaSnapshotBlobJSONRoundtrip(t *testing.T) {
 	if !ok {
 		t.Fatal("SnapshotBlob() ok = false")
 	}
-	ds := cp.(deltaSnapshot)
+	if _, isSnap := asDeltaSnapshot(cp); !isSnap {
+		t.Fatalf("SnapshotBlob() = %T, want a delta snapshot blob", cp)
+	}
 
 	// Serialize the snapshot blob through JSON (as a real backend would).
-	data, err := json.Marshal(ds)
+	data, err := json.Marshal(cp)
 	if err != nil {
-		t.Fatalf("json.Marshal(deltaSnapshot) error = %v", err)
+		t.Fatalf("json.Marshal(snapshot blob) error = %v", err)
 	}
 	var generic any
 	if err := json.Unmarshal(data, &generic); err != nil {

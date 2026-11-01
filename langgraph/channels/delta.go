@@ -159,7 +159,7 @@ func (c *DeltaChannel) Checkpoint() (any, bool) {
 	return nil, false
 }
 
-// SnapshotBlob returns a deltaSnapshot blob for a forced snapshot. It is the
+// SnapshotBlob returns the snapshot blob for a forced snapshot. It is the
 // snapshot payload the executor writes into checkpoint ChannelValues when
 // DeltaChannelsToSnapshot decides this channel should snapshot now (Phase 1:
 // the snapshot decision moves out of Checkpoint into the loop). It returns
@@ -167,11 +167,18 @@ func (c *DeltaChannel) Checkpoint() (any, bool) {
 // is a pure read — it neither inspects nor mutates the in-memory cadence
 // counters. Mirrors the write of _DeltaSnapshot(ch.get()) in Python's
 // create_checkpoint (langgraph/pregel/_checkpoint.py).
+//
+// The blob is the JSON-native map {"type": "__delta_snapshot__", "value": …}
+// — exactly the JSON encoding of the deltaSnapshot struct — so serde-based
+// savers (sqlite/postgres/redis), whose closed registries cannot encode this
+// package's unexported struct types, persist it as plain JSON.
+// asDeltaSnapshot recognizes this form and anything JSON-decoded back from
+// it, so readers treat both identically.
 func (c *DeltaChannel) SnapshotBlob() (any, bool) {
 	if !c.set {
 		return nil, false
 	}
-	return deltaSnapshot{Value: c.value, Type: deltaSnapshotType}, true
+	return map[string]any{"type": deltaSnapshotType, "value": c.value}, true
 }
 
 // SnapshotFrequency returns the per-channel update cadence at which the channel

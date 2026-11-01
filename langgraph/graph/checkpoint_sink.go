@@ -464,6 +464,24 @@ func (s *checkpointSink) flushExit() error {
 	for k := range s.flushRS.deltaOverwriteChs {
 		channelsToSnapshot[k] = true
 	}
+	// #9269: a checkpoint pinned via Options.CheckpointID may already have
+	// children — the thread grew a newer branch past it. Writes anchored on
+	// that shared checkpoint replay into EVERY branch's ancestor walk, so
+	// the newer branch would read this run's delta writes as its own state.
+	// When the pinned checkpoint is superseded, force-snapshot the delta
+	// channels this run wrote into the final checkpoint instead of anchoring
+	// them on the pinned parent (Python's _put_exit_delta_writes gates on
+	// "a checkpoint_id addressed", paying one snapshot even when it is the
+	// latest; Go narrows to actually superseded — anchoring on the latest is
+	// safe, it has no other children — via the checkpoint_superseded
+	// equivalent, pinnedCheckpointSuperseded).
+	if s.hasPersistedParent && len(s.exitDeltaWrites) > 0 && s.pinnedCheckpointSuperseded() {
+		for _, w := range s.exitDeltaWrites {
+			if d, ok := channels.AsDelta(s.flushRS.channels[w.channel]); ok && d.IsAvailable() {
+				channelsToSnapshot[w.channel] = true
+			}
+		}
+	}
 
 	// 2. Filter exit delta writes — exclude channels that will snapshot
 	pending := make([]exitDeltaWrite, 0)
@@ -532,4 +550,27 @@ func (s *checkpointSink) flushExit() error {
 	}
 
 	return nil
+}
+
+// pinnedCheckpointSuperseded reports whether the namespace has moved past the
+// checkpoint this run pinned via Options.CheckpointID — i.e. the run's
+// persisted parent (initialCfg) is no longer its namespace's latest, so a
+// newer branch already descends from it. Detection mirrors Python's
+// checkpoint_superseded (_checkpoint.py): fetch the namespace's latest with
+// an empty checkpoint id and compare against the pinned one. False when the
+// run loaded the latest unpinned (the common new-turn/resume case), when no
+// checkpoint id was addressed, or when the lookup fails (conservative: keep
+// the anchoring behavior that predates #9269).
+func (s *checkpointSink) pinnedCheckpointSuperseded() bool {
+	if s.saver == nil || s.initialCfg.CheckpointID == "" || s.flushOpts.CheckpointID == "" {
+		return false
+	}
+	latest, err := s.saver.GetTuple(s.flushCtx, checkpoint.Config{
+		ThreadID:     s.initialCfg.ThreadID,
+		CheckpointNS: s.initialCfg.CheckpointNS,
+	})
+	if err != nil || latest == nil {
+		return false
+	}
+	return latest.Checkpoint.ID != s.initialCfg.CheckpointID
 }
