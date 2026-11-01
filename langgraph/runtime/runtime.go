@@ -161,9 +161,18 @@ type ServerInfo struct {
 
 // RunControl is the run-scoped control surface for cooperative draining,
 // mirroring Python's `RunControl` (runtime.py:79). Create a fresh RunControl
-// per run; reusing one after RequestDrain leaves it drained. Safe to call
-// from any goroutine: the drain request is a single atomic-ish attribute
-// write, so no lock is needed for this signal (matching Python).
+// per run; reusing one after RequestDrain leaves it drained.
+//
+// Concurrency guarantee (documented divergence from Python's): Python's
+// "safe to call from any goroutine" rests on the GIL serializing the
+// attribute write against readers; Go's drainReason field is an
+// unsynchronized write, and the run loop reads it at every superstep
+// boundary. The supported pattern is a drain requested from goroutines
+// already ordered with the run loop — a node calling rt.Control.RequestDrain
+// (the node runs to completion before the loop's next read). An EXTERNAL
+// goroutine draining while the run is in flight is a data race (it trips
+// -race): external drainers must synchronize themselves (request before
+// Invoke, or under a caller-owned lock the run's reader cannot see).
 type RunControl struct {
 	drainReason *string
 }

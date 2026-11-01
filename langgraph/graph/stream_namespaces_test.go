@@ -147,6 +147,124 @@ func TestStreamNestedInvokeSameThreadStillStreams(t *testing.T) {
 	}
 }
 
+// TestStreamNestedInvokeOwnCheckpointIDDoesNotLeak isolates the CheckpointID
+// half of #9458's drop rule: a child invoked on the CALLER'S OWN thread (so
+// the ThreadID clause cannot fire) but pinned to a CheckpointID of its own
+// starts its namespace at the root and must not stream into the caller —
+// Python's "own thread_id, checkpoint_ns or checkpoint_id" (1f0cf816d).
+func TestStreamNestedInvokeOwnCheckpointIDDoesNotLeak(t *testing.T) {
+	var childObs tokenEmitObservation
+	child := NewStateGraph()
+	child.AddNode("child_model", tokenEmittingNode(&childObs))
+	child.AddEdge(types.START, "child_model")
+	child.AddEdge("child_model", types.END)
+	// The child needs its own saver and a pre-existing checkpoint to pin to;
+	// a SEPARATE saver keeps it decoupled from the parent's thread history
+	// while sharing the thread ID string.
+	compiledChild, err := child.Compile(WithCheckpointer(checkpoint.NewMemorySaver()))
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+	if _, err := compiledChild.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "shared"}); err != nil {
+		t.Fatalf("child warm-up Invoke() error = %v", err)
+	}
+	snap, err := compiledChild.GetState(t.Context(), checkpoint.Config{ThreadID: "shared"})
+	if err != nil {
+		t.Fatalf("child GetState() error = %v", err)
+	}
+	if snap.Config.CheckpointID == "" {
+		t.Fatal("child warm-up produced no checkpoint to pin; the test is vacuous")
+	}
+
+	g := NewStateGraph()
+	g.AddNode("outer", func(ctx runtime.Runtime, _ map[string]any) (any, error) {
+		opts := Options{ThreadID: "shared", CheckpointID: snap.Config.CheckpointID}
+		if _, err := compiledChild.InvokeWithOptions(ctx, map[string]any{"turn": 2}, opts); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	g.AddEdge(types.START, "outer")
+	g.AddEdge("outer", types.END)
+	cg, err := g.Compile(WithCheckpointer(checkpoint.NewMemorySaver()))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	chunks, err := collectStream(t, cg.Stream(t.Context(), map[string]any{}, StreamOptions{
+		Options:   Options{ThreadID: "shared"},
+		Modes:     []StreamMode{StreamMessages},
+		Subgraphs: true,
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if !childObs.ran {
+		t.Fatal("child graph never ran; the test is vacuous")
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("len(chunks) = %d, want 0 (a child pinned to its own checkpoint must not stream into the caller's stream): %#v", len(chunks), chunks)
+	}
+}
+
+// TestStreamNestedInvokeAddSubgraphPinStillStreams is the time-travel-pin
+// regression pin for the CheckpointID clause: an AddSubgraph child re-entered
+// by a RESUMING parent carries a pinned CheckpointID (its pause position,
+// recorded in the parent's Metadata.Parents) — invokeSubgraph sets its
+// checkpointNS first, so the #9458 drop never fires, and the resumed child's
+// token still streams under the subgraph namespace.
+func TestStreamNestedInvokeAddSubgraphPinStillStreams(t *testing.T) {
+	var childObs tokenEmitObservation
+	child := NewStateGraph()
+	child.AddNode("child_a", func(runtime.Runtime, map[string]any) (any, error) {
+		return map[string]any{"a": "done"}, nil
+	})
+	child.AddNode("child_b", tokenEmittingNode(&childObs))
+	child.AddEdge(types.START, "child_a")
+	child.AddEdge("child_a", "child_b")
+	child.AddEdge("child_b", types.END)
+	compiledChild, err := child.Compile(WithInterruptBefore("child_b"))
+	if err != nil {
+		t.Fatalf("child Compile() error = %v", err)
+	}
+
+	g := NewStateGraph()
+	g.AddSubgraph("sub", compiledChild)
+	g.AddEdge(types.START, "sub")
+	g.AddEdge("sub", types.END)
+	cg, err := g.Compile(WithCheckpointer(checkpoint.NewMemorySaver()))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	// First run pauses inside the child at its interrupt_before boundary.
+	res, err := cg.InvokeWithOptions(t.Context(), map[string]any{}, Options{ThreadID: "pin-sub"})
+	if err != nil {
+		t.Fatalf("InvokeWithOptions() error = %v", err)
+	}
+	if len(res.Interrupts) == 0 {
+		t.Fatal("first run did not pause inside the subgraph; the test is vacuous")
+	}
+
+	// The resume re-enters the child PINNED to its recorded pause position
+	// (opts.CheckpointID set alongside its checkpointNS): child_b runs and
+	// its token must still stream under the subgraph namespace.
+	chunks, err := collectStream(t, cg.Stream(t.Context(), nil, StreamOptions{
+		Options:   Options{ThreadID: "pin-sub"},
+		Modes:     []StreamMode{StreamMessages},
+		Subgraphs: true,
+	}))
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("len(chunks) = %d, want 1 (the pinned subgraph child still streams): %#v", len(chunks), chunks)
+	}
+	if chunks[0].Namespace != "sub" {
+		t.Errorf("chunk Namespace = %q, want the subgraph namespace %q", chunks[0].Namespace, "sub")
+	}
+}
+
 // TestStreamNestedInvokeAddSubgraphStillStreams is the regression pin for
 // #9458: the AddSubgraph path (a subgraph TASK of the caller, sharing its
 // thread) keeps streaming through its child emitter under the subgraph

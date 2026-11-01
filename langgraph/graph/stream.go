@@ -345,32 +345,44 @@ func stripStreamCarriers(ctx context.Context) context.Context {
 
 // stripNestedInvokeCarriers derives the context for a run invoked inside a
 // node with its OWN thread identity (#9458, Python's #5674 shape): a child
-// graph invoked directly (not via AddSubgraph) with a ThreadID different from
-// the enclosing run's starts its namespace at the root, so an emitter
+// graph invoked directly (not via AddSubgraph) with a ThreadID or
+// CheckpointID of its own starts its namespace at the root, so an emitter
 // inherited from the caller's context would stream the child's chunks into
 // the caller's stream under the CALLER's namespace — misattributing them.
 // Mirroring Python's rule (pregel/main.py drops inherited messages/tools
 // handlers "whatever their subgraphs" for a child not run as a task of the
-// caller), such a run drops every inherited stream carrier: emitter, messages
-// bridge, and custom writer. A node that STREAMS the child itself still gets
-// its events — the child then installs its own carriers (Stream).
+// caller — one invoked with its own thread_id OR checkpoint_id), such a run
+// drops every inherited stream carrier: emitter, messages bridge, and custom
+// writer. A node that STREAMS the child itself still gets its events — the
+// child then installs its own carriers (Stream).
+//
+// "Of its own" means the value differs from the enclosing run's: re-supplying
+// the caller's own ThreadID/CheckpointID continues the caller's namespace
+// (Python's equivalent child carries the caller's task_id in its config, so
+// its handlers are kept). Go cannot distinguish an explicitly re-supplied
+// identical value from an inherited one — ledgered in DIVERGENCES.md.
 //
 // Kept, not stripped: a top-level Stream run (no enclosing run published on
-// ctx), an AddSubgraph child (opts.checkpointNS names it a task of the
-// caller), and a nested invoke on the caller's own (or no) thread — those run
-// within the caller's namespace and keep streaming as part of it.
+// ctx) and an AddSubgraph child — invokeSubgraph sets the child's
+// checkpointNS (subgraph.go) BEFORE its time-travel pin can set
+// CheckpointID, so every checkpointed child, pinned or not, exits on the
+// first clause below.
 func stripNestedInvokeCarriers(ctx context.Context, opts Options) context.Context {
-	if opts.checkpointNS != "" || opts.ThreadID == "" {
+	if opts.checkpointNS != "" || (opts.ThreadID == "" && opts.CheckpointID == "") {
 		return ctx
 	}
 	if emitterFromContext(ctx) == nil {
 		return ctx
 	}
 	parent, ok := ctx.Value(executionMetaKey{}).(executionMeta)
-	if !ok || parent.opts.ThreadID == opts.ThreadID {
+	if !ok {
 		return ctx
 	}
-	return stripStreamCarriers(ctx)
+	if (opts.ThreadID != "" && opts.ThreadID != parent.opts.ThreadID) ||
+		(opts.CheckpointID != "" && opts.CheckpointID != parent.opts.CheckpointID) {
+		return stripStreamCarriers(ctx)
+	}
+	return ctx
 }
 
 // emitValues delivers a values chunk with the given state snapshot. When

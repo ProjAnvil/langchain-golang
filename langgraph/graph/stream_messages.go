@@ -23,8 +23,15 @@ type messageSeen struct {
 	ids map[string]bool
 }
 
-// mark records id. Empty IDs never dedupe (mirroring the bridge's existing
-// rule for messages without an ID) and are not recorded.
+// mark records id. Empty IDs are NOT recorded: an ID-less message never
+// dedupes and re-emits on every scan that sees it — a documented divergence
+// from Python, whose `_emit` mints a uuid4 ONTO an ID-less message
+// (pregel/_messages.py:126-127) so the stream and the checkpointed state
+// share one ID; Go never mutates a node's returned messages (the #9275
+// stamping contract), and minting only the emitted copy would desync the
+// streamed ID from the applied/persisted write. The canonical path is
+// unaffected: messages-delta channels are #9275-stamped BEFORE emission, so
+// their messages always carry IDs. Ledgered in DIVERGENCES.md.
 func (s *messageSeen) mark(id string) {
 	if id == "" {
 		return
