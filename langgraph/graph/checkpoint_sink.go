@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -15,26 +16,54 @@ import (
 // that Python spreads across PregelLoop._put_checkpoint / put_writes /
 // _suppress_interrupt (_loop.py).
 //
+// #9235: a DeltaChannel is rebuilt from its writes along the parent chain, so
+// a checkpoint saved without one of them reads back short for good. The sink
+// therefore never saves past a failure: the first saver error (a checkpoint
+// save or a delta-channel write) poisons the sink — every later save and
+// write of the run returns the recorded error without touching the saver —
+// and a failed delta write additionally "repairs" the checkpoint it anchors
+// on by re-putting it with full snapshot blobs of every available delta
+// channel, so the half-written checkpoint carries the complete value instead
+// of relying on the write that never landed. Python ties each save to the
+// delta-write futures submitted before it and fails the save when one fails;
+// Go's per-task writes must anchor on the checkpoint they are persisted
+// after (every saver requires the checkpoint row to exist), so writes cannot
+// precede their checkpoint's save — the repair re-put is the Go form of the
+// same invariant.
+//
 // The mode passed to newCheckpointSink is the EFFECTIVE mode for the run: the
 // per-run Options.Durability override when set (Python's invoke/stream
 // durability argument), else the compiled WithDurability value.
 //
 // Sync mode: direct saver calls (no goroutine).
 // Async mode: a single sequential worker goroutine processes requests in FIFO
-// order from a buffered channel. Per-request panic recovery ensures the worker
-// survives saver panics. The enqueue path uses a select-with-workerDone guard
-// so it never blocks if the worker exits unexpectedly.
+// order from a buffered channel; the worker STOPS at the first saver error
+// (nothing later in the run is saved past it) after repairing the checkpoint
+// a failed delta write anchored on. Per-request panic recovery ensures a
+// panic is recorded as the worker error. The enqueue path uses a
+// select-with-workerDone guard so it never blocks if the worker exited.
 // Exit mode: writes are accumulated during the loop and flushed at exit via
 // flushExit (implemented in Task 8).
 type checkpointSink struct {
 	saver checkpoint.Saver
 	mode  Durability
 
+	// poisoned is the first saver failure of the run (#9235): once set, every
+	// later checkpoint save and write of the run fails with it instead of
+	// persisting — later checkpoints must never be saved past a failed write
+	// or on top of a checkpoint that was never saved (Python: a save fails if
+	// a write or the previous save failed).
+	poisoned error
+
 	// async mode: single sequential writer goroutine
 	bgCtx      context.Context
 	writeCh    chan sinkRequest
 	workerDone chan struct{}
 	workerErr  error // first error (single writer = no race after close)
+
+	// lastPut records the most recent successful checkpoint put (sync mode),
+	// held so a failed delta write anchored on it can repair it (#9235).
+	lastPut *putRecord
 
 	// exit mode: accumulator
 	exitDeltaWrites    []exitDeltaWrite
@@ -83,6 +112,29 @@ type sinkRequest struct {
 	writes      []checkpoint.Write
 	taskID      string
 	taskPath    string
+	// delta marks a write batch containing writes to a DeltaChannel (#9235:
+	// only delta writes gate the checkpoint they anchor on — plain channels
+	// carry their value in ChannelValues, so a lost plain write cannot short
+	// a read). Carried per request so the worker can repair without proto
+	// knowledge.
+	delta bool
+	// repair is the forced delta-snapshot payload for the checkpoint being
+	// put (nil when the run has no delta channels): map of channel name to
+	// SnapshotBlob, computed by saveCheckpoint from live channel state at
+	// put time. If one of this checkpoint's delta writes later fails, the
+	// checkpoint is re-put with these blobs overlaid (#9235).
+	repair map[string]any
+}
+
+// putRecord captures one successful checkpoint put so it can be repaired
+// (re-put with forced delta snapshots) when a delta write anchored on it
+// fails (#9235).
+type putRecord struct {
+	cfg         checkpoint.Config
+	cp          checkpoint.Checkpoint
+	md          checkpoint.Metadata
+	newVersions map[string]int64
+	repair      map[string]any
 }
 
 type exitDeltaWrite struct {
@@ -102,6 +154,36 @@ func (r sinkRequest) execute(saver checkpoint.Saver, ctx context.Context) error 
 		return saver.PutWrites(ctx, r.cfg, r.writes, r.taskID, r.taskPath)
 	default:
 		return fmt.Errorf("checkpointSink: unknown request kind %d", r.kind)
+	}
+}
+
+// repairPut re-puts rec's checkpoint with rec.repair's forced delta snapshots
+// overlaid into ChannelValues (#9235). Savers treat a re-put of an existing
+// checkpoint ID as a row replace (MemorySaver keeps the checkpoint's pending
+// writes; sqlite/postgres/redis store them beside the row), so the repair
+// only changes the checkpoint blob: a delta channel whose write failed is
+// materialized as a snapshot, and the checkpoint never reads short. A nil
+// repair payload (no delta channels) makes the call a no-op.
+func (s *checkpointSink) repairPut(ctx context.Context, rec *putRecord) error {
+	if rec == nil || len(rec.repair) == 0 {
+		return nil
+	}
+	cp := rec.cp
+	cp.ChannelValues = maps.Clone(cp.ChannelValues)
+	if cp.ChannelValues == nil {
+		cp.ChannelValues = map[string]any{}
+	}
+	maps.Copy(cp.ChannelValues, rec.repair)
+	_, err := s.saver.Put(ctx, rec.cfg, cp, rec.md, rec.newVersions)
+	return err
+}
+
+// poison records the run's first saver failure: every later save and write of
+// the run stops (#9235). The first error wins so the caller surfaces the root
+// cause, not a follow-on failure.
+func (s *checkpointSink) poison(err error) {
+	if s.poisoned == nil {
+		s.poisoned = err
 	}
 }
 
@@ -128,35 +210,60 @@ func newCheckpointSink(saver checkpoint.Saver, mode Durability, ctx context.Cont
 	return s
 }
 
-// worker processes requests sequentially from writeCh. Per-request recover
-// ensures a single panic does not kill the worker — it continues processing
-// remaining requests. The worker exits when writeCh is closed (by flush).
+// worker processes requests sequentially from writeCh. It stops at the first
+// saver error (#9235): after repairing the checkpoint a failed delta write
+// anchored on, the worker returns, so nothing later in the run is saved past
+// the failure — later checkpoints would otherwise be saved without their
+// writes or on top of a checkpoint that was never saved. The worker exits
+// when writeCh is closed (by flush); pending requests left in the channel are
+// dropped. Per-request recover records a panic as the worker error.
 func (s *checkpointSink) worker() {
 	defer close(s.workerDone)
+	var lastPut *putRecord
 	for req := range s.writeCh {
-		func() {
+		err := func() (err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					if s.workerErr == nil {
-						s.workerErr = fmt.Errorf("checkpointSink worker panic: %v", r)
-					}
+					err = fmt.Errorf("checkpointSink worker panic: %v", r)
 				}
 			}()
-			if err := req.execute(s.saver, s.bgCtx); err != nil && s.workerErr == nil {
-				s.workerErr = err
-			}
+			return req.execute(s.saver, s.bgCtx)
 		}()
+		if err == nil {
+			if req.kind == reqPut {
+				// Copy the request: req is reused per iteration.
+				r := req
+				lastPut = &putRecord{cfg: r.cfg, cp: r.cp, md: r.md, newVersions: r.newVersions, repair: r.repair}
+			}
+			continue
+		}
+		s.workerErr = err
+		if req.kind == reqPutWrites && req.delta && lastPut != nil && lastPut.cp.ID == req.cfg.CheckpointID {
+			if rerr := s.repairPut(s.bgCtx, lastPut); rerr != nil {
+				s.workerErr = errors.Join(err, fmt.Errorf("repairing checkpoint %q after a failed write: %w", lastPut.cp.ID, rerr))
+			}
+		}
+		return
 	}
 }
 
 // putCheckpoint persists (or defers) a checkpoint. Returns the config with the
 // checkpoint ID immediately (the ID is generated locally, not by the saver).
-func (s *checkpointSink) putCheckpoint(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (checkpoint.Config, error) {
+// repair is the checkpoint's forced delta-snapshot payload (see sinkRequest),
+// used only when one of its delta writes later fails (#9235).
+func (s *checkpointSink) putCheckpoint(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64, repair map[string]any) (checkpoint.Config, error) {
 	resultCfg := checkpoint.Config{ThreadID: cfg.ThreadID, CheckpointNS: cfg.CheckpointNS, CheckpointID: cp.ID}
 	switch s.mode {
 	case DurabilitySync:
-		_, err := s.saver.Put(ctx, cfg, cp, md, newVersions)
-		return resultCfg, err
+		if s.poisoned != nil {
+			return resultCfg, s.poisoned
+		}
+		if _, err := s.saver.Put(ctx, cfg, cp, md, newVersions); err != nil {
+			s.poison(err) // #9235: nothing later in the run is saved
+			return resultCfg, err
+		}
+		s.lastPut = &putRecord{cfg: cfg, cp: cloneForSink(cp), md: md, newVersions: maps.Clone(newVersions), repair: repair}
+		return resultCfg, nil
 	case DurabilityAsync:
 		req := sinkRequest{
 			kind:        reqPut,
@@ -164,6 +271,7 @@ func (s *checkpointSink) putCheckpoint(ctx context.Context, cfg checkpoint.Confi
 			cp:          cloneForSink(cp),
 			md:          md,
 			newVersions: maps.Clone(newVersions),
+			repair:      repair,
 		}
 		select {
 		case s.writeCh <- req:
@@ -180,13 +288,27 @@ func (s *checkpointSink) putCheckpoint(ctx context.Context, cfg checkpoint.Confi
 // putWrites persists (or accumulates) per-task writes, stamped with the
 // task's dispatch path so savers replay them in live order (Python #8544).
 // A "" taskPath (graph input, update_state writes, synthetic boundary
-// interrupts) is pathless and sorts before every task's writes.
-func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
+// interrupts) is pathless and sorts before every task's writes. delta marks
+// a batch containing DeltaChannel writes: on failure the sink repairs the
+// anchoring checkpoint with full snapshots and poisons the run (#9235).
+func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string, delta bool) error {
 	switch s.mode {
 	case DurabilitySync:
-		return s.saver.PutWrites(ctx, cfg, writes, taskID, taskPath)
+		if s.poisoned != nil {
+			return s.poisoned
+		}
+		if err := s.saver.PutWrites(ctx, cfg, writes, taskID, taskPath); err != nil {
+			s.poison(err)
+			if delta && s.lastPut != nil && s.lastPut.cp.ID == cfg.CheckpointID {
+				if rerr := s.repairPut(ctx, s.lastPut); rerr != nil {
+					return errors.Join(err, fmt.Errorf("repairing checkpoint %q after a failed write: %w", cfg.CheckpointID, rerr))
+				}
+			}
+			return err
+		}
+		return nil
 	case DurabilityAsync:
-		req := sinkRequest{kind: reqPutWrites, cfg: cfg, writes: writes, taskID: taskID, taskPath: taskPath}
+		req := sinkRequest{kind: reqPutWrites, cfg: cfg, writes: writes, taskID: taskID, taskPath: taskPath, delta: delta}
 		select {
 		case s.writeCh <- req:
 		case <-s.workerDone:
@@ -215,11 +337,15 @@ func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, w
 //     flushExit becomes a no-op. This mirrors Python, where
 //     _suppress_interrupt force-calls _put_checkpoint + _put_pending_writes
 //     even under durability="exit" (_loop.py:1319-1329).
-func (s *checkpointSink) putPauseCheckpoint(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (checkpoint.Config, error) {
+//
+// repair is the pause checkpoint's forced delta-snapshot payload (#9235): a
+// failed accumulated delta write repairs the pause checkpoint the same way a
+// failed task write repairs a loop checkpoint.
+func (s *checkpointSink) putPauseCheckpoint(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64, repair map[string]any) (checkpoint.Config, error) {
 	if s.mode == DurabilityExit {
-		return s.putPauseCheckpointExit(ctx, cfg, cp, md, newVersions)
+		return s.putPauseCheckpointExit(ctx, cfg, cp, md, newVersions, repair)
 	}
-	return s.putCheckpoint(ctx, cfg, cp, md, newVersions)
+	return s.putCheckpoint(ctx, cfg, cp, md, newVersions, repair)
 }
 
 // putPauseCheckpointExit is the exit-mode branch of putPauseCheckpoint. It
@@ -238,15 +364,25 @@ func (s *checkpointSink) putPauseCheckpoint(ctx context.Context, cfg checkpoint.
 // minting any ID after the pause checkpoint's (a stub minted in a later
 // millisecond would sort AFTER the pause checkpoint and shadow it as the
 // namespace's latest).
-func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64) (checkpoint.Config, error) {
+//
+// #9235: a failed accumulated write repairs the pause checkpoint with full
+// delta snapshots (a pause checkpoint saved without one of its writes would
+// read short for good, exactly like a loop checkpoint), and any failure
+// poisons the sink so the deferred flushExit writes nothing more.
+func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpoint.Config, cp checkpoint.Checkpoint, md checkpoint.Metadata, newVersions map[string]int64, repair map[string]any) (checkpoint.Config, error) {
+	if s.poisoned != nil {
+		return checkpoint.Config{}, s.poisoned
+	}
 	parentCfg := checkpoint.Config{ThreadID: cfg.ThreadID, CheckpointNS: cfg.CheckpointNS}
 	if s.hasPersistedParent {
 		parentCfg.CheckpointID = s.initialCfg.CheckpointID
 	}
 	resultCfg, err := s.saver.Put(ctx, parentCfg, cp, md, newVersions)
 	if err != nil {
+		s.poison(err)
 		return checkpoint.Config{}, err
 	}
+	lastPut := &putRecord{cfg: parentCfg, cp: cloneForSink(cp), md: md, newVersions: maps.Clone(newVersions), repair: repair}
 
 	// Delta channels whose cadence fired at this save embed a snapshot blob in
 	// the pause checkpoint itself (saveCheckpoint already advanced the
@@ -260,6 +396,10 @@ func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpo
 		}
 		tid, path := s.exitPauseWriteKey(w)
 		if err := s.saver.PutWrites(ctx, resultCfg, []checkpoint.Write{{Channel: w.channel, Value: w.value}}, tid, path); err != nil {
+			s.poison(err)
+			if rerr := s.repairPut(ctx, lastPut); rerr != nil {
+				return checkpoint.Config{}, errors.Join(err, fmt.Errorf("repairing pause checkpoint %q after a failed write: %w", resultCfg.CheckpointID, rerr))
+			}
 			return checkpoint.Config{}, err
 		}
 	}
@@ -282,15 +422,23 @@ func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpo
 // putPauseCheckpoint it must not be deferred: sync persists directly, async
 // enqueues on the same FIFO channel as the pause checkpoint (which therefore
 // lands first), and exit writes directly to the saver. A nil/empty writes
-// slice is a no-op so callers need not pre-check.
-func (s *checkpointSink) putPauseWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
+// slice is a no-op so callers need not pre-check. delta marks a batch with
+// DeltaChannel writes (repair/poison gating, #9235).
+func (s *checkpointSink) putPauseWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string, delta bool) error {
 	if len(writes) == 0 {
 		return nil
 	}
 	if s.mode == DurabilityExit {
-		return s.saver.PutWrites(ctx, cfg, writes, taskID, taskPath)
+		if s.poisoned != nil {
+			return s.poisoned
+		}
+		if err := s.saver.PutWrites(ctx, cfg, writes, taskID, taskPath); err != nil {
+			s.poison(err)
+			return err
+		}
+		return nil
 	}
-	return s.putWrites(ctx, cfg, writes, taskID, taskPath)
+	return s.putWrites(ctx, cfg, writes, taskID, taskPath, delta)
 }
 
 // setFlushContext stores the context needed by flushExit. Called by the invoke
@@ -441,6 +589,13 @@ func (s *checkpointSink) flushExit() error {
 	if s.saver == nil || s.flushRS == nil {
 		return nil
 	}
+	// #9235: a saver failure already poisoned the run (a direct put in the
+	// pause path, or nothing — exit mode defers everything else to here).
+	// Nothing more may be saved: the final checkpoint would land past the
+	// failed write or on top of a checkpoint that was never saved.
+	if s.poisoned != nil {
+		return s.poisoned
+	}
 	// A pause already persisted its definitive state synchronously
 	// (putPauseCheckpointExit): there is nothing left to flush, and the final
 	// checkpoint this method would write reuses the pause checkpoint's ID
@@ -519,6 +674,7 @@ func (s *checkpointSink) flushExit() error {
 		}
 		stubCfg := checkpoint.Config{ThreadID: s.flushOpts.ThreadID, CheckpointNS: s.flushOpts.checkpointNS}
 		if _, err := s.saver.Put(s.flushCtx, stubCfg, stubCp, checkpoint.Metadata{Source: "input", Step: -2}, nil); err != nil {
+			s.poison(err)
 			return err
 		}
 		anchorCfg = checkpoint.Config{ThreadID: s.flushOpts.ThreadID, CheckpointNS: s.flushOpts.checkpointNS, CheckpointID: stubCp.ID}
@@ -526,10 +682,13 @@ func (s *checkpointSink) flushExit() error {
 
 	// 4. Persist accumulated delta writes under their exit write keys
 	// (real paths for the anchor superstep, sort-after keys for later
-	// supersteps — see exitWriteKey).
+	// supersteps — see exitWriteKey). A failure stops the flush BEFORE the
+	// final checkpoint is saved (#9235): the thread stays at its last
+	// checkpoint that has all its writes.
 	for _, w := range pending {
 		tid, path := s.exitWriteKey(w)
 		if err := s.saver.PutWrites(s.flushCtx, anchorCfg, []checkpoint.Write{{Channel: w.channel, Value: w.value}}, tid, path); err != nil {
+			s.poison(err)
 			return err
 		}
 	}

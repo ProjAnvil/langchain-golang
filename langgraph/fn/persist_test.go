@@ -269,7 +269,10 @@ func TestPersistChainedPauseRestamp(t *testing.T) {
 	var ids []string
 	for i := range tups {
 		tup := &tups[i]
-		if len(tup.Checkpoint.Next) == 0 {
+		// Input checkpoints also carry a non-empty Next (they plan the entry
+		// superstep so a run failing right after one is resumable, #9235);
+		// pause checkpoints are the loop-source ones.
+		if len(tup.Checkpoint.Next) == 0 || tup.Metadata.Source == "input" {
 			continue // not a pause checkpoint
 		}
 		writes := fnWrites(tup, checkpoint.ReservedReturn)

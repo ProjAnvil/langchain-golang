@@ -1301,6 +1301,21 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// the per-channel cadence (S3). Cloned so rs.deltaCounters is
 		// independent of the (shared) loaded metadata map.
 		rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
+		// Force-snapshot every delta channel the loaded checkpoint carries
+		// pending writes for (Python _loop.py:1011-1015): a non-resuming run
+		// never replays those writes, so this run's first checkpoint
+		// materializes the channel instead — the loaded writes stop leaking
+		// into later walks (#8548/#9170's abandoned-branch protection) and,
+		// when the loaded checkpoint is an exit-mode failure leftover, the
+		// stray writes are shadowed for every later read (#9235).
+		for _, w := range tup.PendingWrites {
+			if proto, ok := g.channelProtos[w.Channel]; ok && channels.IsDelta(proto) {
+				if rs.deltaOverwriteChs == nil {
+					rs.deltaOverwriteChs = map[string]bool{}
+				}
+				rs.deltaOverwriteChs[w.Channel] = true
+			}
+		}
 		// Hydrate sentinel delta channels from the ancestor history before
 		// the input applies, so a new turn continues the accumulated value
 		// (Python #8548/#9170).
@@ -1312,19 +1327,23 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if changed {
 			em.emitValues(rs.snapshot())
 		}
+		entryTasks, err := g.entryTasks(runCtx, rs.snapshot())
+		if err != nil {
+			return Result{}, fmt.Errorf("graph: conditional entry point: %w", err)
+		}
 		// S6: the input checkpoint continues the step counter from the
 		// restored checkpoint (only a thread's FIRST input checkpoint is -1).
-		if err := save(checkpoint.Metadata{Source: "input", Step: tup.Metadata.Step}, nil); err != nil {
+		// It plans the entry superstep (Next) so a run that fails right after
+		// it — e.g. the first loop checkpoint's save failing (#9235) — leaves
+		// a latest checkpoint a retry can actually resume, instead of an
+		// empty-Next input checkpoint that resumes as a no-op.
+		if err := save(checkpoint.Metadata{Source: "input", Step: tup.Metadata.Step}, plannedTasks(entryTasks)); err != nil {
 			return Result{}, err
 		}
 		// M2.2: persist delta-channel input writes AFTER the input checkpoint
 		// save (so they anchor on it) for ancestor-walk reconstruction.
 		if err := g.persistDeltaInputWrites(ctx, cpSink, *currentCfg, input); err != nil {
 			return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
-		}
-		entryTasks, err := g.entryTasks(runCtx, rs.snapshot())
-		if err != nil {
-			return Result{}, fmt.Errorf("graph: conditional entry point: %w", err)
 		}
 		tasks = entryTasks
 	default:
@@ -1336,8 +1355,16 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if changed {
 			em.emitValues(rs.snapshot())
 		}
+		entryTasks, err := g.entryTasks(runCtx, rs.snapshot())
+		if err != nil {
+			return Result{}, fmt.Errorf("graph: conditional entry point: %w", err)
+		}
+		tasks = entryTasks
 		if checkpointing {
-			if err := save(checkpoint.Metadata{Source: "input", Step: -1}, nil); err != nil {
+			// The input checkpoint plans the entry superstep (Next), keeping
+			// the no-op-resume gap of an empty-Next input checkpoint closed
+			// (#9235; see the new-turn branch above).
+			if err := save(checkpoint.Metadata{Source: "input", Step: -1}, plannedTasks(entryTasks)); err != nil {
 				return Result{}, err
 			}
 			// M2.2: persist delta-channel input writes AFTER the input checkpoint
@@ -1346,11 +1373,6 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				return Result{}, fmt.Errorf("graph: persisting delta input writes for thread %q: %w", opts.ThreadID, err)
 			}
 		}
-		entryTasks, err := g.entryTasks(runCtx, rs.snapshot())
-		if err != nil {
-			return Result{}, fmt.Errorf("graph: conditional entry point: %w", err)
-		}
-		tasks = entryTasks
 	}
 	// Cached/replayed writes are re-streamed as updates on resume (Python
 	// parity, `_loop.py:676-679`).
@@ -1429,7 +1451,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					next); err != nil {
 					return Result{}, err
 				}
-				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedBefore, ""); err != nil {
+				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedBefore, "", false); err != nil {
 					return Result{}, err
 				}
 			}
@@ -1610,7 +1632,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					nodeErr = ne
 					runHandler := true
 					if checkpointing && cpSink.mode != DurabilityExit {
-						if werr := cpSink.putWrites(ctx, *currentCfg, errorWrites(ne), t.plannedID(*currentCfg, rs.step+1), t.path); werr != nil {
+						if werr := cpSink.putWrites(ctx, *currentCfg, errorWrites(ne), t.plannedID(*currentCfg, rs.step+1), t.path, false); werr != nil {
 							runHandler = false
 							err = fmt.Errorf("graph: persisting error write for thread %q: %w", opts.ThreadID, werr)
 						}
@@ -1722,7 +1744,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						if o.nodeErr == nil {
 							continue
 						}
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), next[i].ID, active[i].path); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), next[i].ID, active[i].path, false); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting error write for thread %q: %w", opts.ThreadID, err)
 						}
 					}
@@ -1762,12 +1784,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						// prefers completed writes — replay — over the ERROR
 						// write; only the ERROR write alone re-runs the
 						// handler.
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), taskID, taskPath); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), taskID, taskPath, false); err != nil {
 							return Result{}, err
 						}
 					}
 					if len(o.interrupts) > 0 {
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptAndResumeWrites(o.interrupts, o.consumed), taskID, taskPath); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptAndResumeWrites(o.interrupts, o.consumed), taskID, taskPath, false); err != nil {
 							return Result{}, err
 						}
 						continue
@@ -1777,7 +1799,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						return Result{}, err
 					}
 					if len(writes) > 0 {
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, writes, taskID, taskPath); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, writes, taskID, taskPath, g.deltaBatch(writes)); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
 						}
 					}
@@ -1907,7 +1929,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, planned); err != nil {
 					return Result{}, err
 				}
-				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedAfter, ""); err != nil {
+				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedAfter, "", false); err != nil {
 					return Result{}, err
 				}
 			}
@@ -1948,7 +1970,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
 				}
 				if len(writes) > 0 {
-					if err := cpSink.putWrites(ctx, *currentCfg, writes, planned[i].ID, active[i].path); err != nil {
+					if err := cpSink.putWrites(ctx, *currentCfg, writes, planned[i].ID, active[i].path, g.deltaBatch(writes)); err != nil {
 						return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
 					}
 				}
@@ -2018,7 +2040,21 @@ func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cpSink *che
 	if len(deltaInput) == 0 {
 		return nil
 	}
-	return cpSink.putWrites(ctx, cfg, deltaInput, checkpoint.NullTaskID, "")
+	return cpSink.putWrites(ctx, cfg, deltaInput, checkpoint.NullTaskID, "", true)
+}
+
+// deltaBatch reports whether writes targets any registered DeltaChannel.
+// Only delta writes gate their checkpoint on success (#9235): a plain
+// channel's value lives in the checkpoint's ChannelValues, so a lost plain
+// write cannot short a later read, while a delta channel is rebuilt from its
+// writes and can.
+func (g *CompiledGraph) deltaBatch(writes []checkpoint.Write) bool {
+	for _, w := range writes {
+		if proto, ok := g.channelProtos[w.Channel]; ok && channels.IsDelta(proto) {
+			return true
+		}
+	}
+	return false
 }
 
 // saveCheckpoint persists rs as a new checkpoint for opts.ThreadID with the
@@ -2065,7 +2101,15 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 		newCounters[k] = [2]int{0, 0}
 	}
 	rs.deltaCounters = newCounters
-	rs.deltaOverwriteChs = make(map[string]bool)
+	// Consume the forced-snapshot set only when this checkpoint is actually
+	// persisted: under exit durability the intermediate saves persist nothing
+	// (putCheckpoint defers), so the forced set must survive to the exit-time
+	// save — Python's _delta_channels_forced_snapshot is difference-updated
+	// only under `if do_checkpoint` (_loop.py:1316-1317), and a pause under
+	// exit mode does persist (putPauseCheckpointExit).
+	if cpSink.mode != DurabilityExit || pause {
+		rs.deltaOverwriteChs = make(map[string]bool)
+	}
 
 	// Persist only non-zero counters (Python omits the key entirely when all
 	// entries are zero, langgraph/pregel/_loop.py:1158-1162).
@@ -2095,7 +2139,10 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 	if pause {
 		put = cpSink.putPauseCheckpoint
 	}
-	cfg, err := put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil)
+	// #9235: carry forced snapshots of every available delta channel with the
+	// put, so a delta write that later fails against this checkpoint can
+	// repair it (re-put with the blobs) instead of leaving it reading short.
+	cfg, err := put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil, rs.deltaRepairSnapshots())
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("graph: saving checkpoint for thread %q: %w", opts.ThreadID, err)
 	}

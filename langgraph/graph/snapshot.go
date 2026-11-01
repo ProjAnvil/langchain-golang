@@ -380,8 +380,14 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 	// no history walk can resolve it. The filter only applies when versions
 	// are present: executor-produced checkpoints always carry versions for
 	// written channels, but synthetic tuples (and migration data) may pair
-	// writes with an empty versions map, and those must still walk.
-	if len(tup.Checkpoint.ChannelVersions) > 0 {
+	// writes with an empty versions map, and those must still walk. An
+	// exit-mode stub (Source "input", Step -2, no versions) is the one
+	// executor-produced empty-versions shape: its accumulated writes are
+	// anchors for the run's final checkpoint, not state — when the flush
+	// failed and the stub is the thread's latest, it must read EMPTY
+	// (Python's walk requires the key in the starting checkpoint's
+	// channel_versions), so the filter applies to it too (#9235).
+	if len(tup.Checkpoint.ChannelVersions) > 0 || isExitStubTuple(tup) {
 		writable := deltaKeys[:0]
 		for _, key := range deltaKeys {
 			if _, everWritten := tup.Checkpoint.ChannelVersions[key]; everWritten {
@@ -416,11 +422,13 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 		if err != nil || ancestor == nil {
 			break
 		}
-		// Collect writes from this ancestor (reversed: pending writes are
-		// stored oldest-first; the walk is newest-to-oldest, so prepend).
-		collectDeltaWrites(ancestor.PendingWrites, deltaKeys, nil, collected, remaining)
 		// Check for a snapshot blob or plain value in this ancestor's
-		// ChannelValues.
+		// ChannelValues BEFORE collecting its pending writes: writes anchor
+		// on the checkpoint that observed them, whose values already fold
+		// them in, so an ancestor that carries a value for a channel subsumes
+		// that superstep's writes for it — collecting both would replay the
+		// superstep twice (a cadence-snapshot checkpoint and #9235's
+		// blob-with-pending-writes shapes both hit this).
 		for _, key := range deltaKeys {
 			if !remaining[key] {
 				continue
@@ -434,6 +442,9 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 				delete(remaining, key)
 			}
 		}
+		// Collect writes from this ancestor (reversed: pending writes are
+		// stored oldest-first; the walk is newest-to-oldest, so prepend).
+		collectDeltaWrites(ancestor.PendingWrites, deltaKeys, nil, collected, remaining)
 		cursor = ancestor.ParentConfig
 	}
 
@@ -468,6 +479,16 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 		}
 	}
 	return out
+}
+
+// isExitStubTuple reports whether tup is an exit-mode flush anchor stub
+// (flushExit's no-parent anchor: Source "input", Step -2). Such a stub holds
+// no channel state of its own — its pending writes are anchors for the run's
+// deferred final checkpoint — so when it is the walk's starting tuple those
+// writes must not reconstruct state (#9235; mirrors Python's walk gate, which
+// requires the channel key in the starting checkpoint's channel_versions).
+func isExitStubTuple(tup *checkpoint.Tuple) bool {
+	return tup.Metadata.Source == "input" && tup.Metadata.Step == -2 && len(tup.Checkpoint.ChannelVersions) == 0
 }
 
 // collectDeltaWrites scans writes for entries targeting any of the delta

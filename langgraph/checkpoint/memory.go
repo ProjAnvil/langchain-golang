@@ -131,6 +131,20 @@ func (s *MemorySaver) Put(ctx context.Context, cfg Config, cp Checkpoint, md Met
 		c := cfg
 		parent = &c
 	}
+	// A re-put of an existing checkpoint ID replaces the checkpoint blob but
+	// keeps the checkpoint's pending writes: writes are keyed by (checkpoint,
+	// task, idx) independently of the blob, exactly as in Python's
+	// InMemorySaver (put writes self.storage while writes live in a separate
+	// dict). The executor relies on this for #9235's repair — re-putting a
+	// checkpoint with forced delta snapshots after one of its delta writes
+	// failed must not drop the writes that did land.
+	if prev, exists := byID[cp.ID]; exists {
+		prev.cp = storedCp
+		prev.md = copyMetadata(md)
+		prev.parent = parent
+		byID[cp.ID] = prev
+		return Config{ThreadID: cfg.ThreadID, CheckpointNS: cfg.CheckpointNS, CheckpointID: cp.ID}, nil
+	}
 	byID[cp.ID] = stored{
 		cp:     storedCp,
 		md:     copyMetadata(md),

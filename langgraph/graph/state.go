@@ -137,6 +137,33 @@ func (rs *runState) checkpointValues(channelsToSnapshot map[string]bool) map[str
 	return out
 }
 
+// deltaRepairSnapshots returns the forced-snapshot payload for a checkpoint
+// put: a SnapshotBlob for every available delta channel, keyed by channel
+// name (nil when the run has no available delta channel). It is computed from
+// live channel state at put time and carried with the put so that, if one of
+// the checkpoint's delta writes later fails, the checkpoint can be re-put
+// with these blobs materialized — the failed write's effect is already folded
+// into the channel value, so the repaired checkpoint reads complete without
+// the write that never landed (#9235; see checkpointSink.repairPut).
+func (rs *runState) deltaRepairSnapshots() map[string]any {
+	var out map[string]any
+	for key, ch := range rs.channels {
+		d, ok := channels.AsDelta(ch)
+		if !ok || !d.IsAvailable() {
+			continue
+		}
+		blob, ok := d.SnapshotBlob()
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]any, len(rs.channels))
+		}
+		out[key] = blob
+	}
+	return out
+}
+
 // applyWrites commits one superstep's writes to the channels, implementing
 // Python's `apply_writes` algorithm (pregel/_algo.py):
 //

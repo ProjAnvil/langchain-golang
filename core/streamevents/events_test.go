@@ -481,8 +481,8 @@ func TestChatModelStreamToolCallDeltaSeedsIDNameFromStart(t *testing.T) {
 	// start-seeded id/name plus the accumulated args.
 	stream = NewChatModelStream()
 	stream.Dispatch(Event{
-		Event: EventContentBlockStart,
-		Index: 0,
+		Event:   EventContentBlockStart,
+		Index:   0,
 		Content: messages.ToolCallChunkBlock{ID: "call_2", Name: "write"},
 	})
 	stream.Dispatch(toolCallDelta(0, `{"path": `))
@@ -578,8 +578,8 @@ func TestChatModelStreamToolCallDeltaLegacyFallback(t *testing.T) {
 	// id/name stick, args append across both shapes.
 	stream = NewChatModelStream()
 	stream.Dispatch(Event{
-		Event: EventContentBlockStart,
-		Index: 0,
+		Event:   EventContentBlockStart,
+		Index:   0,
 		Content: messages.ToolCallChunkBlock{ID: "call_2", Name: "write"},
 	})
 	stream.Dispatch(Event{
@@ -613,8 +613,8 @@ func TestChatModelStreamToolCallDeltaLegacyFallback(t *testing.T) {
 func TestChatModelStreamToolCallDeltaPartialJSONMidStream(t *testing.T) {
 	stream := NewChatModelStream()
 	stream.Dispatch(Event{
-		Event: EventContentBlockStart,
-		Index: 0,
+		Event:   EventContentBlockStart,
+		Index:   0,
 		Content: messages.ToolCallChunkBlock{ID: "call_1", Name: "write"},
 	})
 	for _, slice := range []string{`{"pat`, `h": "a`, `.py", "`, `x": 1}`} {
@@ -642,8 +642,8 @@ func TestChatModelStreamToolCallDeltaPartialJSONMidStream(t *testing.T) {
 	// at sweep time, not a mid-stream failure.
 	stream = NewChatModelStream()
 	stream.Dispatch(Event{
-		Event: EventContentBlockStart,
-		Index: 0,
+		Event:   EventContentBlockStart,
+		Index:   0,
 		Content: messages.ToolCallChunkBlock{ID: "call_2", Name: "broken"},
 	})
 	stream.Dispatch(toolCallDelta(0, `{"oops": `))

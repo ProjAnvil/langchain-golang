@@ -192,53 +192,75 @@ func TestSaveCheckpointSnapshotsDeltaAtCadence(t *testing.T) {
 }
 
 // TestSaveCheckpointPersistsDeltaCountersAcrossResume verifies the counters
-// seeded from a loaded checkpoint (S3) continue advancing on a new-turn run.
+// seeded from a loaded checkpoint (S3) continue advancing on a later run.
 //
-// With freq=4 the cadence never fires in two supersteps, so the step-1 loop
-// checkpoint stores items as a sentinel (omitted from ChannelValues) but keeps
-// its counter {items:{2,2}} in metadata. The new-turn input writes items, which
-// re-creates the (sentinel) channel and applies the seeded counter: advanceDelta
-// bumps the seeded {2,2} by one superstep and one update -> {3,3}.
+// A plain new turn now force-snapshots items at its input checkpoint: the
+// loaded latest carries the last superstep's pending items write (Go anchors
+// task writes on the checkpoint that observed them), and a non-resuming run
+// materializes such channels instead of replaying the loaded writes (Python
+// _loop.py:1011-1015) — which resets the counter. So the seeded-and-advanced
+// counter is pinned via a load with NO pending writes instead: run 1's own
+// input checkpoint (step -1; its empty-input fresh run persisted no
+// NullTaskID write). A run pinned there (time travel) with an items-writing
+// input seeds deltaCounters from that checkpoint's metadata, and the write
+// re-creates the sentinel channel so the seeded counter is actually advanced:
+// the loaded {items:{0,1}} bumps by one superstep and one update -> {1,2}.
 func TestSaveCheckpointPersistsDeltaCountersAcrossResume(t *testing.T) {
 	saver := checkpoint.NewMemorySaver()
 	cg := deltaGraphFreq(t, 4, WithCheckpointer(saver)) // freq=4: cadence never fires here
 	ctx := t.Context()
 
-	// First run completes; latest checkpoint is step-1 loop with counters
-	// {items:{2,3}} (items stored as sentinel, value omitted).
+	// First run completes (empty input, so its input checkpoint carries no
+	// pending writes and counters {items:{0,1}}).
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t1"}); err != nil {
 		t.Fatalf("Invoke() error = %v", err)
-	}
-
-	// A new turn whose input writes the delta channel: restore seeds
-	// deltaCounters from the loaded metadata, and the write re-creates the
-	// sentinel channel so the seeded counter is actually advanced.
-	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"items": []int{99}}, Options{ThreadID: "t1"}); err != nil {
-		t.Fatalf("second Invoke() error = %v", err)
 	}
 
 	history, err := saver.List(ctx, checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	// The new-turn input checkpoint is the one with source=input, step=1 (run 1's
-	// input checkpoint is step=-1). Its seeded-then-advanced counter must be
-	// {items:{3,4}} (seeded {2,3} — run 1's three checkpoint saves each
-	// advanced the superstep counter — then advanced once more by the input
-	// save, which also counts the items write).
-	var inputCP *checkpoint.Tuple
+	var firstInput *checkpoint.Tuple
 	for i := range history {
-		if history[i].Metadata.Source == "input" && history[i].Metadata.Step == 1 {
-			inputCP = &history[i]
+		if history[i].Metadata.Source == "input" && history[i].Metadata.Step == -1 {
+			firstInput = &history[i]
 			break
 		}
 	}
-	if inputCP == nil {
-		t.Fatalf("did not find new-turn input checkpoint (source=input, step=1) in history of %d", len(history))
+	if firstInput == nil {
+		t.Fatalf("did not find run 1 input checkpoint (source=input, step=-1) in history of %d", len(history))
 	}
-	want := map[string][2]int{"items": {3, 4}}
-	if got := inputCP.Metadata.CountersSinceDeltaSnapshot; !reflect.DeepEqual(got, want) {
-		t.Fatalf("new-turn input checkpoint counters = %v, want %v (seeded {2,3} then advanced)", got, want)
+
+	// The pinned run's input write re-creates the (sentinel) channel and
+	// applies the seeded counter.
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"items": []int{99}},
+		Options{ThreadID: "t1", CheckpointID: firstInput.Checkpoint.ID}); err != nil {
+		t.Fatalf("second Invoke() error = %v", err)
+	}
+
+	history, err = saver.List(ctx, checkpoint.Config{ThreadID: "t1"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	// The pinned run's input checkpoint is the input-source checkpoint whose
+	// parent is the pinned one. Its seeded-then-advanced counter must be the
+	// loaded checkpoint's counters advanced by one superstep and one update
+	// (the items input write).
+	var forkInput *checkpoint.Tuple
+	for i := range history {
+		if history[i].Metadata.Source == "input" && history[i].ParentConfig != nil &&
+			history[i].ParentConfig.CheckpointID == firstInput.Checkpoint.ID {
+			forkInput = &history[i]
+			break
+		}
+	}
+	if forkInput == nil {
+		t.Fatalf("did not find the pinned run's input checkpoint in history of %d", len(history))
+	}
+	want := map[string][2]int{"items": {1, 2}}
+	if got := forkInput.Metadata.CountersSinceDeltaSnapshot; !reflect.DeepEqual(got, want) {
+		t.Fatalf("pinned run's input checkpoint counters = %v, want %v (seeded %v then advanced once)",
+			got, want, firstInput.Metadata.CountersSinceDeltaSnapshot)
 	}
 }
 
