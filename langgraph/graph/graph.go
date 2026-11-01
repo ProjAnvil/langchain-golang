@@ -1342,11 +1342,14 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			break
 		}
 		// Stamp dispatch paths: a task restored by planResume keeps the
-		// position it held in the planning checkpoint's Next (its path is
-		// set); fresh tasks take their dispatch position in this superstep.
-		// Pending writes persist under these paths, so a saver replaying one
-		// checkpoint's writes ordered by (task_path, task_id, idx) reproduces
-		// the live dispatch order (Python #8544/#9114).
+		// position it held in the planning checkpoint's Next, and its
+		// replayed sends arrive pre-stamped above that Next index space (see
+		// planResume) — so every task of a resumed superstep already carries
+		// a distinct path. Within-run supersteps are all-fresh: each task
+		// takes its dispatch position in this superstep. Pending writes
+		// persist under these paths, so a saver replaying one checkpoint's
+		// writes ordered by (task_path, task_id, idx) reproduces the live
+		// dispatch order (Python #8544/#9114).
 		for i := range active {
 			if active[i].path == "" {
 				active[i].path = dispatchPath(i)

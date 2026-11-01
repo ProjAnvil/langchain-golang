@@ -393,6 +393,16 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg, path: path})
 		}
 	}
+	// Replayed sends rejoin the resumed superstep's task queue AFTER the
+	// restored tasks, so their dispatch paths continue ABOVE the planning
+	// checkpoint's Next index space: stamping them at their active-slice
+	// index instead would collide with a restored task's path (Next=[p(done,
+	// emitted a Send), q(interrupted)]: q keeps index 1, the send lands at
+	// active index 1 too), and the (task_path, task_id, idx) tie would fall
+	// to the fnv task-id hash, permuting replay vs live dispatch order.
+	for j := range replaySends {
+		replaySends[j].path = dispatchPath(len(tup.Checkpoint.Next) + j)
+	}
 	plan.tasks = append(plan.tasks, replaySends...)
 	// Only boundary interrupts OWNED by this run's namespace may drive the
 	// first-superstep skip: a subgraph's internal interrupt-before-<node>
