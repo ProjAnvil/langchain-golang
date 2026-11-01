@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -723,6 +724,7 @@ func TestResponseStreamToolCallDeltaProtocolSequence(t *testing.T) {
 			"type": "tool_call",
 			"id":   "call_1",
 			"name": "search",
+			"args": map[string]any{"q": "x"},
 		}},
 		{streamevents.EventMessageFinish, 0, nil},
 	}
@@ -749,6 +751,12 @@ func TestResponseStreamToolCallDeltaProtocolSequence(t *testing.T) {
 				// drops empty args; either way args arrive only on deltas).
 				if args, ok := m["args"].(string); ok && args != "" {
 					t.Fatalf("event[%d] start must not carry args: %#v", i, m)
+				}
+			}
+			if wantArgs, ok := w.block["args"].(map[string]any); ok && got.Event == streamevents.EventContentBlockFinish {
+				// The finish carries the parsed late args (the assembled call).
+				if !reflect.DeepEqual(m["args"], wantArgs) {
+					t.Fatalf("event[%d] finish args: got %#v want %#v", i, m["args"], wantArgs)
 				}
 			}
 		case streamevents.EventContentBlockDelta:
