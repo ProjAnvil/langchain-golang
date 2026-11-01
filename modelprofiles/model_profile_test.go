@@ -12,6 +12,8 @@ func TestIsDeclaredProfileField(t *testing.T) {
 		FieldTemperature,
 		FieldImageURLInputs,
 		FieldPDFToolMsg,
+		FieldMidConversationSystemMessages,
+		FieldMidConversationTools,
 	}
 	for _, field := range declared {
 		if !IsDeclaredProfileField(field) {
@@ -57,6 +59,58 @@ func TestUnknownProfileKeysDeclaredOnly(t *testing.T) {
 	}
 	if got := UnknownProfileKeys(profile); len(got) != 0 {
 		t.Fatalf("expected no unknown keys, got %v", got)
+	}
+}
+
+// TestMidConversationFieldKeys pins the exact snake_case key strings added by
+// Python #41180 (langchain-core 1.6.10) so a typo in the constants cannot slip
+// through.
+func TestMidConversationFieldKeys(t *testing.T) {
+	if FieldMidConversationSystemMessages != "mid_conversation_system_messages" {
+		t.Errorf("FieldMidConversationSystemMessages = %q, want %q",
+			FieldMidConversationSystemMessages, "mid_conversation_system_messages")
+	}
+	if FieldMidConversationTools != "mid_conversation_tools" {
+		t.Errorf("FieldMidConversationTools = %q, want %q",
+			FieldMidConversationTools, "mid_conversation_tools")
+	}
+	for _, field := range []string{FieldMidConversationSystemMessages, FieldMidConversationTools} {
+		if !IsDeclaredProfileField(field) {
+			t.Errorf("expected %q to be a declared profile field", field)
+		}
+	}
+	// The new keys must no longer surface as unknown profile keys.
+	profile := Profile{
+		FieldMidConversationSystemMessages: true,
+		FieldMidConversationTools:          false,
+	}
+	if got := UnknownProfileKeys(profile); len(got) != 0 {
+		t.Errorf("expected no unknown keys, got %v", got)
+	}
+}
+
+func TestProfileSupports(t *testing.T) {
+	profile := Profile{
+		FieldMidConversationTools: true,
+		FieldStructuredOutput:     false,
+		FieldMaxInputTokens:       128000,
+	}
+
+	if !profile.Supports(FieldMidConversationTools) {
+		t.Errorf("expected Supports to report true for a present-and-true field")
+	}
+	if profile.Supports(FieldStructuredOutput) {
+		t.Errorf("expected Supports to report false for a present-but-false field")
+	}
+	if profile.Supports(FieldAttachment) {
+		t.Errorf("expected Supports to report false for an absent field")
+	}
+	if profile.Supports(FieldMaxInputTokens) {
+		t.Errorf("expected Supports to report false for a non-boolean field")
+	}
+	var nilProfile Profile
+	if nilProfile.Supports(FieldMidConversationTools) {
+		t.Errorf("expected Supports on a nil profile to report false")
 	}
 }
 

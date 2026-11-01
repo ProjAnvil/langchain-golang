@@ -40,9 +40,15 @@ const (
 	FieldVideoOutputs    = "video_outputs"
 
 	// Tool calling.
-	FieldToolCalling      = "tool_calling"
-	FieldToolChoice       = "tool_choice"
-	FieldToolCallStream   = "tool_call_streaming"
+	FieldToolCalling    = "tool_calling"
+	FieldToolChoice     = "tool_choice"
+	FieldToolCallStream = "tool_call_streaming"
+
+	// Mid-conversation changes (Python #41180, langchain-core 1.6.10).
+	FieldMidConversationSystemMessages = "mid_conversation_system_messages"
+	FieldMidConversationTools          = "mid_conversation_tools"
+
+	// Structured output.
 	FieldStructuredOutput = "structured_output"
 
 	// Other capabilities.
@@ -53,32 +59,34 @@ const (
 // declaredProfileFields is the set of ModelProfile field names declared by the
 // Python TypedDict. It backs UnknownProfileKeys and IsDeclaredProfileField.
 var declaredProfileFields = map[string]struct{}{
-	FieldName:             {},
-	FieldStatus:           {},
-	FieldReleaseDate:      {},
-	FieldLastUpdated:      {},
-	FieldOpenWeights:      {},
-	FieldMaxInputTokens:   {},
-	FieldTextInputs:       {},
-	FieldImageInputs:      {},
-	FieldImageURLInputs:   {},
-	FieldPDFInputs:        {},
-	FieldAudioInputs:      {},
-	FieldVideoInputs:      {},
-	FieldImageToolMsg:     {},
-	FieldPDFToolMsg:       {},
-	FieldMaxOutputTokens:  {},
-	FieldReasoningOutput:  {},
-	FieldTextOutputs:      {},
-	FieldImageOutputs:     {},
-	FieldAudioOutputs:     {},
-	FieldVideoOutputs:     {},
-	FieldToolCalling:      {},
-	FieldToolChoice:       {},
-	FieldToolCallStream:   {},
-	FieldStructuredOutput: {},
-	FieldAttachment:       {},
-	FieldTemperature:      {},
+	FieldName:                          {},
+	FieldStatus:                        {},
+	FieldReleaseDate:                   {},
+	FieldLastUpdated:                   {},
+	FieldOpenWeights:                   {},
+	FieldMaxInputTokens:                {},
+	FieldTextInputs:                    {},
+	FieldImageInputs:                   {},
+	FieldImageURLInputs:                {},
+	FieldPDFInputs:                     {},
+	FieldAudioInputs:                   {},
+	FieldVideoInputs:                   {},
+	FieldImageToolMsg:                  {},
+	FieldPDFToolMsg:                    {},
+	FieldMaxOutputTokens:               {},
+	FieldReasoningOutput:               {},
+	FieldTextOutputs:                   {},
+	FieldImageOutputs:                  {},
+	FieldAudioOutputs:                  {},
+	FieldVideoOutputs:                  {},
+	FieldToolCalling:                   {},
+	FieldToolChoice:                    {},
+	FieldToolCallStream:                {},
+	FieldMidConversationSystemMessages: {},
+	FieldMidConversationTools:          {},
+	FieldStructuredOutput:              {},
+	FieldAttachment:                    {},
+	FieldTemperature:                   {},
 }
 
 // DeclaredProfileFields returns the sorted set of ModelProfile field names
@@ -92,6 +100,17 @@ func DeclaredProfileFields() []string {
 func IsDeclaredProfileField(name string) bool {
 	_, ok := declaredProfileFields[name]
 	return ok
+}
+
+// Supports reports whether the boolean profile field key is present and true.
+//
+// Absent fields and explicit false both report false, matching the Python
+// idiom `profile.get(key, False)`; use a direct map lookup on the Profile when
+// the distinction between "absent" and "false" matters (upstream declares
+// mid_conversation_tools = false for some models, e.g. claude-sonnet-5).
+func (p Profile) Supports(key string) bool {
+	value, ok := p[key].(bool)
+	return ok && value
 }
 
 // UnknownProfileKeys returns the sorted profile keys that are not declared

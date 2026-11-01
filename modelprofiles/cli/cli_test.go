@@ -739,3 +739,146 @@ func TestRefreshOutsideCwdRequiresConfirmation(t *testing.T) {
 		t.Errorf("expected Confirm to be called for out-of-cwd data dir")
 	}
 }
+
+func TestFetchProfilesAppliesAugmentations(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"anthropic": map[string]any{
+				"models": map[string]any{
+					"claude-sonnet-4-6": map[string]any{
+						"name":   "Claude Sonnet 4.6",
+						"status": "stable",
+						"limit":  map[string]any{"context": float64(200000), "output": float64(64000)},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	dataDir := t.TempDir()
+	augmentations := `provider = "anthropic"
+
+[overrides]
+tool_call_streaming = true
+
+[overrides."claude-sonnet-4-6"]
+reasoning_effort_levels = ["low", "medium", "high", "max"]
+mid_conversation_system_messages = true
+mid_conversation_tools = true
+
+[overrides."claude-mythos-5"]
+mid_conversation_system_messages = true
+mid_conversation_tools = true
+`
+	if err := os.WriteFile(filepath.Join(dataDir, augmentationsFileName), []byte(augmentations), 0o644); err != nil {
+		t.Fatalf("failed to write augmentations: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	profiles, err := FetchProfiles(RefreshOptions{
+		Provider: "anthropic",
+		DataDir:  dataDir,
+		APIURL:   server.URL,
+		Stdout:   io.Discard,
+		Stderr:   &stderr,
+	})
+	if err != nil {
+		t.Fatalf("FetchProfiles() error = %v", err)
+	}
+
+	if len(profiles) != 2 {
+		t.Fatalf("expected 2 profiles (1 from API + 1 augmentation-only), got %d: %v", len(profiles), profiles)
+	}
+
+	sonnet, ok := profiles["claude-sonnet-4-6"]
+	if !ok {
+		t.Fatalf("claude-sonnet-4-6 missing from %v", profiles)
+	}
+	if sonnet["name"] != "Claude Sonnet 4.6" {
+		t.Errorf("name = %v, want Claude Sonnet 4.6", sonnet["name"])
+	}
+	if got, ok := sonnet["max_input_tokens"].(float64); !ok || got != 200000 {
+		t.Errorf("max_input_tokens = %v, want 200000", sonnet["max_input_tokens"])
+	}
+	if sonnet["tool_call_streaming"] != true {
+		t.Errorf("provider-level tool_call_streaming = %v, want true", sonnet["tool_call_streaming"])
+	}
+	wantLevels := []any{"low", "medium", "high", "max"}
+	if !reflect.DeepEqual(sonnet["reasoning_effort_levels"], wantLevels) {
+		t.Errorf("reasoning_effort_levels = %#v, want %#v", sonnet["reasoning_effort_levels"], wantLevels)
+	}
+	if sonnet["mid_conversation_system_messages"] != true {
+		t.Errorf("mid_conversation_system_messages = %v, want true", sonnet["mid_conversation_system_messages"])
+	}
+	if sonnet["mid_conversation_tools"] != true {
+		t.Errorf("mid_conversation_tools = %v, want true", sonnet["mid_conversation_tools"])
+	}
+
+	mythos, ok := profiles["claude-mythos-5"]
+	if !ok {
+		t.Fatalf("augmentation-only claude-mythos-5 missing from %v", profiles)
+	}
+	if mythos["mid_conversation_system_messages"] != true || mythos["mid_conversation_tools"] != true {
+		t.Errorf("claude-mythos-5 mid_conversation flags = %v/%v, want true/true",
+			mythos["mid_conversation_system_messages"], mythos["mid_conversation_tools"])
+	}
+
+	// reasoning_effort_* are not declared modelprofiles fields yet (they belong
+	// to the reasoning-effort schema half), so the unknown-key warning fires.
+	if !strings.Contains(stderr.String(), "reasoning_effort_levels") {
+		t.Errorf("expected unknown-key warning naming reasoning_effort_levels, got stderr = %q", stderr.String())
+	}
+
+	// FetchProfiles must not write any files.
+	if _, err := os.Stat(filepath.Join(dataDir, profilesFileName)); !os.IsNotExist(err) {
+		t.Errorf("FetchProfiles wrote %s, want no writes", profilesFileName)
+	}
+}
+
+func TestFetchProfilesUnknownProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer server.Close()
+
+	_, err := FetchProfiles(RefreshOptions{
+		Provider: "nonexistent",
+		DataDir:  t.TempDir(),
+		APIURL:   server.URL,
+		Cwd:      t.TempDir(),
+	})
+	if err == nil {
+		t.Fatalf("expected error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected not-found error message, got %v", err)
+	}
+}
+
+func TestBuildRegistriesJSON(t *testing.T) {
+	registries := map[string]Registry{
+		"openai":    {"gpt-5": {"name": "GPT-5"}},
+		"anthropic": {"claude-opus-4-8": {"name": "Claude Opus 4.8"}},
+	}
+	got, err := BuildRegistriesJSON(registries)
+	if err != nil {
+		t.Fatalf("BuildRegistriesJSON() error = %v", err)
+	}
+	want := `{
+    "anthropic": {
+        "claude-opus-4-8": {
+            "name": "Claude Opus 4.8"
+        }
+    },
+    "openai": {
+        "gpt-5": {
+            "name": "GPT-5"
+        }
+    }
+}
+`
+	if string(got) != want {
+		t.Errorf("BuildRegistriesJSON() =\n%s\nwant\n%s", got, want)
+	}
+}

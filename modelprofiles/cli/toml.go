@@ -7,8 +7,8 @@ package cli
 //
 // This file implements a minimal TOML subset parser sufficient for
 // `profile_augmentations.toml` files, which only use top-level scalar
-// assignments and one level of (optionally dotted/quoted) table headers, for
-// example:
+// assignments, arrays of scalars, and one level of (optionally
+// dotted/quoted) table headers, for example:
 //
 //	provider = "anthropic"
 //
@@ -17,9 +17,10 @@ package cli
 //
 //	[overrides."claude-haiku-4-5"]
 //	structured_output = true
+//	reasoning_effort_levels = ["low", "medium", "high"]
 //
-// It intentionally does not implement full TOML (arrays, multiline strings,
-// inline tables, dates, etc.) since the augmentations files never use those
+// It intentionally does not implement full TOML (multiline strings, inline
+// tables, dates, etc.) since the augmentations files never use those
 // features. Anything outside this subset produces an explicit parse error
 // rather than silently misbehaving.
 
@@ -167,6 +168,9 @@ func parseTOMLValue(value string) (any, error) {
 	if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") && len(value) >= 2 {
 		return value[1 : len(value)-1], nil
 	}
+	if strings.HasPrefix(value, "[") {
+		return parseTOMLArray(value)
+	}
 	if i, err := strconv.ParseInt(value, 10, 64); err == nil {
 		return i, nil
 	}
@@ -174,4 +178,48 @@ func parseTOMLValue(value string) (any, error) {
 		return f, nil
 	}
 	return nil, fmt.Errorf("unsupported TOML value %q", value)
+}
+
+// parseTOMLArray parses a single-line array of scalar values, e.g.
+// `["low", "medium", "high"]`. Elements may themselves be nested arrays since
+// parseTOMLValue recurses; empty arrays are permitted.
+func parseTOMLArray(value string) (any, error) {
+	if !strings.HasSuffix(value, "]") {
+		return nil, fmt.Errorf("unterminated array %q", value)
+	}
+	body := strings.TrimSpace(value[1 : len(value)-1])
+	items := []any{}
+	if body == "" {
+		return items, nil
+	}
+	for _, part := range splitOutsideQuotes(body, ',') {
+		element, err := parseTOMLValue(strings.TrimSpace(part))
+		if err != nil {
+			return nil, fmt.Errorf("invalid array element %q: %w", part, err)
+		}
+		items = append(items, element)
+	}
+	return items, nil
+}
+
+// splitOutsideQuotes splits s on sep, ignoring separators inside double
+// quotes so array elements like "b,c" stay in one piece.
+func splitOutsideQuotes(s string, sep byte) []string {
+	var parts []string
+	var current strings.Builder
+	inQuotes := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		switch {
+		case ch == '"':
+			inQuotes = !inQuotes
+			current.WriteByte(ch)
+		case ch == sep && !inQuotes:
+			parts = append(parts, current.String())
+			current.Reset()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	return append(parts, current.String())
 }

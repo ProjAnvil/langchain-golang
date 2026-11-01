@@ -103,6 +103,44 @@ func Refresh(opts RefreshOptions) error {
 	_, _ = fmt.Fprintf(stdout, "Provider: %s\n", opts.Provider)
 	_, _ = fmt.Fprintf(stdout, "Data directory: %s\n", dataDir)
 
+	profiles, err := FetchProfiles(opts)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dataDir, err)
+	}
+
+	outputFile := filepath.Join(dataDir, profilesFileName)
+	_, _ = fmt.Fprintf(stdout, "Writing to %s...\n", outputFile)
+	contents, err := BuildProfilesJSON(profiles)
+	if err != nil {
+		return fmt.Errorf("failed to encode profiles: %w", err)
+	}
+	if err := writeProfilesFileAtomic(dataDir, outputFile, contents); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(stdout, "Successfully refreshed %d model profiles (%d bytes)\n", len(profiles), len(contents))
+	return nil
+}
+
+// FetchProfiles downloads models.dev data for the provider named in opts,
+// merges the augmentations found in opts.DataDir, and returns the resulting
+// registry without writing any files. Refresh is ValidateDataDir +
+// FetchProfiles + write, so multi-provider tools (such as the CLI's
+// materialize command) can reuse the download-and-merge logic.
+func FetchProfiles(opts RefreshOptions) (Registry, error) {
+	stdout := opts.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = io.Discard
+	}
+
 	apiURL := cmp.Or(opts.APIURL, DefaultAPIURL)
 	client := opts.HTTPClient
 	if client == nil {
@@ -112,7 +150,7 @@ func Refresh(opts RefreshOptions) error {
 	_, _ = fmt.Fprintf(stdout, "Downloading data from %s...\n", apiURL)
 	allData, err := fetchModelsDevData(client, apiURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	providerCount := len(allData)
@@ -128,15 +166,15 @@ func Refresh(opts RefreshOptions) error {
 
 	providerData, ok := allData[opts.Provider].(map[string]any)
 	if !ok {
-		return fmt.Errorf("provider %q not found in models.dev data", opts.Provider)
+		return nil, fmt.Errorf("provider %q not found in models.dev data", opts.Provider)
 	}
 	models, _ := providerData["models"].(map[string]any)
 	_, _ = fmt.Fprintf(stdout, "Extracted %d models for %s\n", len(models), opts.Provider)
 
 	_, _ = fmt.Fprintln(stdout, "Loading augmentations...")
-	providerAug, modelAugs, err := LoadAugmentations(dataDir)
+	providerAug, modelAugs, err := LoadAugmentations(opts.DataDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	profiles := Registry{}
@@ -167,23 +205,7 @@ func Refresh(opts RefreshOptions) error {
 				"partner packages that use these profiles.\n",
 			strings.Join(unknown, ", "))
 	}
-
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dataDir, err)
-	}
-
-	outputFile := filepath.Join(dataDir, profilesFileName)
-	_, _ = fmt.Fprintf(stdout, "Writing to %s...\n", outputFile)
-	contents, err := BuildProfilesJSON(profiles)
-	if err != nil {
-		return fmt.Errorf("failed to encode profiles: %w", err)
-	}
-	if err := writeProfilesFileAtomic(dataDir, outputFile, contents); err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(stdout, "Successfully refreshed %d model profiles (%d bytes)\n", len(profiles), len(contents))
-	return nil
+	return profiles, nil
 }
 
 func fetchModelsDevData(client *http.Client, apiURL string) (map[string]any, error) {
@@ -363,6 +385,18 @@ func ValidateDataDir(dataDir, cwd string) (resolved string, needsConfirmation bo
 // `json.dumps(dict(sorted(profiles.items())), indent=4)`.
 func BuildProfilesJSON(profiles Registry) ([]byte, error) {
 	out, err := json.MarshalIndent(profiles, "", "    ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+// BuildRegistriesJSON renders a provider-to-registry bundle as indented,
+// deterministically ordered JSON. It is the multi-provider counterpart of
+// BuildProfilesJSON and produces the shape consumed by
+// modelprofiles.Lookup: {"<provider>": {"<model-id>": {...}}}.
+func BuildRegistriesJSON(registries map[string]Registry) ([]byte, error) {
+	out, err := json.MarshalIndent(registries, "", "    ")
 	if err != nil {
 		return nil, err
 	}

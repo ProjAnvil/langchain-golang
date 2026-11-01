@@ -50,6 +50,43 @@ structured_output = true
 	}
 }
 
+// TestParseTOMLSubsetAugmentationShapes parses a model section shaped like the
+// upstream partner augmentation data: boolean mid_conversation keys plus an
+// array-valued reasoning_effort_levels key.
+func TestParseTOMLSubsetAugmentationShapes(t *testing.T) {
+	data := []byte(`provider = "anthropic"
+
+[overrides."claude-sonnet-4-6"]
+reasoning_effort_levels = ["low", "medium", "high", "max"]
+reasoning_effort_default = "high"
+mid_conversation_system_messages = true
+mid_conversation_tools = false
+`)
+
+	doc, err := parseTOMLSubset(data)
+	if err != nil {
+		t.Fatalf("parseTOMLSubset() error = %v", err)
+	}
+
+	model, ok := doc["overrides"].(map[string]any)["claude-sonnet-4-6"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected claude-sonnet-4-6 sub-table, got %#v", doc["overrides"])
+	}
+	wantLevels := []any{"low", "medium", "high", "max"}
+	if !reflect.DeepEqual(model["reasoning_effort_levels"], wantLevels) {
+		t.Errorf("reasoning_effort_levels = %#v, want %#v", model["reasoning_effort_levels"], wantLevels)
+	}
+	if model["reasoning_effort_default"] != "high" {
+		t.Errorf("reasoning_effort_default = %v, want high", model["reasoning_effort_default"])
+	}
+	if model["mid_conversation_system_messages"] != true {
+		t.Errorf("mid_conversation_system_messages = %v, want true", model["mid_conversation_system_messages"])
+	}
+	if model["mid_conversation_tools"] != false {
+		t.Errorf("mid_conversation_tools = %v, want false", model["mid_conversation_tools"])
+	}
+}
+
 func TestParseTOMLSubsetComments(t *testing.T) {
 	data := []byte(`# top comment
 [overrides] # trailing comment
@@ -70,8 +107,9 @@ func TestParseTOMLSubsetMalformed(t *testing.T) {
 		"[unterminated",
 		"key without equals",
 		`[overrides."unterminated]`,
-		"key = [1, 2]", // unsupported value type
-		"key = ",       // empty value
+		"key = [1, 2",   // unterminated array
+		"key = [1, no]", // "no" is not a scalar
+		"key = ",        // empty value
 	}
 	for _, tc := range cases {
 		if _, err := parseTOMLSubset([]byte(tc)); err == nil {
@@ -93,6 +131,14 @@ func TestParseTOMLValue(t *testing.T) {
 		{"-7", int64(-7)},
 		{"3.14", 3.14},
 		{"1e3", 1000.0},
+		// Arrays of scalars, as used by reasoning_effort_levels and other
+		// list-valued augmentation keys.
+		{`[]`, []any{}},
+		{`["low"]`, []any{"low"}},
+		{`["low", "medium", "high", "max"]`, []any{"low", "medium", "high", "max"}},
+		{`[1, 2, 3]`, []any{int64(1), int64(2), int64(3)}},
+		{`[true, false]`, []any{true, false}},
+		{`[ "a" , "b,c" ]`, []any{"a", "b,c"}},
 	}
 	for _, tc := range cases {
 		got, err := parseTOMLValue(tc.input)
@@ -100,7 +146,7 @@ func TestParseTOMLValue(t *testing.T) {
 			t.Errorf("parseTOMLValue(%q) error = %v", tc.input, err)
 			continue
 		}
-		if got != tc.want {
+		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("parseTOMLValue(%q) = %#v, want %#v", tc.input, got, tc.want)
 		}
 	}
@@ -109,7 +155,8 @@ func TestParseTOMLValue(t *testing.T) {
 func TestParseTOMLValueErrors(t *testing.T) {
 	for _, input := range []string{
 		"",              // empty value
-		"[1, 2]",        // arrays unsupported
+		"[1, 2",         // unterminated array
+		"[nope]",        // array element is not a scalar
 		"2024-01-01",    // dates unsupported
 		`"unterminated`, // unterminated string
 	} {
