@@ -48,6 +48,28 @@ const (
 	langSmithFlushTimeout    = 5 * time.Second
 )
 
+// AgentAddress routes traces to a LangSmith agent environment instead of a
+// project (#41006; Python's langsmith.address.agent_address). The JSON shape
+// mirrors the normalized destination dict Python's SDK accepts and forwards
+// on each run payload: {"kind": "AGENT", "id": ..., "environment": ...}.
+type AgentAddress struct {
+	// Kind is always "AGENT": the only destination kind the tracer accepts.
+	Kind string `json:"kind"`
+	// ID names the agent (Python's agent_id).
+	ID string `json:"id"`
+	// Environment names the agent environment, e.g. "production".
+	Environment string `json:"environment"`
+}
+
+// AgentKind is the address kind NewAgentAddress produces.
+const AgentKind = "AGENT"
+
+// NewAgentAddress builds an agent address, the Go equivalent of Python's
+// address.agent_address(agent_id, environment).
+func NewAgentAddress(id, environment string) *AgentAddress {
+	return &AgentAddress{Kind: AgentKind, ID: id, Environment: environment}
+}
+
 // LangSmithOptions configures a LangChainTracer. The zero value is usable
 // after NewLangChainTracerWithOptions fills the defaults.
 type LangSmithOptions struct {
@@ -61,6 +83,14 @@ type LangSmithOptions struct {
 	// Project names the LangSmith project (session_name on each run). Env:
 	// LANGSMITH_PROJECT / LANGCHAIN_PROJECT (legacy SESSION names).
 	Project string
+	// Address routes every run to a LangSmith agent environment instead of
+	// a project: the run payload carries "address" and no session_name,
+	// and children inherit the destination. Env: LANGSMITH_AGENT_ID +
+	// LANGSMITH_AGENT_ENVIRONMENT (both required; when set together with a
+	// project the address wins — Python raises LangSmithUserError, but the
+	// tracer never fails the business call). Beta: agent addressing must be
+	// enabled for the LangSmith workspace.
+	Address *AgentAddress
 	// HTTPClient overrides the HTTP client used for batch POSTs. When nil a
 	// client with a 30s timeout is created.
 	HTTPClient *http.Client
@@ -120,17 +150,25 @@ func isTruthyEnv(value string) bool {
 // langSmithOptionsFromEnv builds options from the environment using the same
 // precedence rules as the Python client (LANGSMITH_ before LANGCHAIN_;
 // project falls back to the legacy SESSION names; endpoint trailing slashes
-// are trimmed).
+// are trimmed). A complete agent-address pair (LANGSMITH_AGENT_ID together
+// with LANGSMITH_AGENT_ENVIRONMENT) resolves an Address destination instead
+// of a project; an incomplete pair is ignored (#41006).
 func langSmithOptionsFromEnv() LangSmithOptions {
 	endpoint := strings.TrimRight(firstEnvValue("ENDPOINT"), "/")
 	project := firstEnvValue("PROJECT")
 	if project == "" {
 		project = firstEnvValue("SESSION")
 	}
+	var address *AgentAddress
+	agentID, agentEnv := firstEnvValue("AGENT_ID"), firstEnvValue("AGENT_ENVIRONMENT")
+	if agentID != "" && agentEnv != "" {
+		address = NewAgentAddress(agentID, agentEnv)
+	}
 	return LangSmithOptions{
 		Endpoint: endpoint,
 		APIKey:   firstEnvValue("API_KEY"),
 		Project:  project,
+		Address:  address,
 	}
 }
 
@@ -153,7 +191,11 @@ func NewLangChainTracerWithOptions(options LangSmithOptions) *LangChainTracer {
 	} else {
 		options.Endpoint = strings.TrimRight(options.Endpoint, "/")
 	}
-	if options.Project == "" {
+	// The project default is only resolved when no destination was supplied:
+	// with an Address the tracer routes by address and never posts a
+	// session_name (Python resolves the "default" project lazily the same
+	// way, #41006).
+	if options.Project == "" && options.Address == nil {
 		options.Project = defaultLangSmithProject
 	}
 	if options.BatchSize <= 0 {
@@ -217,11 +259,13 @@ type LangChainTracer struct {
 // _start_trace. Callers must hold t.mu (or be single-threaded pre-enqueue).
 func (t *LangChainTracer) startTrace(run *Run) {
 	current := dottedOrderSuffix(run.StartTime, run.ID)
+	var parentRun *Run
 	if run.ParentRunID != "" {
 		if parent, ok := t.orderMap[run.ParentRunID]; ok {
 			run.TraceID = parent.traceID
 			run.DottedOrder = parent.dottedOrder + "." + current
-			if parentRun, ok := t.runMap[run.ParentRunID]; ok {
+			parentRun = t.runMap[run.ParentRunID]
+			if parentRun != nil {
 				parentRun.ChildRuns = append(parentRun.ChildRuns, run)
 			}
 		} else {
@@ -235,7 +279,18 @@ func (t *LangChainTracer) startTrace(run *Run) {
 		run.DottedOrder = current
 	}
 	run.SessionID = run.TraceID
-	run.SessionName = t.opts.Project
+	// Destination forwarding mirrors Python's _get_run_kwargs (#41006): a
+	// child inherits the known parent's session_name and address; a root
+	// run routes to the tracer's address, when one is configured, instead
+	// of the project (session_name omitted).
+	if parentRun != nil {
+		run.SessionName = parentRun.SessionName
+		run.Address = parentRun.Address
+	} else if t.opts.Address != nil {
+		run.Address = t.opts.Address
+	} else {
+		run.SessionName = t.opts.Project
+	}
 	if len(run.Metadata) > 0 {
 		metadata := make(map[string]any, len(run.Metadata))
 		maps.Copy(metadata, run.Metadata)

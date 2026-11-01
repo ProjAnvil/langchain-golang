@@ -63,6 +63,11 @@ type Run struct {
 	Extra       map[string]any `json:"extra,omitempty"`
 	SessionID   string         `json:"session_id,omitempty"`
 	SessionName string         `json:"session_name,omitempty"`
+	// Address routes the run to a LangSmith agent environment instead of a
+	// project (#41006); omitted (nil) on project-routed runs. Children
+	// inherit their parent's address, mirroring the parent branch of
+	// Python's _get_run_kwargs.
+	Address *AgentAddress `json:"address,omitempty"`
 
 	ChildRuns []*Run `json:"-"`
 	streams   int

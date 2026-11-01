@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -581,5 +582,134 @@ func TestLangSmithQueueOverflowAggregatesOnError(t *testing.T) {
 		t.Fatal("queue overflow never reached OnError")
 	} else if n > 2 {
 		t.Fatalf("OnError fired %d times for one overload episode, want a bounded 1-2", n)
+	}
+}
+
+// TestLangSmithAddressRoutesInsteadOfProject pins #41006: an Address option
+// routes every run to that agent destination instead of a project — the root
+// posts "address" (the normalized {"kind","id","environment"} shape) and no
+// session_name, children inherit it, and the patches carry it too. Python
+// rejects project_name+address together (LangSmithUserError); the tracer
+// never fails the business call, so the address wins (documented
+// divergence).
+func TestLangSmithAddressRoutesInsteadOfProject(t *testing.T) {
+	server := newLSServer("ok")
+	defer server.Close()
+	tracer := NewLangChainTracerWithOptions(LangSmithOptions{
+		Endpoint: server.URL(), APIKey: "test-key", Project: "proj",
+		Address:   NewAgentAddress("code-agent", "production"),
+		BatchSize: 64, FlushEvery: time.Hour,
+	})
+	ctx := t.Context()
+
+	rootID, childID := "aaaaaaaa-0000-0000-0000-0000000000a1", "aaaaaaaa-0000-0000-0000-0000000000a2"
+	for _, event := range []callbacks.Event{
+		lsEvent(callbacks.EventChainStart, "chain", rootID, "", lsTS(30), func(e *callbacks.Event) { e.Input = "go" }),
+		lsEvent(callbacks.EventChainStart, "step", childID, rootID, lsTS(31)),
+		lsEvent(callbacks.EventChainEnd, "step", childID, rootID, lsTS(32)),
+		lsEvent(callbacks.EventChainEnd, "chain", rootID, "", lsTS(33), func(e *callbacks.Event) { e.Output = "done" }),
+	} {
+		if err := tracer.HandleEvent(ctx, event); err != nil {
+			t.Fatalf("HandleEvent returned %v, want always nil", err)
+		}
+	}
+	if err := tracer.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	_ = tracer.Close()
+
+	body := server.lastBody(t)
+	posts, patches := lsRuns(t, body, "post"), lsRuns(t, body, "patch")
+	if len(posts) != 2 || len(patches) != 2 {
+		t.Fatalf("post=%d patch=%d, want 2/2", len(posts), len(patches))
+	}
+	wantAddress := map[string]any{"kind": "AGENT", "id": "code-agent", "environment": "production"}
+	for _, run := range append(posts, patches...) {
+		if got := run["address"]; !reflect.DeepEqual(got, wantAddress) {
+			t.Fatalf("run %v address = %#v, want %#v", run["id"], got, wantAddress)
+		}
+		if _, ok := run["session_name"]; ok {
+			t.Fatalf("run %v posted session_name %#v, want it omitted for address routing", run["id"], run["session_name"])
+		}
+	}
+}
+
+// TestLangSmithChildInheritsParentDestination ports Python's
+// test_parent_destination_overrides_tracer: a child run resolves its
+// destination from the known parent (session_name and address), not from the
+// tracer options — _get_run_kwargs' parent branch.
+func TestLangSmithChildInheritsParentDestination(t *testing.T) {
+	server := newLSServer("ok")
+	defer server.Close()
+	tracer := NewLangChainTracerWithOptions(LangSmithOptions{
+		Endpoint: server.URL(), APIKey: "test-key", Project: "other-project",
+		BatchSize: 64, FlushEvery: time.Hour,
+	})
+	ctx := t.Context()
+
+	parentID, childID := "aaaaaaaa-0000-0000-0000-0000000000b1", "aaaaaaaa-0000-0000-0000-0000000000b2"
+	parentDO := "20260912T102029123456Z" + parentID
+	parent := &Run{
+		ID: parentID, Name: "parent", RunType: RunTypeChain,
+		TraceID: parentID, DottedOrder: parentDO,
+		SessionName: "", Address: NewAgentAddress("code-agent", "production"),
+		StartTime: lsTS(29),
+	}
+	tracer.mu.Lock()
+	tracer.runMap[parent.ID] = parent
+	tracer.orderMap[parent.ID] = runOrder{traceID: parentID, dottedOrder: parentDO}
+	tracer.mu.Unlock()
+
+	if err := tracer.HandleEvent(ctx, lsEvent(callbacks.EventChainStart, "child", childID, parentID, lsTS(30))); err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+	if err := tracer.Flush(ctx); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	_ = tracer.Close()
+
+	posts := lsRuns(t, server.lastBody(t), "post")
+	if len(posts) != 1 {
+		t.Fatalf("posts %d, want 1", len(posts))
+	}
+	wantAddress := map[string]any{"kind": "AGENT", "id": "code-agent", "environment": "production"}
+	if got := posts[0]["address"]; !reflect.DeepEqual(got, wantAddress) {
+		t.Fatalf("child address = %#v, want the parent's %#v", got, wantAddress)
+	}
+	if _, ok := posts[0]["session_name"]; ok {
+		t.Fatalf("child session_name = %#v, want inherited empty", posts[0]["session_name"])
+	}
+}
+
+// TestLangSmithAddressFromEnv pins the env resolution of #41006: with both
+// LANGSMITH_AGENT_ID and LANGSMITH_AGENT_ENVIRONMENT set (and no explicit
+// destination), the env-built tracer routes to that agent address instead of
+// the project. Python errors when project and address env vars collide; the
+// Go port lets the address win (never-fail discipline, documented
+// divergence).
+func TestLangSmithAddressFromEnv(t *testing.T) {
+	t.Setenv("LANGSMITH_TRACING", "true")
+	t.Setenv("LANGSMITH_API_KEY", "env-key")
+	t.Setenv("LANGSMITH_PROJECT", "env-project")
+	t.Setenv("LANGSMITH_AGENT_ID", "env-agent")
+	t.Setenv("LANGSMITH_AGENT_ENVIRONMENT", "staging")
+
+	options := langSmithOptionsFromEnv()
+	if options.Address == nil {
+		t.Fatal("langSmithOptionsFromEnv did not resolve the agent address")
+	}
+	if options.Address.ID != "env-agent" || options.Address.Environment != "staging" || options.Address.Kind != "AGENT" {
+		t.Fatalf("address = %#v", options.Address)
+	}
+
+	// An incomplete pair (only the id) resolves no address, keeping the
+	// project route.
+	t.Setenv("LANGSMITH_AGENT_ENVIRONMENT", "")
+	options = langSmithOptionsFromEnv()
+	if options.Address != nil {
+		t.Fatalf("incomplete env address = %#v, want nil", options.Address)
+	}
+	if options.Project != "env-project" {
+		t.Fatalf("project = %q", options.Project)
 	}
 }
