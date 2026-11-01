@@ -10,7 +10,10 @@ package anthropic
 //   - claude-sonnet-4-5: neither key (legacy hoisting behavior)
 
 import (
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -584,6 +587,303 @@ func TestMidConversationLeadingSystemToolChangeDroppedOnToolsFalseModel(t *testi
 	}
 	if strings.Contains(logged, "hoisted") {
 		t.Fatalf("leading run is not hoisted; no hoist warning expected, got: %s", logged)
+	}
+}
+
+// --- Beta-header auto-append for tool-change blocks (Python #41180,
+// chat_models.py:2140-2161) ---
+
+const (
+	testToolChangeBeta  = "mid-conversation-tool-changes-2026-07-01"
+	testInlineToolsBeta = "inline-tools-2026-09-15"
+)
+
+// midConvCapture records the wire request: parsed body, anthropic-beta header,
+// and the request path (query included) so tests can assert endpoint routing.
+type midConvCapture struct {
+	body map[string]any
+	beta string
+	path string
+}
+
+// newMidConvCaptureServer serves the Messages API response while capturing
+// header, path, and body of the incoming request.
+func newMidConvCaptureServer(t *testing.T, captured *midConvCapture) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.path = r.URL.RequestURI()
+		captured.beta = r.Header.Get("anthropic-beta")
+		decodeRequest(t, w, r, &captured.body)
+		_, _ = fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"ok"}],"usage":{}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func midConvInvokeCaptured(t *testing.T, model string, opts []modelconfig.Option, input []messages.Message) *midConvCapture {
+	t.Helper()
+	captured := &midConvCapture{}
+	server := newMidConvCaptureServer(t, captured)
+	options := append([]modelconfig.Option{
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel(model),
+	}, opts...)
+	if _, err := NewChatModel(options...).Invoke(t.Context(), input); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	return captured
+}
+
+var toolChangeConversation = []messages.Message{
+	messages.Human("Review foo()"),
+	systemWithBlocks(toolRemovalBlock()),
+	messages.AI("Looks fine."),
+}
+
+// TestMidConversationToolChangeAutoAppendsBeta mirrors Python
+// test_tool_change_block_auto_appends_beta (test_chat_models.py:5857): a
+// tool-change block that reaches the wire as an in-place system turn enables
+// the required beta header, and the request routes to the beta endpoint.
+func TestMidConversationToolChangeAutoAppendsBeta(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-opus-5", nil, toolChangeConversation)
+
+	if captured.beta != testToolChangeBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, testToolChangeBeta)
+	}
+	if captured.path != "/messages?beta=true" {
+		t.Fatalf("request path: got %q want /messages?beta=true (Python routes betas-bearing payloads to the beta namespace)", captured.path)
+	}
+}
+
+// TestMidConversationToolChangeBetaNotDuplicated mirrors Python
+// test_tool_change_block_beta_not_duplicated (test_chat_models.py:5866): the
+// auto-appended beta appears at most once when the caller already set it.
+func TestMidConversationToolChangeBetaNotDuplicated(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-opus-5",
+		[]modelconfig.Option{WithBetaHeaders(testToolChangeBeta)},
+		toolChangeConversation)
+
+	if got := strings.Count(captured.beta, testToolChangeBeta); got != 1 {
+		t.Fatalf("anthropic-beta header should contain the beta exactly once, got %q", captured.beta)
+	}
+}
+
+// TestMidConversationToolChangeBetaMergesCallerSuppliedBetas checks the merge
+// (not clobber) rule: caller-supplied beta flags are preserved alongside the
+// auto-appended one.
+func TestMidConversationToolChangeBetaMergesCallerSuppliedBetas(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-opus-5",
+		[]modelconfig.Option{WithBetaHeaders("context-1m-2025-08-07")},
+		toolChangeConversation)
+
+	want := "context-1m-2025-08-07," + testToolChangeBeta
+	if captured.beta != want {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, want)
+	}
+}
+
+// TestMidConversationInlineToolDefinitionAutoAppendsBeta mirrors Python
+// test_inline_tool_definition_auto_appends_beta (test_chat_models.py:5875):
+// an inline tool_definition uses the inline-tools beta.
+func TestMidConversationInlineToolDefinitionAutoAppendsBeta(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-opus-5", nil, []messages.Message{
+		messages.Human("Review data"),
+		systemWithBlocks(inlineToolAdditionBlock()),
+	})
+
+	if captured.beta != testInlineToolsBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, testInlineToolsBeta)
+	}
+	if captured.path != "/messages?beta=true" {
+		t.Fatalf("request path: got %q want /messages?beta=true", captured.path)
+	}
+}
+
+// TestMidConversationInlineToolDefinitionSupersedesReferenceBeta mirrors
+// Python test_inline_tool_definition_supersedes_reference_beta
+// (test_chat_models.py:5891): one inline beta covers mixed inline and
+// reference-based changes.
+func TestMidConversationInlineToolDefinitionSupersedesReferenceBeta(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-opus-5", nil, []messages.Message{
+		messages.Human("Review data"),
+		systemWithBlocks(toolRemovalBlock(), inlineToolAdditionBlock()),
+	})
+
+	if captured.beta != testInlineToolsBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q (inline beta must supersede the reference beta)", captured.beta, testInlineToolsBeta)
+	}
+}
+
+// TestMidConversationExplicitInlineBetaSuppressesReferenceBeta ports Python's
+// explicit-betas condition (chat_models.py:2152-2157): the reference beta is
+// not appended when the inline beta is already caller-supplied, even with no
+// inline block present.
+func TestMidConversationExplicitInlineBetaSuppressesReferenceBeta(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-opus-5",
+		[]modelconfig.Option{WithBetaHeaders(testInlineToolsBeta)},
+		toolChangeConversation)
+
+	if captured.beta != testInlineToolsBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q (explicit inline beta suppresses the reference beta)", captured.beta, testInlineToolsBeta)
+	}
+}
+
+// TestMidConversationLeadingToolChangeDoesNotAppendBeta pins the scan scope:
+// Python scans only in-place system turns (payload messages with role
+// "system"), so tool changes forwarded through the top-level system field do
+// NOT trigger the beta, and the request keeps the standard endpoint.
+func TestMidConversationLeadingToolChangeDoesNotAppendBeta(t *testing.T) {
+	captureAnthropicWarnings(t)
+	captured := midConvInvokeCaptured(t, "claude-opus-5", nil, []messages.Message{
+		systemWithBlocks(toolRemovalBlock()),
+		messages.Human("Review foo()"),
+	})
+
+	if captured.beta != "" {
+		t.Fatalf("anthropic-beta header should stay unset, got %q", captured.beta)
+	}
+	if captured.path != "/messages" {
+		t.Fatalf("request path: got %q want /messages", captured.path)
+	}
+}
+
+// TestMidConversationPlainSystemTurnNoBeta guards the no-tool-change path: an
+// in-place text system turn touches neither the header nor the endpoint.
+func TestMidConversationPlainSystemTurnNoBeta(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-opus-5", nil, []messages.Message{
+		messages.Human("Review foo()"),
+		messages.System("Be concise."),
+	})
+
+	if captured.beta != "" {
+		t.Fatalf("anthropic-beta header should stay unset, got %q", captured.beta)
+	}
+	if captured.path != "/messages" {
+		t.Fatalf("request path: got %q want /messages", captured.path)
+	}
+}
+
+// TestMidConversationStreamToolChangeAutoAppendsBeta checks the streaming
+// path applies the same auto-append.
+func TestMidConversationStreamToolChangeAutoAppendsBeta(t *testing.T) {
+	captured := &midConvCapture{}
+	streamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.path = r.URL.RequestURI()
+		captured.beta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: message_start\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_start\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_delta\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: content_block_stop\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"content_block_stop","index":0}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: message_delta\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: message_stop\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	defer streamServer.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(streamServer.URL),
+		modelconfig.WithModel("claude-opus-5"),
+	)
+	stream, err := model.Stream(t.Context(), toolChangeConversation)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		_, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if !ok {
+			break
+		}
+	}
+
+	if captured.beta != testToolChangeBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, testToolChangeBeta)
+	}
+	if captured.path != "/messages?beta=true" {
+		t.Fatalf("request path: got %q want /messages?beta=true", captured.path)
+	}
+}
+
+// --- Unrecognized system block narrowing on the in-place path
+// (chat_models.py:635-642) ---
+
+// TestMidConversationUnrecognizedSystemBlockDroppedInPlace mirrors Python
+// test__format_messages_system_unrecognized_block_dropped_with_warning
+// (test_chat_models.py:2435): Anthropic accepts only text (plus tool changes
+// on mid-conversation turns) in a system message, so other blocks are dropped
+// with a warning rather than forwarded to rejection.
+func TestMidConversationUnrecognizedSystemBlockDroppedInPlace(t *testing.T) {
+	logs := captureAnthropicWarnings(t)
+	captured := midConvInvokeCaptured(t, "claude-opus-5", nil, []messages.Message{
+		messages.Human("Review foo()"),
+		systemWithBlocks(
+			map[string]any{"type": "text", "text": "Be concise."},
+			map[string]any{"type": "made_up_block", "foo": "bar"},
+		),
+		messages.AI("Looks fine."),
+	})
+
+	turn := captured.body["messages"].([]any)[1].(map[string]any)
+	content, ok := turn["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("unrecognized block should be dropped: %+v", turn["content"])
+	}
+	if text := content[0].(map[string]any); text["text"] != "Be concise." {
+		t.Fatalf("surviving text block: %+v", text)
+	}
+	if !strings.Contains(logs.String(), "made_up_block") {
+		t.Fatalf("expected unrecognized-block drop warning, got: %s", logs.String())
+	}
+}
+
+// TestMidConversationUnrecognizedOnlySystemTurnOmitted extends the omit rule:
+// an in-place turn whose blocks all narrow away disappears entirely.
+func TestMidConversationUnrecognizedOnlySystemTurnOmitted(t *testing.T) {
+	captureAnthropicWarnings(t)
+	request := midConvInvoke(t, "claude-opus-5", []messages.Message{
+		messages.Human("Review foo()"),
+		systemWithBlocks(map[string]any{"type": "made_up_block", "foo": "bar"}),
+		messages.AI("Looks fine."),
+	})
+
+	roles := midConvRoles(t, request)
+	want := []string{"user", "assistant"}
+	if len(roles) != len(want) {
+		t.Fatalf("roles: got %v want %v", roles, want)
+	}
+}
+
+// TestMidConversationLeadingSystemNonToolBlockKept guards the compat scope of
+// the narrowing: the hoisting paths (leading run here) keep the adapter's
+// existing block formatting — only the in-place path narrows.
+func TestMidConversationLeadingSystemNonToolBlockKept(t *testing.T) {
+	logs := captureAnthropicWarnings(t)
+	request := midConvInvoke(t, "claude-sonnet-4-5", []messages.Message{
+		systemWithBlocks(map[string]any{
+			"type": "image",
+			"url":  "https://example.com/diagram.png",
+		}),
+		messages.Human("hi"),
+	})
+
+	system, ok := request["system"].([]any)
+	if !ok || len(system) != 1 {
+		t.Fatalf("leading non-tool block should be kept: %+v", request["system"])
+	}
+	if block := system[0].(map[string]any); block["type"] != "image" {
+		t.Fatalf("leading image block: %+v", block)
+	}
+	if logs.String() != "" {
+		t.Fatalf("hoisting paths must not narrow, got: %s", logs.String())
 	}
 }
 

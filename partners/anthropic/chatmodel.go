@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -314,6 +315,19 @@ func (m ChatModel) InvokeStructured(
 	return out, nil
 }
 
+// messagesEndpoint is the Messages API endpoint a request posts to. When the
+// payload requires beta flags (in-place tool-change system turns), Python
+// routes through the SDK's beta namespace (chat_models.py:2177-2190), whose
+// endpoint is "/v1/messages?beta=true" — same path plus the beta query flag
+// (anthropic-sdk-python resources/beta/messages/messages.py:1130-1131) — with
+// the flags carried by the anthropic-beta header.
+func messagesEndpoint(requiredBetas []string) string {
+	if len(requiredBetas) > 0 {
+		return "/messages?beta=true"
+	}
+	return "/messages"
+}
+
 func (m ChatModel) createMessage(
 	ctx context.Context,
 	input []messages.Message,
@@ -324,7 +338,7 @@ func (m ChatModel) createMessage(
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.config.Timeout)
 	defer cancel()
-	resp, err := postJSON[messagePayload](ctx, m.config, "/messages", req)
+	resp, err := postJSON[messagePayload](ctx, m.configWithRequiredBetas(req.requiredBetas), messagesEndpoint(req.requiredBetas), req)
 	if err != nil {
 		return messagePayload{}, err
 	}
@@ -402,7 +416,7 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 				systemText = append(systemText, message.Content)
 			}
 			if len(message.ContentBlocks) > 0 {
-				blocks, err := formatSystemBlocks(message.ContentBlocks, allowToolChanges, m.config.Model)
+				blocks, err := formatHoistedSystemBlocks(message.ContentBlocks, allowToolChanges, m.config.Model)
 				if err != nil {
 					return err
 				}
@@ -510,6 +524,7 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	} else if len(systemText) > 0 {
 		payload.System = strings.Join(systemText, "\n")
 	}
+	payload.requiredBetas = requiredBetaHeaders(payload.Messages, splitBetaHeader(m.config.Headers[anthropicBetaHeader]))
 	for _, tool := range m.boundTools {
 		payload.Tools = append(payload.Tools, toolSpec{
 			Name:        tool.Name(),
@@ -552,13 +567,108 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 // bundle (modelprofiles/profiles.json).
 const anthropicProviderID = "anthropic"
 
+// Beta headers required to send tool-change system blocks
+// (chat_models.py:545-549 documents both as REQUIRED for
+// tool_addition/tool_removal).
+const (
+	// toolChangeBeta enables tool_addition/tool_removal blocks referencing
+	// already-bound tools (tool_reference).
+	toolChangeBeta = "mid-conversation-tool-changes-2026-07-01"
+	// inlineToolsBeta enables defining a tool inline in a tool_addition block
+	// (tool_definition); it supersedes toolChangeBeta when both apply.
+	inlineToolsBeta = "inline-tools-2026-09-15"
+)
+
+// requiredBetaHeaders mirrors Python's beta auto-append decision
+// (chat_models.py:2140-2161): scan the in-place system turns (payload messages
+// with role "system" — the top-level system field is NOT scanned) for
+// tool-change blocks. An inline tool_definition requires the inline-tools beta
+// (superseding the reference beta even when both block kinds are present);
+// otherwise any tool_addition/tool_removal block requires the tool-changes
+// beta, unless the inline beta is already caller-supplied. explicit holds the
+// caller-supplied anthropic-beta flags. Returns the flags to append, if any.
+func requiredBetaHeaders(messages []requestMessage, explicit []string) []string {
+	hasToolChange := false
+	hasInlineDefinition := false
+	for _, message := range messages {
+		if message.Role != "system" {
+			continue
+		}
+		for _, block := range message.Content {
+			switch block.Type {
+			case "tool_addition", "tool_removal":
+				hasToolChange = true
+				if toolType, _ := block.Tool["type"].(string); toolType == "tool_definition" {
+					hasInlineDefinition = true
+				}
+			}
+		}
+	}
+	switch {
+	case hasInlineDefinition:
+		if !slices.Contains(explicit, inlineToolsBeta) {
+			return []string{inlineToolsBeta}
+		}
+	case hasToolChange && !slices.Contains(explicit, inlineToolsBeta):
+		if !slices.Contains(explicit, toolChangeBeta) {
+			return []string{toolChangeBeta}
+		}
+	}
+	return nil
+}
+
+// configWithRequiredBetas returns a copy of the model config with the required
+// beta flags merged into the anthropic-beta header — the Go equivalent of
+// Python appending to payload["betas"] (chat_models.py:2159-2161): the
+// anthropic SDK turns that list into the comma-joined anthropic-beta header
+// (anthropic-sdk-python resources/beta/messages/messages.py:1122-1124), which
+// is exactly what WithBetaHeaders sets. Caller-supplied flags are preserved
+// (append-if-absent), and the caller's config map is never mutated.
+func (m ChatModel) configWithRequiredBetas(required []string) modelconfig.Config {
+	cfg := m.config
+	if len(required) == 0 {
+		return cfg
+	}
+	merged := make(map[string]string, len(cfg.Headers)+1)
+	maps.Copy(merged, cfg.Headers)
+	flags := splitBetaHeader(merged[anthropicBetaHeader])
+	for _, flag := range required {
+		if !slices.Contains(flags, flag) {
+			flags = append(flags, flag)
+		}
+	}
+	merged[anthropicBetaHeader] = strings.Join(flags, ",")
+	cfg.Headers = merged
+	return cfg
+}
+
+// anthropicBetaHeader is the HTTP header carrying beta feature flags.
+const anthropicBetaHeader = "anthropic-beta"
+
+// splitBetaHeader splits a comma-joined anthropic-beta header value into its
+// flags, dropping empties.
+func splitBetaHeader(header string) []string {
+	if header == "" {
+		return nil
+	}
+	var flags []string
+	for flag := range strings.SplitSeq(header, ",") {
+		if flag = strings.TrimSpace(flag); flag != "" {
+			flags = append(flags, flag)
+		}
+	}
+	return flags
+}
+
 // midConversationGates reports whether the model's profile allows mid-
 // conversation system messages and mid-conversation tool changes (Python
 // #41180, langchain-anthropic chat_models.py:1901-1906 reads the same keys off
-// self.profile). Like Python's registry lookup, model IDs are matched exactly;
-// a model absent from the bundle (including dated IDs such as
-// "claude-sonnet-4-5-20250929") allows neither, preserving the legacy hoisting
-// behavior.
+// self.profile). Model IDs are matched exactly, like Python's registry
+// lookup; a profile that omits the keys allows neither, preserving the legacy
+// hoisting behavior — that includes older and dated IDs in the bundle (e.g.
+// claude-sonnet-4-5 and claude-sonnet-4-5-20250929 are both present in
+// profiles.json but carry no mid_conversation keys) and IDs absent from the
+// bundle entirely.
 func (m ChatModel) midConversationGates() (system, tools bool) {
 	profile, ok := modelprofiles.Lookup(anthropicProviderID, m.config.Model)
 	if !ok {
@@ -605,7 +715,7 @@ func inPlaceSystemTurns(run []messages.Message, allowToolChanges bool, model str
 			blocks = append(blocks, contentBlock{Type: "text", Text: message.Content})
 		}
 		if len(message.ContentBlocks) > 0 {
-			formatted, err := formatSystemBlocks(message.ContentBlocks, allowToolChanges, model)
+			formatted, err := formatInPlaceSystemBlocks(message.ContentBlocks, allowToolChanges, model)
 			if err != nil {
 				return nil, err
 			}
@@ -643,6 +753,18 @@ func warnToolChangeBlockDropped(blockType, model string) {
 		slog.String("model", model))
 }
 
+// warnUnrecognizedSystemBlockDropped mirrors Python's unrecognized-block
+// warning (chat_models.py:635-642): Anthropic accepts `text` in any system
+// message plus tool_addition/tool_removal on a mid-conversation one, so any
+// other block type is dropped rather than forwarded to an API rejection.
+func warnUnrecognizedSystemBlockDropped(blockType, model string) {
+	slog.Warn("anthropic: unrecognized system content block dropped: Anthropic accepts "+
+		"text in any system message, plus tool_addition and tool_removal on a "+
+		"mid-conversation one",
+		slog.String("block_type", blockType),
+		slog.String("model", model))
+}
+
 type requestPayload struct {
 	Model             string           `json:"model"`
 	MaxTokens         int              `json:"max_tokens"`
@@ -658,6 +780,11 @@ type requestPayload struct {
 	Thinking          map[string]any   `json:"thinking,omitempty"`
 	ContextManagement map[string]any   `json:"context_management,omitempty"`
 	InferenceGeo      string           `json:"inference_geo,omitempty"`
+
+	// requiredBetas carries beta flags the payload's in-place tool-change
+	// system turns require; senders merge them into the anthropic-beta header
+	// and route to the beta endpoint. Unexported, so never serialized.
+	requiredBetas []string
 }
 
 // requestMessage is one turn of the messages array. Content carries block

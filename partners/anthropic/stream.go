@@ -31,25 +31,30 @@ func (m ChatModel) createMessageStream(
 	}
 	requestPayload.Stream = true
 
+	// Tool-change system turns require beta flags: merge them into the
+	// anthropic-beta header and route to the beta endpoint, mirroring
+	// createMessage (chat_models.py:2177-2190).
+	requestConfig := m.configWithRequiredBetas(requestPayload.requiredBetas)
+
 	body, err := json.Marshal(requestPayload)
 	if err != nil {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, m.config.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, requestConfig.Timeout)
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		strings.TrimRight(m.config.BaseURL, "/")+"/messages",
+		strings.TrimRight(requestConfig.BaseURL, "/")+messagesEndpoint(requestPayload.requiredBetas),
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	setHeaders(req, m.config)
+	setHeaders(req, requestConfig)
 
-	client := m.config.HTTPClient
+	client := requestConfig.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
