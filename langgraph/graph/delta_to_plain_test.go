@@ -164,8 +164,10 @@ func TestPlainReducerContinuesDeltaThread(t *testing.T) {
 // an ex-delta channel from the ancestor walk with ONE reducer call per write
 // — the writes span many supersteps, and a single batched call would reject a
 // second Overwrite and drop the writes after it (#9302, Python's _replay).
-// Hand-built chain: cp0 stores the plain seed [1]; writes on cp1 are [2],
-// Overwrite([3]), [4] — the last Overwrite resets to [3], then [4] folds in.
+// Hand-built chain: cp0 stores the plain seed [1]; cp1's writes are [2],
+// Overwrite([3]), Overwrite([4]), [5] — the last Overwrite resets to [4],
+// then [5] folds in: [4 5]. (Two Overwrites in the batch prove the
+// one-call-per-write split: a single batched Update would reject the second.)
 func TestPlainReducerReplaysDeltaHistoryOneWriteAtATime(t *testing.T) {
 	ctx := t.Context()
 	saver := checkpoint.NewMemorySaver()

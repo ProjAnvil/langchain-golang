@@ -199,7 +199,7 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	return g.saveCheckpoint(ctx,
 		updateSink,
 		Options{ThreadID: cfg.ThreadID, checkpointNS: cfg.CheckpointNS}, rs, tup.Config,
-		md, plannedTasks(dests), false)
+		md, plannedTasks(dests), false, nil)
 }
 
 // BulkUpdateState applies a sequence of state-update supersteps to the
@@ -492,7 +492,8 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 				// write — the writes span many supersteps, and a single
 				// batched call would reject a second Overwrite and drop the
 				// writes after one. On a reducer error, keep the last good
-				// value (mirrors DeltaChannel.ReplayWrites keeping its base).
+				// value (deliberate hardening — Python propagates the error;
+				// mirrors DeltaChannel.ReplayWrites keeping its base).
 				for _, w := range writes {
 					if _, err := ch.Update([]any{w}); err != nil {
 						break

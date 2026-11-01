@@ -1213,7 +1213,13 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 	// variant: it routes the write through cpSink.putPauseCheckpoint, which
 	// guarantees durability before the run returns under every Durability mode
 	// (see checkpointSink.putPauseCheckpoint).
-	persist := func(pause bool, md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
+	// persist is the run's checkpoint-save entry point. suppress names delta
+	// channels whose pending writes anchor ON the checkpoint being saved (the
+	// pause paths' completed-sibling writes): a pause checkpoint is saved from
+	// PRE-superstep state, so a snapshot blob on it would NOT fold those
+	// writes in — and the ancestor walk stops at a stored value — so the save
+	// keeps such channels sentinel instead (see saveCheckpoint).
+	persist := func(pause bool, md checkpoint.Metadata, next []checkpoint.PlannedTask, suppress map[string]bool) error {
 		md.Parents = children.snapshot()
 		if isSubgraph && parentSC.current != nil && parentSC.current.CheckpointID != "" {
 			if md.Parents == nil {
@@ -1221,7 +1227,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			}
 			md.Parents[parentSC.ns] = parentSC.current.CheckpointID
 		}
-		cfg, err := g.saveCheckpoint(ctx, cpSink, opts, rs, *currentCfg, md, next, pause)
+		cfg, err := g.saveCheckpoint(ctx, cpSink, opts, rs, *currentCfg, md, next, pause, suppress)
 		if err != nil {
 			return err
 		}
@@ -1231,10 +1237,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		return nil
 	}
 	save := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
-		return persist(false, md, next)
+		return persist(false, md, next, nil)
 	}
-	savePause := func(md checkpoint.Metadata, next []checkpoint.PlannedTask) error {
-		return persist(true, md, next)
+	savePause := func(md checkpoint.Metadata, next []checkpoint.PlannedTask, suppress map[string]bool) error {
+		return persist(true, md, next, suppress)
 	}
 
 	// Run mode selection. An explicit Options.Resume always resumes (the
@@ -1448,7 +1454,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				// a non-paused run would have computed.
 				stampDispatchIDs(next, active, *currentCfg, rs.step+1)
 				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step},
-					next); err != nil {
+					next, nil); err != nil {
 					return Result{}, err
 				}
 				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedBefore, "", false); err != nil {
@@ -1737,7 +1743,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if checkpointing && slices.ContainsFunc(outcomes, func(o outcome) bool { return o.nodeErr != nil }) {
 					next := plannedTasks(active)
 					stampDispatchIDs(next, active, *currentCfg, rs.step+1)
-					if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next); err != nil {
+					if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next, nil); err != nil {
 						return Result{}, err
 					}
 					for i, o := range outcomes {
@@ -1770,7 +1776,32 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				// of this superstep actually ran under, so the next resume
 				// re-attaches those same IDs (see stampDispatchIDs).
 				stampDispatchIDs(next, active, *currentCfg, rs.step+1)
-				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next); err != nil {
+				// Pre-compute the completed siblings' write batches: their
+				// delta channels anchor ON the pause checkpoint while its
+				// values predate them, so the pause save must suppress those
+				// channels' snapshots (a blob beside the writes would strand
+				// them — the ancestor walk stops at a stored value).
+				siblingWrites := make([][]checkpoint.Write, len(outcomes))
+				var suppressSnapshots map[string]bool
+				for i, o := range outcomes {
+					if len(o.interrupts) > 0 {
+						continue
+					}
+					writes, err := completedTaskWrites(o.update, o.cmd)
+					if err != nil {
+						return Result{}, err
+					}
+					siblingWrites[i] = writes
+					for _, w := range writes {
+						if proto, ok := g.channelProtos[w.Channel]; ok && channels.IsDelta(proto) {
+							if suppressSnapshots == nil {
+								suppressSnapshots = map[string]bool{}
+							}
+							suppressSnapshots[w.Channel] = true
+						}
+					}
+				}
+				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next, suppressSnapshots); err != nil {
 					return Result{}, err
 				}
 				for i, o := range outcomes {
@@ -1794,11 +1825,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						}
 						continue
 					}
-					writes, err := completedTaskWrites(o.update, o.cmd)
-					if err != nil {
-						return Result{}, err
-					}
-					if len(writes) > 0 {
+					if writes := siblingWrites[i]; len(writes) > 0 {
 						if err := cpSink.putPauseWrites(ctx, *currentCfg, writes, taskID, taskPath, g.deltaBatch(writes)); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
 						}
@@ -1926,7 +1953,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				NS:    taskCheckpointNS(opts.checkpointNS, pausedAfter, ""),
 			}
 			if checkpointing {
-				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, planned); err != nil {
+				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, planned, nil); err != nil {
 					return Result{}, err
 				}
 				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedAfter, "", false); err != nil {
@@ -2064,8 +2091,15 @@ func (g *CompiledGraph) deltaBatch(writes []checkpoint.Write) bool {
 // its actual predecessor (D3). Planned task IDs bind to the new checkpoint's
 // ID and the superstep the tasks will run in (md.Step + 1). pause selects the
 // sink's pause path (putPauseCheckpoint), which makes the write durable under
-// every Durability mode instead of deferring it (async/exit).
-func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSink, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask, pause bool) (checkpoint.Config, error) {
+// every Durability mode instead of deferring it (async/exit). suppress names
+// delta channels whose pending writes anchor ON this checkpoint (the pause
+// paths' completed-sibling writes): a pause checkpoint is saved from
+// PRE-superstep state, so a snapshot blob on it would predate — not fold in —
+// those writes, and the ancestor walk stops at a stored value; suppressing
+// the snapshot keeps the channel sentinel so the walk collects the writes
+// (the commit path needs no suppression: its checkpoints fold in the writes
+// they anchor).
+func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSink, opts Options, rs *runState, parent checkpoint.Config, md checkpoint.Metadata, next []checkpoint.PlannedTask, pause bool, suppress map[string]bool) (checkpoint.Config, error) {
 	// Advance the per-delta-channel (updates, supersteps) counters for this
 	// checkpoint, then decide which delta channels snapshot now. Mirrors
 	// Python's _loop._put_checkpoint counter advancement + create_checkpoint
@@ -2097,6 +2131,13 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 	}
 
 	// Counters reset to zero for channels that snapshot this checkpoint.
+	// Suppressed channels (see the signature comment) keep their counters —
+	// the cadence simply re-fires at the next save.
+	if pause {
+		for k := range suppress {
+			delete(channelsToSnapshot, k)
+		}
+	}
 	for k := range channelsToSnapshot {
 		newCounters[k] = [2]int{0, 0}
 	}

@@ -113,16 +113,25 @@ func TestCheckpointSinkAsyncPanicRecovery(t *testing.T) {
 
 	sink := newCheckpointSink(panicky, DurabilityAsync, t.Context(), nil)
 
-	// Submit a Put that will panic
+	// Submit a Put that will panic: the worker records the panic as its
+	// error (#9235) and STOPS — nothing later in the run is saved past the
+	// failure.
 	sink.putCheckpoint(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
 		V: 1, ID: "cp-99", TS: time.Now(),
 	}, checkpoint.Metadata{Source: "loop", Step: 0}, nil, nil)
+	<-sink.workerDone
 
-	// Submit a PutWrites that should still be processed (per-request recover)
+	// Once the worker has exited, further requests deterministically return
+	// the worker's error instead of landing in the abandoned channel.
 	err := sink.putWrites(t.Context(), checkpoint.Config{ThreadID: "t1", CheckpointID: "cp-1"},
 		[]checkpoint.Write{{Channel: "ch", Value: "after-panic"}}, "task-survive", "", false)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("putWrites() after the worker died = nil, want the panic error")
+	}
+	if _, err := sink.putCheckpoint(t.Context(), checkpoint.Config{ThreadID: "t1"}, checkpoint.Checkpoint{
+		V: 1, ID: "cp-100", TS: time.Now(),
+	}, checkpoint.Metadata{Source: "loop", Step: 1}, nil, nil); err == nil {
+		t.Fatal("putCheckpoint() after the worker died = nil, want the panic error")
 	}
 
 	flushErr := sink.flush()

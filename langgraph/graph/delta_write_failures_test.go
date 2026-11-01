@@ -120,13 +120,16 @@ func logOf(t *testing.T, cg *CompiledGraph, threadID string) []int {
 // finalLog is the expected completed-thread log value ([a b c]).
 func finalLog() []int { return []int{'a', 'b', 'c'} }
 
-// TestFailedDeltaWriteIsRerunNotLost covers the #9235 write-failure scenario on
-// every durability mode: the first run fails with the injected error, every
-// saved checkpoint stays consistent (log == plain — nothing was saved past the
-// failed write), and a retry completes the thread. Exit durability saves
-// nothing before the failed write, so its retry starts over with the original
-// input (Python passes INPUT only for the exit case).
-func TestFailedDeltaWriteIsRerunNotLost(t *testing.T) {
+// TestFailedDeltaWriteIsRecoveredNotLost covers the #9235 write-failure
+// scenario on every durability mode: the first run fails with the injected
+// error, every saved checkpoint stays consistent (log == plain — nothing was
+// saved past the failed write), and a retry completes the thread. Under
+// sync/async the failed run's checkpoint is repaired with a full snapshot and
+// the retry CONTINUES from it (Python re-runs the failed task — see
+// DIVERGENCES.md); only exit durability saves nothing before the failed
+// write, so its retry starts over with the original input (Python passes
+// INPUT only for the exit case).
+func TestFailedDeltaWriteIsRecoveredNotLost(t *testing.T) {
 	cases := []struct {
 		durability Durability
 		retryInput map[string]any

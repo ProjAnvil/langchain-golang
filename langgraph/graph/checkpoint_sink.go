@@ -272,6 +272,16 @@ func (s *checkpointSink) putCheckpoint(ctx context.Context, cfg checkpoint.Confi
 		s.lastPut = &putRecord{cfg: cfg, cp: cloneForSink(cp), md: md, newVersions: maps.Clone(newVersions), repair: repair}
 		return resultCfg, nil
 	case DurabilityAsync:
+		// Pre-check the worker before enqueueing: after a saver failure the
+		// worker has exited, and without this check a request could
+		// nondeterministically land in the abandoned channel (select picks
+		// among ready cases) instead of deterministically returning the
+		// worker's error.
+		select {
+		case <-s.workerDone:
+			return resultCfg, s.workerErr
+		default:
+		}
 		req := sinkRequest{
 			kind:        reqPut,
 			cfg:         cfg,
@@ -315,6 +325,13 @@ func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, w
 		}
 		return nil
 	case DurabilityAsync:
+		// Same worker pre-check as putCheckpoint: a deterministic error
+		// return once the worker has exited (#9235).
+		select {
+		case <-s.workerDone:
+			return s.workerErr
+		default:
+		}
 		req := sinkRequest{kind: reqPutWrites, cfg: cfg, writes: writes, taskID: taskID, taskPath: taskPath, delta: delta}
 		select {
 		case s.writeCh <- req:
