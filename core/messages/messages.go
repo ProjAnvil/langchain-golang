@@ -439,6 +439,7 @@ func MergeRuns(values []Message) []Message {
 		last.Content = mergeText(last.Content, current.Content)
 		last.ContentBlocks = append(last.ContentBlocks, cloneBlocks(current.ContentBlocks)...)
 		last.ToolCalls = append(last.ToolCalls, cloneToolCalls(current.ToolCalls)...)
+		mergeNotificationKwargs(last, current)
 	}
 	return out
 }
