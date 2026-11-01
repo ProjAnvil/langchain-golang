@@ -44,7 +44,9 @@ const (
 	// StreamDebug yields task dispatch/completion and checkpoint events.
 	StreamDebug StreamMode = "debug"
 	// StreamMessages yields per-token LLM message chunks (MessageChunk
-	// payloads). The executor installs a callbacks.Manager into each node's
+	// payloads) plus the messages a node RETURNS in its update (#9463), the
+	// latter deduped by message ID against everything the run has already
+	// streamed. The executor installs a callbacks.Manager into each node's
 	// context; node code opts in by pulling it with
 	// callbacks.ManagerFromContext and fanning it into its model configs
 	// (runnables.WithCallbacks) — see stream_messages.go.
@@ -229,6 +231,12 @@ type streamEmitter struct {
 	// compute the incremental diff for StreamDelta. nil before the first
 	// emission, so the first delta chunk is the full initial state.
 	prevDelta map[string]any
+	// msgSeen is the run-scoped message-ID ledger messages mode dedupes
+	// against (#9463): one ledger per stream, shared by every node's bridge
+	// and the node-output emission path, and propagated to subgraph child
+	// emitters so a message surfaces exactly once per stream (Python's single
+	// StreamMessagesHandler.seen set).
+	msgSeen *messageSeen
 }
 
 func newStreamEmitter(ctx context.Context, modes []StreamMode, subgraphs bool, send chan<- StreamChunk) *streamEmitter {
@@ -236,7 +244,7 @@ func newStreamEmitter(ctx context.Context, modes []StreamMode, subgraphs bool, s
 	for _, mode := range modes {
 		m[mode] = true
 	}
-	return &streamEmitter{ctx: ctx, send: send, modes: m, subgraphs: subgraphs, closed: &atomic.Bool{}}
+	return &streamEmitter{ctx: ctx, send: send, modes: m, subgraphs: subgraphs, closed: &atomic.Bool{}, msgSeen: &messageSeen{}}
 }
 
 // streamEmitterKey is the context-value key under which the active emitter
@@ -257,7 +265,8 @@ func emitterFromContext(ctx context.Context) *streamEmitter {
 }
 
 // child returns the emitter for a subgraph run: same delivery channel and
-// modes, namespace extended with the subgraph node name.
+// modes, namespace extended with the subgraph node name, and the same
+// run-scoped message-ID ledger (messages dedup spans the whole stream).
 func (e *streamEmitter) child(name string) *streamEmitter {
 	return &streamEmitter{
 		ctx:       e.ctx,
@@ -266,6 +275,7 @@ func (e *streamEmitter) child(name string) *streamEmitter {
 		subgraphs: e.subgraphs,
 		closed:    e.closed,
 		ns:        joinCheckpointNS(e.ns, name),
+		msgSeen:   e.msgSeen,
 	}
 }
 

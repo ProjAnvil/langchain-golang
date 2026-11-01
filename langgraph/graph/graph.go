@@ -1588,6 +1588,17 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// subgraph checkpoint namespacing; see plannedTaskIDKey).
 			taskCtx := context.WithValue(em.nodeContext(runCtx, t.node, rs.step+1),
 				plannedTaskIDKey{}, t.plannedID(*currentCfg, rs.step+1))
+			// #9463: mark the node input's message IDs as seen for messages
+			// mode (Python's on_chain_start input scan) BEFORE the node runs,
+			// so a node echoing its input's messages does not re-emit them
+			// when its outcome is scanned after the superstep. Send tasks mark
+			// their own arg. Concurrent sibling marking is safe: the ledger is
+			// mutex-guarded and marking is idempotent.
+			taskInput := state
+			if t.arg != nil {
+				taskInput = t.arg
+			}
+			em.markMessagesSeen(taskInput)
 			// Per-node TracePolicy (langgraph 1.2.11 trace_policy=): wrap the
 			// node context's callback manager so every event emitted within
 			// this node — from the node itself or runnables it invokes —
@@ -1726,6 +1737,15 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		for i, o := range outcomes {
 			interrupts = append(interrupts, o.interrupts...)
 			pub := g.dropJoinKeys(o.update)
+			// #9463: emit the messages the node RETURNED (Python's on_chain_end
+			// -> _find_and_emit_messages) before the task's updates chunk —
+			// unseen IDs only, against the run-scoped ledger the node's model
+			// chunks and input marking filled. Only tasks that actually
+			// executed (not cache hits — Python fires no chain events for
+			// them) and completed cleanly (no error, no interrupt) emit.
+			if execute[i] && o.err == nil && len(o.interrupts) == 0 {
+				em.emitNodeMessages(active[i].node, rs.step+1, o.update)
+			}
 			em.debugTaskResult(rs.step+1, active[i], pub, o.err, o.interrupts)
 			em.emitUpdate(active[i].node, pub)
 		}
