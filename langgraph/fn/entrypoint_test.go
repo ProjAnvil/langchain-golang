@@ -478,16 +478,16 @@ func TestEntrypointPersistResultsNoCheckpoint(t *testing.T) {
 	}
 }
 
-// putWritesPathSaver fails PutWrites for nested (non-empty) task paths,
-// which only fn's persistResults issues — the graph's own PutWrites always
-// use the root path.
+// putWritesPathSaver fails PutWrites for fn's nested call paths ("name@idx",
+// optionally "a@0/b@0"), which only fn's persistResults issues — the graph
+// executor's own PutWrites carry zero-padded dispatch paths (digits only).
 type putWritesPathSaver struct {
 	checkpoint.Saver
 	err error
 }
 
 func (s *putWritesPathSaver) PutWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
-	if taskPath != "" {
+	if strings.Contains(taskPath, "@") {
 		return s.err
 	}
 	return s.Saver.PutWrites(ctx, cfg, writes, taskID, taskPath)

@@ -447,10 +447,13 @@ func (s *Saver) loadBlobs(ctx context.Context, threadID, ns string, versions map
 	return out, rows.Err()
 }
 
-// loadWrites returns pending writes ordered by (task_id, idx), Python parity.
+// loadWrites returns pending writes ordered by (task_path, task_id, idx) —
+// the writes_sort_key order live execution applies a superstep's tasks in
+// (Python #8544), so an order-sensitive reducer replays the same value the
+// run produced.
 func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]checkpoint.Write, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT task_id, task_path, channel, type, blob FROM checkpoint_writes WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3 ORDER BY task_id, idx`,
+		`SELECT task_id, task_path, channel, type, blob FROM checkpoint_writes WHERE thread_id = $1 AND checkpoint_ns = $2 AND checkpoint_id = $3 ORDER BY task_path, task_id, idx`,
 		threadID, ns, cpID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres saver: load writes for checkpoint %q: %w", cpID, err)

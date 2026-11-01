@@ -312,10 +312,16 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 
 	plan := resumePlan{resumeValues: map[string][]any{}}
 	var replaySends []task
-	for _, pt := range tup.Checkpoint.Next {
+	for i, pt := range tup.Checkpoint.Next {
 		if pt.Node == types.END {
 			continue
 		}
+		// The task's dispatch path is its position in the planning
+		// checkpoint's Next — the position it held in the interrupted
+		// superstep — so the rerun task's writes interleave with its loaded
+		// siblings' writes exactly as the original dispatch ordered them
+		// (Python #9114).
+		path := dispatchPath(i)
 		var interrupts []types.Interrupt
 		var resumePrefix []any
 		var sends []types.Send
@@ -351,7 +357,7 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 		}
 		switch {
 		case len(interrupts) > 0:
-			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg})
+			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg, path: path})
 			plan.resumeValues[pt.ID] = resumeValuesFor(interrupts, resumePrefix, resume, graphNS)
 		case len(update) > 0 || len(sends) > 0:
 			plan.replayWrites = append(plan.replayWrites, taskWrites{node: pt.Node, update: update})
@@ -363,7 +369,7 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 				// Re-run the handler with the persisted message — the node
 				// itself never re-executes (Python langgraph 1.2.0 crash
 				// recovery semantics for error_handler).
-				plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg,
+				plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg, path: path,
 					runErrorHandler: true, resumeErrMsg: taskErrMsg})
 			} else {
 				// The write was produced by a graph that had a handler;
@@ -372,7 +378,7 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 				return plan, fmt.Errorf("graph: task %s failed (persisted error): %s", pt.ID, taskErrMsg)
 			}
 		default:
-			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg})
+			plan.tasks = append(plan.tasks, task{id: pt.ID, node: pt.Node, arg: pt.Arg, path: path})
 		}
 	}
 	plan.tasks = append(plan.tasks, replaySends...)

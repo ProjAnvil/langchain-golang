@@ -27,6 +27,7 @@ func Run(t *testing.T, newSaver func(t *testing.T) checkpoint.Saver) {
 	t.Run("put_writes_batch_rule", func(t *testing.T) { testPutWritesBatchRule(t, newSaver) })
 	t.Run("put_writes_tasks_all_survive", func(t *testing.T) { testPutWritesTasksAllSurvive(t, newSaver) })
 	t.Run("put_writes_task_path", func(t *testing.T) { testPutWritesTaskPath(t, newSaver) })
+	t.Run("put_writes_order_by_task_path", func(t *testing.T) { testPutWritesOrderByTaskPath(t, newSaver) })
 	t.Run("put_writes_missing_checkpoint", func(t *testing.T) { testPutWritesMissingCheckpoint(t, newSaver) })
 	t.Run("delete_thread", func(t *testing.T) { testDeleteThread(t, newSaver) })
 	t.Run("delete_for_runs", func(t *testing.T) { testDeleteForRuns(t, newSaver) })
@@ -476,6 +477,66 @@ func testPutWritesTaskPath(t *testing.T, newSaver func(t *testing.T) checkpoint.
 		if w.TaskPath != "path/a" {
 			t.Fatalf("PendingWrites[%d].TaskPath = %q, want %q", i, w.TaskPath, "path/a")
 		}
+	}
+}
+
+// testPutWritesOrderByTaskPath pins the writes_sort_key replay order
+// (Python #8544): a saver that replays a checkpoint's pending writes — as
+// the delta-channel ancestor walk does — must return them ordered by
+// (task_path, task_id, idx), the order live execution applies a superstep's
+// tasks in. task_id is a hash of the task, so when two tasks of one
+// superstep write the same channel and their id order opposes their task
+// path (dispatch) order, ordering by (task_id, idx) alone permutes them and
+// an order-sensitive reducer rebuilds a different value than the run
+// produced.
+//
+// The writes are Put in dispatch order (pathless input first, then paths
+// 0, 1, 2), with task ids whose sort order is the OPPOSITE: task_id ordering
+// alone yields [third, first-a, first-b, second, input]. Writes stored
+// without a task path (graph input, update_state updates, rows predating
+// the column) sort first, which is also where live execution applies input.
+func testPutWritesOrderByTaskPath(t *testing.T, newSaver func(t *testing.T) checkpoint.Saver) {
+	t.Helper()
+	ctx := context.Background()
+	s := newSaver(t)
+
+	cfg, err := s.Put(ctx, checkpoint.Config{ThreadID: "t1"}, sampleCheckpoint(checkpoint.NewID(1)), checkpoint.Metadata{}, nil)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	put := func(taskID, taskPath string, writes ...checkpoint.Write) {
+		t.Helper()
+		if err := s.PutWrites(ctx, cfg, writes, taskID, taskPath); err != nil {
+			t.Fatalf("PutWrites(%s, %q): %v", taskID, taskPath, err)
+		}
+	}
+	// Dispatch order: input (pathless), then tasks at paths 0, 1, 2. Task ids
+	// sort in the opposite order: third < first < second < input.
+	put("ffffffffffffffff", "", checkpoint.Write{Channel: "ch", Value: "input"})
+	put("7777777777777777", "0000000000",
+		checkpoint.Write{Channel: "ch", Value: "first-a"},
+		checkpoint.Write{Channel: "ch", Value: "first-b"})
+	put("eeeeeeeeeeeeeeee", "0000000001", checkpoint.Write{Channel: "ch", Value: "second"})
+	put("0000000000000000", "0000000002", checkpoint.Write{Channel: "ch", Value: "third"})
+
+	tup, err := s.GetTuple(ctx, cfg)
+	if err != nil || tup == nil {
+		t.Fatalf("GetTuple: tup=%v err=%v", tup, err)
+	}
+	want := []string{"input", "first-a", "first-b", "second", "third"}
+	got := make([]string, 0, len(tup.PendingWrites))
+	for _, w := range tup.PendingWrites {
+		if w.Channel != "ch" {
+			t.Fatalf("PendingWrites = %+v, want only channel %q", tup.PendingWrites, "ch")
+		}
+		v, ok := w.Value.(string)
+		if !ok {
+			t.Fatalf("PendingWrites value = %#v, want a string", w.Value)
+		}
+		got = append(got, v)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PendingWrites order = %v, want %v (task_path, task_id, idx order; (task_id, idx) alone yields [third first-a first-b second input])", got, want)
 	}
 }
 

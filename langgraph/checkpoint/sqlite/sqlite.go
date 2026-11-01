@@ -48,7 +48,12 @@ const (
 	insertCheckpointSQL = `INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`
 	insertOrIgnoreSQL   = `INSERT OR IGNORE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value, task_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertOrReplaceSQL  = `INSERT OR REPLACE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value, task_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	selectWritesSQL     = `SELECT task_id, task_path, channel, type, value FROM writes WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? ORDER BY task_id, idx`
+	// selectWritesSQL orders by the writes_sort_key (task_path, task_id,
+	// idx) — the order live execution applies a superstep's tasks in (Python
+	// #8544), so replaying order-sensitive reducers rebuilds the value the
+	// run produced. Writes stored without a task path (graph input, older
+	// rows) sort first, which is also where live execution applies input.
+	selectWritesSQL = `SELECT task_id, task_path, channel, type, value FROM writes WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? ORDER BY task_path, task_id, idx`
 )
 
 // checkpointBlobType is the `type` column value for checkpoint blobs: the

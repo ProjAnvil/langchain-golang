@@ -512,8 +512,10 @@ func (s *Saver) loadTuple(ctx context.Context, threadID, ns, cpID string) (*chec
 }
 
 // loadWrites returns the pending writes recorded against a checkpoint,
-// ordered by (task_id, idx) exactly like the sqlite/postgres savers, plus
-// the keys they were read from (for TTL refresh).
+// ordered by (task_path, task_id, idx) exactly like the sqlite/postgres
+// savers (the writes_sort_key order live execution applies a superstep's
+// tasks in — Python #8544), plus the keys they were read from (for TTL
+// refresh).
 func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]checkpoint.Write, []string, error) {
 	keys, err := s.scanKeys(ctx, writeScanPattern(threadID, ns, cpID))
 	if err != nil {
@@ -549,6 +551,7 @@ func (s *Saver) loadWrites(ctx context.Context, threadID, ns, cpID string) ([]ch
 	}
 	slices.SortFunc(stored, func(a, b storedWrite) int {
 		return cmp.Or(
+			cmp.Compare(a.TaskPath, b.TaskPath),
 			cmp.Compare(a.TaskID, b.TaskID),
 			cmp.Compare(a.Idx, b.Idx),
 		)

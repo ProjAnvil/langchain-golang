@@ -73,13 +73,15 @@ type sinkRequest struct {
 	newVersions map[string]int64
 	writes      []checkpoint.Write
 	taskID      string
+	taskPath    string
 }
 
 type exitDeltaWrite struct {
-	step    int
-	taskID  string
-	channel string
-	value   any
+	step     int
+	taskID   string
+	taskPath string
+	channel  string
+	value    any
 }
 
 func (r sinkRequest) execute(saver checkpoint.Saver, ctx context.Context) error {
@@ -88,7 +90,7 @@ func (r sinkRequest) execute(saver checkpoint.Saver, ctx context.Context) error 
 		_, err := saver.Put(ctx, r.cfg, r.cp, r.md, r.newVersions)
 		return err
 	case reqPutWrites:
-		return saver.PutWrites(ctx, r.cfg, r.writes, r.taskID, "")
+		return saver.PutWrites(ctx, r.cfg, r.writes, r.taskID, r.taskPath)
 	default:
 		return fmt.Errorf("checkpointSink: unknown request kind %d", r.kind)
 	}
@@ -166,13 +168,16 @@ func (s *checkpointSink) putCheckpoint(ctx context.Context, cfg checkpoint.Confi
 	return resultCfg, nil
 }
 
-// putWrites persists (or accumulates) per-task writes.
-func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID string) error {
+// putWrites persists (or accumulates) per-task writes, stamped with the
+// task's dispatch path so savers replay them in live order (Python #8544).
+// A "" taskPath (graph input, update_state writes, synthetic boundary
+// interrupts) is pathless and sorts before every task's writes.
+func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
 	switch s.mode {
 	case DurabilitySync:
-		return s.saver.PutWrites(ctx, cfg, writes, taskID, "")
+		return s.saver.PutWrites(ctx, cfg, writes, taskID, taskPath)
 	case DurabilityAsync:
-		req := sinkRequest{kind: reqPutWrites, cfg: cfg, writes: writes, taskID: taskID}
+		req := sinkRequest{kind: reqPutWrites, cfg: cfg, writes: writes, taskID: taskID, taskPath: taskPath}
 		select {
 		case s.writeCh <- req:
 		case <-s.workerDone:
@@ -180,7 +185,7 @@ func (s *checkpointSink) putWrites(ctx context.Context, cfg checkpoint.Config, w
 		}
 		return nil
 	case DurabilityExit:
-		s.accumulateExitWrites(writes, taskID)
+		s.accumulateExitWrites(writes, taskID, taskPath)
 		return nil
 	}
 	return nil
@@ -263,19 +268,20 @@ func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpo
 
 // putPauseWrites persists the pending writes of a pause (interrupt records,
 // consumed-resume prefixes, and completed-sibling writes of the interrupted
-// superstep) against the pause checkpoint identified by cfg. Like
+// superstep) against the pause checkpoint identified by cfg, stamped with
+// the task's dispatch path (live replay order, Python #8544). Like
 // putPauseCheckpoint it must not be deferred: sync persists directly, async
 // enqueues on the same FIFO channel as the pause checkpoint (which therefore
 // lands first), and exit writes directly to the saver. A nil/empty writes
 // slice is a no-op so callers need not pre-check.
-func (s *checkpointSink) putPauseWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID string) error {
+func (s *checkpointSink) putPauseWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string) error {
 	if len(writes) == 0 {
 		return nil
 	}
 	if s.mode == DurabilityExit {
-		return s.saver.PutWrites(ctx, cfg, writes, taskID, "")
+		return s.saver.PutWrites(ctx, cfg, writes, taskID, taskPath)
 	}
-	return s.putWrites(ctx, cfg, writes, taskID)
+	return s.putWrites(ctx, cfg, writes, taskID, taskPath)
 }
 
 // setFlushContext stores the context needed by flushExit. Called by the invoke
@@ -349,13 +355,14 @@ func cloneAnyShallow(v any) any {
 
 // --- exit mode (stubs — implemented in Task 8) ---
 
-func (s *checkpointSink) accumulateExitWrites(writes []checkpoint.Write, taskID string) {
+func (s *checkpointSink) accumulateExitWrites(writes []checkpoint.Write, taskID, taskPath string) {
 	for _, w := range writes {
 		s.exitDeltaWrites = append(s.exitDeltaWrites, exitDeltaWrite{
-			step:    s.currentStep,
-			taskID:  taskID,
-			channel: w.Channel,
-			value:   w.Value,
+			step:     s.currentStep,
+			taskID:   taskID,
+			taskPath: taskPath,
+			channel:  w.Channel,
+			value:    w.Value,
 		})
 	}
 }

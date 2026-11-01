@@ -906,6 +906,14 @@ type task struct {
 	id   string
 	node string
 	arg  map[string]any // nil means "use the shared graph state"
+	// path is the task's dispatch path (dispatchPath of its position within
+	// the planning superstep), persisted as Write.TaskPath so savers replay a
+	// checkpoint's writes in live dispatch order (Python #8544). Empty until
+	// the run loop stamps it at active-task assembly; tasks restored by
+	// planResume carry the position they held in the paused checkpoint's
+	// Next, so a rerun task interleaves with its loaded siblings exactly as
+	// the original dispatch ordered them (Python #9114).
+	path string
 	// runErrorHandler marks a resumed task whose node failed with a persisted
 	// ERROR write: the executor runs the node's error handler instead of the
 	// node function (crash recovery — Python langgraph 1.2.0 re-executes the
@@ -1333,6 +1341,17 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if len(active) == 0 {
 			break
 		}
+		// Stamp dispatch paths: a task restored by planResume keeps the
+		// position it held in the planning checkpoint's Next (its path is
+		// set); fresh tasks take their dispatch position in this superstep.
+		// Pending writes persist under these paths, so a saver replaying one
+		// checkpoint's writes ordered by (task_path, task_id, idx) reproduces
+		// the live dispatch order (Python #8544/#9114).
+		for i := range active {
+			if active[i].path == "" {
+				active[i].path = dispatchPath(i)
+			}
+		}
 
 		// interrupt_before: if any active task's node is registered, pause
 		// before dispatching the superstep. resumingNode excludes the node
@@ -1359,7 +1378,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					next); err != nil {
 					return Result{}, err
 				}
-				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedBefore); err != nil {
+				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedBefore, ""); err != nil {
 					return Result{}, err
 				}
 			}
@@ -1538,7 +1557,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					nodeErr = ne
 					runHandler := true
 					if checkpointing && cpSink.mode != DurabilityExit {
-						if werr := cpSink.putWrites(ctx, *currentCfg, errorWrites(ne), t.plannedID(*currentCfg, rs.step+1)); werr != nil {
+						if werr := cpSink.putWrites(ctx, *currentCfg, errorWrites(ne), t.plannedID(*currentCfg, rs.step+1), t.path); werr != nil {
 							runHandler = false
 							err = fmt.Errorf("graph: persisting error write for thread %q: %w", opts.ThreadID, werr)
 						}
@@ -1637,7 +1656,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						if o.nodeErr == nil {
 							continue
 						}
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), next[i].ID); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), next[i].ID, active[i].path); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting error write for thread %q: %w", opts.ThreadID, err)
 						}
 					}
@@ -1668,6 +1687,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				}
 				for i, o := range outcomes {
 					taskID := next[i].ID
+					taskPath := active[i].path
 					if o.nodeErr != nil {
 						// The task failed and its handler produced this
 						// superstep's outcome; the ERROR write rides
@@ -1676,12 +1696,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						// prefers completed writes — replay — over the ERROR
 						// write; only the ERROR write alone re-runs the
 						// handler.
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), taskID); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, errorWrites(o.nodeErr), taskID, taskPath); err != nil {
 							return Result{}, err
 						}
 					}
 					if len(o.interrupts) > 0 {
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptAndResumeWrites(o.interrupts, o.consumed), taskID); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptAndResumeWrites(o.interrupts, o.consumed), taskID, taskPath); err != nil {
 							return Result{}, err
 						}
 						continue
@@ -1691,7 +1711,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 						return Result{}, err
 					}
 					if len(writes) > 0 {
-						if err := cpSink.putPauseWrites(ctx, *currentCfg, writes, taskID); err != nil {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, writes, taskID, taskPath); err != nil {
 							return Result{}, fmt.Errorf("graph: persisting completed task writes for thread %q: %w", opts.ThreadID, err)
 						}
 					}
@@ -1821,7 +1841,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, planned); err != nil {
 					return Result{}, err
 				}
-				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedAfter); err != nil {
+				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedAfter, ""); err != nil {
 					return Result{}, err
 				}
 			}
@@ -1850,6 +1870,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// reconstruct delta channels stored as sentinels by replaying
 			// ancestor writes (mirrors Python's per-task put_writes, which
 			// anchors each task's writes on the checkpoint that observed them).
+			// Each batch carries the task's dispatch path, so the saver's
+			// (task_path, task_id, idx) replay order is the live dispatch
+			// order (Python #8544).
 			for i := range planned {
 				planned[i].ID = TaskID(currentCfg.CheckpointID, rs.step+1, planned[i].Node, planned[i].Arg)
 			}
@@ -1859,7 +1882,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 					return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
 				}
 				if len(writes) > 0 {
-					if err := cpSink.putWrites(ctx, *currentCfg, writes, planned[i].ID); err != nil {
+					if err := cpSink.putWrites(ctx, *currentCfg, writes, planned[i].ID, active[i].path); err != nil {
 						return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
 					}
 				}
@@ -1910,10 +1933,12 @@ func plannedTasks(tasks []task) []checkpoint.PlannedTask {
 }
 
 // persistDeltaInputWrites persists the delta-channel entries of input as
-// pending writes (NullTaskID) against cfg, so a later GetState can reconstruct
-// them via the ancestor walk when the input checkpoint stored them as
-// sentinels (snapshotFrequency > 1, below cadence). Non-delta input keys are
-// always present in ChannelValues, so they need no write. Mirrors Python's
+// pathless pending writes (NullTaskID) against cfg, so a later GetState can
+// reconstruct them via the ancestor walk when the input checkpoint stored
+// them as sentinels (snapshotFrequency > 1, below cadence). Non-delta input
+// keys are always present in ChannelValues, so they need no write. The
+// empty task path sorts before every task's writes, which is also where
+// live execution applies input (Python #8544). Mirrors Python's
 // put_writes(NULL_TASK_ID, delta_input) (langgraph/pregel/_loop.py:1023-1030).
 // cfg must identify an already-saved checkpoint (PutWrites errors otherwise),
 // so callers invoke this AFTER the input checkpoint save.
@@ -1927,7 +1952,7 @@ func (g *CompiledGraph) persistDeltaInputWrites(ctx context.Context, cpSink *che
 	if len(deltaInput) == 0 {
 		return nil
 	}
-	return cpSink.putWrites(ctx, cfg, deltaInput, checkpoint.NullTaskID)
+	return cpSink.putWrites(ctx, cfg, deltaInput, checkpoint.NullTaskID, "")
 }
 
 // saveCheckpoint persists rs as a new checkpoint for opts.ThreadID with the

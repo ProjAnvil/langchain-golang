@@ -618,7 +618,7 @@ func TestResumeNilResumeRepausesKeepsPrefix(t *testing.T) {
 func TestPutPauseWritesEmptyIsNoOp(t *testing.T) {
 	// Even with a failing saver, persisting zero writes must not call it.
 	sink := newCheckpointSink(&putWritesErrSaver{Saver: checkpoint.NewMemorySaver()}, DurabilitySync, t.Context(), nil)
-	err := sink.putPauseWrites(t.Context(), checkpoint.Config{ThreadID: "t"}, nil, "task")
+	err := sink.putPauseWrites(t.Context(), checkpoint.Config{ThreadID: "t"}, nil, "task", "")
 	if err != nil {
 		t.Fatalf("putPauseWrites(nil) error = %v, want nil", err)
 	}
