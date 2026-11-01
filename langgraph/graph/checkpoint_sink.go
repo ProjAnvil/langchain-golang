@@ -69,7 +69,13 @@ type checkpointSink struct {
 	exitDeltaWrites    []exitDeltaWrite
 	hasPersistedParent bool
 	initialCfg         checkpoint.Config
-	exitAnchorID       string
+	// initialValues is the loaded checkpoint's ChannelValues (nil without a
+	// persisted parent): the values the flush's write anchor (initialCfg)
+	// already stores. A channel stored there must not receive anchored writes
+	// — the ancestor walk stops at the stored value, stranding them — so it
+	// snapshots into the final checkpoint instead (see flushExit).
+	initialValues map[string]any
+	exitAnchorID  string
 	// exit mode: current superstep (updated by the invoke loop via
 	// beginSuperstep; input writes accumulate before the first superstep
 	// under step 0, mirroring Python's _first appending input writes at the
@@ -201,6 +207,7 @@ func newCheckpointSink(saver checkpoint.Saver, mode Durability, ctx context.Cont
 		if tup != nil {
 			s.hasPersistedParent = true
 			s.initialCfg = tup.Config
+			s.initialValues = tup.Checkpoint.ChannelValues
 		} else if saver != nil {
 			// Reserve before loop checkpoint IDs so a later flush cannot
 			// create an anchor that shadows the final checkpoint as latest.
@@ -412,6 +419,7 @@ func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpo
 	s.exitPauseFlushed = true
 	s.hasPersistedParent = true
 	s.initialCfg = resultCfg
+	s.initialValues = cp.ChannelValues
 	return resultCfg, nil
 }
 
@@ -641,6 +649,26 @@ func (s *checkpointSink) flushExit() error {
 	// both a narrower gate than Python's and racy.
 	if s.hasPersistedParent && s.flushOpts.CheckpointID != "" {
 		for _, w := range s.exitDeltaWrites {
+			if d, ok := channels.AsDelta(s.flushRS.channels[w.channel]); ok && d.IsAvailable() {
+				channelsToSnapshot[w.channel] = true
+			}
+		}
+	}
+	// The unaddressed sibling of that gate: the persisted parent this flush
+	// anchors on may itself store a value for a channel (a blob an earlier
+	// run materialized — e.g. the previous turn's force-snapshot final). The
+	// ancestor walk stops at a stored value, so writes anchored beside it
+	// would strand: the channel snapshots into the final checkpoint instead
+	// (the write's effect is folded into the live state the blob captures).
+	// Same shape as #9269's addressed-load gate; both are Python
+	// _put_exit_delta_writes' "anchoring is unsafe once the anchor has
+	// readers" family. Delta channels only: a plain channel is never omitted
+	// from ChannelValues, so it has nothing to strand.
+	if s.hasPersistedParent {
+		for _, w := range s.exitDeltaWrites {
+			if _, stored := s.initialValues[w.channel]; !stored {
+				continue
+			}
 			if d, ok := channels.AsDelta(s.flushRS.channels[w.channel]); ok && d.IsAvailable() {
 				channelsToSnapshot[w.channel] = true
 			}
