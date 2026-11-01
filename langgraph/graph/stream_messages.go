@@ -29,6 +29,10 @@ type MessageChunk struct {
 // emitter. Node code opts in by pulling the manager with
 // callbacks.ManagerFromContext and fanning it into its model configs
 // (runnables.WithCallbacks).
+//
+// The bridge is a raw-payload handler: a node's trace_policy must not rewrite
+// (or drop) the payloads messages mode delivers to the caller — upstream
+// langgraph #9486 scopes payload policies to tracers only.
 type messagesBridge struct {
 	emitter  *streamEmitter
 	metadata map[string]any
@@ -48,6 +52,12 @@ func newMessagesBridge(emitter *streamEmitter, node string, step int) *messagesB
 		seen: map[string]bool{},
 	}
 }
+
+// RawPayloads opts the bridge out of payload-policy transforms
+// (callbacks.RawPayloadHandler): messages mode delivers the node's real
+// payloads to the caller, which a trace_policy — kept to shrink tracer
+// ingest — must not scrub (upstream #9486).
+func (h *messagesBridge) RawPayloads() bool { return true }
 
 // HandleEvent maps EventChatModelStream/EventLLMStream chunks (Chunk =
 // messages.Message for chat models, string tokens for legacy LLMs) to

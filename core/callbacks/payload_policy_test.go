@@ -1,8 +1,9 @@
 // Tests for NewPayloadPolicyManager: emit-side payload transforms applied
-// before any handler observes an event (langgraph 1.2.11 trace_policy parity,
-// PR #8523). Every tracer attached to the wrapped manager's parent must see
-// the transformed payloads; a panicking transform fails closed (payload
-// dropped, event delivered).
+// before tracer handlers observe an event (langgraph 1.2.11 trace_policy
+// parity, PR #8523, with #9486's tracer-only scoping). Every tracer attached
+// to the wrapped manager's parent must see the transformed payloads while
+// raw-payload handlers see the real ones; a panicking transform fails closed
+// (payload dropped, event delivered).
 package callbacks
 
 import (
@@ -159,5 +160,57 @@ func TestPayloadPolicyManagerNilTransformsPassthrough(t *testing.T) {
 	}
 	if inputCalls != 0 {
 		t.Fatalf("ProcessInputs called %d times, want 0 (nil payloads skip the transform)", inputCalls)
+	}
+}
+
+// rawPayloadRecorder is a Recorder that opts into raw payloads: a stand-in
+// for a stream bridge (langgraph's messages-mode handler), which must see a
+// run's real payloads even under an active policy (langgraph #9486).
+type rawPayloadRecorder struct {
+	*Recorder
+}
+
+// RawPayloads opts the handler out of payload-policy transforms.
+func (rawPayloadRecorder) RawPayloads() bool { return true }
+
+func TestPayloadPolicyManagerSparesRawPayloadHandlers(t *testing.T) {
+	// A tracer and a raw-payload handler share the wrapped manager: the
+	// tracer sees the transformed payloads; the raw-payload handler sees the
+	// real ones (langgraph #9486 — the policy exists to keep tracer ingest
+	// small, not to rewrite what streams deliver to the caller).
+	tracer := NewRecorder()
+	stream := rawPayloadRecorder{NewRecorder()}
+	parent := NewManager(tracer, stream)
+
+	wrapped := NewPayloadPolicyManager(parent, redactPayload, redactPayload)
+
+	if err := wrapped.Emit(t.Context(), Event{Kind: EventChainStart, Name: "node", Input: "feed secret words"}); err != nil {
+		t.Fatalf("emit chain_start: %v", err)
+	}
+	if err := wrapped.Emit(t.Context(), Event{Kind: EventChainEnd, Name: "node", Output: "out secret"}); err != nil {
+		t.Fatalf("emit chain_end: %v", err)
+	}
+
+	tracerEvents := tracer.Events()
+	if len(tracerEvents) != 2 {
+		t.Fatalf("tracer recorded %d events, want 2", len(tracerEvents))
+	}
+	if got, want := tracerEvents[0].Input, "feed [REDACTED] words"; got != want {
+		t.Fatalf("tracer chain_start Input = %v, want %q", got, want)
+	}
+	if got, want := tracerEvents[1].Output, "out [REDACTED]"; got != want {
+		t.Fatalf("tracer chain_end Output = %v, want %q", got, want)
+	}
+	assertNoRawPayload(t, "tracer", tracerEvents)
+
+	streamEvents := stream.Events()
+	if len(streamEvents) != 2 {
+		t.Fatalf("raw-payload handler recorded %d events, want 2", len(streamEvents))
+	}
+	if got, want := streamEvents[0].Input, "feed secret words"; got != want {
+		t.Fatalf("raw-payload handler chain_start Input = %v, want the RAW %q", got, want)
+	}
+	if got, want := streamEvents[1].Output, "out secret"; got != want {
+		t.Fatalf("raw-payload handler chain_end Output = %v, want the RAW %q", got, want)
 	}
 }

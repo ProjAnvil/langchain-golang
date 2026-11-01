@@ -1526,7 +1526,9 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			// node context's callback manager so every event emitted within
 			// this node — from the node itself or runnables it invokes —
 			// carries transformed payloads before any tracer observes them.
-			// An empty manager (no handlers installed, e.g. the inert carrier
+			// The policy scopes to tracers only (#9486): raw-payload handlers
+			// (the StreamMessages bridge) still see the real payloads. An
+			// empty manager (no handlers installed, e.g. the inert carrier
 			// subgraphs run under) is left untouched: events are dropped
 			// there anyway, and wrapping would flip its Empty() signal.
 			if tp := g.tracePolicy(t.node); tp != nil {

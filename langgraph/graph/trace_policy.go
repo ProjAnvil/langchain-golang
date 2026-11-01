@@ -1,14 +1,18 @@
 package graph
 
 // TracePolicy controls what traced payloads a node contributes, mirroring
-// langgraph 1.2.11's add_node(trace_policy=) (PR #8523): transforms are
-// applied where events are EMITTED, before any tracer (LangSmith, console, a
-// future OTel bridge) observes them, so every handler sees the same scrubbed
-// payloads. Installed per node via NodePolicies.Trace
-// (StateGraph.AddNodeWithPolicies); the executor wraps the node context's
-// callback manager in a callbacks.NewPayloadPolicyManager for the duration of
-// the node's task, which covers both events the node emits itself and chain
-// events from runnables it invokes (they discover the wrapped manager via
+// langgraph 1.2.11's add_node(trace_policy=) (PR #8523) with the scoping
+// upstream fixed in #9486: transforms are applied where events are EMITTED,
+// before any tracer (LangSmith, console, a future OTel bridge) observes
+// them, so tracers see the scrubbed payloads while handlers that deliver the
+// run's output to the caller (the messages stream bridge, a
+// callbacks.RawPayloadHandler) keep seeing the raw ones — the policy exists
+// to keep tracer ingest small, not to rewrite streamed payloads. Installed
+// per node via NodePolicies.Trace (StateGraph.AddNodeWithPolicies); the
+// executor wraps the node context's callback manager in a
+// callbacks.NewPayloadPolicyManager for the duration of the node's task,
+// which covers both events the node emits itself and chain events from
+// runnables it invokes (they discover the wrapped manager via
 // callbacks.ManagerFromContext).
 //
 // Fail-closed: a transform that panics drops the corresponding payload rather
