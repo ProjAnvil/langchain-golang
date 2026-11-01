@@ -438,6 +438,49 @@ func TestStreamEventsBridgeToolCallChunkStableIndicesWithoutSourceIndex(t *testi
 	}
 }
 
+// TestStreamEventsBridgeSyntheticIndicesAvoidSourceIndices locks the
+// allocation rule for blocks without a source index: their synthetic wire
+// index must not collide with an index another block claimed (directly or
+// via its source index), or ordered-block assembly would clobber content.
+func TestStreamEventsBridgeSyntheticIndicesAvoidSourceIndices(t *testing.T) {
+	chunk := messages.AI("")
+	chunk.ContentBlocks = []messages.ContentBlock{
+		messages.ReasoningBlock{Reasoning: "step", Index: 1},
+		messages.ReasoningBlock{Reasoning: "two", Index: 2},
+		messages.ToolCallChunkBlock{ID: "c1", Name: "search", Args: `{"q":"x"}`},
+	}
+	model := NewFakeChatModel(WithStreamChunks(chunk))
+
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
+		messages.Human("search"),
+	})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+
+	seen := map[int]streamevents.EventName{}
+	for _, event := range stream.Events() {
+		switch event.Event {
+		case streamevents.EventContentBlockStart, streamevents.EventContentBlockFinish:
+			if prior, clash := seen[event.Index]; clash {
+				t.Fatalf("index %d claimed twice (%s then %s)", event.Index, prior, event.Event)
+			}
+			seen[event.Index] = event.Event
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 distinct block indices, got %d: %v", len(seen), seen)
+	}
+
+	output, err := stream.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if len(output.ContentBlocks) != 3 {
+		t.Fatalf("output blocks: %+v", output.ContentBlocks)
+	}
+}
+
 func TestStreamEventsFallbackMalformedToolCallChunk(t *testing.T) {
 	chunk := messages.AI("")
 	chunk.ContentBlocks = []messages.ContentBlock{messages.ParseContentBlock(map[string]any{

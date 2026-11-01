@@ -3224,6 +3224,7 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, prep
 	bridge := &streamChunkBridge{
 		dispatch:    dispatch,
 		wireIndices: make(map[string]int),
+		takenWires:  make(map[int]bool),
 	}
 	for {
 		chunk, ok, err := stream.Next(ctx)

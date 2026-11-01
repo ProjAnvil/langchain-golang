@@ -81,8 +81,11 @@ type chunkProtocolBridge struct {
 	// wireIndices maps each streaming block's key to its stable wire index
 	// (#41257): blocks keyed by their source-side index (or, lacking one,
 	// their type and position) keep one index for every slice instead of the
-	// old len(events) fallback that drifted per event.
+	// old len(events) fallback that drifted per event. takenWires guards the
+	// synthetic allocator against colliding with a source-side index another
+	// block claimed.
 	wireIndices map[string]int
+	takenWires  map[int]bool
 	nextWire    int
 }
 
@@ -94,6 +97,7 @@ func newChunkProtocolBridge(
 		stream:      stream,
 		collector:   collector,
 		wireIndices: make(map[string]int),
+		takenWires:  make(map[int]bool),
 		nextWire:    1, // 0 is reserved for the text block
 	}
 }
@@ -279,21 +283,28 @@ func (b *chunkProtocolBridge) wireIndexAlloc(m map[string]any, position int) (in
 	if index, ok := b.wireIndices[key]; ok {
 		return index, false
 	}
+	// Prefer the block's own source index, but never one another key already
+	// claimed (a collision would clobber assembled block content).
 	index, ok := blockSourceIndex(m)
-	if !ok {
-		index = b.nextWire
-		b.nextWire++
+	if !ok || b.takenWires[index] {
+		index = b.freshIndex()
 	}
 	b.wireIndices[key] = index
+	b.takenWires[index] = true
 	return index, true
 }
 
-// freshIndex returns a never-reused wire index for one-shot blocks that are
-// finalized as they arrive (already-complete tool calls on a chunk): each
-// observation is a distinct block, so it gets a distinct index.
+// freshIndex returns a never-reused wire index that no other block claimed:
+// for one-shot blocks finalized as they arrive (already-complete tool calls
+// on a chunk), and as the synthetic index for streaming blocks without a
+// source-side one.
 func (b *chunkProtocolBridge) freshIndex() int {
+	for b.takenWires[b.nextWire] {
+		b.nextWire++
+	}
 	index := b.nextWire
 	b.nextWire++
+	b.takenWires[index] = true
 	return index
 }
 

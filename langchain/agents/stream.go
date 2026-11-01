@@ -343,7 +343,10 @@ type streamChunkBridge struct {
 	// wireIndices maps each streaming block's key to its stable wire index
 	// (#41257): tool-call chunks keyed by their source-side index (or, lacking
 	// one, their position in the chunk) keep one index for every slice.
+	// takenWires keeps synthetic indices from colliding with a source-side
+	// index another block claimed.
 	wireIndices map[string]int
+	takenWires  map[int]bool
 }
 
 func (b *streamChunkBridge) push(chunk messages.Message) {
@@ -364,7 +367,7 @@ func (b *streamChunkBridge) push(chunk messages.Message) {
 		b.pushBlock(block, i)
 	}
 	for _, call := range chunk.ToolCalls {
-		idx := b.nextIndex()
+		idx := b.nextFreeIndex()
 		b.dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: idx,
@@ -376,7 +379,7 @@ func (b *streamChunkBridge) push(chunk messages.Message) {
 		})
 	}
 	for _, call := range chunk.InvalidToolCalls {
-		idx := b.nextIndex()
+		idx := b.nextFreeIndex()
 		b.dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
 			Index: idx,
@@ -470,7 +473,7 @@ func (b *streamChunkBridge) pushBlock(block messages.ContentBlock, position int)
 		if blockType != "" {
 			b.dispatch(streamevents.Event{
 				Event:   streamevents.EventContentBlockFinish,
-				Index:   b.nextIndex(),
+				Index:   b.nextFreeIndex(),
 				Content: block,
 			})
 		}
@@ -482,7 +485,8 @@ func (b *streamChunkBridge) pushBlock(block messages.ContentBlock, position int)
 // just allocated. Blocks carrying a source-side index (int, float, or string)
 // are keyed by it; blocks without one are bucketed by position, mirroring
 // Python's compat bridge, so every slice of the same call shares one index
-// instead of the old per-event counter.
+// instead of the old per-event counter. Allocated indices never collide with
+// one another (a collision would clobber assembled block content).
 func (b *streamChunkBridge) toolWireIndex(m map[string]any, position int) (int, bool) {
 	var key string
 	hasSourceIndex := true
@@ -504,11 +508,23 @@ func (b *streamChunkBridge) toolWireIndex(m map[string]any, position int) (int, 
 	if idx, ok := b.wireIndices[key]; ok {
 		return idx, false
 	}
-	if !hasSourceIndex {
-		index = b.nextIndex()
+	if !hasSourceIndex || b.takenWires[index] {
+		index = b.nextFreeIndex()
 	}
 	b.wireIndices[key] = index
+	b.takenWires[index] = true
 	return index, true
+}
+
+// nextFreeIndex returns a monotonically increasing index that no other block
+// claimed, for synthetic allocation and one-shot finalized blocks.
+func (b *streamChunkBridge) nextFreeIndex() int {
+	index := b.nextIndex()
+	for b.takenWires[index] {
+		index = b.nextIndex()
+	}
+	b.takenWires[index] = true
+	return index
 }
 
 // nextIndex returns a monotonically increasing block index for non-text

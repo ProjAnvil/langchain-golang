@@ -1212,6 +1212,56 @@ func TestStreamChunkBridgeToolCallDeltaSequence(t *testing.T) {
 	}
 }
 
+// TestStreamChunkBridgeIndicesNeverCollide locks the bridge's allocation
+// rule: synthetic indices (for blocks without a source index) must not
+// collide with source-side indices other blocks claimed, or assembled block
+// content would clobber.
+func TestStreamChunkBridgeIndicesNeverCollide(t *testing.T) {
+	chunks := []messages.Message{
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.ParseContentBlock(map[string]any{
+				"type":      "reasoning",
+				"reasoning": "step",
+				"index":     1,
+			}),
+			messages.ToolCallChunkBlock{ID: "c1", Name: "search", Args: `{"q":"x"}`},
+		}},
+	}
+	model := &streamSequenceModel{
+		responses:    []messages.Message{messages.AI("hello")},
+		streamChunks: [][]messages.Message{chunks},
+	}
+	agent, err := CreateAgent(model, nil)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	events := drainStream(t, stream)
+	if end := requireTerminalEnd(t, events); end.Err != nil {
+		t.Fatalf("unexpected terminal error: %v", end.Err)
+	}
+
+	seen := map[int]streamevents.EventName{}
+	for _, ev := range events {
+		if ev.Type != StreamModelDelta || ev.Delta == nil {
+			continue
+		}
+		switch ev.Delta.Event {
+		case streamevents.EventContentBlockStart, streamevents.EventContentBlockFinish:
+			if prior, clash := seen[ev.Delta.Index]; clash {
+				t.Fatalf("index %d claimed twice (%s then %s)", ev.Delta.Index, prior, ev.Delta.Event)
+			}
+			seen[ev.Delta.Index] = ev.Delta.Event
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 distinct block indices, got %d: %v", len(seen), seen)
+	}
+}
+
 func TestStreamChunkBridgeContentBlocks(t *testing.T) {
 	chunks := []messages.Message{
 		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
