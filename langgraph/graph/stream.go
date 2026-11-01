@@ -343,6 +343,36 @@ func stripStreamCarriers(ctx context.Context) context.Context {
 	return ctx
 }
 
+// stripNestedInvokeCarriers derives the context for a run invoked inside a
+// node with its OWN thread identity (#9458, Python's #5674 shape): a child
+// graph invoked directly (not via AddSubgraph) with a ThreadID different from
+// the enclosing run's starts its namespace at the root, so an emitter
+// inherited from the caller's context would stream the child's chunks into
+// the caller's stream under the CALLER's namespace — misattributing them.
+// Mirroring Python's rule (pregel/main.py drops inherited messages/tools
+// handlers "whatever their subgraphs" for a child not run as a task of the
+// caller), such a run drops every inherited stream carrier: emitter, messages
+// bridge, and custom writer. A node that STREAMS the child itself still gets
+// its events — the child then installs its own carriers (Stream).
+//
+// Kept, not stripped: a top-level Stream run (no enclosing run published on
+// ctx), an AddSubgraph child (opts.checkpointNS names it a task of the
+// caller), and a nested invoke on the caller's own (or no) thread — those run
+// within the caller's namespace and keep streaming as part of it.
+func stripNestedInvokeCarriers(ctx context.Context, opts Options) context.Context {
+	if opts.checkpointNS != "" || opts.ThreadID == "" {
+		return ctx
+	}
+	if emitterFromContext(ctx) == nil {
+		return ctx
+	}
+	parent, ok := ctx.Value(executionMetaKey{}).(executionMeta)
+	if !ok || parent.opts.ThreadID == opts.ThreadID {
+		return ctx
+	}
+	return stripStreamCarriers(ctx)
+}
+
 // emitValues delivers a values chunk with the given state snapshot. When
 // StreamDelta is active it also delivers a delta chunk — the incremental diff
 // between this state and the last one emitted (every key whose value differs).

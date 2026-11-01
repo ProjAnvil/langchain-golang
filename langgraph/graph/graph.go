@@ -1055,6 +1055,10 @@ var checkpointSeq atomic.Int64
 // nil emitter makes every hook a no-op, so Invoke/InvokeStream keep their
 // exact prior behavior.
 func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink) (result Result, err error) {
+	// #9458: a nested invoke carrying its own thread identity must not adopt
+	// the caller's stream carriers (see stripNestedInvokeCarriers). This must
+	// precede the emitter read below, which then sees no inherited emitter.
+	ctx = stripNestedInvokeCarriers(ctx, opts)
 	em := emitterFromContext(ctx)
 	runCtx := ctx
 	if sink != nil {
