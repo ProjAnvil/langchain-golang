@@ -326,6 +326,13 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 			cmd.Graph = ""
 			return &cmd, nil
 		}
+		if _, ok := errors.AsType[*types.GraphDrainedError](err); ok {
+			// #9281: a drained child bubbles like Python's GraphDrained —
+			// unwrapped, so the parent run surfaces the drain itself (and
+			// stops: the child task never completed), instead of a
+			// subgraph-wrapped error.
+			return nil, err
+		}
 		return nil, fmt.Errorf("graph: subgraph %q: %w", name, err)
 	}
 	if len(res.Interrupts) > 0 {

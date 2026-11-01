@@ -5,7 +5,7 @@
 //
 // This package corresponds to Python's `langgraph.types` plus
 // `langgraph.constants` and `langgraph.errors` (GraphInterrupt,
-// GraphRecursionError).
+// GraphRecursionError, GraphDrained).
 package types
 
 import (
@@ -126,6 +126,22 @@ type GraphRecursionError struct {
 
 func (e *GraphRecursionError) Error() string {
 	return fmt.Sprintf("graph: recursion limit (%d) exceeded", e.Limit)
+}
+
+// GraphDrainedError reports that a run exited early because a cooperative
+// drain was requested, mirroring Python's `langgraph.errors.GraphDrained` (a
+// GraphBubbleUp). The graph stopped at a superstep boundary — the requesting
+// superstep fully committed and its checkpoint (with the next task set) was
+// saved — so a later resume continues from the boundary; see
+// graph.Options.Control and runtime.RunControl (#9281).
+type GraphDrainedError struct {
+	// Reason is the drain reason the requester passed to
+	// RunControl.RequestDrain ("shutdown" when it passed an empty string).
+	Reason string
+}
+
+func (e *GraphDrainedError) Error() string {
+	return fmt.Sprintf("graph drained: %s", e.Reason)
 }
 
 // CacheKey is the structured cache key a CachePolicy.KeyFunc returns,

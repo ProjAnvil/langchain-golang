@@ -872,6 +872,21 @@ type Options struct {
 	// Options.WithRunDurability.
 	Durability Durability
 
+	// Control supplies the run-scoped cooperative-draining control plane
+	// (#9281), mirroring Python's invoke/stream `control` parameter: a node
+	// (or any goroutine holding it) calls Control.RequestDrain, and the run
+	// loop stops at the next superstep boundary — AFTER the
+	// interrupt_before resolution, so breakpoints win over draining — with
+	// the requesting superstep fully committed and checkpointed, returning a
+	// *types.GraphDrainedError. A nil Control is resolved per run: the
+	// enclosing run's control is inherited (so subgraphs and nested invokes
+	// drain their caller, mirroring Python's `control or
+	// parent_runtime.control or RunControl()`), else a fresh one is minted
+	// and published on Runtime.Control for nodes to request drains through.
+	// Reuse across runs is the caller's choice: a still-drained control
+	// stops the next run at its first boundary.
+	Control *runtime.RunControl
+
 	// checkpointNS namespaces the run's checkpoints within the thread. It is
 	// set only internally, by the StateGraph.AddSubgraph node wrapper, to run
 	// a child graph under <parentNS>/<name>:<taskID> (see
@@ -1065,6 +1080,22 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		runCtx = ContextWithEventSink(ctx, sink)
 	}
 
+	// #9281: resolve the run-scoped RunControl the loop drains on and
+	// Runtime.Control surfaces to nodes: the caller's Options.Control wins,
+	// else the enclosing run's control is inherited (a subgraph or nested
+	// invoke drains its caller, mirroring Python's `control or
+	// parent_runtime.control or RunControl()`), else a fresh one is minted
+	// so rt.Control is never nil inside a run (see runtime.Runtime.Control).
+	control := opts.Control
+	if control == nil {
+		if m, ok := ctx.Value(executionMetaKey{}).(executionMeta); ok && m.control != nil {
+			control = m.control
+		}
+	}
+	if control == nil {
+		control = runtime.NewRunControl()
+	}
+
 	// Per-run durability override (Python's invoke/stream durability
 	// argument): an unknown value must fail loudly rather than silently
 	// disabling persistence.
@@ -1183,6 +1214,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		cfg:      currentCfg,
 		opts:     opts,
 		resuming: resuming,
+		control:  control,
 	})
 
 	// cpSink dispatches checkpoint/per-task writes according to the
@@ -1469,6 +1501,35 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 			return Result{Values: rs.snapshot(), Interrupts: []types.Interrupt{interrupt}}, nil
 		}
 		resumingNode = "" // resume-only skip applies solely to the first superstep
+
+		// #9281: stop before running the next superstep when a cooperative
+		// drain was requested (RunControl.RequestDrain). The check sits AFTER
+		// the interrupt_before resolution above — breakpoints win over
+		// draining: a resume passes the next step's breakpoints, so draining
+		// in front of one would skip it (Python 10f1fabb3). The previous
+		// superstep fully committed (writes applied, loop checkpoint saved
+		// with the successor task set), so the run stops at a clean boundary:
+		// a nil-input resume continues from it. Requesting a drain in the
+		// terminal superstep never trips — the next iteration exits via the
+		// empty-active break above before reaching this check, matching
+		// Python's tick order (no tasks -> done, then breakpoint, then drain).
+		if control.DrainRequested() {
+			// Under exit durability nothing has persisted yet (the end-of-loop
+			// saves only accumulated), so the boundary must be persisted as a
+			// durable stop — the same pause-exit path the interrupt blocks
+			// use (putPauseCheckpointExit), anchoring the accumulated delta
+			// writes on the drain checkpoint. Sync/async already saved this
+			// exact checkpoint at the previous iteration's end (Next = the
+			// successor plan), mirroring Python's tick-order guarantee.
+			if checkpointing && cpSink.mode == DurabilityExit {
+				next := plannedTasks(active)
+				stampDispatchIDs(next, active, *currentCfg, rs.step+1)
+				if err := savePause(checkpoint.Metadata{Source: "loop", Step: rs.step}, next, nil); err != nil {
+					return Result{}, err
+				}
+			}
+			return Result{Values: rs.snapshot()}, &types.GraphDrainedError{Reason: control.DrainReason()}
+		}
 
 		steps++
 		if steps > recursionLimit {
@@ -2566,8 +2627,9 @@ func (g *CompiledGraph) buildTimedRuntime(nodeCtx context.Context, t task, timeo
 //   - rt.ExecutionInfo is populated from the task's identity and the
 //     executor's current checkpoint position when available; nil when no
 //     checkpointer is in use (Python: nil before task prep populates it).
-//   - rt.Control and rt.ServerInfo are nil for now (no server/control plane
-//     in this port yet).
+//   - rt.Control is the run-scoped cooperative-draining surface resolved by
+//     the run loop (#9281); rt.ServerInfo stays nil (no server plane in this
+//     port yet).
 //
 // The returned Runtime shares ctx by reference (via the unexported ctx
 // field), so a node reading rt.Value(interruptCtxKey{}) still reaches the
@@ -2604,6 +2666,13 @@ func (g *CompiledGraph) buildRuntime(ctx context.Context, t task) runtime.Runtim
 	if ei := executionInfoFromContext(ctx, t); ei != nil {
 		rt.ExecutionInfo = ei
 	}
+	// Control: the run-scoped cooperative-draining surface (#9281), resolved
+	// and published by the run loop (see CompiledGraph.run). Never nil inside
+	// a run, so nodes can call rt.Control.RequestDrain without a nil-check;
+	// nil only outside an active graph runtime.
+	if m, ok := ctx.Value(executionMetaKey{}).(executionMeta); ok && m.control != nil {
+		rt.Control = m.control
+	}
 	return rt
 }
 
@@ -2628,6 +2697,11 @@ type executionMeta struct {
 	// wrapper reads it to forward the resume payload into child runs
 	// (invokeSubgraph), mirroring Python's CONFIG_KEY_RESUMING propagation.
 	resuming bool
+	// control is the run-scoped RunControl the loop drains on (#9281);
+	// buildRuntime surfaces it as Runtime.Control so nodes request drains
+	// through rt.Control, and a nested run's run() inherits it as its own
+	// control unless the caller supplied Options.Control.
+	control *runtime.RunControl
 }
 
 // executionInfoFromContext assembles an ExecutionInfo from the run's published
