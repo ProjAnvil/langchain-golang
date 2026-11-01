@@ -394,8 +394,8 @@ func TestDrawMermaidMetadataLabels(t *testing.T) {
 				"flag":  true,
 			}},
 			{ID: "sub", Name: "sub", Metadata: map[string]any{
-				"only":  map[string]any{"nested": "dict"},
-				"mixed": []any{1, map[string]any{"a": 2}},
+				"only":   map[string]any{"nested": "dict"},
+				"nested": []any{[]any{1}},
 			}},
 			{ID: "__end__", Name: "__end__"},
 		},
@@ -421,7 +421,7 @@ func TestDrawMermaidMetadataLabels(t *testing.T) {
 			t.Errorf("DrawMermaid() missing %q:\n%s", want, got)
 		}
 	}
-	for _, banned := range []string{"[search", "map[a:b]", `say "hi"`, "__subagents", "mixed"} {
+	for _, banned := range []string{"[search", "map[a:b]", `say "hi"`, "__subagents", "nested ="} {
 		if strings.Contains(got, banned) {
 			t.Errorf("DrawMermaid() must not contain %q:\n%s", banned, got)
 		}

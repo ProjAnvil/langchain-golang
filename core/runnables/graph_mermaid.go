@@ -423,30 +423,45 @@ func escapeMermaidLabel(text string) string {
 
 // formatMermaidMetadataValue mirrors Python's _format_metadata_value
 // (#41512): scalars (string, bool, all numeric kinds) render as before;
-// slices of only scalars join with ", "; everything else — maps, slices
-// holding non-scalars — is unrenderable and left out of the label. The
-// second result reports whether the value produced a label component.
-// Divergence: Go metadata has no set type, so slices keep their order like
-// Python lists/tuples; Python additionally sorts set items for stable
-// output.
+// slices of only flat scalars join with ", "; everything else — maps, and
+// slices holding non-scalars including nested slices — is unrenderable and
+// left out of the label, like Python's
+// all(isinstance(item, (str, int, float, bool))). The second result reports
+// whether the value produced a label component.
+// Divergences: Go metadata has no set type, so slices keep their order like
+// Python lists/tuples (Python additionally sorts set items); and Go renders
+// its own bool spelling (true/false where Python writes True/False).
 func formatMermaidMetadataValue(value any) (string, bool) {
 	switch value := value.(type) {
 	case string, bool, float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		// Scalars render via %v: Go-native casing (true/false, not Python's
+		// True/False) — cosmetic divergence from str(value).
 		return fmt.Sprintf("%v", value), true
 	case []string:
 		return strings.Join(value, ", "), true
 	case []any:
 		parts := make([]string, 0, len(value))
 		for _, item := range value {
-			formatted, ok := formatMermaidMetadataValue(item)
-			if !ok {
+			if !isMermaidScalar(item) {
 				return "", false
 			}
-			parts = append(parts, formatted)
+			parts = append(parts, fmt.Sprintf("%v", item))
 		}
 		return strings.Join(parts, ", "), true
 	default:
 		return "", false
+	}
+}
+
+// isMermaidScalar reports whether value is one of the flat scalar types
+// _format_metadata_value accepts inside a list (nested containers are not
+// scalars and make the whole list unrenderable).
+func isMermaidScalar(value any) bool {
+	switch value.(type) {
+	case string, bool, float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	default:
+		return false
 	}
 }
 
