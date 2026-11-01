@@ -367,3 +367,63 @@ func TestGraphTrimFirstLastNode(t *testing.T) {
 		t.Fatalf("join last node must be kept: %#v", graph.Nodes)
 	}
 }
+
+// TestDrawMermaidMetadataLabels ports Python's test_graph_mermaid_metadata_labels
+// (#41512, graph_mermaid.py): node metadata joins the label as "key = value"
+// lines with scalar-only formatting (lists of scalars join with ", ", maps and
+// nested values are omitted; a node with nothing renderable gets no metadata
+// section) and every metadata line is escaped to Mermaid entity codes
+// (#35; #91; #93; #40; #41; #123; #125; #quot; #60; #62; #124;). Divergence:
+// Go metadata has no set type, so slices keep their order like Python
+// lists/tuples (Python additionally sorts set items).
+func TestDrawMermaidMetadataLabels(t *testing.T) {
+	graph := Graph{
+		Nodes: []GraphNode{
+			{ID: "__start__", Name: "__start__"},
+			{ID: "tools", Name: "tools", Metadata: map[string]any{
+				"__tools":     []any{"search", "lookup"},
+				"tags":        []any{"c", "a", "b"},
+				"__subagents": map[string]any{"a": "b"},
+			}},
+			{ID: "agent", Name: "agent", Metadata: map[string]any{
+				"note": `say "hi" [x] (y) {z} <b> #1 str | None`,
+			}},
+			{ID: "scalars", Name: "scalars", Metadata: map[string]any{
+				"count": 3,
+				"ratio": 0.5,
+				"flag":  true,
+			}},
+			{ID: "sub", Name: "sub", Metadata: map[string]any{
+				"only":  map[string]any{"nested": "dict"},
+				"mixed": []any{1, map[string]any{"a": 2}},
+			}},
+			{ID: "__end__", Name: "__end__"},
+		},
+		Edges: []GraphEdge{
+			{Source: "__start__", Target: "tools"},
+			{Source: "tools", Target: "agent"},
+			{Source: "agent", Target: "scalars"},
+			{Source: "scalars", Target: "sub"},
+			{Source: "sub", Target: "__end__"},
+		},
+		FirstNode: "__start__",
+		LastNode:  "__end__",
+	}
+	got := graph.DrawMermaid()
+	for _, want := range []string{
+		"\ttools(tools<hr/><small><em>__tools = search, lookup\ntags = c, a, b</em></small>)\n",
+		"\tagent(agent<hr/><small><em>note = say #quot;hi#quot; #91;x#93; #40;y#41; " +
+			"#123;z#125; #60;b#62; #35;1 str #124; None</em></small>)\n",
+		"\tscalars(scalars<hr/><small><em>count = 3\nflag = true\nratio = 0.5</em></small>)\n",
+		"\tsub(sub)\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("DrawMermaid() missing %q:\n%s", want, got)
+		}
+	}
+	for _, banned := range []string{"[search", "map[a:b]", `say "hi"`, "__subagents", "mixed"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("DrawMermaid() must not contain %q:\n%s", banned, got)
+		}
+	}
+}

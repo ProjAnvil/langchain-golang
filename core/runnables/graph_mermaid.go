@@ -125,12 +125,8 @@ func (g Graph) DrawMermaid(opts ...MermaidOption) string {
 		if isMarkdownSpecialName(label) {
 			label = "<p>" + label + "</p>"
 		}
-		if len(node.Metadata) > 0 {
-			pairs := make([]string, 0, len(node.Metadata))
-			for _, key := range sortedRunnableKeys(node.Metadata) {
-				pairs = append(pairs, fmt.Sprintf("%s = %v", key, node.Metadata[key]))
-			}
-			label += "<hr/><small><em>" + strings.Join(pairs, "\n") + "</em></small>"
+		if metadataLines := formatMermaidMetadataLines(node.Metadata); len(metadataLines) > 0 {
+			label += "<hr/><small><em>" + strings.Join(metadataLines, "\n") + "</em></small>"
 		}
 		id := toSafeMermaidID(node.ID)
 		switch node.ID {
@@ -396,6 +392,77 @@ func yamlNeedsQuotes(s string) bool {
 		return true
 	}
 	return false
+}
+
+// mermaidLabelEscapes mirrors Python's _MERMAID_LABEL_ESCAPES
+// (graph_mermaid.py): the Mermaid-significant characters replaced with entity
+// codes so metadata cannot break out of the node label syntax.
+var mermaidLabelEscapes = [][2]string{
+	{"[", "#91;"},
+	{"]", "#93;"},
+	{"(", "#40;"},
+	{")", "#41;"},
+	{"{", "#123;"},
+	{"}", "#125;"},
+	{`"`, "#quot;"},
+	{"<", "#60;"},
+	{">", "#62;"},
+	{"|", "#124;"},
+}
+
+// escapeMermaidLabel mirrors Python's _escape_mermaid_label (#41512): '#' is
+// replaced first (so the entity introducer itself is escaped before any
+// entities are inserted), then each Mermaid-significant character.
+func escapeMermaidLabel(text string) string {
+	text = strings.ReplaceAll(text, "#", "#35;")
+	for _, escape := range mermaidLabelEscapes {
+		text = strings.ReplaceAll(text, escape[0], escape[1])
+	}
+	return text
+}
+
+// formatMermaidMetadataValue mirrors Python's _format_metadata_value
+// (#41512): scalars (string, bool, all numeric kinds) render as before;
+// slices of only scalars join with ", "; everything else — maps, slices
+// holding non-scalars — is unrenderable and left out of the label. The
+// second result reports whether the value produced a label component.
+// Divergence: Go metadata has no set type, so slices keep their order like
+// Python lists/tuples; Python additionally sorts set items for stable
+// output.
+func formatMermaidMetadataValue(value any) (string, bool) {
+	switch value := value.(type) {
+	case string, bool, float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%v", value), true
+	case []string:
+		return strings.Join(value, ", "), true
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, item := range value {
+			formatted, ok := formatMermaidMetadataValue(item)
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, formatted)
+		}
+		return strings.Join(parts, ", "), true
+	default:
+		return "", false
+	}
+}
+
+// formatMermaidMetadataLines mirrors Python's _format_metadata_lines
+// (#41512): one "key = value" line per renderable metadata entry, each
+// escaped as a Mermaid label. Unrenderable entries (maps, nested values) are
+// dropped; a metadata map with nothing renderable yields no lines, so the
+// node gets no metadata section at all.
+func formatMermaidMetadataLines(metadata map[string]any) []string {
+	lines := make([]string, 0, len(metadata))
+	for _, key := range sortedRunnableKeys(metadata) {
+		if formatted, ok := formatMermaidMetadataValue(metadata[key]); ok {
+			lines = append(lines, escapeMermaidLabel(key+" = "+formatted))
+		}
+	}
+	return lines
 }
 
 // toSafeMermaidID converts a node ID into a Mermaid-compatible id, the Go
