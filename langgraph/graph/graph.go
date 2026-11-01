@@ -1352,6 +1352,10 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				active[i].path = dispatchPath(i)
 			}
 		}
+		// Exit durability accumulates per-superstep writes; the FIRST
+		// superstep is the anchor superstep whose writes keep their real
+		// dispatch paths (see checkpointSink.beginSuperstep).
+		cpSink.beginSuperstep(rs.step + 1)
 
 		// interrupt_before: if any active task's node is registered, pause
 		// before dispatching the superstep. resumingNode excludes the node

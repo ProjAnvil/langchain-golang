@@ -41,8 +41,17 @@ type checkpointSink struct {
 	hasPersistedParent bool
 	initialCfg         checkpoint.Config
 	exitAnchorID       string
-	// exit mode: current superstep (updated by the invoke loop)
+	// exit mode: current superstep (updated by the invoke loop via
+	// beginSuperstep; input writes accumulate before the first superstep
+	// under step 0, mirroring Python's _first appending input writes at the
+	// entry step)
 	currentStep int
+	// exit mode: the run's FIRST superstep — the anchor superstep whose
+	// writes keep their real dispatch paths so they interleave with the
+	// writes a resume loaded from the anchor checkpoint exactly as live
+	// execution applied them (Python #9114's _exit_first_step).
+	exitFirstStep int
+	exitFirstSet  bool
 	// exitPauseFlushed records that a pause checkpoint (and its pending
 	// writes) were already persisted synchronously by putPauseCheckpoint,
 	// so the deferred flushExit must not write anything else: its final
@@ -249,8 +258,8 @@ func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpo
 		if _, ok := channels.UnwrapDeltaSnapshot(cp.ChannelValues[w.channel]); ok {
 			continue
 		}
-		synthTID := exitDeltaTaskID(w.step, w.taskID)
-		if err := s.saver.PutWrites(ctx, resultCfg, []checkpoint.Write{{Channel: w.channel, Value: w.value}}, synthTID, ""); err != nil {
+		tid, path := s.exitPauseWriteKey(w)
+		if err := s.saver.PutWrites(ctx, resultCfg, []checkpoint.Write{{Channel: w.channel, Value: w.value}}, tid, path); err != nil {
 			return checkpoint.Config{}, err
 		}
 	}
@@ -355,6 +364,67 @@ func cloneAnyShallow(v any) any {
 
 // --- exit mode (stubs — implemented in Task 8) ---
 
+// beginSuperstep records the superstep the executor is entering, latching
+// the run's FIRST superstep as the anchor superstep (Python #9114's
+// _exit_first_step): its accumulated writes keep their real dispatch paths
+// so they interleave with the writes a resume loaded from the anchor
+// checkpoint; every later superstep's writes sort after all real task ids
+// and paths, in step order. No-op outside exit durability.
+func (s *checkpointSink) beginSuperstep(step int) {
+	if s.mode != DurabilityExit {
+		return
+	}
+	if !s.exitFirstSet {
+		s.exitFirstSet = true
+		s.exitFirstStep = step
+	}
+	s.currentStep = step
+}
+
+// exitWriteKey derives the (task ID, task path) pair an accumulated exit
+// write is stored under when the run COMPLETES and flushExit anchors it on
+// the run's starting checkpoint — Python #9114's _put_exit_delta_writes
+// grouping (_loop.py):
+//
+//   - input writes (NullTaskID) replay as the anchor checkpoint's own state:
+//     pathless, sorting before every task write;
+//   - the anchor superstep's writes keep their real dispatch paths — they
+//     interleave with the writes loaded from the anchor checkpoint exactly
+//     as live execution applied them — under step-prefixed synthetic ids
+//     (synthetic, never the real id, so a run whose final checkpoint fails
+//     to save does not leave the resumed task looking done);
+//   - every later superstep sorts after all real task ids and paths, in
+//     step order, so replay preserves chronology whether a saver orders by
+//     task path (#8544) or only by task id.
+func (s *checkpointSink) exitWriteKey(w exitDeltaWrite) (taskID, taskPath string) {
+	switch {
+	case w.taskID == checkpoint.NullTaskID:
+		return exitDeltaTaskID(w.step, w.taskID), ""
+	case w.step == s.exitFirstStep:
+		return exitDeltaTaskID(w.step, w.taskID), w.taskPath
+	default:
+		return exitDeltaLateTaskID(w.step, w.taskID), exitDeltaLatePath(w.step, w.taskPath)
+	}
+}
+
+// exitPauseWriteKey is the pause-path variant used by
+// putPauseCheckpointExit, which anchors the accumulator on the PAUSE
+// checkpoint — the same checkpoint that receives the pause superstep's own
+// direct writes (real ids, real dispatch paths). Every accumulated write is
+// from a superstep strictly BEFORE the pause superstep, so beyond the
+// input write (pathless) they all sort before every real dispatch path, in
+// step order: a "!"-prefixed step-qualified path, the mirror image of
+// exitDeltaLatePath's sort-after "~~" prefix. (Python does not need this:
+// its _suppress_interrupt anchors accumulated writes on the run's START
+// checkpoint, not the pause checkpoint — a Go divergence kept from the
+// v0.11.1 exit-anchor checkpoint-ID reservation work.)
+func (s *checkpointSink) exitPauseWriteKey(w exitDeltaWrite) (taskID, taskPath string) {
+	if w.taskID == checkpoint.NullTaskID {
+		return exitDeltaTaskID(w.step, w.taskID), ""
+	}
+	return exitDeltaTaskID(w.step, w.taskID), exitDeltaEarlyPath(w.step, w.taskPath)
+}
+
 func (s *checkpointSink) accumulateExitWrites(writes []checkpoint.Write, taskID, taskPath string) {
 	for _, w := range writes {
 		s.exitDeltaWrites = append(s.exitDeltaWrites, exitDeltaWrite{
@@ -427,10 +497,12 @@ func (s *checkpointSink) flushExit() error {
 		anchorCfg = checkpoint.Config{ThreadID: s.flushOpts.ThreadID, CheckpointNS: s.flushOpts.checkpointNS, CheckpointID: stubCp.ID}
 	}
 
-	// 4. Persist accumulated delta writes with step-prefixed task IDs
+	// 4. Persist accumulated delta writes under their exit write keys
+	// (real paths for the anchor superstep, sort-after keys for later
+	// supersteps — see exitWriteKey).
 	for _, w := range pending {
-		synthTID := exitDeltaTaskID(w.step, w.taskID)
-		if err := s.saver.PutWrites(s.flushCtx, anchorCfg, []checkpoint.Write{{Channel: w.channel, Value: w.value}}, synthTID, ""); err != nil {
+		tid, path := s.exitWriteKey(w)
+		if err := s.saver.PutWrites(s.flushCtx, anchorCfg, []checkpoint.Write{{Channel: w.channel, Value: w.value}}, tid, path); err != nil {
 			return err
 		}
 	}

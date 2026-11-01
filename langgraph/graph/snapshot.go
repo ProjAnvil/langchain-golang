@@ -245,6 +245,12 @@ func (g *CompiledGraph) BulkUpdateState(ctx context.Context, cfg checkpoint.Conf
 // snapshot blobs stored in ChannelValues are unwrapped to their inner values.
 func (g *CompiledGraph) snapshotFromTuple(tup *checkpoint.Tuple) StateSnapshot {
 	values := maps.Clone(tup.Checkpoint.ChannelValues)
+	if values == nil {
+		// A checkpoint whose channel values round-tripped through a
+		// persistent saver as an empty (or omitted) map decodes to nil;
+		// Values must stay assignable for delta reconstruction below.
+		values = map[string]any{}
+	}
 	for key, val := range values {
 		if isJoinKey(g.channelProtos, key) {
 			delete(values, key)
