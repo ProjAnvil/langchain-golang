@@ -473,8 +473,16 @@ func TestChatCompletionsStreamInvalidToolCallArguments(t *testing.T) {
 	}
 	defer stream.Close()
 
+	// The unparseable args slice is forwarded incrementally first (#41257)...
 	chunk, ok, err := stream.Next(t.Context())
 	if err != nil || !ok {
+		t.Fatalf("Next: ok=%v err=%v", ok, err)
+	}
+	if block := messages.BlockToMap(chunk.ContentBlocks[0]); block["id"] != "call_1" {
+		t.Fatalf("slice block = %#v", block)
+	}
+	// ...then the terminal [DONE] chunk carries the invalid call.
+	if chunk, ok, err = stream.Next(t.Context()); err != nil || !ok {
 		t.Fatalf("Next: ok=%v err=%v", ok, err)
 	}
 	if len(chunk.ToolCalls) != 0 || len(chunk.InvalidToolCalls) != 1 {

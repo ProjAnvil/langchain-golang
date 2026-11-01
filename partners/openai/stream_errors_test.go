@@ -396,11 +396,27 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 		}
 		defer stream.Close()
 
-		// Index 1 never streamed: finalToolCallChunk iterates 0..len-1, so the
-		// missing slot is skipped — but the call at index 2 is also dropped
-		// (same lossy behavior locked by the second subtest).
+		// Each slice is forwarded as it arrives (#41257), so both sparse
+		// calls surface as tool_call_chunk blocks even though the assembly
+		// below remains index-ordered.
 		chunk, ok, err := stream.Next(t.Context())
 		if err != nil || !ok {
+			t.Fatalf("Next: ok=%v err=%v", ok, err)
+		}
+		if block := messages.BlockToMap(chunk.ContentBlocks[0]); block["id"] != "call_2" {
+			t.Fatalf("first slice = %#v", block)
+		}
+		if chunk, ok, err = stream.Next(t.Context()); err != nil || !ok {
+			t.Fatalf("Next: ok=%v err=%v", ok, err)
+		}
+		if block := messages.BlockToMap(chunk.ContentBlocks[0]); block["id"] != "call_0" {
+			t.Fatalf("second slice = %#v", block)
+		}
+
+		// Index 1 never streamed: finalToolCallChunk iterates 0..len-1, so the
+		// missing slot is skipped — but the call at index 2 is also dropped
+		// (same lossy assembly locked by the second subtest).
+		if chunk, ok, err = stream.Next(t.Context()); err != nil || !ok {
 			t.Fatalf("Next: ok=%v err=%v", ok, err)
 		}
 		if len(chunk.ToolCalls) != 1 || chunk.ToolCalls[0].ID != "call_0" {
@@ -423,10 +439,19 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 		}
 		defer stream.Close()
 
-		// NOTE: finalToolCallChunk iterates 0..len(toolCalls)-1, so a lone
-		// tool call at index 2 is never assembled — the stream ends without a
-		// final chunk. This locks the current (lossy) behavior; it looks like a
-		// production bug worth reporting rather than covering up.
+		// The slice itself is forwarded incrementally (#41257), so the sparse
+		// call is no longer invisible mid-stream...
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil || !ok {
+			t.Fatalf("Next: ok=%v err=%v", ok, err)
+		}
+		if block := messages.BlockToMap(chunk.ContentBlocks[0]); block["id"] != "call_2" {
+			t.Fatalf("slice = %#v", block)
+		}
+		// ...but NOTE: finalToolCallChunk iterates 0..len(toolCalls)-1, so a
+		// lone tool call at index 2 is still never assembled — the stream ends
+		// without a final chunk. This locks the current (lossy) assembly; it
+		// looks like a production bug worth reporting rather than covering up.
 		if _, ok, err := stream.Next(t.Context()); err != nil || ok {
 			t.Fatalf("expected stream end without chunk, ok=%v err=%v", ok, err)
 		}

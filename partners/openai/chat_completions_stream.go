@@ -194,6 +194,7 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 			}
 			return chunk, true, nil
 		}
+		var toolChunkBlocks []messages.ContentBlock
 		for _, tc := range delta.ToolCalls {
 			call := s.toolCalls[tc.Index]
 			if call == nil {
@@ -207,6 +208,24 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 				call.Name = tc.Function.Name
 			}
 			call.Arguments += tc.Function.Arguments
+			// Forward each args slice as it arrives (#41257): the chunk
+			// carries only what the API sent on it — id/name on the call's
+			// first slice, then args slices alone. The assembled call still
+			// rides the terminal [DONE] chunk.
+			toolChunkBlocks = append(toolChunkBlocks, messages.ToolCallChunkBlock{
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Args:  tc.Function.Arguments,
+				Index: tc.Index,
+			})
+		}
+		if len(toolChunkBlocks) > 0 {
+			chunk := messages.AI("")
+			chunk.ContentBlocks = toolChunkBlocks
+			if err := emitStream(ctx, s.cfg, chunk); err != nil {
+				return messages.Message{}, false, err
+			}
+			return chunk, true, nil
 		}
 	}
 }

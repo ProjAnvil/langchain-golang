@@ -97,6 +97,81 @@ func TestChatCompletionsStreamToolCalls(t *testing.T) {
 	}
 }
 
+// TestChatCompletionsStreamToolArgsForwardedIncrementally locks #41257's
+// chat-completions shape: each tool_calls delta yields a message chunk
+// carrying the per-slice args as a tool_call_chunk block (id/name only on the
+// chunk where the API sent them), instead of buffering everything until
+// [DONE]. The terminal [DONE] chunk still carries the assembled call.
+func TestChatCompletionsStreamToolArgsForwardedIncrementally(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w,
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\"}}]}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"hi\\\"}\"}}]}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	).WithChatCompletions()
+
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var chunks []messages.Message
+	for {
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3 (two slices + assembled terminal): %+v", len(chunks), chunks)
+	}
+
+	slice := func(i int) map[string]any {
+		t.Helper()
+		if len(chunks[i].ContentBlocks) != 1 {
+			t.Fatalf("chunk[%d] content blocks: %+v", i, chunks[i].ContentBlocks)
+		}
+		m := messages.BlockToMap(chunks[i].ContentBlocks[0])
+		if m["type"] != "tool_call_chunk" {
+			t.Fatalf("chunk[%d] block type: %v", i, m["type"])
+		}
+		return m
+	}
+	first := slice(0)
+	if first["id"] != "call_1" || first["name"] != "search" || first["args"] != `{"q":` || first["index"] != 0 {
+		t.Fatalf("first slice block: %#v", first)
+	}
+	second := slice(1)
+	if second["args"] != `"hi"}` {
+		t.Fatalf("second slice block: %#v", second)
+	}
+	if _, ok := second["id"]; ok {
+		t.Fatalf("later slice must not repeat id: %#v", second)
+	}
+	if _, ok := second["name"]; ok {
+		t.Fatalf("later slice must not repeat name: %#v", second)
+	}
+
+	final := chunks[len(chunks)-1]
+	if len(final.ToolCalls) != 1 || final.ToolCalls[0].ID != "call_1" ||
+		final.ToolCalls[0].Name != "search" || final.ToolCalls[0].Args["q"] != "hi" {
+		t.Fatalf("terminal assembled chunk: %+v", final.ToolCalls)
+	}
+}
+
 // TestChatCompletionsStreamToolsNestedFunctionShape locks the STREAM request
 // payload to the Chat Completions tools shape: the function descriptor must be
 // nested under "function" (regression test for the flat toolSpec leak that
