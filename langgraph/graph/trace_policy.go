@@ -4,10 +4,13 @@ package graph
 // langgraph 1.2.11's add_node(trace_policy=) (PR #8523) with the scoping
 // upstream fixed in #9486: transforms are applied where events are EMITTED,
 // before any tracer (LangSmith, console, a future OTel bridge) observes
-// them, so tracers see the scrubbed payloads while handlers that deliver the
-// run's output to the caller (the messages stream bridge, a
-// callbacks.RawPayloadHandler) keep seeing the raw ones — the policy exists
-// to keep tracer ingest small, not to rewrite streamed payloads. Installed
+// them, so tracers see the scrubbed payloads while handlers whose output
+// belongs to the caller or meters it (the messages stream bridge, usage
+// aggregation — callbacks.RawPayloadHandler implementers) keep seeing the
+// raw ones — the policy exists to keep tracer ingest small, not to rewrite
+// what non-tracer handlers receive. Go has no tracer type system, so the
+// rule is scrubbed-by-default with the opt-out marker, the inverse of
+// upstream's tracer-only opt-in (see DIVERGENCES.md). Installed
 // per node via NodePolicies.Trace (StateGraph.AddNodeWithPolicies); the
 // executor wraps the node context's callback manager in a
 // callbacks.NewPayloadPolicyManager for the duration of the node's task,

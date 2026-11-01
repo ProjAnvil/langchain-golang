@@ -71,8 +71,11 @@ func TestPayloadPolicyManagerPanicFailsClosed(t *testing.T) {
 	// transform still applies. Deliberate divergence from upstream's
 	// fail-open behavior (see DIVERGENCES.md): the feature's motivation is
 	// PII/compliance, so failing open would silently leak the raw payload.
+	// A raw-payload handler next to the tracer must be unaffected by the
+	// panic entirely: its raw delivery never passes through the transform.
 	recorder := NewRecorder()
-	parent := NewManager(recorder)
+	stream := rawPayloadRecorder{NewRecorder()}
+	parent := NewManager(recorder, stream)
 	panicky := func(any) any { panic("transform exploded") }
 
 	wrapped := NewPayloadPolicyManager(parent, panicky, redactPayload)
@@ -92,6 +95,17 @@ func TestPayloadPolicyManagerPanicFailsClosed(t *testing.T) {
 		t.Fatalf("Output = %v, want %q (an independent transform must still apply)", got, want)
 	}
 	assertNoRawPayload(t, "recorder", events)
+
+	streamEvents := stream.Events()
+	if len(streamEvents) != 1 {
+		t.Fatalf("raw-payload handler recorded %d events, want 1", len(streamEvents))
+	}
+	if got, want := streamEvents[0].Input, "secret"; got != want {
+		t.Fatalf("raw-payload handler Input = %v, want the RAW %q (raw delivery survives a panicking transform)", got, want)
+	}
+	if got, want := streamEvents[0].Output, "clean secret"; got != want {
+		t.Fatalf("raw-payload handler Output = %v, want the RAW %q", got, want)
+	}
 }
 
 func TestPayloadPolicyManagerChildRetainsPolicy(t *testing.T) {

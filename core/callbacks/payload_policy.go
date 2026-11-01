@@ -8,9 +8,13 @@ import "context"
 // and langchain 1.3.15's middleware trace_policy (#38910). Any tracer
 // attached to parent (LangSmith, console, a future OTel bridge) therefore
 // sees the transformed payloads. Handlers that opted into raw payloads
-// (RawPayloadHandler — stream bridges) still see the real ones: since
-// langgraph #9486 the policy scopes to tracers, because it exists to keep
-// tracer ingest small, not to rewrite what streams deliver to the caller.
+// (RawPayloadHandler — stream bridges, usage aggregators) still see the real
+// ones: since langgraph #9486 the policy scopes to tracers, because it exists
+// to keep tracer ingest small, not to rewrite what other handlers deliver.
+// Go has no tracer type system, so the rule is scrubbed-by-default with an
+// opt-out marker — the inverse of upstream's tracer-only opt-in (see
+// DIVERGENCES.md). Transforms must return a NEW value: mutating a pointer
+// payload in place would corrupt the raw delivery too.
 //
 // Manager is a value struct with no virtual dispatch, so the wrapper is built
 // by composition rather than embedding: the returned manager's single handler
@@ -33,8 +37,11 @@ func NewPayloadPolicyManager(parent Manager, processInputs, processOutputs func(
 // RawPayloadHandler is a Handler that must observe a run's REAL payloads even
 // when a payload policy (trace_policy) is active: the policy rewrites what
 // tracers record, never what the handler itself delivers. Implement it —
-// returning true — for stream bridges whose output belongs to the caller
-// (langgraph's messages mode does; upstream #9486).
+// returning true — for handlers whose output belongs to the caller rather
+// than to a trace (langgraph's messages bridge and the usage aggregator do;
+// upstream #9486). Transforms must return a NEW value: mutating a pointer
+// payload in place would corrupt the raw delivery too (Python's processors
+// have the identical exposure).
 type RawPayloadHandler interface {
 	Handler
 	// RawPayloads reports whether the handler opts out of payload-policy

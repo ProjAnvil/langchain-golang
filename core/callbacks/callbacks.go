@@ -283,6 +283,12 @@ func NewUsageMetadataHandler() *UsageMetadataHandler {
 	return &UsageMetadataHandler{usage: map[string]messages.UsageMetadata{}}
 }
 
+// RawPayloads opts the handler out of payload-policy transforms
+// (callbacks.RawPayloadHandler): usage aggregation is metering, not tracing —
+// an omitting node policy must not destroy usage data (upstream #9486 keeps
+// every non-tracer handler on the real payloads).
+func (h *UsageMetadataHandler) RawPayloads() bool { return true }
+
 func (h *UsageMetadataHandler) HandleEvent(_ context.Context, event Event) error {
 	if event.Kind != EventChatModelEnd {
 		return nil

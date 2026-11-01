@@ -214,6 +214,12 @@ type eventCollector struct {
 	closed *atomic.Bool
 }
 
+// RawPayloads opts the collector out of payload-policy transforms
+// (callbacks.RawPayloadHandler): StreamEvents feeds the caller's own stream,
+// which — like langgraph's messages mode (#9486) — must see the run's real
+// payloads, not what a trace policy records.
+func (c *eventCollector) RawPayloads() bool { return true }
+
 // HandleEvent implements callbacks.Handler.
 func (c *eventCollector) HandleEvent(ctx context.Context, event callbacks.Event) error {
 	if c.closed.Load() {

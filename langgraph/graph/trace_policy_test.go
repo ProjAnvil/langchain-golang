@@ -187,3 +187,54 @@ func TestNodeTracePolicyScrubsTracersNotMessagesStream(t *testing.T) {
 		t.Errorf("tracer saw Output content = %q, want the SCRUBBED %q", got, want)
 	}
 }
+
+// TestNodeTracePolicySparesUsageHandler pins the user-reachable protected
+// class of #9486's scoping: a usage-metadata handler installed as the node's
+// callback handler is metering, not tracing, so even an omitting node policy
+// must not destroy the usage data it aggregates (upstream keeps every
+// non-tracer handler on the real payloads). The tracer next to it still sees
+// the omitted payloads.
+func TestNodeTracePolicySparesUsageHandler(t *testing.T) {
+	usage := callbacks.NewUsageMetadataHandler()
+	tracer := callbacks.NewRecorder()
+	ctx := callbacks.ContextWithManager(t.Context(), callbacks.NewManager(tracer, usage))
+
+	g := NewStateGraph()
+	g.AddNodeWithPolicies("model", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		manager, ok := callbacks.ManagerFromContext(rt)
+		if !ok {
+			return nil, errors.New("trace policy test: no callback manager in the node context")
+		}
+		msg := messages.AI("answer")
+		msg.ResponseMetadata = map[string]any{"model_name": "test-model"}
+		msg.UsageMetadata = messages.UsageMetadata{InputTokens: 3, OutputTokens: 5, TotalTokens: 8}
+		if err := manager.Emit(rt, callbacks.Event{Kind: callbacks.EventChatModelEnd, Output: msg}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"done": true}, nil
+	}, NodePolicies{Trace: &TracePolicy{ProcessOutputs: OmitPayload}})
+	g.AddEdge(types.START, "model")
+	g.AddEdge("model", types.END)
+	cg, err := g.Compile()
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if _, err := cg.Invoke(ctx, map[string]any{}); err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+
+	// Usage aggregation kept the REAL payload: token counts survive the
+	// omitting policy.
+	if got, want := usage.Usage()["test-model"], (messages.UsageMetadata{InputTokens: 3, OutputTokens: 5, TotalTokens: 8}); got != want {
+		t.Errorf("usage for test-model = %+v, want %+v (usage handlers are not tracers; the policy must not drop their payloads)", got, want)
+	}
+
+	// The tracer next to it still saw the OMITTED payload.
+	events := tracer.Events()
+	if len(events) != 1 {
+		t.Fatalf("tracer recorded %d events, want 1 (chat_model_end)", len(events))
+	}
+	if events[0].Output != nil {
+		t.Errorf("tracer saw Output = %v, want nil (omitted by the policy)", events[0].Output)
+	}
+}
