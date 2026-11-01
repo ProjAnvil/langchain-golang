@@ -3369,7 +3369,7 @@ func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s s
 			return nil, err
 		}
 		if len(gotoDests) > 0 {
-				return &types.Command{Update: update, Goto: gotoDests}, nil
+			return &types.Command{Update: update, Goto: gotoDests}, nil
 		}
 		return update, nil
 	}, toolNode, nil

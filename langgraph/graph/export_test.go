@@ -462,6 +462,29 @@ func TestGetGraphToolsMetadata(t *testing.T) {
 	}
 }
 
+// TestAddNodeClearsStaleBound pins the nodeBounds invariant: registering a
+// node name drops any bound object recorded for that name, so a node can
+// never export a previous registration's `__tools` metadata. Today the
+// builder rejects duplicate names before nodes can be replaced, so the
+// phantom bound here simulates a stale entry (e.g. from future registration
+// APIs) and asserts AddNode scrubs it.
+func TestAddNodeClearsStaleBound(t *testing.T) {
+	g := NewStateGraph()
+	g.AddNodeWithBound("tools", noopNode, fakeToolBound{names: []string{"stale"}})
+	// Simulate a stale entry surviving a plain re-registration of the name.
+	g.nodeBounds["plain"] = fakeToolBound{names: []string{"phantom"}}
+	g.AddNode("plain", noopNode)
+
+	delete(g.nodes, "tools")
+	g.AddNode("tools", noopNode) // re-register without a bound
+
+	for _, node := range g.GetGraph().Nodes {
+		if _, ok := node.Metadata["__tools"]; ok {
+			t.Fatalf("node %q unexpectedly exports __tools from a stale bound: %v", node.ID, node.Metadata)
+		}
+	}
+}
+
 // compileSubgraph is a test helper building START -> x -> y -> END.
 func compileSubgraph(t *testing.T, nameX, nameY string) *CompiledGraph {
 	t.Helper()

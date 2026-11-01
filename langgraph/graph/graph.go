@@ -129,7 +129,9 @@ type StateGraph struct {
 	// nodeBounds records the object each node wraps ("bound", Python's
 	// node.bound analog) for nodes registered via AddNodeWithBound, keyed by
 	// node name, so GetGraph can duck-type export metadata (e.g. `__tools`,
-	// #9449). Absent for plain AddNode registrations.
+	// #9449). Absent for plain AddNode registrations; cleared whenever a name
+	// is (re)registered (see AddNodeWithPolicies), so an entry always
+	// describes the current registration of its node.
 	nodeBounds map[string]any
 	// pathMaps holds the static path maps registered via
 	// AddConditionalEdgesWithPathMap (keyed by source node); they make the
@@ -226,6 +228,12 @@ func (g *StateGraph) AddNodeWithPolicies(name string, fn NodeFunc, policies Node
 	}
 	g.nodes[name] = fn
 	g.policies[name] = policies
+	// Drop any bound object a previous registration of this name recorded:
+	// nodeBounds[name] must always describe the CURRENT node registration
+	// (AddNodeWithBound re-sets it right after a successful AddNodeWithPolicies
+	// call), so a re-registered node can never export the previous
+	// registration's `__tools` metadata.
+	delete(g.nodeBounds, name)
 	return g
 }
 
