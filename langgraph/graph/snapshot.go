@@ -174,7 +174,7 @@ func (g *CompiledGraph) UpdateState(ctx context.Context, cfg checkpoint.Config, 
 	// update applies, so an update writing a delta key snapshots the
 	// accumulated value plus the update, and an untouched delta key survives
 	// into the update checkpoint (Python #9165/#9142).
-	g.hydrateDeltaChannels(ctx, tup, rs)
+	g.hydrateDeltaChannels(ctx, tup, rs, nil)
 	if _, err := rs.applyWrites([]taskWrites{{node: asNode, update: values}}); err != nil {
 		return checkpoint.Config{}, err
 	}
@@ -321,7 +321,7 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 		}
 		deltaKeys = append(deltaKeys, key)
 	}
-	for key, channel := range g.rebuildDeltaChannels(ctx, tup, deltaKeys) {
+	for key, channel := range g.rebuildDeltaChannels(ctx, tup, deltaKeys, nil) {
 		if v, err := channel.Get(); err == nil {
 			values[key] = v
 		}
@@ -333,7 +333,12 @@ func (g *CompiledGraph) reconstructDeltaChannels(ctx context.Context, tup *check
 // continue the accumulated value instead of starting from empty (Python
 // langgraph hydrates delta channels on every state-restore path — #8548,
 // #9170, #9165). Channels absent from history stay absent.
-func (g *CompiledGraph) hydrateDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, rs *runState) {
+//
+// skipTaskIDs (resume only) names tasks whose writes on tup ITSELF are
+// excluded from the seed: the resumed run re-applies them via
+// planResume.replayWrites, so seeding them here would double-count
+// (Python #9114). nil includes every write.
+func (g *CompiledGraph) hydrateDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, rs *runState, skipTaskIDs map[string]bool) {
 	var deltaKeys []string
 	for key, proto := range g.channelProtos {
 		if !channels.IsDelta(proto) {
@@ -344,15 +349,16 @@ func (g *CompiledGraph) hydrateDeltaChannels(ctx context.Context, tup *checkpoin
 		}
 		deltaKeys = append(deltaKeys, key)
 	}
-	maps.Copy(rs.channels, g.rebuildDeltaChannels(ctx, tup, deltaKeys))
+	maps.Copy(rs.channels, g.rebuildDeltaChannels(ctx, tup, deltaKeys, skipTaskIDs))
 }
 
 // rebuildDeltaChannels walks tup's ancestor chain and returns the
 // reconstructed delta channel OBJECTS for the given keys (seeded from the
 // nearest snapshot blob or plain value, then replayed with every collected
 // pending write, oldest first). Keys that never resolve to an available
-// value are omitted from the result.
-func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, deltaKeys []string) map[string]channels.Channel {
+// value are omitted from the result. skipTaskIDs (see hydrateDeltaChannels)
+// filters only tup's OWN pending writes; ancestors' writes always count.
+func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoint.Tuple, deltaKeys []string, skipTaskIDs map[string]bool) map[string]channels.Channel {
 	if len(deltaKeys) == 0 {
 		return nil
 	}
@@ -386,7 +392,7 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 	}
 
 	// Also check the current tuple's pending writes (interrupt-path writes).
-	collectDeltaWrites(tup.PendingWrites, deltaKeys, collected, remaining)
+	collectDeltaWrites(tup.PendingWrites, deltaKeys, skipTaskIDs, collected, remaining)
 
 	cursor := tup.ParentConfig
 	for cursor != nil && cursor.CheckpointID != "" && len(remaining) > 0 {
@@ -401,7 +407,7 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 		}
 		// Collect writes from this ancestor (reversed: pending writes are
 		// stored oldest-first; the walk is newest-to-oldest, so prepend).
-		collectDeltaWrites(ancestor.PendingWrites, deltaKeys, collected, remaining)
+		collectDeltaWrites(ancestor.PendingWrites, deltaKeys, nil, collected, remaining)
 		// Check for a snapshot blob or plain value in this ancestor's
 		// ChannelValues.
 		for _, key := range deltaKeys {
@@ -455,13 +461,17 @@ func (g *CompiledGraph) rebuildDeltaChannels(ctx context.Context, tup *checkpoin
 
 // collectDeltaWrites scans writes for entries targeting any of the delta
 // channel keys, appending their values to the corresponding collected slice.
-func collectDeltaWrites(writes []checkpoint.Write, deltaKeys []string, collected map[string][]any, remaining map[string]bool) {
+// skipTaskIDs (nil = keep all) drops the named tasks' writes — used to keep
+// a resumed run's replayed siblings' writes out of the hydration seed.
+func collectDeltaWrites(writes []checkpoint.Write, deltaKeys []string, skipTaskIDs map[string]bool, collected map[string][]any, remaining map[string]bool) {
 	for _, key := range deltaKeys {
 		if !remaining[key] {
 			continue
 		}
 		for _, w := range slices.Backward(writes) {
-
+			if skipTaskIDs != nil && skipTaskIDs[w.TaskID] {
+				continue
+			}
 			if w.Channel == key {
 				collected[key] = append(collected[key], w.Value)
 			}

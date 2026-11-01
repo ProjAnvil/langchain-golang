@@ -1260,7 +1260,7 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		// Hydrate sentinel delta channels from the ancestor history before
 		// the input applies, so a new turn continues the accumulated value
 		// (Python #8548/#9170).
-		g.hydrateDeltaChannels(ctx, tup, rs)
+		g.hydrateDeltaChannels(ctx, tup, rs, nil)
 		changed, err := rs.applyWrites([]taskWrites{{node: inputNodeName, update: input}})
 		if err != nil {
 			return Result{}, err

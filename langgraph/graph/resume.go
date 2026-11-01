@@ -207,6 +207,13 @@ type resumePlan struct {
 	resumeValues map[string][]any // keyed by PlannedTask.ID (D5)
 	skipNode     string
 	replayWrites []taskWrites
+	// replayedTaskIDs names the planned tasks whose completed writes
+	// replayWrites carries. resumeFromTuple excludes exactly those tasks'
+	// delta writes from the hydration seed below (they are re-applied by
+	// applyWrites), so a completed sibling's delta write counts once — the
+	// Go manifestation of Python #9114's "writes loaded with the checkpoint
+	// are skipped, since they are already stored on it".
+	replayedTaskIDs map[string]bool
 }
 
 // resumeFromTuple restores rs from a paused (or completed) checkpoint and
@@ -228,13 +235,17 @@ func (g *CompiledGraph) resumeFromTuple(ctx context.Context, rs *runState, tup *
 	// per-channel cadence (S3). Cloned so rs.deltaCounters is independent of
 	// the (shared) loaded metadata map.
 	rs.deltaCounters = maps.Clone(tup.Metadata.CountersSinceDeltaSnapshot)
-	// Hydrate sentinel delta channels from the ancestor history so the
-	// resumed run continues the accumulated value (Python #8548/#9170).
-	g.hydrateDeltaChannels(ctx, tup, rs)
+	// The plan is derived before hydrating: replayWrites re-applies the
+	// completed siblings' writes below, so the hydration seed must skip
+	// exactly those tasks' delta writes on THIS tuple — seeding them would
+	// double-count (Python #9114).
 	plan, err := g.planResume(tup, resume, graphNS)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
+	// Hydrate sentinel delta channels from the ancestor history so the
+	// resumed run continues the accumulated value (Python #8548/#9170).
+	g.hydrateDeltaChannels(ctx, tup, rs, plan.replayedTaskIDs)
 	if len(plan.replayWrites) > 0 {
 		if _, err := rs.applyWrites(plan.replayWrites); err != nil {
 			return nil, nil, "", nil, err
@@ -310,7 +321,7 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 		byTask[w.TaskID] = append(byTask[w.TaskID], w)
 	}
 
-	plan := resumePlan{resumeValues: map[string][]any{}}
+	plan := resumePlan{resumeValues: map[string][]any{}, replayedTaskIDs: map[string]bool{}}
 	var replaySends []task
 	for i, pt := range tup.Checkpoint.Next {
 		if pt.Node == types.END {
@@ -361,6 +372,7 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 			plan.resumeValues[pt.ID] = resumeValuesFor(interrupts, resumePrefix, resume, graphNS)
 		case len(update) > 0 || len(sends) > 0:
 			plan.replayWrites = append(plan.replayWrites, taskWrites{node: pt.Node, update: update})
+			plan.replayedTaskIDs[pt.ID] = true
 			for _, s := range sends {
 				replaySends = append(replaySends, task{node: s.Node, arg: s.Arg})
 			}
