@@ -1129,6 +1129,89 @@ func TestSinkFromContextWithForeignOrSuppressedSink(t *testing.T) {
 	}
 }
 
+// TestStreamChunkBridgeToolCallDeltaSequence locks the agents bridge's #41257
+// wire shape: the first observation of a tool call emits a content-block-start
+// skeleton carrying id/name, later slices carry only args as tool-call-delta
+// events, and wire indices stay per-key stable across interleaved calls.
+func TestStreamChunkBridgeToolCallDeltaSequence(t *testing.T) {
+	chunks := []messages.Message{
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.ToolCallChunkBlock{ID: "c1", Name: "search", Args: `{"q":`, Index: 0},
+		}},
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.ToolCallChunkBlock{Args: `"x"}`, Index: 0},
+			messages.ToolCallChunkBlock{ID: "c2", Name: "write", Args: `{"p":1}`, Index: 1},
+		}},
+	}
+	model := &streamSequenceModel{
+		responses:    []messages.Message{messages.AI("hello")},
+		streamChunks: [][]messages.Message{chunks},
+	}
+	agent, err := CreateAgent(model, nil)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	stream, err := agent.StreamEvents(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	events := drainStream(t, stream)
+	end := requireTerminalEnd(t, events)
+	if end.Err != nil {
+		t.Fatalf("unexpected terminal error: %v", end.Err)
+	}
+
+	var protocol []streamevents.Event
+	for _, ev := range events {
+		if ev.Type == StreamModelDelta && ev.Delta != nil {
+			protocol = append(protocol, *ev.Delta)
+		}
+	}
+	type step struct {
+		event streamevents.EventName
+		index int
+	}
+	want := []step{
+		{streamevents.EventMessageStart, 0},
+		{streamevents.EventContentBlockStart, 0},
+		{streamevents.EventContentBlockDelta, 0},
+		{streamevents.EventContentBlockDelta, 0},
+		{streamevents.EventContentBlockStart, 1},
+		{streamevents.EventContentBlockDelta, 1},
+		{streamevents.EventMessageFinish, 0},
+	}
+	if len(protocol) != len(want) {
+		t.Fatalf("protocol events: got %d want %d: %+v", len(protocol), len(want), protocol)
+	}
+	for i, w := range want {
+		if protocol[i].Event != w.event || protocol[i].Index != w.index {
+			t.Fatalf("event[%d]: got %s/%d want %s/%d", i, protocol[i].Event, protocol[i].Index, w.event, w.index)
+		}
+	}
+
+	start := messages.BlockToMap(protocol[1].Content)
+	if start["type"] != "tool_call_chunk" || start["id"] != "c1" || start["name"] != "search" {
+		t.Fatalf("start skeleton: %#v", start)
+	}
+	// The skeleton must not carry an args payload (BlockToMap drops empty
+	// args; either way the first slice's args arrive only on its delta).
+	if args, ok := start["args"].(string); ok && args != "" {
+		t.Fatalf("start skeleton must not carry args: %#v", start)
+	}
+	for i, args := range []string{`{"q":`, `"x"}`} {
+		delta := messages.BlockToMap(protocol[2+i].Delta)
+		if delta["type"] != streamevents.ToolCallDeltaType || delta["args"] != args {
+			t.Fatalf("delta[%d]: %#v", i, delta)
+		}
+		if _, ok := delta["id"]; ok {
+			t.Fatalf("delta[%d] must not carry id: %#v", i, delta)
+		}
+	}
+	if delta := messages.BlockToMap(protocol[5].Delta); delta["args"] != `{"p":1}` {
+		t.Fatalf("second call delta: %#v", delta)
+	}
+}
+
 func TestStreamChunkBridgeContentBlocks(t *testing.T) {
 	chunks := []messages.Message{
 		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
@@ -1159,9 +1242,9 @@ func TestStreamChunkBridgeContentBlocks(t *testing.T) {
 		t.Fatalf("unexpected terminal error: %v", end.Err)
 	}
 
-	var sawTextDelta, sawToolCallChunk, sawReasoningFinish, sawInvalidToolCall bool
+	var sawTextDelta, sawToolCallDelta, sawReasoningFinish, sawInvalidToolCall bool
 	for _, ev := range events {
-		if ev.Type != StreamModelDelta || ev.Delta == nil {
+		if ev.Type != StreamModelDelta {
 			continue
 		}
 		switch ev.Delta.Event {
@@ -1171,8 +1254,8 @@ func TestStreamChunkBridgeContentBlocks(t *testing.T) {
 				if m["type"] == "text-delta" {
 					sawTextDelta = true
 				}
-				if m["type"] == "tool_call_chunk" {
-					sawToolCallChunk = true
+				if m["type"] == streamevents.ToolCallDeltaType {
+					sawToolCallDelta = true
 				}
 			}
 		case streamevents.EventContentBlockFinish:
@@ -1187,9 +1270,9 @@ func TestStreamChunkBridgeContentBlocks(t *testing.T) {
 			}
 		}
 	}
-	if !sawTextDelta || !sawToolCallChunk || !sawReasoningFinish || !sawInvalidToolCall {
-		t.Fatalf("missing expected deltas: text=%v tool_call_chunk=%v reasoning=%v invalid_tool_call=%v",
-			sawTextDelta, sawToolCallChunk, sawReasoningFinish, sawInvalidToolCall)
+	if !sawTextDelta || !sawToolCallDelta || !sawReasoningFinish || !sawInvalidToolCall {
+		t.Fatalf("missing expected deltas: text=%v tool_call_delta=%v reasoning=%v invalid_tool_call=%v",
+			sawTextDelta, sawToolCallDelta, sawReasoningFinish, sawInvalidToolCall)
 	}
 }
 

@@ -22,6 +22,14 @@ const (
 	EventMessageFinish      EventName = "message-finish"
 )
 
+// ToolCallDeltaType tags the wire shape (#41257) for streamed tool-call args:
+// a content-block-delta whose payload carries only the incremental args
+// slice. The call's id, name, and provider index arrive on its
+// content-block-start skeleton; fields that arrive late ride its
+// content-block-finish. Legacy producers that repeat id/name on every delta
+// keep the "tool_call_chunk" delta type; the consumer accepts both.
+const ToolCallDeltaType = "tool-call-delta"
+
 // Event is a provider-neutral chat streaming protocol event.
 type Event struct {
 	Event   EventName             `json:"event"`
@@ -81,6 +89,8 @@ func (s *ChatModelStream) Dispatch(event Event) {
 	}
 	s.events = append(s.events, cloneEvent(event))
 	switch event.Event {
+	case EventContentBlockStart:
+		s.startBlock(event.Index, event.Content)
 	case EventContentBlockDelta:
 		s.pushDelta(event.Index, event.Delta)
 	case EventContentBlockFinish:
@@ -164,6 +174,31 @@ func (s *ChatModelStream) Output() (messages.Message, error) {
 	return cloneMessage(s.output), nil
 }
 
+// startBlock seeds tool-call chunk state from a content-block-start
+// skeleton (#41246): tool-call-delta events carry only args slices, so the
+// start is the only place to learn the call's id and name. Other block types
+// need nothing from their start.
+func (s *ChatModelStream) startBlock(index int, block messages.ContentBlock) {
+	if block == nil {
+		return
+	}
+	m := messages.BlockToMap(block)
+	if m["type"] != "tool_call_chunk" {
+		return
+	}
+	chunk := s.toolChunks[index]
+	if id, _ := m["id"].(string); id != "" && chunk.ID == "" {
+		chunk.ID = id
+	}
+	if name, _ := m["name"].(string); name != "" && chunk.Name == "" {
+		chunk.Name = name
+	}
+	if args, _ := m["args"].(string); args != "" {
+		chunk.Args += args
+	}
+	s.toolChunks[index] = chunk
+}
+
 func (s *ChatModelStream) pushDelta(index int, delta messages.ContentBlock) {
 	if delta == nil {
 		return
@@ -184,6 +219,19 @@ func (s *ChatModelStream) pushDelta(index int, delta messages.ContentBlock) {
 		}
 		s.reasoningDeltas = append(s.reasoningDeltas, reasoning)
 		s.reasoningByBlock[index] += reasoning
+	case ToolCallDeltaType:
+		args, _ := m["args"].(string)
+		if args == "" {
+			return
+		}
+		// Python parity (#41246): a delta whose start this stream never saw
+		// is left to content-block-finish, which carries the call.
+		chunk, ok := s.toolChunks[index]
+		if !ok {
+			return
+		}
+		chunk.Args += args
+		s.toolChunks[index] = chunk
 	case "tool_call_chunk":
 		chunk := s.toolChunks[index]
 		if id, _ := m["id"].(string); id != "" && chunk.ID == "" {

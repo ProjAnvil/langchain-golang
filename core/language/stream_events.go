@@ -2,6 +2,7 @@ package language
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/messages"
@@ -77,6 +78,12 @@ type chunkProtocolBridge struct {
 	started     bool
 	textStarted bool
 	text        string
+	// wireIndices maps each streaming block's key to its stable wire index
+	// (#41257): blocks keyed by their source-side index (or, lacking one,
+	// their type and position) keep one index for every slice instead of the
+	// old len(events) fallback that drifted per event.
+	wireIndices map[string]int
+	nextWire    int
 }
 
 func newChunkProtocolBridge(
@@ -84,8 +91,10 @@ func newChunkProtocolBridge(
 	collector *protocolCollector,
 ) *chunkProtocolBridge {
 	return &chunkProtocolBridge{
-		stream:    stream,
-		collector: collector,
+		stream:      stream,
+		collector:   collector,
+		wireIndices: make(map[string]int),
+		nextWire:    1, // 0 is reserved for the text block
 	}
 }
 
@@ -106,13 +115,13 @@ func (b *chunkProtocolBridge) Push(chunk messages.Message) {
 			},
 		})
 	}
-	for _, block := range chunk.ContentBlocks {
-		b.pushBlock(block)
+	for i, block := range chunk.ContentBlocks {
+		b.pushBlock(block, i)
 	}
 	for _, call := range chunk.ToolCalls {
 		b.stream.Dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
-			Index: len(b.stream.Events()),
+			Index: b.freshIndex(),
 			Content: messages.ToolCallBlock{
 				ID:   call.ID,
 				Name: call.Name,
@@ -123,7 +132,7 @@ func (b *chunkProtocolBridge) Push(chunk messages.Message) {
 	for _, call := range chunk.InvalidToolCalls {
 		b.stream.Dispatch(streamevents.Event{
 			Event: streamevents.EventContentBlockFinish,
-			Index: len(b.stream.Events()),
+			Index: b.freshIndex(),
 			Content: messages.NonStandardContentBlock{
 				Type: "invalid_tool_call",
 				Value: map[string]any{
@@ -180,7 +189,7 @@ func (b *chunkProtocolBridge) ensureTextStarted() {
 	})
 }
 
-func (b *chunkProtocolBridge) pushBlock(block messages.ContentBlock) {
+func (b *chunkProtocolBridge) pushBlock(block messages.ContentBlock, position int) {
 	m := messages.BlockToMap(block)
 	blockType, _ := m["type"].(string)
 	switch blockType {
@@ -199,7 +208,7 @@ func (b *chunkProtocolBridge) pushBlock(block messages.ContentBlock) {
 		}
 	case "reasoning":
 		if reasoning, _ := m["reasoning"].(string); reasoning != "" {
-			index := blockIndex(m, len(b.stream.Events()))
+			index := b.wireIndex(m, position)
 			b.stream.Dispatch(streamevents.Event{
 				Event: streamevents.EventContentBlockDelta,
 				Index: index,
@@ -217,36 +226,104 @@ func (b *chunkProtocolBridge) pushBlock(block messages.ContentBlock) {
 			})
 		}
 	case "tool_call_chunk":
-		b.stream.Dispatch(streamevents.Event{
-			Event: streamevents.EventContentBlockDelta,
-			Index: blockIndex(m, len(b.stream.Events())),
-			Delta: messages.NonStandardContentBlock{
-				Type: "tool_call_chunk",
-				Value: map[string]any{
-					"id":   m["id"],
-					"name": m["name"],
-					"args": m["args"],
+		id, _ := m["id"].(string)
+		name, _ := m["name"].(string)
+		args, _ := m["args"].(string)
+		index, first := b.wireIndexAlloc(m, position)
+		if first {
+			// The call's first slice emits the start skeleton carrying its
+			// id/name (and source index when present); later slices are
+			// tool-call-delta events carrying only args (#41257).
+			b.stream.Dispatch(streamevents.Event{
+				Event: streamevents.EventContentBlockStart,
+				Index: index,
+				Content: messages.ToolCallChunkBlock{
+					ID:    id,
+					Name:  name,
+					Args:  "",
+					Index: m["index"],
 				},
-			},
-		})
+			})
+		}
+		if args != "" {
+			b.stream.Dispatch(streamevents.Event{
+				Event: streamevents.EventContentBlockDelta,
+				Index: index,
+				Delta: messages.NonStandardContentBlock{
+					Type:  streamevents.ToolCallDeltaType,
+					Value: map[string]any{"args": args},
+				},
+			})
+		}
 	default:
 		if blockType != "" {
 			b.stream.Dispatch(streamevents.Event{
 				Event:   streamevents.EventContentBlockFinish,
-				Index:   blockIndex(m, len(b.stream.Events())),
+				Index:   b.wireIndex(m, position),
 				Content: block,
 			})
 		}
 	}
 }
 
-func blockIndex(m map[string]any, fallback int) int {
-	switch index := m["index"].(type) {
+// wireIndex returns the stable wire index for a streaming block, allocating
+// one on first observation. wireIndexAlloc additionally reports whether the
+// index was just allocated (the caller's first observation of the block).
+func (b *chunkProtocolBridge) wireIndex(m map[string]any, position int) int {
+	index, _ := b.wireIndexAlloc(m, position)
+	return index
+}
+
+func (b *chunkProtocolBridge) wireIndexAlloc(m map[string]any, position int) (int, bool) {
+	key := blockWireKey(m, position)
+	if index, ok := b.wireIndices[key]; ok {
+		return index, false
+	}
+	index, ok := blockSourceIndex(m)
+	if !ok {
+		index = b.nextWire
+		b.nextWire++
+	}
+	b.wireIndices[key] = index
+	return index, true
+}
+
+// freshIndex returns a never-reused wire index for one-shot blocks that are
+// finalized as they arrive (already-complete tool calls on a chunk): each
+// observation is a distinct block, so it gets a distinct index.
+func (b *chunkProtocolBridge) freshIndex() int {
+	index := b.nextWire
+	b.nextWire++
+	return index
+}
+
+// blockWireKey identifies a streaming block across chunks. Blocks carrying a
+// source-side index (int, float, or string) are keyed by it; blocks without
+// one are bucketed by (type, position), mirroring Python's compat bridge, so
+// every chunk of the same streamed block shares one key.
+func blockWireKey(m map[string]any, position int) string {
+	switch v := m["index"].(type) {
 	case int:
-		return index
+		return "idx:" + strconv.Itoa(v)
 	case float64:
-		return int(index)
+		return "idx:" + strconv.Itoa(int(v))
+	case string:
+		return "idx:" + v
 	default:
-		return fallback
+		blockType, _ := m["type"].(string)
+		return "pos:" + blockType + ":" + strconv.Itoa(position)
+	}
+}
+
+// blockSourceIndex extracts an int wire index from a block's source-side
+// index field, if it carries a numeric one.
+func blockSourceIndex(m map[string]any) (int, bool) {
+	switch v := m["index"].(type) {
+	case int:
+		return v, true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
 	}
 }

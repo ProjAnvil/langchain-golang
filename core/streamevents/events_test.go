@@ -426,6 +426,237 @@ func TestChatModelStreamFinishBlockEdgeCases(t *testing.T) {
 	}
 }
 
+// toolCallDelta emits a #41257 tool-call-delta event carrying only an args
+// slice.
+func toolCallDelta(index int, args string) Event {
+	return Event{
+		Event: EventContentBlockDelta,
+		Index: index,
+		Delta: messages.NonStandardContentBlock{
+			Type:  ToolCallDeltaType,
+			Value: map[string]any{"args": args},
+		},
+	}
+}
+
+// TestChatModelStreamToolCallDeltaSeedsIDNameFromStart covers the #41246
+// consumer shape: the content-block-start skeleton carries the call's id and
+// name, tool-call-delta events carry only args slices, and the assembled call
+// keeps the start-seeded identity.
+func TestChatModelStreamToolCallDeltaSeedsIDNameFromStart(t *testing.T) {
+	stream := NewChatModelStream()
+	stream.Dispatch(Event{Event: EventMessageStart})
+	stream.Dispatch(Event{
+		Event: EventContentBlockStart,
+		Index: 0,
+		Content: messages.ToolCallChunkBlock{
+			ID:    "call_1",
+			Name:  "search",
+			Args:  "",
+			Index: 0,
+		},
+	})
+	stream.Dispatch(toolCallDelta(0, `{"q":`))
+	stream.Dispatch(toolCallDelta(0, `"x"}`))
+	stream.Dispatch(Event{
+		Event: EventContentBlockFinish,
+		Index: 0,
+		Content: messages.ToolCallBlock{
+			ID:   "call_1",
+			Name: "search",
+			Args: map[string]any{"q": "x"},
+		},
+	})
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	calls := stream.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls: %+v", calls)
+	}
+	if calls[0].ID != "call_1" || calls[0].Name != "search" || calls[0].Args["q"] != "x" {
+		t.Fatalf("assembled call: %+v", calls[0])
+	}
+
+	// Deltas without a finish are swept at message-finish and keep the
+	// start-seeded id/name plus the accumulated args.
+	stream = NewChatModelStream()
+	stream.Dispatch(Event{
+		Event: EventContentBlockStart,
+		Index: 0,
+		Content: messages.ToolCallChunkBlock{ID: "call_2", Name: "write"},
+	})
+	stream.Dispatch(toolCallDelta(0, `{"path": `))
+	stream.Dispatch(toolCallDelta(0, `"a.py"}`))
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	calls = stream.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("swept tool calls: %+v", calls)
+	}
+	if calls[0].ID != "call_2" || calls[0].Name != "write" || calls[0].Args["path"] != "a.py" {
+		t.Fatalf("swept call: %+v", calls[0])
+	}
+}
+
+// TestChatModelStreamToolCallDeltaWithoutStartLeftToFinish mirrors Python: a
+// tool-call-delta whose content-block-start this stream never saw is left to
+// content-block-finish, which carries the call.
+func TestChatModelStreamToolCallDeltaWithoutStartLeftToFinish(t *testing.T) {
+	stream := NewChatModelStream()
+	stream.Dispatch(toolCallDelta(0, `{"q":"x"}`))
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	// The orphan slice is dropped rather than fabricated into a call.
+	if got := stream.ToolCalls(); len(got) != 0 {
+		t.Fatalf("tool calls from orphan delta: %+v", got)
+	}
+	if got := stream.InvalidToolCalls(); len(got) != 0 {
+		t.Fatalf("invalid tool calls from orphan delta: %+v", got)
+	}
+
+	stream = NewChatModelStream()
+	stream.Dispatch(toolCallDelta(0, `{"q":"x"}`))
+	stream.Dispatch(Event{
+		Event: EventContentBlockFinish,
+		Index: 0,
+		Content: messages.ToolCallBlock{
+			ID:   "call_1",
+			Name: "search",
+			Args: map[string]any{"q": "x"},
+		},
+	})
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	calls := stream.ToolCalls()
+	if len(calls) != 1 || calls[0].ID != "call_1" || calls[0].Args["q"] != "x" {
+		t.Fatalf("finish-carried call: %+v", calls)
+	}
+}
+
+// TestChatModelStreamToolCallDeltaLegacyFallback keeps the legacy
+// tool_call_chunk delta shape working: id/name ride the first delta when no
+// start skeleton was emitted, and a start-seeded identity is sticky.
+func TestChatModelStreamToolCallDeltaLegacyFallback(t *testing.T) {
+	stream := NewChatModelStream()
+	stream.Dispatch(Event{
+		Event: EventContentBlockDelta,
+		Index: 0,
+		Delta: messages.NonStandardContentBlock{
+			Type: "tool_call_chunk",
+			Value: map[string]any{
+				"id":   "call_1",
+				"name": "search",
+				"args": `{"q":`,
+			},
+		},
+	})
+	// Legacy producers repeat (or change) id/name on every delta; the first
+	// observation wins.
+	stream.Dispatch(Event{
+		Event: EventContentBlockDelta,
+		Index: 0,
+		Delta: messages.NonStandardContentBlock{
+			Type: "tool_call_chunk",
+			Value: map[string]any{
+				"id":   "other",
+				"name": "other",
+				"args": `"x"}`,
+			},
+		},
+	})
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	calls := stream.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls: %+v", calls)
+	}
+	if calls[0].ID != "call_1" || calls[0].Name != "search" || calls[0].Args["q"] != "x" {
+		t.Fatalf("legacy call: %+v", calls[0])
+	}
+
+	// A start-seeded call can also be extended by legacy deltas: the start's
+	// id/name stick, args append across both shapes.
+	stream = NewChatModelStream()
+	stream.Dispatch(Event{
+		Event: EventContentBlockStart,
+		Index: 0,
+		Content: messages.ToolCallChunkBlock{ID: "call_2", Name: "write"},
+	})
+	stream.Dispatch(Event{
+		Event: EventContentBlockDelta,
+		Index: 0,
+		Delta: messages.NonStandardContentBlock{
+			Type: "tool_call_chunk",
+			Value: map[string]any{
+				"id":   "ignored",
+				"name": "ignored",
+				"args": `{"p":`,
+			},
+		},
+	})
+	stream.Dispatch(toolCallDelta(0, `"a"}`))
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	calls = stream.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("mixed tool calls: %+v", calls)
+	}
+	if calls[0].ID != "call_2" || calls[0].Name != "write" || calls[0].Args["p"] != "a" {
+		t.Fatalf("mixed call: %+v", calls[0])
+	}
+}
+
+// TestChatModelStreamToolCallDeltaPartialJSONMidStream locks mid-stream
+// tolerance: args slices routinely form invalid JSON until the final slice,
+// so Dispatch must never parse them eagerly and projections must be safe to
+// query mid-stream.
+func TestChatModelStreamToolCallDeltaPartialJSONMidStream(t *testing.T) {
+	stream := NewChatModelStream()
+	stream.Dispatch(Event{
+		Event: EventContentBlockStart,
+		Index: 0,
+		Content: messages.ToolCallChunkBlock{ID: "call_1", Name: "write"},
+	})
+	for _, slice := range []string{`{"pat`, `h": "a`, `.py", "`, `x": 1}`} {
+		stream.Dispatch(toolCallDelta(0, slice))
+		// Mid-stream projections must not blow up on the partial JSON seen
+		// so far, even though it cannot parse yet.
+		if got := stream.Text(); got != "" {
+			t.Fatalf("mid-stream text: %q", got)
+		}
+		if got := stream.ToolCalls(); len(got) != 0 {
+			t.Fatalf("mid-stream tool calls: %+v", got)
+		}
+		if got := stream.Events(); len(got) == 0 {
+			t.Fatal("mid-stream events should be recorded")
+		}
+	}
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	calls := stream.ToolCalls()
+	if len(calls) != 1 || calls[0].Args["path"] != "a.py" || calls[0].Args["x"] != float64(1) {
+		t.Fatalf("assembled partial-stream call: %+v", calls)
+	}
+
+	// A stream that ends with args that never parse becomes an invalid call
+	// at sweep time, not a mid-stream failure.
+	stream = NewChatModelStream()
+	stream.Dispatch(Event{
+		Event: EventContentBlockStart,
+		Index: 0,
+		Content: messages.ToolCallChunkBlock{ID: "call_2", Name: "broken"},
+	})
+	stream.Dispatch(toolCallDelta(0, `{"oops": `))
+	stream.Dispatch(Event{Event: EventMessageFinish})
+
+	if got := stream.ToolCalls(); len(got) != 0 {
+		t.Fatalf("unparseable call should be invalid, got %+v", got)
+	}
+	if got := stream.InvalidToolCalls(); len(got) != 1 || got[0].Name != "broken" {
+		t.Fatalf("invalid calls: %+v", got)
+	}
+}
+
 func TestChatModelStreamUsageProjection(t *testing.T) {
 	stream := NewChatModelStream()
 	// Empty usage before message-finish.

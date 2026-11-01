@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/runnables"
@@ -339,6 +340,10 @@ type streamChunkBridge struct {
 	textStarted  bool
 	text         string
 	eventCounter int
+	// wireIndices maps each streaming block's key to its stable wire index
+	// (#41257): tool-call chunks keyed by their source-side index (or, lacking
+	// one, their position in the chunk) keep one index for every slice.
+	wireIndices map[string]int
 }
 
 func (b *streamChunkBridge) push(chunk messages.Message) {
@@ -355,8 +360,8 @@ func (b *streamChunkBridge) push(chunk messages.Message) {
 			},
 		})
 	}
-	for _, block := range chunk.ContentBlocks {
-		b.pushBlock(block)
+	for i, block := range chunk.ContentBlocks {
+		b.pushBlock(block, i)
 	}
 	for _, call := range chunk.ToolCalls {
 		idx := b.nextIndex()
@@ -417,7 +422,7 @@ func (b *streamChunkBridge) ensureTextStarted() {
 	})
 }
 
-func (b *streamChunkBridge) pushBlock(block messages.ContentBlock) {
+func (b *streamChunkBridge) pushBlock(block messages.ContentBlock, position int) {
 	m := messages.BlockToMap(block)
 	blockType, _ := m["type"].(string)
 	switch blockType {
@@ -432,18 +437,35 @@ func (b *streamChunkBridge) pushBlock(block messages.ContentBlock) {
 			})
 		}
 	case "tool_call_chunk":
-		b.dispatch(streamevents.Event{
-			Event: streamevents.EventContentBlockDelta,
-			Index: b.nextIndex(),
-			Delta: messages.NonStandardContentBlock{
-				Type: "tool_call_chunk",
-				Value: map[string]any{
-					"id":   m["id"],
-					"name": m["name"],
-					"args": m["args"],
+		id, _ := m["id"].(string)
+		name, _ := m["name"].(string)
+		args, _ := m["args"].(string)
+		index, first := b.toolWireIndex(m, position)
+		if first {
+			// The call's first slice emits the start skeleton carrying its
+			// id/name (and source index when present); later slices are
+			// tool-call-delta events carrying only args (#41257).
+			b.dispatch(streamevents.Event{
+				Event: streamevents.EventContentBlockStart,
+				Index: index,
+				Content: messages.ToolCallChunkBlock{
+					ID:    id,
+					Name:  name,
+					Args:  "",
+					Index: m["index"],
 				},
-			},
-		})
+			})
+		}
+		if args != "" {
+			b.dispatch(streamevents.Event{
+				Event: streamevents.EventContentBlockDelta,
+				Index: index,
+				Delta: messages.NonStandardContentBlock{
+					Type:  streamevents.ToolCallDeltaType,
+					Value: map[string]any{"args": args},
+				},
+			})
+		}
 	default:
 		if blockType != "" {
 			b.dispatch(streamevents.Event{
@@ -453,6 +475,40 @@ func (b *streamChunkBridge) pushBlock(block messages.ContentBlock) {
 			})
 		}
 	}
+}
+
+// toolWireIndex returns the stable wire index for a streaming tool-call
+// chunk, allocating one on first observation and reporting whether it was
+// just allocated. Blocks carrying a source-side index (int, float, or string)
+// are keyed by it; blocks without one are bucketed by position, mirroring
+// Python's compat bridge, so every slice of the same call shares one index
+// instead of the old per-event counter.
+func (b *streamChunkBridge) toolWireIndex(m map[string]any, position int) (int, bool) {
+	var key string
+	hasSourceIndex := true
+	index := 0
+	switch v := m["index"].(type) {
+	case int:
+		key = "idx:" + strconv.Itoa(v)
+		index = v
+	case float64:
+		key = "idx:" + strconv.Itoa(int(v))
+		index = int(v)
+	case string:
+		key = "idx:" + v
+		hasSourceIndex = false
+	default:
+		key = "pos:" + strconv.Itoa(position)
+		hasSourceIndex = false
+	}
+	if idx, ok := b.wireIndices[key]; ok {
+		return idx, false
+	}
+	if !hasSourceIndex {
+		index = b.nextIndex()
+	}
+	b.wireIndices[key] = index
+	return index, true
 }
 
 // nextIndex returns a monotonically increasing block index for non-text

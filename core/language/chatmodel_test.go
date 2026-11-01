@@ -295,6 +295,149 @@ func TestStreamEventsPreservesUserCallbacks(t *testing.T) {
 	}
 }
 
+// TestStreamEventsBridgeToolCallDeltaSequence locks the bridge's #41257 wire
+// shape: tool_call_chunk message-chunk blocks become a content-block-start
+// skeleton on first observation of the call's index, then tool-call-delta
+// events carrying ONLY the args slices, with per-key stable wire indices even
+// when calls interleave.
+func TestStreamEventsBridgeToolCallDeltaSequence(t *testing.T) {
+	chunks := []messages.Message{
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.ToolCallChunkBlock{ID: "c1", Name: "search", Args: `{"q":`, Index: 0},
+		}},
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.ToolCallChunkBlock{Args: `"x"}`, Index: 0},
+			messages.ToolCallChunkBlock{ID: "c2", Name: "write", Args: `{"p":1}`, Index: 1},
+		}},
+	}
+	model := NewFakeChatModel(WithStreamChunks(chunks...))
+
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
+		messages.Human("search"),
+	})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+
+	events := stream.Events()
+	type step struct {
+		event streamevents.EventName
+		index int
+	}
+	want := []step{
+		{streamevents.EventMessageStart, 0},
+		{streamevents.EventContentBlockStart, 0},
+		{streamevents.EventContentBlockDelta, 0},
+		{streamevents.EventContentBlockDelta, 0},
+		{streamevents.EventContentBlockStart, 1},
+		{streamevents.EventContentBlockDelta, 1},
+		{streamevents.EventMessageFinish, 0},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events: got %d want %d: %+v", len(events), len(want), events)
+	}
+	for i, w := range want {
+		if events[i].Event != w.event || events[i].Index != w.index {
+			t.Fatalf("event[%d]: got %s/%d want %s/%d", i, events[i].Event, events[i].Index, w.event, w.index)
+		}
+	}
+
+	start := messages.BlockToMap(events[1].Content)
+	if start["type"] != "tool_call_chunk" || start["id"] != "c1" || start["name"] != "search" {
+		t.Fatalf("start skeleton: %#v", start)
+	}
+	// The skeleton must not carry an args payload (BlockToMap drops empty
+	// args; either way the first slice's args arrive only on its delta).
+	if args, ok := start["args"].(string); ok && args != "" {
+		t.Fatalf("start skeleton must not carry args: %#v", start)
+	}
+	wantArgs := []string{`{"q":`, `"x"}`}
+	for i, args := range wantArgs {
+		delta := messages.BlockToMap(events[2+i].Delta)
+		if delta["type"] != streamevents.ToolCallDeltaType || delta["args"] != args {
+			t.Fatalf("delta[%d]: %#v", i, delta)
+		}
+		if _, ok := delta["id"]; ok {
+			t.Fatalf("delta[%d] must not carry id: %#v", i, delta)
+		}
+	}
+	secondStart := messages.BlockToMap(events[4].Content)
+	if secondStart["id"] != "c2" || secondStart["name"] != "write" {
+		t.Fatalf("second start skeleton: %#v", secondStart)
+	}
+	if args, ok := secondStart["args"].(string); ok && args != "" {
+		t.Fatalf("second start skeleton must not carry args: %#v", secondStart)
+	}
+	if delta := messages.BlockToMap(events[5].Delta); delta["args"] != `{"p":1}` {
+		t.Fatalf("second call delta: %#v", delta)
+	}
+
+	// Both interleaved calls assemble from their own slices.
+	output, err := stream.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if len(output.ToolCalls) != 2 {
+		t.Fatalf("tool calls: %+v", output.ToolCalls)
+	}
+	if output.ToolCalls[0].ID != "c1" || output.ToolCalls[0].Name != "search" ||
+		output.ToolCalls[0].Args["q"] != "x" {
+		t.Fatalf("call[0]: %+v", output.ToolCalls[0])
+	}
+	if output.ToolCalls[1].ID != "c2" || output.ToolCalls[1].Name != "write" ||
+		output.ToolCalls[1].Args["p"] != float64(1) {
+		t.Fatalf("call[1]: %+v", output.ToolCalls[1])
+	}
+}
+
+// TestStreamEventsBridgeToolCallChunkStableIndicesWithoutSourceIndex covers
+// producers that emit tool_call_chunk blocks without a source index: slices
+// of the same call must keep one stable wire index (per-key map, not a
+// len(events) fallback that drifts on every event).
+func TestStreamEventsBridgeToolCallChunkStableIndicesWithoutSourceIndex(t *testing.T) {
+	chunks := []messages.Message{
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.ToolCallChunkBlock{ID: "c1", Name: "search", Args: `{"q":`},
+		}},
+		{Role: messages.RoleAI, ContentBlocks: []messages.ContentBlock{
+			messages.ToolCallChunkBlock{Args: `"x"}`},
+		}},
+	}
+	model := NewFakeChatModel(WithStreamChunks(chunks...))
+
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{
+		messages.Human("search"),
+	})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+
+	events := stream.Events()
+	if len(events) != 5 {
+		t.Fatalf("events: got %d want 5: %+v", len(events), events)
+	}
+	for i, event := range events {
+		if event.Event == streamevents.EventContentBlockStart ||
+			event.Event == streamevents.EventContentBlockDelta {
+			if event.Index != 1 {
+				t.Fatalf("event[%d] (%s): index = %d, want stable 1", i, event.Event, event.Index)
+			}
+		}
+	}
+	if delta := messages.BlockToMap(events[3].Delta); delta["args"] != `"x"}` {
+		t.Fatalf("second slice delta: %#v", delta)
+	}
+
+	output, err := stream.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if len(output.ToolCalls) != 1 || output.ToolCalls[0].Args["q"] != "x" ||
+		output.ToolCalls[0].Name != "search" {
+		t.Fatalf("assembled call: %+v", output.ToolCalls)
+	}
+}
+
 func TestStreamEventsFallbackMalformedToolCallChunk(t *testing.T) {
 	chunk := messages.AI("")
 	chunk.ContentBlocks = []messages.ContentBlock{messages.ParseContentBlock(map[string]any{

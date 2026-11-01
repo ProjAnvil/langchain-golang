@@ -3221,7 +3221,10 @@ func invokeModelStreaming(ctx context.Context, req middleware.ModelRequest, prep
 	// model that hasn't adopted the v3 protocol callbacks) into v3 events,
 	// emitting + projecting each. This mirrors language.chunkProtocolBridge
 	// but emits through `dispatch` so each delta is surfaced live.
-	bridge := &streamChunkBridge{dispatch: dispatch}
+	bridge := &streamChunkBridge{
+		dispatch:    dispatch,
+		wireIndices: make(map[string]int),
+	}
 	for {
 		chunk, ok, err := stream.Next(ctx)
 		if err != nil {
