@@ -135,7 +135,7 @@ func TestExitDurabilityPinnedForkKeepsNewerBranchClean(t *testing.T) {
 		t.Fatalf("GetStateHistory() error = %v", err)
 	}
 	if len(hist) < 6 {
-		t.Fatalf("history has %d checkpoints, want at least 6 (two sync turns + the exit final)", len(hist))
+		t.Fatalf("history has %d checkpoints, want at least 6 (two sync turns + the exit finals)", len(hist))
 	}
 	for _, s := range hist {
 		log, _ := s.Values["log"].([]string)
@@ -143,5 +143,78 @@ func TestExitDurabilityPinnedForkKeepsNewerBranchClean(t *testing.T) {
 		if !reflect.DeepEqual(log, plain) {
 			t.Fatalf("checkpoint %s: log = %v, plain = %v (delta reconstruction diverged from plain state)", s.Config.CheckpointID, log, plain)
 		}
+	}
+}
+
+// TestExitDurabilityPinnedAtLatestSnapshotsForFutureForks freezes the widened
+// #9269 gate: Python force-snapshots whenever a run was loaded by an
+// ADDRESSED checkpoint_id (`not _loaded_latest`) — even when that checkpoint
+// IS the namespace's latest ("costs one snapshot of each channel the run
+// wrote, even when the addressed checkpoint is the latest one"). Anchoring on
+// the latest would be safe only until the thread forks from it: a later
+// time-travel pin or a concurrent sibling exit run from the same checkpoint
+// would replay the anchored writes as its own state.
+func TestExitDurabilityPinnedAtLatestSnapshotsForFutureForks(t *testing.T) {
+	ctx := t.Context()
+	saver := checkpoint.NewMemorySaver()
+	cg := forkBranchGraph(t, WithCheckpointer(saver))
+
+	invoke := func(turn int, opts Options) (Result, error) {
+		token := fmt.Sprintf("in%d", turn)
+		return cg.InvokeWithOptions(ctx, map[string]any{
+			"turn":  turn,
+			"log":   []string{token},
+			"plain": []string{token},
+		}, opts)
+	}
+
+	// Turn 1 runs to completion; its final checkpoint A is the latest.
+	if _, err := invoke(1, Options{ThreadID: "t"}); err != nil {
+		t.Fatalf("turn 1 Invoke() error = %v", err)
+	}
+	snapA, err := cg.GetState(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("GetState() after turn 1 error = %v", err)
+	}
+	cpA := snapA.Config.CheckpointID
+
+	// Turn 2 pins A explicitly while A is STILL the latest: the run must
+	// force-snapshot (addressed load), leaving no anchored writes on A.
+	if _, err := invoke(2, Options{ThreadID: "t", CheckpointID: cpA}.WithRunDurability(DurabilityExit)); err != nil {
+		t.Fatalf("pinned-at-latest Invoke() error = %v", err)
+	}
+	tupF2, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil || tupF2 == nil {
+		t.Fatalf("GetTuple(latest) after turn 2 = (%v, %v)", tupF2, err)
+	}
+	if _, ok := channels.UnwrapDeltaSnapshot(tupF2.Checkpoint.ChannelValues["log"]); !ok {
+		t.Fatalf("turn-2 final checkpoint log = %#v, want a forced delta snapshot blob (pinned-at-latest must snapshot, not anchor)", tupF2.Checkpoint.ChannelValues["log"])
+	}
+	tupA, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t", CheckpointID: cpA})
+	if err != nil || tupA == nil {
+		t.Fatalf("GetTuple(A) = (%v, %v)", tupA, err)
+	}
+	for _, w := range tupA.PendingWrites {
+		if w.Channel != "log" {
+			continue
+		}
+		for _, tok := range w.Value.([]string) {
+			if tok == "in2" || tok == "a2" || tok == "b2" {
+				t.Fatalf("A carries the pinned-at-latest run's %q write (anchored instead of snapshotted): pending log writes = %+v", tok, tupA.PendingWrites)
+			}
+		}
+	}
+
+	// Turn 3 forks from A (now superseded by turn 2's final): it must see
+	// A's state only — none of turn 2's writes, live or on read.
+	res, err := invoke(3, Options{ThreadID: "t", CheckpointID: cpA}.WithRunDurability(DurabilityExit))
+	if err != nil {
+		t.Fatalf("fork Invoke() error = %v", err)
+	}
+	if got, _ := res.Values["log"].([]string); !reflect.DeepEqual(got, []string{"in1", "a1", "b1", "in3", "a3", "b3"}) {
+		t.Fatalf("fork live log = %v, want [in1 a1 b1 in3 a3 b3] (turn-2 writes replayed into the fork)", got)
+	}
+	if got := mustGetLog(t, cg, checkpoint.Config{ThreadID: "t"}); !reflect.DeepEqual(got, []string{"in1", "a1", "b1", "in3", "a3", "b3"}) {
+		t.Fatalf("forked branch log = %v, want [in1 a1 b1 in3 a3 b3] (turn-2 writes replayed into the fork)", got)
 	}
 }

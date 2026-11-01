@@ -464,18 +464,27 @@ func (s *checkpointSink) flushExit() error {
 	for k := range s.flushRS.deltaOverwriteChs {
 		channelsToSnapshot[k] = true
 	}
-	// #9269: a checkpoint pinned via Options.CheckpointID may already have
-	// children — the thread grew a newer branch past it. Writes anchored on
-	// that shared checkpoint replay into EVERY branch's ancestor walk, so
-	// the newer branch would read this run's delta writes as its own state.
-	// When the pinned checkpoint is superseded, force-snapshot the delta
-	// channels this run wrote into the final checkpoint instead of anchoring
-	// them on the pinned parent (Python's _put_exit_delta_writes gates on
-	// "a checkpoint_id addressed", paying one snapshot even when it is the
-	// latest; Go narrows to actually superseded — anchoring on the latest is
-	// safe, it has no other children — via the checkpoint_superseded
-	// equivalent, pinnedCheckpointSuperseded).
-	if s.hasPersistedParent && len(s.exitDeltaWrites) > 0 && s.pinnedCheckpointSuperseded() {
+	// #9269: a checkpoint an explicit Options.CheckpointID addressed may
+	// already have children — the thread grew a newer branch past it. Writes
+	// anchored on that shared checkpoint replay into EVERY branch's ancestor
+	// walk, so the newer branch would read this run's delta writes as its
+	// own state. A run loaded by an addressed checkpoint_id therefore
+	// force-snapshots the delta channels it wrote into its final checkpoint
+	// instead of anchoring them on the pinned parent — exactly Python's
+	// `_has_persisted_parent and not self._loaded_latest`
+	// (_loop.py:_put_exit_delta_writes): `_loaded_latest` is set ONLY on the
+	// no-checkpoint-id load path, so an addressed run snapshots even when
+	// the pinned checkpoint IS the latest ("costs one snapshot of each
+	// channel the run wrote, even when the addressed checkpoint is the
+	// latest one") — anchoring on the latest is safe only until the thread
+	// forks from it (a later time-travel pin, a concurrent sibling exit
+	// run), and those future children replay anchored writes the same way.
+	// Go's CheckpointID axis covers Python's subgraph replay_state axis too:
+	// a re-entered subgraph loads its recorded parent position via
+	// opts.CheckpointID (subgraph.go), the same addressed load. No I/O, no
+	// error path: the earlier superseded-probe (latest via GetTuple) was
+	// both a narrower gate than Python's and racy.
+	if s.hasPersistedParent && s.flushOpts.CheckpointID != "" {
 		for _, w := range s.exitDeltaWrites {
 			if d, ok := channels.AsDelta(s.flushRS.channels[w.channel]); ok && d.IsAvailable() {
 				channelsToSnapshot[w.channel] = true
@@ -550,27 +559,4 @@ func (s *checkpointSink) flushExit() error {
 	}
 
 	return nil
-}
-
-// pinnedCheckpointSuperseded reports whether the namespace has moved past the
-// checkpoint this run pinned via Options.CheckpointID — i.e. the run's
-// persisted parent (initialCfg) is no longer its namespace's latest, so a
-// newer branch already descends from it. Detection mirrors Python's
-// checkpoint_superseded (_checkpoint.py): fetch the namespace's latest with
-// an empty checkpoint id and compare against the pinned one. False when the
-// run loaded the latest unpinned (the common new-turn/resume case), when no
-// checkpoint id was addressed, or when the lookup fails (conservative: keep
-// the anchoring behavior that predates #9269).
-func (s *checkpointSink) pinnedCheckpointSuperseded() bool {
-	if s.saver == nil || s.initialCfg.CheckpointID == "" || s.flushOpts.CheckpointID == "" {
-		return false
-	}
-	latest, err := s.saver.GetTuple(s.flushCtx, checkpoint.Config{
-		ThreadID:     s.initialCfg.ThreadID,
-		CheckpointNS: s.initialCfg.CheckpointNS,
-	})
-	if err != nil || latest == nil {
-		return false
-	}
-	return latest.Checkpoint.ID != s.initialCfg.CheckpointID
 }
