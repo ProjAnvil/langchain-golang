@@ -13,11 +13,15 @@ import (
 // pauseCadenceGraph builds START -> w1 -> w2 -> (a || b) with a delta `log`
 // (snapshotFrequency=2): the first loop checkpoint cadence-snapshots (updates
 // {2,2}, counters reset), and the PAUSE save two supersteps later fires again
-// via the supersteps bound ({0,2}) — from PRE-superstep state, while `b` — a
-// parallel COMPLETED sibling of the interrupting `a` — has its write anchored
-// on that same pause checkpoint. The resumed run's checkpoints stay below
-// cadence, so every read after the resume reconstructs `log` by walking back
-// THROUGH the pause checkpoint.
+// via the updates bound ({2,2}: the pause superstep never runs applyWrites, so
+// updatedChannels still counts w2's write — the supersteps bound is the 5000
+// staleness cap and is nowhere near firing) — from PRE-superstep state, while
+// `b` — a parallel COMPLETED sibling of the interrupting `a` — has its write
+// anchored on that same pause checkpoint. The resumed run's checkpoints stay
+// below cadence, so reads at or past the pause reconstruct `log` by walking
+// back through the pause checkpoint — collecting `b`'s anchored write off it —
+// to the pre-pause cadence blob (the pause checkpoint's own snapshot is the
+// suppressed sentinel).
 func pauseCadenceGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
 	t.Helper()
 	g := NewStateGraph()
@@ -89,7 +93,8 @@ func TestPauseCadenceSnapshotDoesNotStrandSiblingWrites(t *testing.T) {
 
 			// Resume: `a` re-runs, `b` replays; the run completes. The resumed
 			// run's checkpoints stay below cadence, so GetState walks back
-			// through the pause checkpoint.
+			// through the pause checkpoint (collecting `b`'s anchored write
+			// off its suppressed sentinel) to the pre-pause cadence blob.
 			if _, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "go"}); err != nil {
 				t.Fatalf("resume Invoke() error = %v", err)
 			}
