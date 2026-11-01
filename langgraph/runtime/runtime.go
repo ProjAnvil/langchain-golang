@@ -25,6 +25,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/projanvil/langchain-golang/langgraph/store"
@@ -163,23 +164,19 @@ type ServerInfo struct {
 // mirroring Python's `RunControl` (runtime.py:79). Create a fresh RunControl
 // per run; reusing one after RequestDrain leaves it drained.
 //
-// Concurrency guarantee (documented divergence from Python's): Python's
-// "safe to call from any goroutine" rests on the GIL serializing the
-// attribute write against readers; Go's drainReason field is an
-// unsynchronized write, and the run loop reads it at every superstep
-// boundary. The supported pattern is single-writer: a drain requested from
-// a goroutine already ordered with the run loop — a node calling
-// rt.Control.RequestDrain (the node runs to completion before the loop's
-// next read). Two sibling nodes draining concurrently in one superstep
-// (MaxConcurrency > 1) race the check-then-write against EACH OTHER: both
-// drains still take effect (each writes a non-nil reason), but which reason
-// survives is arbitrary and the write pair trips -race. An EXTERNAL
-// goroutine draining while the run is in flight is a data race against the
-// loop's reader too (it also trips -race): external drainers must
-// synchronize themselves (request before Invoke, or under a caller-owned
-// lock the run's reader cannot see).
+// Concurrency: Python's "safe to call from any thread" rests on the GIL
+// serializing the attribute write against readers; the Go port instead
+// stores the drain reason in an atomic pointer, so RequestDrain,
+// DrainRequested, and DrainReason are safe to call from any number of
+// goroutines without external synchronization. Sibling nodes draining
+// concurrently in one superstep (MaxConcurrency > 1) and external goroutines
+// (e.g. a watchdog) draining a live run are both race-free: every drain
+// request takes effect, and first-writer-wins reason semantics are
+// well-defined — whichever RequestDrain lands first records the reason,
+// later callers never overwrite it (which of two racing reasons survives is
+// scheduler-dependent, never a torn or dropped write).
 type RunControl struct {
-	drainReason *string
+	drainReason atomic.Pointer[string]
 }
 
 // NewRunControl returns a fresh, un-drained RunControl.
@@ -190,31 +187,40 @@ func NewRunControl() *RunControl { return &RunControl{} }
 // DrainRequested reports true and DrainReason returns reason. A no-op when
 // already drained (the reason is NOT overwritten — first writer wins — so a
 // high-priority "shutdown" reason is not clobbered by a later "timeout").
+// Safe for concurrent use: racing callers are serialized atomically and
+// exactly one reason is recorded (see RunControl's concurrency note).
 func (c *RunControl) RequestDrain(reason string) {
-	if c == nil || c.drainReason != nil {
+	if c == nil {
 		return
 	}
 	if reason == "" {
 		reason = "shutdown"
 	}
-	c.drainReason = &reason
+	// First-writer-wins: swap only when no reason is recorded yet. A losing
+	// racer's pointer is discarded, so each caller's stack-allocated reason
+	// is never shared.
+	c.drainReason.CompareAndSwap(nil, &reason)
 }
 
 // DrainRequested reports whether a drain has been requested on c, mirroring
 // Python's `RunControl.drain_requested` property. Safe on a nil receiver
-// (returns false).
+// (returns false) and safe for concurrent use with RequestDrain.
 func (c *RunControl) DrainRequested() bool {
-	return c != nil && c.drainReason != nil
+	return c != nil && c.drainReason.Load() != nil
 }
 
 // DrainReason returns the drain reason set by RequestDrain, or "" when no
 // drain has been requested, mirroring Python's `RunControl.drain_reason`
-// property. Safe on a nil receiver (returns "").
+// property. Safe on a nil receiver (returns "") and safe for concurrent use
+// with RequestDrain.
 func (c *RunControl) DrainReason() string {
-	if c == nil || c.drainReason == nil {
+	if c == nil {
 		return ""
 	}
-	return *c.drainReason
+	if p := c.drainReason.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // Runtime bundles run-scoped context and other runtime utilities, mirroring

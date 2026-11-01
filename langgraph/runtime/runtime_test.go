@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -525,6 +526,62 @@ func TestRunControl(t *testing.T) {
 		}
 		c.RequestDrain("shutdown") // must not panic
 	})
+}
+
+// TestRunControlConcurrentRequestDrain locks the race-safety of
+// RequestDrain/DrainRequested/DrainReason for concurrent callers — the
+// sibling-nodes-under-MaxConcurrency>1 and external-watchdog patterns from
+// RunControl's concurrency note (drainReason is an atomic pointer, so this
+// is well-defined rather than a data race). Two goroutines call RequestDrain
+// simultaneously against each fresh control (a start gate maximizes overlap;
+// iterations vary interleavings) while a third reads concurrently; the
+// invariant under test: no panic, a drain is requested, and exactly one of
+// the two reasons wins (first-writer-wins, never torn or absent).
+func TestRunControlConcurrentRequestDrain(t *testing.T) {
+	const iterations = 200
+	reasons := []string{"shutdown", "timeout"}
+	for i := 0; i < iterations; i++ {
+		c := NewRunControl()
+		start := make(chan struct{})
+		var writers sync.WaitGroup
+		for j := range 2 {
+			writers.Add(1)
+			go func(reason string) {
+				defer writers.Done()
+				<-start
+				c.RequestDrain(reason)
+			}(reasons[j])
+		}
+		// A concurrent reader keeps the read side of the race detector busy
+		// while the writers CAS.
+		stopRead := make(chan struct{})
+		var readers sync.WaitGroup
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stopRead:
+					return
+				default:
+					c.DrainRequested()
+					c.DrainReason()
+				}
+			}
+		}()
+		close(start)
+		writers.Wait()
+		close(stopRead)
+		readers.Wait()
+
+		if !c.DrainRequested() {
+			t.Fatalf("iteration %d: DrainRequested = false after concurrent RequestDrain", i)
+		}
+		got := c.DrainReason()
+		if got != reasons[0] && got != reasons[1] {
+			t.Fatalf("iteration %d: DrainReason = %q, want one of %v", i, got, reasons)
+		}
+	}
 }
 
 // TestRuntimeDrainDelegates verifies Runtime.DrainRequested/DrainReason

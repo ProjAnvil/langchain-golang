@@ -40,10 +40,10 @@ const (
 	FieldReasoningEffortLevels  = "reasoning_effort_levels"
 	FieldReasoningEffortDefault = "reasoning_effort_default"
 
-	FieldTextOutputs   = "text_outputs"
-	FieldImageOutputs  = "image_outputs"
-	FieldAudioOutputs  = "audio_outputs"
-	FieldVideoOutputs  = "video_outputs"
+	FieldTextOutputs  = "text_outputs"
+	FieldImageOutputs = "image_outputs"
+	FieldAudioOutputs = "audio_outputs"
+	FieldVideoOutputs = "video_outputs"
 
 	// Tool calling.
 	FieldToolCalling    = "tool_calling"

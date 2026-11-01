@@ -878,10 +878,11 @@ type Options struct {
 	// run stops at the next superstep boundary — AFTER the
 	// interrupt_before resolution, so breakpoints win over draining — with
 	// the requesting superstep fully committed and checkpointed, returning a
-	// *types.GraphDrainedError. RequestDrain is safe from within the run's
-	// own goroutines as a single writer (a node); concurrent sibling nodes
-	// draining in one superstep and external goroutines draining a live run
-	// are data races — see runtime.RunControl's concurrency note. A nil
+	// *types.GraphDrainedError. RequestDrain is safe to call from any
+	// goroutine, including concurrently — sibling nodes draining in one
+	// superstep and external goroutines draining a live run are serialized
+	// atomically, with the first writer's reason winning (see
+	// runtime.RunControl's concurrency note). A nil
 	// Control is resolved per run: the enclosing run's control is inherited
 	// (so subgraphs and nested invokes drain their caller, mirroring
 	// Python's `control or parent_runtime.control or RunControl()`), else a
