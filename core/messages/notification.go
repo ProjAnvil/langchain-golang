@@ -9,7 +9,11 @@
 
 package messages
 
-import "maps"
+import (
+	"maps"
+	"reflect"
+	"slices"
+)
 
 // NotificationMetadata reports which feature added a message, and that
 // feature's fields. It mirrors Python's NotificationMetadata TypedDict:
@@ -68,31 +72,87 @@ func GetNotificationMetadata(message Message) *NotificationMetadata {
 
 // mergeNotificationKwargs carries notification metadata across MergeRuns.
 // Python's merge_message_runs joins messages through chunk addition, which
-// merges additional_kwargs with merge_dicts; that concatenates conflicting
-// string values (merge_dicts' `merged[k] += v` for str) and copies keys the
-// first message lacks. Scoped to the notification keys, a notification
-// merged with an adjacent human message keeps the metadata with lc_source
-// concatenated. Divergence: on a type conflict Python raises TypeError;
-// MergeRuns cannot fail, so the first message's value wins. Both arguments
-// are clones owned by the caller, so values may be moved between them.
+// merges additional_kwargs with merge_dicts; scoped to the notification
+// keys, a notification merged with an adjacent human message keeps the
+// metadata with lc_source concatenated and lc_data deep-merged. Keys the
+// first message lacks are copied from the incoming one (merge_dicts'
+// missing-key rule), so an lc_data without an lc_source is carried too.
+// Divergence: where merge_dicts raises TypeError (lc_source or lc_data type
+// conflicts) MergeRuns cannot fail — for lc_source, a string first value
+// with a non-string incoming value keeps the first, and any non-string
+// first value is replaced by the incoming one; for lc_data leaves, the
+// first value wins. Both arguments are clones owned by the caller, so
+// values may be moved between them.
 func mergeNotificationKwargs(last *Message, current Message) {
-	currentSource, hasSource := current.AdditionalKwargs["lc_source"]
-	if !hasSource {
+	if len(current.AdditionalKwargs) == 0 {
 		return
 	}
 	if last.AdditionalKwargs == nil {
 		last.AdditionalKwargs = make(map[string]any, 2)
 	}
-	if leftSource, ok := last.AdditionalKwargs["lc_source"].(string); ok {
-		if rightSource, ok := currentSource.(string); ok {
-			last.AdditionalKwargs["lc_source"] = leftSource + rightSource
-		}
-	} else {
-		last.AdditionalKwargs["lc_source"] = currentSource
-	}
-	if _, ok := last.AdditionalKwargs["lc_data"]; !ok {
-		if data, ok := current.AdditionalKwargs["lc_data"]; ok {
-			last.AdditionalKwargs["lc_data"] = data
+	if currentSource, ok := current.AdditionalKwargs["lc_source"]; ok {
+		if leftSource, ok := last.AdditionalKwargs["lc_source"].(string); ok {
+			if rightSource, ok := currentSource.(string); ok {
+				last.AdditionalKwargs["lc_source"] = leftSource + rightSource
+			}
+		} else {
+			last.AdditionalKwargs["lc_source"] = currentSource
 		}
 	}
+	if currentData, ok := current.AdditionalKwargs["lc_data"]; ok {
+		if leftData, exists := last.AdditionalKwargs["lc_data"]; exists {
+			if leftMap, lok := leftData.(map[string]any); lok {
+				if rightMap, rok := currentData.(map[string]any); rok {
+					last.AdditionalKwargs["lc_data"] = mergeNotificationData(leftMap, rightMap)
+				}
+			}
+		} else {
+			last.AdditionalKwargs["lc_data"] = currentData
+		}
+	}
+}
+
+// mergeNotificationData deep-merges two lc_data maps the way merge_dicts
+// merges dict+dict: right-only keys are copied in, equal values are kept
+// (Python's `continue` — this is what keeps an equal "id" from doubling),
+// nested maps recurse, strings concatenate (merge_dicts' `+=`), and lists
+// append (merge_lists' plain append). Any other leaf conflict — type
+// mismatch, differing bools or numbers — keeps the left value where Python
+// raises TypeError or sums ints; MergeRuns has no error channel and
+// accumulating user data would be more surprising than keeping the first
+// value.
+func mergeNotificationData(left map[string]any, right map[string]any) map[string]any {
+	merged := maps.Clone(left)
+	if merged == nil {
+		merged = make(map[string]any, len(right))
+	}
+	for key, rightValue := range right {
+		leftValue, exists := merged[key]
+		if !exists || equalAny(leftValue, rightValue) {
+			merged[key] = rightValue
+			continue
+		}
+		switch leftTyped := leftValue.(type) {
+		case map[string]any:
+			if rightMap, ok := rightValue.(map[string]any); ok {
+				merged[key] = mergeNotificationData(leftTyped, rightMap)
+			}
+		case string:
+			if rightString, ok := rightValue.(string); ok {
+				merged[key] = leftTyped + rightString
+			}
+		case []any:
+			if rightList, ok := rightValue.([]any); ok {
+				merged[key] = append(slices.Clone(leftTyped), rightList...)
+			}
+		}
+		// Other conflicts keep the left value (see the doc comment).
+	}
+	return merged
+}
+
+// equalAny reports shallow equality of two any values, mirroring the
+// `merged[k] == v` check merge_dicts applies before its type branches.
+func equalAny(left, right any) bool {
+	return reflect.DeepEqual(left, right)
 }

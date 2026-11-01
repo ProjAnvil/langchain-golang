@@ -171,3 +171,59 @@ func TestMergeRunsCarriesNotificationSource(t *testing.T) {
 		t.Fatalf("merged metadata = %#v, want carried source/data", got)
 	}
 }
+
+// TestMergeRunsMergesNotificationData pins merge_dicts' dict branch scoped to
+// lc_data (#41540 review): when both merged messages carry map lc_data, the
+// result deep-merges — nested maps recurse, right-only keys are copied,
+// equal values are kept and conflicting strings concatenate (merge_dicts'
+// `+=`, so "ok" + "done" merges to "okdone").
+func TestMergeRunsMergesNotificationData(t *testing.T) {
+	merged := MergeRuns([]Message{
+		AddNotificationMetadata(Human("a"), "s", map[string]any{
+			"task": map[string]any{"id": "t1", "status": "ok"},
+			"keep": "x",
+		}),
+		AddNotificationMetadata(Human("b"), "s2", map[string]any{
+			"task":  map[string]any{"id": "t1", "status": "done", "note": "n"},
+			"extra": true,
+		}),
+	})
+	if len(merged) != 1 {
+		t.Fatalf("merged %d messages, want 1: %#v", len(merged), merged)
+	}
+	// "id" is equal on both sides and stays single (merge_dicts' `continue`
+	// before the str concat).
+	wantData := map[string]any{
+		"task":  map[string]any{"id": "t1", "status": "okdone", "note": "n"},
+		"keep":  "x",
+		"extra": true,
+	}
+	if !reflect.DeepEqual(merged[0].AdditionalKwargs["lc_data"], wantData) {
+		t.Fatalf("lc_data = %#v, want deep-merged %#v", merged[0].AdditionalKwargs["lc_data"], wantData)
+	}
+	if source, _ := merged[0].AdditionalKwargs["lc_source"].(string); source != "ss2" {
+		t.Fatalf("lc_source = %#v, want ss2", merged[0].AdditionalKwargs["lc_source"])
+	}
+}
+
+// TestMergeRunsCarriesNotificationDataWithoutSource covers merge_dicts'
+// missing-key rule for lc_data alone: an incoming lc_data without an
+// lc_source is still carried onto the merged message (it is notification
+// data even though the message is not itself marked).
+func TestMergeRunsCarriesNotificationDataWithoutSource(t *testing.T) {
+	merged := MergeRuns([]Message{
+		Human("a"),
+		{Role: RoleHuman, Content: "b", AdditionalKwargs: map[string]any{
+			"lc_data": map[string]any{"k": 1},
+		}},
+	})
+	if len(merged) != 1 {
+		t.Fatalf("merged %d messages, want 1: %#v", len(merged), merged)
+	}
+	if !reflect.DeepEqual(merged[0].AdditionalKwargs["lc_data"], map[string]any{"k": 1}) {
+		t.Fatalf("lc_data = %#v, want carried", merged[0].AdditionalKwargs["lc_data"])
+	}
+	if got := GetNotificationMetadata(merged[0]); got != nil {
+		t.Fatalf("metadata = %#v, want nil without lc_source", got)
+	}
+}
