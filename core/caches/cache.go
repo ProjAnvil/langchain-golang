@@ -20,6 +20,30 @@ type Cache interface {
 	Clear(ctx context.Context) error
 }
 
+// The LLM cache global (Python's globals.get_llm_cache / set_llm_cache over
+// a module-level _llm_cache). Python needs no lock; the Go port guards the
+// package-level variable with an RWMutex so concurrent Set/Get is race-free.
+var (
+	llmCacheMu sync.RWMutex
+	llmCache   Cache
+)
+
+// GetLLMCache returns the global LLM cache, or nil when none is set
+// (Python's get_llm_cache).
+func GetLLMCache() Cache {
+	llmCacheMu.RLock()
+	defer llmCacheMu.RUnlock()
+	return llmCache
+}
+
+// SetLLMCache installs cache as the global LLM cache; a nil cache clears it
+// (Python's set_llm_cache).
+func SetLLMCache(cache Cache) {
+	llmCacheMu.Lock()
+	defer llmCacheMu.Unlock()
+	llmCache = cache
+}
+
 type InMemoryCacheOption func(*InMemoryCache) error
 
 func WithMaxSize(maxSize int) InMemoryCacheOption {
