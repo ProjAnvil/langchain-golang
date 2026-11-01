@@ -180,13 +180,18 @@ type Store interface {
 
 // ErrInvalidNamespace is returned by Put when namespace fails validation,
 // mirroring Python's InvalidNamespaceError. A namespace is invalid when it is
-// empty, contains an empty label, contains a label with ".", or has "langgraph"
-// as its root label (the reserved prefix).
+// empty, contains an empty label, contains a label with "." or "\x00", or has
+// "langgraph" as its root label (the reserved prefix).
 var ErrInvalidNamespace = errors.New("store: invalid namespace")
 
-// validateNamespace mirrors Python's `_validate_namespace` (base/__init__.py).
-// It is applied on Put (and only Put, matching Python, which validates in
-// put/aput but not in get/delete/search).
+// validateNamespace mirrors Python's `_validate_namespace` /
+// `_validate_namespace_labels` (base/__init__.py). It is applied on Put (and
+// only Put, matching the documented Put-only validation divergence). Since
+// #9383, labels containing NUL bytes are rejected too: Go joins labels with
+// "\x00" for the internal bucket key (see joinNS), so a label with an
+// embedded NUL would alias a multi-segment namespace (["a\x00b"] collides
+// with ["a","b"]) — Python rejects them for the analogous reason (NUL is its
+// SQLite store's segment separator).
 func validateNamespace(namespace []string) error {
 	if len(namespace) == 0 {
 		return fmt.Errorf("%w: namespace cannot be empty", ErrInvalidNamespace)
@@ -198,6 +203,9 @@ func validateNamespace(namespace []string) error {
 		if strings.Contains(label, ".") {
 			return fmt.Errorf("%w: namespace label %q cannot contain periods", ErrInvalidNamespace, label)
 		}
+		if strings.ContainsRune(label, '\x00') {
+			return fmt.Errorf("%w: namespace label %q cannot contain NUL bytes", ErrInvalidNamespace, label)
+		}
 	}
 	if namespace[0] == "langgraph" {
 		return fmt.Errorf("%w: root label cannot be %q", ErrInvalidNamespace, "langgraph")
@@ -206,8 +214,8 @@ func validateNamespace(namespace []string) error {
 }
 
 // joinNS renders a namespace slice as a stable map key. Segments are joined by
-// a NUL byte, which cannot appear in a validated label (labels are non-empty
-// and period-free; NUL is simply an out-of-band separator). The joined key is
+// a NUL byte, which cannot appear in a validated label (labels are non-empty,
+// period-free, and — since #9383 — NUL-free). The joined key is
 // only used internally as a map bucket — namespace prefix matching always
 // compares the original []string slices element-wise, so the separator never
 // affects matching.

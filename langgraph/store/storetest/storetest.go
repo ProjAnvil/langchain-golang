@@ -43,6 +43,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("put_updates_existing", func(t *testing.T) { testPutUpdatesExisting(t, newStore) })
 	t.Run("namespaces_hierarchical", func(t *testing.T) { testNamespacesHierarchical(t, newStore) })
 	t.Run("put_rejects_invalid_namespace", func(t *testing.T) { testPutRejectsInvalidNamespace(t, newStore) })
+	t.Run("put_rejects_nul_bucket_collision", func(t *testing.T) { testPutRejectsNULBucketCollision(t, newStore) })
 	t.Run("concurrent_put_get", func(t *testing.T) { testConcurrentPutGet(t, newStore) })
 	t.Run("list_namespaces", func(t *testing.T) { testListNamespaces(t, newStore) })
 }
@@ -424,8 +425,8 @@ func testNamespacesHierarchical(t *testing.T, newStore func(t *testing.T) store.
 }
 
 // testPutRejectsInvalidNamespace: Put rejects empty namespaces, empty labels,
-// labels with periods, and the reserved "langgraph" root — mirroring Python's
-// _validate_namespace.
+// labels with periods, labels with NUL bytes, and the reserved "langgraph"
+// root — mirroring Python's _validate_namespace (with #9383's NUL rejection).
 func testPutRejectsInvalidNamespace(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -438,6 +439,8 @@ func testPutRejectsInvalidNamespace(t *testing.T, newStore func(t *testing.T) st
 		{"empty", nil},
 		{"empty_label", []string{"a", ""}},
 		{"period_in_label", []string{"a.b"}},
+		{"nul_in_label", []string{"a\x00b"}},
+		{"nul_prefix_in_label", []string{"\x00a", "b"}},
 		{"langgraph_root", []string{"langgraph", "x"}},
 	}
 	for _, c := range cases {
@@ -453,6 +456,51 @@ func testPutRejectsInvalidNamespace(t *testing.T, newStore func(t *testing.T) st
 	// A valid namespace still succeeds (sanity).
 	if err := s.Put(ctx, []string{"valid", "ns"}, "k", map[string]any{"v": 1}, nil); err != nil {
 		t.Errorf("Put valid namespace: %v", err)
+	}
+}
+
+// testPutRejectsNULBucketCollision: a label containing a NUL byte must be
+// rejected at Put, so it can never alias a multi-segment namespace whose
+// segments join to the same internal bucket key (#9383). Without the
+// rejection, Put(["a\x00b"], ...) would silently write into the bucket of
+// ["a","b"] (labels are joined with "\x00" in Go's InMemoryStore — and NUL
+// separators are what Python's stores use internally too), corrupting the
+// other namespace's items.
+func testPutRejectsNULBucketCollision(t *testing.T, newStore func(t *testing.T) store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	s := newStore(t)
+
+	if err := s.Put(ctx, []string{"a", "b"}, "k", map[string]any{"v": "original"}, nil); err != nil {
+		t.Fatalf("Put [a b]: %v", err)
+	}
+	// ["a\x00b"] joins to the same bucket key as ["a","b"]: the write must be
+	// rejected, not funneled into the other namespace.
+	if err := s.Put(ctx, []string{"a\x00b"}, "k", map[string]any{"v": "imposter"}, nil); err == nil {
+		t.Fatal("Put [a\\x00b] succeeded; want an invalid-namespace error (NUL bucket collision)")
+	}
+	// The colliding write must not have landed: the original item is intact
+	// under its own namespace.
+	got, err := s.Get(ctx, []string{"a", "b"}, "k")
+	if err != nil {
+		t.Fatalf("Get [a b]: %v", err)
+	}
+	if got == nil || got.Value["v"] != "original" {
+		t.Fatalf("Get [a b] after rejected collision = %+v, want the original item", got)
+	}
+	// The NUL label is not a usable namespace: search matches element-wise,
+	// so nothing is reachable under ["a\x00b"] as a prefix.
+	results, err := s.Search(ctx, []string{"a\x00b"}, store.SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search [a\\x00b]: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("Search [a\\x00b] = %d items, want 0 (NUL label must not reach the colliding bucket)", len(results))
+	}
+	// And the collision must not work in reverse either: any label containing
+	// a NUL byte is rejected, wherever it sits in the namespace.
+	if err := s.Put(ctx, []string{"x\x00y", "z"}, "k", map[string]any{"v": 1}, nil); err == nil {
+		t.Fatal("Put [x\\x00y z] succeeded; want an invalid-namespace error")
 	}
 }
 
