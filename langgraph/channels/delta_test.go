@@ -358,14 +358,30 @@ func TestDeltaFromCheckpointNilEmpty(t *testing.T) {
 	requireEmpty(t, restored)
 }
 
+// TestNewDeltaChannelDefaultFrequency pins the default snapshot cadence at
+// 100 updates (#9420, Python 1.2.18 commit 0fc4f35b6): non-positive
+// frequencies fall back to 100, while explicit positive overrides (including
+// the old 1000) are honored unchanged. Mirrors Python's
+// test_delta_channel_snapshot_frequency[None].
 func TestNewDeltaChannelDefaultFrequency(t *testing.T) {
 	ch := NewDeltaChannel(deltaListReducer, intSliceFactory, 0)
-	if ch.snapshotFrequency != 1000 {
-		t.Fatalf("snapshotFrequency = %d, want 1000 (default)", ch.snapshotFrequency)
+	if ch.snapshotFrequency != 100 {
+		t.Fatalf("snapshotFrequency = %d, want 100 (default)", ch.snapshotFrequency)
 	}
 	ch2 := NewDeltaChannel(deltaListReducer, intSliceFactory, -5)
-	if ch2.snapshotFrequency != 1000 {
-		t.Fatalf("snapshotFrequency = %d, want 1000 (default for negative)", ch2.snapshotFrequency)
+	if ch2.snapshotFrequency != 100 {
+		t.Fatalf("snapshotFrequency = %d, want 100 (default for negative)", ch2.snapshotFrequency)
+	}
+	// Explicit overrides pass through untouched, including the pre-1.2.18
+	// default of 1000.
+	ch3 := NewDeltaChannel(deltaListReducer, intSliceFactory, 1000)
+	if ch3.snapshotFrequency != 1000 {
+		t.Fatalf("snapshotFrequency = %d, want 1000 (explicit override)", ch3.snapshotFrequency)
+	}
+	// NewMessagesDeltaChannel inherits the same default.
+	mch := NewMessagesDeltaChannel(nil, 0)
+	if mch.snapshotFrequency != 100 {
+		t.Fatalf("messages snapshotFrequency = %d, want 100 (default)", mch.snapshotFrequency)
 	}
 }
 

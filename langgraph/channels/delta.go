@@ -81,10 +81,12 @@ type DeltaChannel struct {
 // typFactory creates the zero/empty value for the channel's type (e.g.
 // func() any { return []int{} }); nil defaults to an empty []any.
 // snapshotFrequency is the per-channel update cadence; values <= 0 default to
-// 1000 (Python's default). A value of 1 forces a snapshot on every update.
+// 100 (Python's default since 1.2.18, #9420 — previously 1000; more frequent
+// snapshots bound replay latency). A value of 1 forces a snapshot on every
+// update.
 func NewDeltaChannel(reducer BatchReducer, typFactory func() any, snapshotFrequency int) *DeltaChannel {
 	if snapshotFrequency <= 0 {
-		snapshotFrequency = 1000
+		snapshotFrequency = 100
 	}
 	if typFactory == nil {
 		typFactory = func() any { return []any{} }
