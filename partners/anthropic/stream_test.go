@@ -13,6 +13,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
+	"github.com/projanvil/langchain-golang/core/streamevents"
 )
 
 // sse formats one server-sent event frame.
@@ -78,6 +79,85 @@ func streamWithRecorder(t *testing.T, server *httptest.Server) (runnables.Stream
 		t.Fatalf("stream: %v", err)
 	}
 	return stream, recorder
+}
+
+// TestStreamToolUseProtocolEventSequence locks the #41257 wire shape for
+// streamed tool_use blocks: content_block_start maps to a content-block-start
+// skeleton carrying the call's id/name/index with empty args, each
+// input_json_delta maps to a tool-call-delta carrying ONLY the args slice,
+// and content_block_stop carries the late id/name/args on
+// content-block-finish.
+func TestStreamToolUseProtocolEventSequence(t *testing.T) {
+	server := streamServer(
+		sse("message_start", streamMessageStart),
+		sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"search","input":{}}}`),
+		sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}`),
+		sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"weather\"}"}}`),
+		sse("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}`),
+		sse("message_stop", `{"type":"message_stop"}`),
+	)
+	defer server.Close()
+
+	stream, recorder := streamWithRecorder(t, server)
+	drainStream(t, stream)
+
+	type step struct {
+		event streamevents.EventName
+		index int
+	}
+	want := []step{
+		{streamevents.EventMessageStart, 0},
+		{streamevents.EventContentBlockStart, 0},
+		{streamevents.EventContentBlockDelta, 0},
+		{streamevents.EventContentBlockDelta, 0},
+		{streamevents.EventContentBlockFinish, 0},
+		{streamevents.EventMessageFinish, 0},
+	}
+	var events []streamevents.Event
+	for _, event := range recorder.Events() {
+		if event.Kind != callbacks.EventChatModelProtocol {
+			continue
+		}
+		if protocol, ok := event.Chunk.(streamevents.Event); ok {
+			events = append(events, protocol)
+		}
+	}
+	if len(events) != len(want) {
+		t.Fatalf("protocol events: got %d want %d: %+v", len(events), len(want), events)
+	}
+	for i, w := range want {
+		if events[i].Event != w.event || events[i].Index != w.index {
+			t.Fatalf("event[%d]: got %s/%d want %s/%d", i, events[i].Event, events[i].Index, w.event, w.index)
+		}
+	}
+
+	start := messages.BlockToMap(events[1].Content)
+	if start["type"] != "tool_call_chunk" || start["id"] != "toolu_1" || start["name"] != "search" {
+		t.Fatalf("start skeleton: %#v", start)
+	}
+	// The skeleton must not carry an args payload (BlockToMap drops empty
+	// args; either way args arrive only on the deltas).
+	if args, ok := start["args"].(string); ok && args != "" {
+		t.Fatalf("start skeleton must not carry args: %#v", start)
+	}
+	for i, wantArgs := range []string{`{"q":`, `"weather"}`} {
+		delta := messages.BlockToMap(events[2+i].Delta)
+		if delta["type"] != streamevents.ToolCallDeltaType || delta["args"] != wantArgs {
+			t.Fatalf("delta[%d]: %#v", i, delta)
+		}
+		if _, ok := delta["id"]; ok {
+			t.Fatalf("delta[%d] must not carry id: %#v", i, delta)
+		}
+		if _, ok := delta["name"]; ok {
+			t.Fatalf("delta[%d] must not carry name: %#v", i, delta)
+		}
+	}
+	finish := messages.BlockToMap(events[4].Content)
+	if finish["type"] != "tool_call" || finish["id"] != "toolu_1" ||
+		finish["name"] != "search" || finish["args"].(map[string]any)["q"] != "weather" {
+		t.Fatalf("finish block: %#v", finish)
+	}
 }
 
 func TestStreamToolUseBlock(t *testing.T) {

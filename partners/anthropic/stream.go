@@ -111,6 +111,10 @@ type streamToolBlock struct {
 	id        string
 	name      string
 	arguments string
+	// started tracks whether the block's content-block-start skeleton has
+	// been emitted (#41257): it goes out once, on first observation of the
+	// block's index; input_json_delta slices carry only args from there on.
+	started bool
 }
 
 // streamThinkingBlock accumulates an extended-thinking content block. Redacted
@@ -311,19 +315,15 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		block := s.upsertToolBlock(event.Index)
 		block.id = event.ContentBlock.ID
 		block.name = event.ContentBlock.Name
-		if event.ContentBlock.Input != nil {
+		// A start block that already carries the complete input seeds the
+		// args; the API's usual empty `{"input":{}}` start must not (the
+		// input_json_delta slices are the args source of truth there, and a
+		// marshaled `{}` prefix would corrupt the accumulated JSON).
+		if len(event.ContentBlock.Input) > 0 {
 			raw, _ := json.Marshal(event.ContentBlock.Input)
 			block.arguments = string(raw)
 		}
-		if err := s.emitProtocol(ctx, streamevents.Event{
-			Event: streamevents.EventContentBlockStart,
-			Index: event.Index,
-			Content: messages.ToolCallBlock{
-				ID:   event.ContentBlock.ID,
-				Name: event.ContentBlock.Name,
-				Args: map[string]any{},
-			},
-		}); err != nil {
+		if err := s.emitToolBlockStart(ctx, event.Index, block); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
@@ -396,12 +396,15 @@ func (s *messageStream) contentBlockDelta(ctx context.Context, event streamEvent
 		return chunk, true, nil
 	case "input_json_delta":
 		block := s.upsertToolBlock(event.Index)
+		if err := s.emitToolBlockStart(ctx, event.Index, block); err != nil {
+			return messages.Message{}, false, err
+		}
 		block.arguments += event.Delta.PartialJSON
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: event.Index,
 			Delta: messages.NonStandardContentBlock{
-				Type:  "tool_call_chunk",
+				Type:  streamevents.ToolCallDeltaType,
 				Value: map[string]any{"args": event.Delta.PartialJSON},
 			},
 		}); err != nil {
@@ -568,6 +571,28 @@ func (s *messageStream) upsertToolBlock(index int) *streamToolBlock {
 		s.toolBlocks[index] = block
 	}
 	return block
+}
+
+// emitToolBlockStart emits the content-block-start skeleton for a streamed
+// tool_use block (#41257): a tool_call_chunk carrying the call's id/name and
+// provider index with empty args, emitted once on first observation of the
+// block's index. Fields that arrive late (or the parsed args) ride the
+// block's content-block-finish.
+func (s *messageStream) emitToolBlockStart(ctx context.Context, index int, block *streamToolBlock) error {
+	if block.started {
+		return nil
+	}
+	block.started = true
+	return s.emitProtocol(ctx, streamevents.Event{
+		Event: streamevents.EventContentBlockStart,
+		Index: index,
+		Content: messages.ToolCallChunkBlock{
+			ID:    block.id,
+			Name:  block.name,
+			Args:  "",
+			Index: index,
+		},
+	})
 }
 
 func (s *messageStream) upsertThinkingBlock(index int) *streamThinkingBlock {
