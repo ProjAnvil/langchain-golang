@@ -113,14 +113,19 @@ func mergeNotificationKwargs(last *Message, current Message) {
 }
 
 // mergeNotificationData deep-merges two lc_data maps the way merge_dicts
-// merges dict+dict: right-only keys are copied in, equal values are kept
-// (Python's `continue` — this is what keeps an equal "id" from doubling),
-// nested maps recurse, strings concatenate (merge_dicts' `+=`), and lists
-// append (merge_lists' plain append). Any other leaf conflict — type
-// mismatch, differing bools or numbers — keeps the left value where Python
-// raises TypeError or sums ints; MergeRuns has no error channel and
-// accumulating user data would be more surprising than keeping the first
-// value.
+// merges dict+dict: right-only keys are copied in, nested maps recurse,
+// strings concatenate (merge_dicts' `+=`), and lists append (merge_lists'
+// plain append). Equal leaves short-circuit where Python's special keys do —
+// merge_dicts skips an equal "id"/"output_version"/"model_provider" string
+// (and an "index" string with an lc_ prefix) but has NO general equality
+// pre-check, so two equal plain strings or lists elsewhere double in Python
+// while Go keeps them single (the keep-single side of the keep-first rule
+// below). Any other leaf conflict — type mismatch, differing bools or
+// numbers — keeps the left value where Python raises TypeError or sums ints;
+// MergeRuns has no error channel and accumulating user data would be more
+// surprising than keeping the first value. Python's last-wins rule for int
+// "index"/"created"/"timestamp" leaves is likewise not mirrored (keep-first
+// for those too).
 func mergeNotificationData(left map[string]any, right map[string]any) map[string]any {
 	merged := maps.Clone(left)
 	if merged == nil {
@@ -151,8 +156,12 @@ func mergeNotificationData(left map[string]any, right map[string]any) map[string
 	return merged
 }
 
-// equalAny reports shallow equality of two any values, mirroring the
-// `merged[k] == v` check merge_dicts applies before its type branches.
+// equalAny reports shallow equality of two any values. It generalizes
+// merge_dicts' key-specific `==` checks (the equal special-key strings and
+// the generic equality branch Python evaluates after the str/dict/list
+// branches) to every leaf. reflect.DeepEqual is type-strict where Python's
+// `==` coerces (1 == 1.0 == True), but every coercion case falls through to
+// a keep-left branch on both sides, so the outcomes coincide.
 func equalAny(left, right any) bool {
 	return reflect.DeepEqual(left, right)
 }

@@ -879,15 +879,15 @@ type Options struct {
 	// interrupt_before resolution, so breakpoints win over draining — with
 	// the requesting superstep fully committed and checkpointed, returning a
 	// *types.GraphDrainedError. RequestDrain is safe from within the run's
-	// own goroutines (nodes); an external goroutine draining a live run is a
-	// data race — see runtime.RunControl's concurrency note. A nil Control
-	// is resolved per run: the
-	// enclosing run's control is inherited (so subgraphs and nested invokes
-	// drain their caller, mirroring Python's `control or
-	// parent_runtime.control or RunControl()`), else a fresh one is minted
-	// and published on Runtime.Control for nodes to request drains through.
-	// Reuse across runs is the caller's choice: a still-drained control
-	// stops the next run at its first boundary.
+	// own goroutines as a single writer (a node); concurrent sibling nodes
+	// draining in one superstep and external goroutines draining a live run
+	// are data races — see runtime.RunControl's concurrency note. A nil
+	// Control is resolved per run: the enclosing run's control is inherited
+	// (so subgraphs and nested invokes drain their caller, mirroring
+	// Python's `control or parent_runtime.control or RunControl()`), else a
+	// fresh one is minted and published on Runtime.Control for nodes to
+	// request drains through. Reuse across runs is the caller's choice: a
+	// still-drained control stops the next run at its first boundary.
 	Control *runtime.RunControl
 
 	// checkpointNS namespaces the run's checkpoints within the thread. It is

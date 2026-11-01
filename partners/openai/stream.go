@@ -195,7 +195,9 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 	// output_index on an item's done events than on its added event. Pin each
 	// item id to the first output_index seen so every later event for that
 	// item lands on the content block it started on. Events without an item
-	// id keep the raw event index (mirrors Python's item_output_indices).
+	// id keep the raw event index (mirrors Python's item_output_indices). A
+	// missing output_index decodes as 0, so an item whose first event omits
+	// it pins to block 0 — the same value Python's pin map records.
 	if itemID := cmp.Or(event.Item.ID, event.ItemID); itemID != "" {
 		if pinned, ok := s.itemOutputIndices[itemID]; ok {
 			event.OutputIndex = pinned

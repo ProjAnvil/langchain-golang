@@ -167,12 +167,17 @@ type ServerInfo struct {
 // "safe to call from any goroutine" rests on the GIL serializing the
 // attribute write against readers; Go's drainReason field is an
 // unsynchronized write, and the run loop reads it at every superstep
-// boundary. The supported pattern is a drain requested from goroutines
-// already ordered with the run loop — a node calling rt.Control.RequestDrain
-// (the node runs to completion before the loop's next read). An EXTERNAL
-// goroutine draining while the run is in flight is a data race (it trips
-// -race): external drainers must synchronize themselves (request before
-// Invoke, or under a caller-owned lock the run's reader cannot see).
+// boundary. The supported pattern is single-writer: a drain requested from
+// a goroutine already ordered with the run loop — a node calling
+// rt.Control.RequestDrain (the node runs to completion before the loop's
+// next read). Two sibling nodes draining concurrently in one superstep
+// (MaxConcurrency > 1) race the check-then-write against EACH OTHER: both
+// drains still take effect (each writes a non-nil reason), but which reason
+// survives is arbitrary and the write pair trips -race. An EXTERNAL
+// goroutine draining while the run is in flight is a data race against the
+// loop's reader too (it also trips -race): external drainers must
+// synchronize themselves (request before Invoke, or under a caller-owned
+// lock the run's reader cannot see).
 type RunControl struct {
 	drainReason *string
 }

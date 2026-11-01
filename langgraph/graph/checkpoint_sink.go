@@ -535,7 +535,9 @@ func cloneAnyShallow(v any) any {
 	}
 }
 
-// --- exit mode (stubs — implemented in Task 8) ---
+// --- exit mode (exit-durability accumulation: beginSuperstep latches the
+// anchor superstep, accumulateExitWrites defers below-cadence delta writes,
+// flushExit persists them beside the run's final checkpoint) ---
 
 // beginSuperstep records the superstep the executor is entering, latching
 // the run's FIRST superstep as the anchor superstep (Python #9114's

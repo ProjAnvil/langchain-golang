@@ -4,6 +4,33 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-01
+
+Parity wave 4 — the late-October 2026 upstream releases (langchain-core 1.7.3 · langchain 1.4.7 · langgraph 1.2.19 · checkpoint 4.3.1 · prebuilt 1.1.1): the second DeltaChannel-correctness wave, the core 1.7.0 tool-call stream protocol, and partner catch-up. Spec/plan: `docs/superpowers/{specs,plans}/2026-11-01-parity-wave4*`; gap analysis: `reports/14-latest-release-port-gap.md`.
+
+### Added
+- langgraph: delta-channel persistence correctness (#8544/#9114) — every write carries its dispatch-position task path and sqlite/postgres/redis replay pending writes in live dispatch order; resumed sends dispatch above restored tasks, resumed siblings' delta writes apply exactly once, and resumed exit runs replay in live order.
+- langgraph: exit-durability runs against a superseded checkpoint snapshot onto their own fork instead of contaminating the newer branch (#9269), covering the new-turn and pinned-at-latest cases.
+- langgraph: every message written to a messages delta channel is stamped with a stable ID before apply/persist (#9275), so RemoveMessage targeting and ID dedupe survive persisted writes.
+- langgraph: cooperative draining (#9281) — `Options.Control`/`Runtime.Control` RunControl requests stop the run at the next superstep boundary (breakpoints still win) with the requesting superstep committed, returning `*types.GraphDrainedError`; subgraphs and nested invokes inherit the caller's control (see DIVERGENCES.md).
+- langgraph: messages streaming emits node-returned values (#9463); nested invokes with their own thread/checkpoint drop inherited stream carriers (#9458); graph export lists a ToolNode's tool names as `__tools` metadata via `AddNodeWithBound`/`prebuilt.AddToolNode` (#9449).
+- langgraph: a delta channel's value survives its field changing to a plain reducer (#9302); a failed delta write repairs its checkpoint instead of stranding it (#9235); store namespace labels (incl. NUL bytes) are validated on every entry point (#9383); redis `GetTuple` returns pending writes, locked by test (langgraph-redis #220).
+- core/partners: tool-call args stream as `tool-call-delta` protocol slices (#41257) — `content-block-start` skeleton carrying id/name, per-slice args deltas without repetition — emitted incrementally by openai (Responses and Chat Completions) and anthropic and assembled by `ChatModelStream.Dispatch` alongside the legacy shape; gemini/ollama stay whole-block (see DIVERGENCES.md).
+- core: notification metadata helpers (#41540) — `lc_source`/`lc_data` add/get on messages, deep-merged across `MergeRuns`; LangSmith tracer accepts `address` (#41006); llm-cache global accessors.
+- anthropic: `WithEffort`/`reasoning_effort` — `output_config` emission, profile-gated adaptive-thinking default, and the opus-5 thinking/effort conflict validation (#41536); mid-conversation system messages and tool changes gated on the model's profile with tool-change beta auto-append and beta-endpoint routing (#41180).
+- modelprofiles: `mid_conversation_*` profile keys plus refreshed materialized data (#41180).
+
+### Fixed
+- langgraph: `trace_policy` scopes to tracers only (#9486) — usage aggregation, the messages bridge, and StreamEvents observe real payloads again (`callbacks.RawPayloadHandler` opt-out; language-forced scoping difference in DIVERGENCES.md).
+- langgraph: a new turn's exit input write no longer lands on a paused thread's collision slot (#9114); pause checkpoints no longer strand sibling writes beside anchored snapshots (#9235 review).
+- openai: Responses stream items land on the content block they started on after `output_index` drift (#41121); both chunk bridges keep wire indices collision-free.
+- core: Mermaid export escapes node labels and drops nested containers from metadata labels (#41512); notification `lc_data` deep-merges instead of overwriting (#41540).
+
+### Changed
+- langgraph: **delta snapshot cadence defaults to 100 updates** (was 1000, #9420) — tighter replay-latency bound, more frequent full snapshots; pass an explicit `snapshotFrequency` to `NewDeltaChannel`/`NewMessagesDeltaChannel` to keep the old spacing.
+- core/partners: **tool-call streaming uses the `tool-call-delta` protocol** (#41257) — consumers of content-block events see a start skeleton plus id/name-free args slices instead of repeated self-describing chunks; the assembled final chunk is unchanged.
+- anthropic: requests requiring beta flags (in-place tool-change system blocks) automatically append the tool-change betas and post to `/messages?beta=true` (#41180).
+
 ## [0.11.1] - 2026-10-24
 
 ### Fixed
