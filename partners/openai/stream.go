@@ -66,36 +66,38 @@ func (m ChatModel) createResponseStream(
 	}
 
 	return &responseStream{
-		ctx:             ctx,
-		cancel:          cancel,
-		body:            resp.Body,
-		scanner:         providerutil.NewSSEScanner(resp.Body),
-		cfg:             cfg,
-		toolCalls:       make(map[int]*streamToolCall),
-		textBlocks:      make(map[int]*streamTextBlock),
-		reasoningBlocks: make(map[int]*streamReasoningBlock),
-		chunkTimeout:    m.streamChunkTimeout,
-		model:           m.config.Model,
+		ctx:               ctx,
+		cancel:            cancel,
+		body:              resp.Body,
+		scanner:           providerutil.NewSSEScanner(resp.Body),
+		cfg:               cfg,
+		toolCalls:         make(map[int]*streamToolCall),
+		textBlocks:        make(map[int]*streamTextBlock),
+		reasoningBlocks:   make(map[int]*streamReasoningBlock),
+		itemOutputIndices: make(map[string]int),
+		chunkTimeout:      m.streamChunkTimeout,
+		model:             m.config.Model,
 	}, nil
 }
 
 type responseStream struct {
-	ctx             context.Context
-	cancel          context.CancelFunc
-	body            io.Closer
-	scanner         *bufio.Scanner
-	cfg             runnables.Config
-	done            bool
-	eventName       string
-	data            []string
-	toolCalls       map[int]*streamToolCall
-	textBlocks      map[int]*streamTextBlock
-	reasoningBlocks map[int]*streamReasoningBlock
-	protocolStarted bool
-	chunkTimeout    time.Duration
-	model           string
-	chunksReceived  int
-	guard           chunkTimeoutGuard
+	ctx               context.Context
+	cancel            context.CancelFunc
+	body              io.Closer
+	scanner           *bufio.Scanner
+	cfg               runnables.Config
+	done              bool
+	eventName         string
+	data              []string
+	toolCalls         map[int]*streamToolCall
+	textBlocks        map[int]*streamTextBlock
+	reasoningBlocks   map[int]*streamReasoningBlock
+	itemOutputIndices map[string]int
+	protocolStarted   bool
+	chunkTimeout      time.Duration
+	model             string
+	chunksReceived    int
+	guard             chunkTimeoutGuard
 }
 
 // Next arms the per-chunk timeout (stream_chunk_timeout, spec 4.6) around the
@@ -188,6 +190,19 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		return messages.Message{}, false, err
 	}
 	eventType := cmp.Or(event.Type, s.eventName)
+
+	// #41121: after several built-in tool calls the API can report a later
+	// output_index on an item's done events than on its added event. Pin each
+	// item id to the first output_index seen so every later event for that
+	// item lands on the content block it started on. Events without an item
+	// id keep the raw event index (mirrors Python's item_output_indices).
+	if itemID := cmp.Or(event.Item.ID, event.ItemID); itemID != "" {
+		if pinned, ok := s.itemOutputIndices[itemID]; ok {
+			event.OutputIndex = pinned
+		} else {
+			s.itemOutputIndices[itemID] = event.OutputIndex
+		}
+	}
 
 	switch eventType {
 	case "response.output_text.delta":

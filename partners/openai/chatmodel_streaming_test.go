@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
+	"github.com/projanvil/langchain-golang/core/streamevents"
 )
 
 const responsesAPIBody = `{"id":"resp_1","model":"gpt-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{}}`
@@ -604,5 +606,207 @@ func TestChatCompletionsRequestSamplingParamsAndToolCalls(t *testing.T) {
 	fn, _ := call["function"].(map[string]any)
 	if fn["name"] != "search" || fn["arguments"] != `{"q":"hi"}` {
 		t.Fatalf("tool call function = %v", fn)
+	}
+}
+
+// blockStartIndices returns the Index of every ContentBlockStart protocol
+// event, in emission order.
+func blockStartIndices(t *testing.T, recorder *callbacks.Recorder) []int {
+	t.Helper()
+	var indices []int
+	for _, event := range filterEvents(recorder.Events(), callbacks.EventChatModelProtocol) {
+		chunk, ok := event.Chunk.(streamevents.Event)
+		if !ok || chunk.Event != streamevents.EventContentBlockStart {
+			continue
+		}
+		indices = append(indices, chunk.Index)
+	}
+	return indices
+}
+
+// blockFinishes returns every ContentBlockFinish protocol event, in emission
+// order.
+func blockFinishes(t *testing.T, recorder *callbacks.Recorder) []streamevents.Event {
+	t.Helper()
+	var finishes []streamevents.Event
+	for _, event := range filterEvents(recorder.Events(), callbacks.EventChatModelProtocol) {
+		chunk, ok := event.Chunk.(streamevents.Event)
+		if !ok || chunk.Event != streamevents.EventContentBlockFinish {
+			continue
+		}
+		finishes = append(finishes, chunk)
+	}
+	return finishes
+}
+
+// TestResponseStreamOutputIndexDriftToolCalls covers #41121: after several
+// built-in tool calls the API reports a later output_index on an item's done
+// events than on its added events. Each item's args and id must land on the
+// content block the item started on, so block starts and finishes stay paired.
+func TestResponseStreamOutputIndexDriftToolCalls(t *testing.T) {
+	server := sseServer(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_a","type":"function_call","call_id":"call_a","name":"alpha","arguments":""}}`+"\n\n"+
+			`data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_a","delta":"{\"x\":"}`+"\n\n"+
+			`data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_a","delta":"1}"}`+"\n\n"+
+			// Done events below drift one index higher than the added events.
+			`data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_a","arguments":"{\"x\":1}"}`+"\n\n"+
+			`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"fc_a","type":"function_call","call_id":"call_a","name":"alpha","arguments":"{\"x\":1}"}}`+"\n\n"+
+			`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_b","type":"function_call","call_id":"call_b","name":"beta","arguments":""}}`+"\n\n"+
+			`data: {"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_b","delta":"{\"y\":2}"}`+"\n\n"+
+			`data: {"type":"response.output_item.done","output_index":2,"item":{"id":"fc_b","type":"function_call","call_id":"call_b","name":"beta","arguments":"{\"y\":2}"}}`+"\n\n"+
+			sseCompleted,
+	)
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	)
+	stream, err := model.Stream(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)),
+	)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var toolCalls []messages.ToolCall
+	for {
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		toolCalls = append(toolCalls, chunk.ToolCalls...)
+	}
+	// Each item's assembled tool call keeps its own id and arguments.
+	if len(toolCalls) != 2 {
+		t.Fatalf("tool calls = %#v, want 2", toolCalls)
+	}
+	if toolCalls[0].ID != "call_a" || toolCalls[0].Name != "alpha" ||
+		toolCalls[0].Args["x"] != float64(1) {
+		t.Fatalf("tool call[0] = %#v, want call_a/alpha/{x:1}", toolCalls[0])
+	}
+	if toolCalls[1].ID != "call_b" || toolCalls[1].Name != "beta" ||
+		toolCalls[1].Args["y"] != float64(2) {
+		t.Fatalf("tool call[1] = %#v, want call_b/beta/{y:2}", toolCalls[1])
+	}
+
+	// Blocks must start and finish on the same index: item A on 0, item B on 1.
+	if got, want := blockStartIndices(t, recorder), []int{0, 1}; !slices.Equal(got, want) {
+		t.Fatalf("block start indices = %v, want %v", got, want)
+	}
+	finishes := blockFinishes(t, recorder)
+	if len(finishes) != 2 {
+		t.Fatalf("block finishes = %d, want 2: %+v", len(finishes), finishes)
+	}
+	wantFinishIDs := []string{"call_a", "call_b"}
+	for i, finish := range finishes {
+		if finish.Index != i {
+			t.Fatalf("finish[%d] index = %d, want %d (items must finish on their first-seen output_index)", i, finish.Index, i)
+		}
+		if id := finish.Content.(messages.ToolCallBlock).ID; id != wantFinishIDs[i] {
+			t.Fatalf("finish[%d] id = %q, want %q", i, id, wantFinishIDs[i])
+		}
+	}
+}
+
+// TestResponseStreamOutputIndexDriftReasoning mirrors the Python regression
+// test for #41121: a reasoning item added at output_index 0 whose done event
+// announces output_index 1, followed by a text item that legitimately owns
+// output_index 1. The reasoning item must stay on block 0 (keeping its summary
+// text) instead of splitting onto the text item's block.
+func TestResponseStreamOutputIndexDriftReasoning(t *testing.T) {
+	server := sseServer(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_123","type":"reasoning","summary":[]}}`+"\n\n"+
+			`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"thinking"}`+"\n\n"+
+			// Drifted: done announces output_index 1, one higher than added.
+			`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"rs_123","type":"reasoning","summary":[]}}`+"\n\n"+
+			`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_123","type":"message","role":"assistant","status":"in_progress"}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":1,"item_id":"msg_123","delta":"{\"news_items\": []}"}`+"\n\n"+
+			// Drifted: text done announces output_index 2.
+			`data: {"type":"response.output_text.done","output_index":2,"item_id":"msg_123","text":"{\"news_items\": []}"}`+"\n\n"+
+			sseCompleted,
+	)
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	)
+	stream, err := model.Stream(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)),
+	)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var chunks []messages.Message
+	for {
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	// The text item's delta must survive the reasoning drift untouched.
+	var text string
+	for _, chunk := range chunks {
+		text += chunk.Content
+	}
+	if text != `{"news_items": []}` {
+		t.Fatalf("streamed text = %q", text)
+	}
+
+	// Both reasoning item chunks (added + done) carry a "summary" key; both must
+	// stay on index 0, and the done chunk must attach the summary text
+	// accumulated before the drifted done event.
+	var itemBlocks []map[string]any
+	for _, chunk := range chunks {
+		for _, block := range chunk.ContentBlocks {
+			m := messages.BlockToMap(block)
+			if m["type"] == "reasoning" && m["summary"] != nil {
+				itemBlocks = append(itemBlocks, m)
+			}
+		}
+	}
+	if len(itemBlocks) != 2 {
+		t.Fatalf("reasoning item blocks = %d, want 2 (added + done): %+v", len(itemBlocks), itemBlocks)
+	}
+	for i, m := range itemBlocks {
+		if m["index"] != 0 {
+			t.Fatalf("reasoning item block[%d] index = %v, want 0 (pinned to first-seen output_index)", i, m["index"])
+		}
+	}
+
+	// Protocol finish for the reasoning block must stay on index 0 and carry
+	// the summary text accumulated before the drifted done event.
+	var reasoningFinish *streamevents.Event
+	for _, finish := range blockFinishes(t, recorder) {
+		if messages.BlockToMap(finish.Content)["type"] != "reasoning" {
+			continue
+		}
+		if reasoningFinish != nil {
+			t.Fatalf("multiple reasoning finishes: %+v", blockFinishes(t, recorder))
+		}
+		reasoningFinish = &finish
+	}
+	if reasoningFinish == nil {
+		t.Fatalf("no reasoning finish event: %+v", blockFinishes(t, recorder))
+	}
+	if reasoningFinish.Index != 0 {
+		t.Fatalf("reasoning finish index = %d, want 0", reasoningFinish.Index)
+	}
+	if got := messages.BlockToMap(reasoningFinish.Content)["reasoning"]; got != "thinking" {
+		t.Fatalf("reasoning finish text = %v, want %q (summary text must attach to the pinned block)", got, "thinking")
 	}
 }
