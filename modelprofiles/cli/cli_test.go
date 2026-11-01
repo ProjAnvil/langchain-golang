@@ -770,6 +770,7 @@ mid_conversation_tools = true
 [overrides."claude-mythos-5"]
 mid_conversation_system_messages = true
 mid_conversation_tools = true
+future_field = true
 `
 	if err := os.WriteFile(filepath.Join(dataDir, augmentationsFileName), []byte(augmentations), 0o644); err != nil {
 		t.Fatalf("failed to write augmentations: %v", err)
@@ -824,10 +825,14 @@ mid_conversation_tools = true
 			mythos["mid_conversation_system_messages"], mythos["mid_conversation_tools"])
 	}
 
-	// reasoning_effort_* are not declared modelprofiles fields yet (they belong
-	// to the reasoning-effort schema half), so the unknown-key warning fires.
-	if !strings.Contains(stderr.String(), "reasoning_effort_levels") {
-		t.Errorf("expected unknown-key warning naming reasoning_effort_levels, got stderr = %q", stderr.String())
+	// reasoning_effort_* are declared modelprofiles fields as of the
+	// reasoning-effort schema half (Python #41536), so they must NOT trip the
+	// unknown-key warning; the synthetic future_field still does.
+	if strings.Contains(stderr.String(), "reasoning_effort_levels") {
+		t.Errorf("unexpected unknown-key warning for declared key reasoning_effort_levels: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "future_field") {
+		t.Errorf("expected unknown-key warning naming future_field, got stderr = %q", stderr.String())
 	}
 
 	// FetchProfiles must not write any files.

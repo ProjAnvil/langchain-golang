@@ -228,3 +228,97 @@ func TestLookupMiss(t *testing.T) {
 		t.Errorf("Lookup(empty args) = (%v, true), want miss", profile)
 	}
 }
+
+// wantAnthropicReasoningEffort is the expected set of anthropic models whose
+// profile declares reasoning-effort keys, mirrored from the upstream partner
+// augmentation data (langchain-anthropic data/_profiles.py, Python #41536-era
+// bundle). Twelve models: everything from Opus 4.5 up plus Sonnet 4.6+.
+var wantAnthropicReasoningEffort = []string{
+	"claude-fable-5",
+	"claude-fable-5-1",
+	"claude-opus-4-5",
+	"claude-opus-4-5-20251101",
+	"claude-opus-4-6",
+	"claude-opus-4-7",
+	"claude-opus-4-8",
+	"claude-opus-5",
+	"claude-opus-5-5",
+	"claude-sonnet-4-6",
+	"claude-sonnet-5",
+	"claude-sonnet-5-5",
+}
+
+func TestLookupAnthropicReasoningEffortCoverage(t *testing.T) {
+	reg, ok := materialized()["anthropic"]
+	if !ok {
+		t.Fatal("anthropic provider missing from materialized profiles")
+	}
+	var carriers []string
+	defaults := map[string]string{}
+	for modelID, profile := range reg {
+		if levels := profile.ReasoningEffortLevels(); levels != nil {
+			carriers = append(carriers, modelID)
+		}
+		if def, ok := profile.ReasoningEffortDefault(); ok {
+			defaults[modelID] = def
+		}
+	}
+	slices.Sort(carriers)
+	if !slices.Equal(carriers, wantAnthropicReasoningEffort) {
+		t.Errorf("anthropic reasoning_effort_levels carriers = %v, want %v",
+			carriers, wantAnthropicReasoningEffort)
+	}
+	// Every carrier documents a default; Opus 5.5 is the one model whose
+	// documented default is "medium" rather than "high" (Opus 5.5 note in
+	// chat_models.py:1540-1544); the rest default to "high".
+	if len(defaults) != len(wantAnthropicReasoningEffort) {
+		t.Errorf("reasoning_effort_default carriers = %d, want %d",
+			len(defaults), len(wantAnthropicReasoningEffort))
+	}
+	if got := defaults["claude-opus-5-5"]; got != "medium" {
+		t.Errorf("claude-opus-5-5 reasoning_effort_default = %q, want \"medium\"", got)
+	}
+	for _, modelID := range wantAnthropicReasoningEffort {
+		if defaults[modelID] != "high" && modelID != "claude-opus-5-5" {
+			t.Errorf("%s reasoning_effort_default = %q, want \"high\"", modelID, defaults[modelID])
+		}
+	}
+}
+
+func TestLookupAnthropicReasoningEffortLevels(t *testing.T) {
+	profile, ok := Lookup("anthropic", "claude-opus-4-7")
+	if !ok {
+		t.Fatal("Lookup(claude-opus-4-7) missed, want hit")
+	}
+	want := []string{"low", "medium", "high", "xhigh", "max"}
+	if got := profile.ReasoningEffortLevels(); !slices.Equal(got, want) {
+		t.Errorf("claude-opus-4-7 reasoning_effort_levels = %v, want %v", got, want)
+	}
+
+	// Opus 4.5/4.6 advertise effort but not the xhigh level, so they must not
+	// get the adaptive-thinking default (Python regression test
+	// test_reasoning_effort_older_model_does_not_default_thinking).
+	older, ok := Lookup("anthropic", "claude-opus-4-5-20251101")
+	if !ok {
+		t.Fatal("Lookup(claude-opus-4-5-20251101) missed, want hit")
+	}
+	if got := older.ReasoningEffortLevels(); slices.Contains(got, "xhigh") {
+		t.Errorf("claude-opus-4-5-20251101 reasoning_effort_levels = %v, want no xhigh", got)
+	}
+}
+
+func TestLookupOlderModelsDoNotCarryReasoningEffortKeys(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-4-5", "claude-haiku-4-5"} {
+		profile, ok := Lookup("anthropic", model)
+		if !ok {
+			t.Errorf("Lookup(%q) missed, want hit", model)
+			continue
+		}
+		if got := profile.ReasoningEffortLevels(); got != nil {
+			t.Errorf("%s: reasoning_effort_levels = %v, want nil", model, got)
+		}
+		if _, ok := profile.ReasoningEffortDefault(); ok {
+			t.Errorf("%s: reasoning_effort_default present, want absent", model)
+		}
+	}
+}

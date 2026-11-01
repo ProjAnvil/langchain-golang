@@ -53,6 +53,8 @@ var fieldLabels = map[string]string{
 	"audio_outputs":                    "audio output",
 	"video_outputs":                    "video output",
 	"reasoning_output":                 "reasoning",
+	"reasoning_effort_levels":          "reasoning effort levels",
+	"reasoning_effort_default":         "default reasoning effort",
 	"tool_calling":                     "tool calling",
 	"tool_choice":                      "tool choice",
 	"tool_call_streaming":              "tool call streaming",

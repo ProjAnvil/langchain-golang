@@ -34,10 +34,16 @@ const (
 	// Output constraints.
 	FieldMaxOutputTokens = "max_output_tokens"
 	FieldReasoningOutput = "reasoning_output"
-	FieldTextOutputs     = "text_outputs"
-	FieldImageOutputs    = "image_outputs"
-	FieldAudioOutputs    = "audio_outputs"
-	FieldVideoOutputs    = "video_outputs"
+
+	// Reasoning effort (langchain-core model_profile.py:94-108; anthropic
+	// bundle data since the #41536-era augmentations).
+	FieldReasoningEffortLevels  = "reasoning_effort_levels"
+	FieldReasoningEffortDefault = "reasoning_effort_default"
+
+	FieldTextOutputs   = "text_outputs"
+	FieldImageOutputs  = "image_outputs"
+	FieldAudioOutputs  = "audio_outputs"
+	FieldVideoOutputs  = "video_outputs"
 
 	// Tool calling.
 	FieldToolCalling    = "tool_calling"
@@ -75,6 +81,8 @@ var declaredProfileFields = map[string]struct{}{
 	FieldPDFToolMsg:                    {},
 	FieldMaxOutputTokens:               {},
 	FieldReasoningOutput:               {},
+	FieldReasoningEffortLevels:         {},
+	FieldReasoningEffortDefault:        {},
 	FieldTextOutputs:                   {},
 	FieldImageOutputs:                  {},
 	FieldAudioOutputs:                  {},
@@ -111,6 +119,35 @@ func IsDeclaredProfileField(name string) bool {
 func (p Profile) Supports(key string) bool {
 	value, ok := p[key].(bool)
 	return ok && value
+}
+
+// ReasoningEffortLevels returns the reasoning-effort levels declared in the
+// profile, mirroring Python's defensive _reasoning_effort_levels helper
+// (langchain_anthropic chat_models.py:1140-1152): an absent key, a non-list
+// value, or non-string entries read as "not declared" rather than erroring, so
+// a malformed or future profile never breaks a lookup.
+func (p Profile) ReasoningEffortLevels() []string {
+	raw, ok := p[FieldReasoningEffortLevels].([]any)
+	if !ok {
+		return nil
+	}
+	var levels []string
+	for _, item := range raw {
+		if level, isString := item.(string); isString {
+			levels = append(levels, level)
+		}
+	}
+	return levels
+}
+
+// ReasoningEffortDefault returns the provider's documented default
+// reasoning-effort level and whether the profile declares one. Python's
+// ChatAnthropic never resolves this default client-side (the value documents
+// API behavior, e.g. Opus 5.5 defaults to "medium"); the accessor exists for
+// schema completeness and consumers that surface the documented default.
+func (p Profile) ReasoningEffortDefault() (string, bool) {
+	level, ok := p[FieldReasoningEffortDefault].(string)
+	return level, ok
 }
 
 // UnknownProfileKeys returns the sorted profile keys that are not declared

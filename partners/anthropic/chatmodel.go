@@ -29,6 +29,7 @@ type ChatModel struct {
 	boundTools        []tools.Tool
 	toolStrict        *bool
 	thinking          map[string]any
+	reasoningEffort   string
 	toolChoice        map[string]any
 	parallelToolCalls *bool
 	contextManagement map[string]any
@@ -201,6 +202,72 @@ func (m ChatModel) WithThinking(thinking map[string]any) ChatModel {
 	return next
 }
 
+// validEffortLevels mirrors Python ChatAnthropic's reasoning_effort field type
+// Literal["max", "xhigh", "high", "medium", "low"] (alias "effort",
+// langchain_anthropic/chat_models.py:1523). The set is model-independent: the
+// per-model levels in the profile advertise support but are not enforced
+// client-side.
+var validEffortLevels = []string{"max", "xhigh", "high", "medium", "low"}
+
+// opus5Prefix names the model family whose members reject disabled thinking at
+// xhigh/max effort (chat_models.py:1851-1863 checks
+// model.startswith("claude-opus-5")).
+const opus5Prefix = "claude-opus-5"
+
+// WithEffort returns a copy of the model with the reasoning-effort level set
+// (Python ChatAnthropic's `effort`/`reasoning_effort` constructor fields, #41536).
+// The level is emitted as output_config.effort on the request. When no explicit
+// thinking is set and the model's profile declares xhigh support (Opus 4.7+,
+// Sonnet 5 and newer), thinking defaults to
+// {"type":"adaptive","display":"summarized"} so the model actually reasons at
+// the requested level. The level is validated at request-build time — an
+// illegal value errors with Python's exact pydantic literal_error text, since
+// a Go option chain cannot fail at construction.
+func (m ChatModel) WithEffort(effort string) ChatModel {
+	next := m
+	next.reasoningEffort = effort
+	return next
+}
+
+// Effort returns the resolved reasoning-effort level, or "" when unset. It is
+// the Go counterpart of Python's `effort` property alias for `reasoning_effort`
+// (chat_models.py:1611-1613): it exposes only the explicitly configured value
+// (the profile's documented default is never resolved client-side).
+func (m ChatModel) Effort() string { return m.reasoningEffort }
+
+// assertValidEffort mirrors the effort parts of Python's
+// _assert_valid_model_configuration (chat_models.py:1793-1863), which runs
+// before message conversion on every request:
+//
+//   - the level must be one of the Literal values — Python enforces this at
+//     construction via pydantic's literal_error; Go surfaces the same message
+//     here because WithEffort cannot fail;
+//   - claude-opus-5* models reject thinking={"type":"disabled"} combined with
+//     xhigh/max effort ("permits disabled thinking only through `high` effort").
+func (m ChatModel) assertValidEffort() error {
+	if m.reasoningEffort == "" {
+		return nil
+	}
+	if !slices.Contains(validEffortLevels, m.reasoningEffort) {
+		return fmt.Errorf(
+			"anthropic %s: effort %q is invalid: Input should be 'max', 'xhigh', 'high', 'medium' or 'low'",
+			m.config.Model, m.reasoningEffort)
+	}
+	if strings.HasPrefix(m.config.Model, opus5Prefix) &&
+		m.thinking != nil && m.thinking["type"] == "disabled" &&
+		(m.reasoningEffort == "xhigh" || m.reasoningEffort == "max") {
+		// Python's message verbatim (chat_models.py:1857-1862) except the
+		// trailing period, dropped per Go error-string convention (staticcheck
+		// ST1005).
+		return fmt.Errorf(
+			"`thinking={\"type\": \"disabled\"}` is not supported for %s with "+
+				"`output_config.effort='%s'`; use adaptive thinking, omit `thinking`, "+
+				"or set effort to `high` or below",
+			m.config.Model, m.reasoningEffort)
+	}
+	return nil
+}
+
 // WithToolChoice returns a copy of the model with the Anthropic tool_choice
 // request parameter set, e.g. {"type":"auto"}, {"type":"any"},
 // {"type":"tool","name":"search"}, or
@@ -361,6 +428,9 @@ func (m ChatModel) createMessage(
 }
 
 func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error) {
+	if err := m.assertValidEffort(); err != nil {
+		return requestPayload{}, err
+	}
 	payload := requestPayload{
 		Model:     m.config.Model,
 		MaxTokens: 4096,
@@ -538,6 +608,22 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	}
 	if m.thinking != nil {
 		payload.Thinking = m.thinking
+	}
+	// Effort → output_config (#41536, chat_models.py:1970-1998). Python merges
+	// the constructor output_config dict and then applies effort on top; effort
+	// is the only Go source, so the emitted map is exactly {"effort": level}.
+	// The adaptive-thinking default (chat_models.py:2005-2010) fires only when
+	// no explicit thinking is set and the model's profile declares xhigh
+	// support — sending the adaptive+summarized shape to an older model (Opus
+	// 4.5/4.6) is rejected with "adaptive thinking is not supported on this
+	// model".
+	if m.reasoningEffort != "" {
+		payload.OutputConfig = map[string]any{"effort": m.reasoningEffort}
+		if payload.Thinking == nil && m.profileSupportsXHighEffort() {
+			payload.Thinking = map[string]any{"type": "adaptive", "display": "summarized"}
+		}
+	}
+	if payload.Thinking != nil {
 		applyThinkingConstraints(&payload)
 	}
 	if m.toolChoice != nil {
@@ -678,6 +764,20 @@ func (m ChatModel) midConversationGates() (system, tools bool) {
 		profile.Supports(modelprofiles.FieldMidConversationTools)
 }
 
+// profileSupportsXHighEffort mirrors Python's gate `"xhigh" in
+// _reasoning_effort_levels(self.profile)` (chat_models.py:2008): only models
+// whose profile declares the xhigh level (Opus 4.7+, Sonnet 5 and newer) accept
+// the adaptive+summarized thinking shape. Exact-ID lookup like
+// midConversationGates — IDs absent from the bundle, or carrying no levels,
+// report false, so older models keep their pre-effort payloads.
+func (m ChatModel) profileSupportsXHighEffort() bool {
+	profile, ok := modelprofiles.Lookup(anthropicProviderID, m.config.Model)
+	if !ok {
+		return false
+	}
+	return slices.Contains(profile.ReasoningEffortLevels(), "xhigh")
+}
+
 // previousTurnAllowsSystem mirrors Python's _previous_turn_allows_system
 // (chat_models.py:668-680): a system message may be sent in place after a
 // user turn (human or folded tool results), or after an assistant turn that
@@ -778,6 +878,7 @@ type requestPayload struct {
 	ToolChoice        map[string]any   `json:"tool_choice,omitempty"`
 	Stream            bool             `json:"stream,omitzero"`
 	Thinking          map[string]any   `json:"thinking,omitempty"`
+	OutputConfig      map[string]any   `json:"output_config,omitempty"`
 	ContextManagement map[string]any   `json:"context_management,omitempty"`
 	InferenceGeo      string           `json:"inference_geo,omitempty"`
 

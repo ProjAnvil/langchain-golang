@@ -89,6 +89,79 @@ func TestMidConversationFieldKeys(t *testing.T) {
 	}
 }
 
+// TestReasoningEffortFieldKeys pins the exact snake_case key strings declared
+// by Python's ModelProfile TypedDict (langchain-core
+// model_profile.py:94-108) so a typo in the constants cannot slip through.
+// The anthropic bundle has carried the data since the Task 8 materialization;
+// this task declares the schema keys (Python #41536).
+func TestReasoningEffortFieldKeys(t *testing.T) {
+	if FieldReasoningEffortLevels != "reasoning_effort_levels" {
+		t.Errorf("FieldReasoningEffortLevels = %q, want %q",
+			FieldReasoningEffortLevels, "reasoning_effort_levels")
+	}
+	if FieldReasoningEffortDefault != "reasoning_effort_default" {
+		t.Errorf("FieldReasoningEffortDefault = %q, want %q",
+			FieldReasoningEffortDefault, "reasoning_effort_default")
+	}
+	for _, field := range []string{FieldReasoningEffortLevels, FieldReasoningEffortDefault} {
+		if !IsDeclaredProfileField(field) {
+			t.Errorf("expected %q to be a declared profile field", field)
+		}
+	}
+	// The new keys must no longer surface as unknown profile keys.
+	profile := Profile{
+		FieldReasoningEffortLevels:  []any{"low", "medium", "high"},
+		FieldReasoningEffortDefault: "high",
+	}
+	if got := UnknownProfileKeys(profile); len(got) != 0 {
+		t.Errorf("expected no unknown keys, got %v", got)
+	}
+}
+
+// TestProfileReasoningEffortLevels mirrors Python's defensive
+// _reasoning_effort_levels helper (langchain_anthropic chat_models.py:1140-1152):
+// absent, non-list, or non-string entries read as "not declared" instead of
+// erroring.
+func TestProfileReasoningEffortLevels(t *testing.T) {
+	profile := Profile{
+		FieldReasoningEffortLevels: []any{"low", "medium", "high", "xhigh", 7, nil},
+	}
+	if got, want := profile.ReasoningEffortLevels(), []string{"low", "medium", "high", "xhigh"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ReasoningEffortLevels() = %v, want %v", got, want)
+	}
+	bad := Profile{
+		FieldReasoningEffortLevels: "low",
+	}
+	if got := bad.ReasoningEffortLevels(); got != nil {
+		t.Errorf("ReasoningEffortLevels() on non-list = %v, want nil", got)
+	}
+	if got := (Profile{}).ReasoningEffortLevels(); got != nil {
+		t.Errorf("ReasoningEffortLevels() on absent key = %v, want nil", got)
+	}
+	var nilProfile Profile
+	if got := nilProfile.ReasoningEffortLevels(); got != nil {
+		t.Errorf("ReasoningEffortLevels() on nil profile = %v, want nil", got)
+	}
+}
+
+// TestProfileReasoningEffortDefault reads the documented default level the way
+// the schema declares it: a string when present, absent otherwise. Python's
+// ChatAnthropic never resolves this default client-side (the value documents
+// API behavior); the accessor exists for schema completeness.
+func TestProfileReasoningEffortDefault(t *testing.T) {
+	profile := Profile{FieldReasoningEffortDefault: "medium"}
+	if got, ok := profile.ReasoningEffortDefault(); !ok || got != "medium" {
+		t.Errorf("ReasoningEffortDefault() = (%q, %v), want (\"medium\", true)", got, ok)
+	}
+	if _, ok := (Profile{}).ReasoningEffortDefault(); ok {
+		t.Error("ReasoningEffortDefault() on absent key reported present")
+	}
+	nonString := Profile{FieldReasoningEffortDefault: 1}
+	if _, ok := nonString.ReasoningEffortDefault(); ok {
+		t.Error("ReasoningEffortDefault() on non-string reported present")
+	}
+}
+
 func TestProfileSupports(t *testing.T) {
 	profile := Profile{
 		FieldMidConversationTools: true,
