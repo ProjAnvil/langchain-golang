@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/tools"
+	"github.com/projanvil/langchain-golang/modelprofiles"
 	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
@@ -367,48 +369,138 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 		payload.StopSequences = append([]string(nil), stops...)
 	}
 
-	var systemText []string
-	var systemBlocks []contentBlock
-	for _, message := range input {
-		switch message.Role {
-		case messages.RoleSystem:
+	midSystem, midTools := m.midConversationGates()
+
+	var (
+		systemText   []string
+		systemBlocks []contentBlock
+		// systemClaimed mirrors Python's `system is not None`
+		// (chat_models.py:751): once the top-level system field holds the
+		// leading run or a hoisted message, a further hoist on the
+		// profile-enabled path is an error.
+		systemClaimed bool
+		// pending collects a run of system messages deferred for in-place
+		// emission, mirroring Python's pending_system.
+		pending []messages.Message
+		// nonSystemSeen distinguishes the leading system run (hoisted without
+		// warning) from mid-conversation ones.
+		nonSystemSeen bool
+	)
+
+	// hoistSystemRun folds a run of system messages into the top-level system
+	// field. allowToolChanges mirrors Python's preserve_tool_changes: only the
+	// leading run (gated on the profile's mid_conversation_tools) may carry
+	// tool-change blocks; a hoisted mid-conversation message never does.
+	hoistSystemRun := func(run []messages.Message, allowToolChanges, warn bool) error {
+		if midSystem && systemClaimed {
+			return fmt.Errorf(
+				"anthropic %s: received multiple non-consecutive system messages (this model's profile allows mid-conversation system messages; place extra system messages last or before an AI message)",
+				m.config.Model)
+		}
+		for _, message := range run {
+			if message.Content != "" {
+				systemText = append(systemText, message.Content)
+			}
 			if len(message.ContentBlocks) > 0 {
-				blocks, err := formatContentBlocks(message.ContentBlocks)
+				blocks, err := formatSystemBlocks(message.ContentBlocks, allowToolChanges, m.config.Model)
+				if err != nil {
+					return err
+				}
+				systemBlocks = append(systemBlocks, blocks...)
+			}
+		}
+		systemClaimed = true
+		if warn {
+			warnSystemMessageHoisted(m.config.Model)
+		}
+		return nil
+	}
+
+	for i := 0; i < len(input); {
+		message := input[i]
+		if message.Role != messages.RoleSystem {
+			nonSystemSeen = true
+			// Flush deferred system messages ahead of the turn they precede:
+			// before an assistant turn they go in place
+			// (chat_models.py:1043-1046), otherwise they are hoisted with a
+			// warning (chat_models.py:1047-1054).
+			if len(pending) > 0 {
+				if message.Role == messages.RoleAI {
+					turns, err := inPlaceSystemTurns(pending, midTools, m.config.Model)
+					if err != nil {
+						return requestPayload{}, err
+					}
+					payload.Messages = append(payload.Messages, turns...)
+				} else if err := hoistSystemRun(pending, false, true); err != nil {
+					return requestPayload{}, err
+				}
+				pending = nil
+			}
+			switch message.Role {
+			case messages.RoleHuman:
+				content, err := formatHumanContent(message)
 				if err != nil {
 					return requestPayload{}, err
 				}
-				systemBlocks = append(systemBlocks, blocks...)
-			} else if message.Content != "" {
-				systemText = append(systemText, message.Content)
+				payload.Messages = append(payload.Messages, requestMessage{
+					Role:    "user",
+					Content: content,
+				})
+			case messages.RoleAI:
+				content, err := messageToAnthropicContent(message)
+				if err != nil {
+					return requestPayload{}, err
+				}
+				payload.Messages = append(payload.Messages, requestMessage{
+					Role:    "assistant",
+					Content: content,
+				})
+			case messages.RoleTool:
+				content, err := toolResultContent(message)
+				if err != nil {
+					return requestPayload{}, err
+				}
+				payload.Messages = append(payload.Messages, requestMessage{
+					Role:    "user",
+					Content: content,
+				})
 			}
-		case messages.RoleHuman:
-			content, err := formatHumanContent(message)
-			if err != nil {
-				return requestPayload{}, err
-			}
-			payload.Messages = append(payload.Messages, requestMessage{
-				Role:    "user",
-				Content: content,
-			})
-		case messages.RoleAI:
-			content, err := messageToAnthropicContent(message)
-			if err != nil {
-				return requestPayload{}, err
-			}
-			payload.Messages = append(payload.Messages, requestMessage{
-				Role:    "assistant",
-				Content: content,
-			})
-		case messages.RoleTool:
-			content, err := toolResultContent(message)
-			if err != nil {
-				return requestPayload{}, err
-			}
-			payload.Messages = append(payload.Messages, requestMessage{
-				Role:    "user",
-				Content: content,
-			})
+			i++
+			continue
 		}
+		// Gather the run of consecutive system messages (Python's
+		// _merge_messages coalesces them into one message, so placement
+		// decisions are per run).
+		j := i
+		for j < len(input) && input[j].Role == messages.RoleSystem {
+			j++
+		}
+		run := input[i:j]
+		i = j
+		switch {
+		case !nonSystemSeen:
+			// Leading run: hoisted into the top-level system field without a
+			// warning; tool-change blocks survive only when the profile
+			// declares mid_conversation_tools.
+			if err := hoistSystemRun(run, midTools, false); err != nil {
+				return requestPayload{}, err
+			}
+		case midSystem && (len(pending) > 0 || previousTurnAllowsSystem(payload.Messages)):
+			pending = append(pending, run...)
+		default:
+			if err := hoistSystemRun(run, false, true); err != nil {
+				return requestPayload{}, err
+			}
+		}
+	}
+	// A trailing run of deferred system messages is emitted in place
+	// (chat_models.py:1063-1065).
+	if len(pending) > 0 {
+		turns, err := inPlaceSystemTurns(pending, midTools, m.config.Model)
+		if err != nil {
+			return requestPayload{}, err
+		}
+		payload.Messages = append(payload.Messages, turns...)
 	}
 	if len(systemBlocks) > 0 {
 		if len(systemText) > 0 {
@@ -456,6 +548,101 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	return payload, nil
 }
 
+// anthropicProviderID is the models.dev provider ID keying the modelprofiles
+// bundle (modelprofiles/profiles.json).
+const anthropicProviderID = "anthropic"
+
+// midConversationGates reports whether the model's profile allows mid-
+// conversation system messages and mid-conversation tool changes (Python
+// #41180, langchain-anthropic chat_models.py:1901-1906 reads the same keys off
+// self.profile). Like Python's registry lookup, model IDs are matched exactly;
+// a model absent from the bundle (including dated IDs such as
+// "claude-sonnet-4-5-20250929") allows neither, preserving the legacy hoisting
+// behavior.
+func (m ChatModel) midConversationGates() (system, tools bool) {
+	profile, ok := modelprofiles.Lookup(anthropicProviderID, m.config.Model)
+	if !ok {
+		return false, false
+	}
+	return profile.Supports(modelprofiles.FieldMidConversationSystemMessages),
+		profile.Supports(modelprofiles.FieldMidConversationTools)
+}
+
+// previousTurnAllowsSystem mirrors Python's _previous_turn_allows_system
+// (chat_models.py:668-680): a system message may be sent in place after a
+// user turn (human or folded tool results), or after an assistant turn that
+// ends with a server-side tool result block (any "*_tool_result" type). After
+// a plain assistant turn it must be hoisted.
+func previousTurnAllowsSystem(messages []requestMessage) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	last := messages[len(messages)-1]
+	if last.Role == "user" {
+		return true
+	}
+	if last.Role != "assistant" || len(last.Content) == 0 {
+		return false
+	}
+	return strings.HasSuffix(last.Content[len(last.Content)-1].Type, "_tool_result")
+}
+
+// inPlaceSystemTurns formats a run of deferred system messages into wire
+// turns, mirroring Python's _merge_messages coalescing plus
+// _format_in_place_system_messages (chat_models.py:329,679-707): the run
+// becomes one system turn whose content is a block array (string contents
+// become text blocks), except a single message with string content, which
+// keeps the bare string. A run whose blocks all narrow away is omitted
+// entirely rather than sent as an empty system turn.
+func inPlaceSystemTurns(run []messages.Message, allowToolChanges bool, model string) ([]requestMessage, error) {
+	if len(run) == 1 && len(run[0].ContentBlocks) == 0 {
+		text := run[0].Content
+		return []requestMessage{{Role: "system", Text: &text}}, nil
+	}
+	var blocks []contentBlock
+	for _, message := range run {
+		if message.Content != "" {
+			blocks = append(blocks, contentBlock{Type: "text", Text: message.Content})
+		}
+		if len(message.ContentBlocks) > 0 {
+			formatted, err := formatSystemBlocks(message.ContentBlocks, allowToolChanges, model)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, formatted...)
+		}
+	}
+	if len(blocks) == 0 {
+		return nil, nil
+	}
+	return []requestMessage{{Role: "system", Content: blocks}}, nil
+}
+
+// warnSystemMessageHoisted mirrors Python's _warn_system_message_hoisted
+// (chat_models.py:661-671): a non-leading SystemMessage was folded into the
+// top-level system field and now applies to the entire conversation.
+func warnSystemMessageHoisted(model string) {
+	slog.Warn("anthropic: a non-leading system message was hoisted into the top-level "+
+		"system field and now applies to the entire conversation; to send it in place, "+
+		"use a model whose profile sets mid_conversation_system_messages and place it "+
+		"after a human or tool message, either last or before an AI message",
+		slog.String("model", model))
+}
+
+// warnToolChangeBlockDropped mirrors Python's tool-change drop warning
+// (chat_models.py:623-637) extended with the mid_conversation_tools profile
+// gate: tool_addition/tool_removal blocks only reach the wire on a system
+// message sent in place on a model whose profile allows mid-conversation tool
+// changes.
+func warnToolChangeBlockDropped(blockType, model string) {
+	slog.Warn("anthropic: tool-change block dropped: tool_addition/tool_removal blocks "+
+		"are only valid on a system message sent in place (after a human or tool "+
+		"message, either last or before an AI message) on a model whose profile sets "+
+		"mid_conversation_tools",
+		slog.String("block_type", blockType),
+		slog.String("model", model))
+}
+
 type requestPayload struct {
 	Model             string           `json:"model"`
 	MaxTokens         int              `json:"max_tokens"`
@@ -473,9 +660,28 @@ type requestPayload struct {
 	InferenceGeo      string           `json:"inference_geo,omitempty"`
 }
 
+// requestMessage is one turn of the messages array. Content carries block
+// content. An in-place system turn whose source message had string content
+// carries the bare string in Text instead — Python's _format_messages emits
+// {"role":"system","content":"..."} for a single string SystemMessage sent in
+// place (chat_models.py:1044) — which MarshalJSON renders as the JSON string.
 type requestMessage struct {
 	Role    string         `json:"role"`
 	Content []contentBlock `json:"content"`
+	Text    *string        `json:"-"`
+}
+
+// MarshalJSON renders the message, preferring the bare string form when Text
+// is set.
+func (m requestMessage) MarshalJSON() ([]byte, error) {
+	if m.Text != nil {
+		return json.Marshal(struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}{m.Role, *m.Text})
+	}
+	type requestMessageFields requestMessage
+	return json.Marshal(requestMessageFields(m))
 }
 
 type contentBlock struct {
@@ -484,6 +690,7 @@ type contentBlock struct {
 	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name,omitempty"`
 	Input        map[string]any `json:"input,omitempty"`
+	Tool         map[string]any `json:"tool,omitempty"`
 	ToolUseID    string         `json:"tool_use_id,omitempty"`
 	Content      any            `json:"content,omitempty"`
 	IsError      bool           `json:"is_error,omitzero"`

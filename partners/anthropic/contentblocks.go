@@ -193,6 +193,34 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 	return mediaType, data, true
 }
 
+// formatSystemBlocks formats a system message's content blocks for the wire,
+// mirroring Python's _format_system_content (chat_models.py:578-656): text
+// blocks pass through the standard text formatting; tool_addition /
+// tool_removal blocks are forwarded only when allowToolChanges (the message is
+// placed so tool changes are legal AND the model's profile sets
+// mid_conversation_tools), otherwise dropped with a warning; other blocks keep
+// the adapter's existing passthrough behavior.
+func formatSystemBlocks(blocks []messages.ContentBlock, allowToolChanges bool, model string) ([]contentBlock, error) {
+	out := make([]contentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		blockType, _ := messages.BlockToMap(block)["type"].(string)
+		if blockType == "tool_addition" || blockType == "tool_removal" {
+			if !allowToolChanges {
+				warnToolChangeBlockDropped(blockType, model)
+				continue
+			}
+			out = append(out, passthroughBlock(messages.BlockToMap(block)))
+			continue
+		}
+		converted, err := formatContentBlock(block)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, converted)
+	}
+	return out, nil
+}
+
 // passthroughBlock forwards provider-native blocks (tool_use, thinking,
 // redacted_thinking, ...) without reinterpreting their fields.
 func passthroughBlock(m map[string]any) contentBlock {
@@ -226,6 +254,10 @@ func setContentBlockField(out *contentBlock, key string, value any) {
 	case "input":
 		if isMap {
 			out.Input = m
+		}
+	case "tool":
+		if isMap {
+			out.Tool = m
 		}
 	case "tool_use_id":
 		if isString {
