@@ -236,15 +236,7 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		call.ID = event.Item.CallID
 		call.Name = event.Item.Name
 		call.Arguments = event.Item.Arguments
-		if err := s.emitProtocol(ctx, streamevents.Event{
-			Event: streamevents.EventContentBlockStart,
-			Index: event.OutputIndex,
-			Content: messages.ToolCallBlock{
-				ID:   event.Item.CallID,
-				Name: event.Item.Name,
-				Args: map[string]any{},
-			},
-		}); err != nil {
+		if err := s.emitToolCallStart(ctx, event.OutputIndex, call); err != nil {
 			return messages.Message{}, false, err
 		}
 		chunk := messages.AI("")
@@ -265,11 +257,14 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 	case "response.function_call_arguments.delta":
 		call := s.upsertToolCall(event.OutputIndex)
 		call.Arguments += event.Delta
+		if err := s.emitToolCallStart(ctx, event.OutputIndex, call); err != nil {
+			return messages.Message{}, false, err
+		}
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockDelta,
 			Index: event.OutputIndex,
 			Delta: messages.NonStandardContentBlock{
-				Type:  "tool_call_chunk",
+				Type:  streamevents.ToolCallDeltaType,
 				Value: map[string]any{"args": event.Delta},
 			},
 		}); err != nil {
@@ -481,6 +476,31 @@ type streamToolCall struct {
 	ID        string
 	Name      string
 	Arguments string
+	// started tracks whether the call's content-block-start skeleton has been
+	// emitted (#41257): it goes out once, on first observation of the call's
+	// index; deltas carry only args slices from there on.
+	started bool
+}
+
+// emitToolCallStart emits the content-block-start skeleton for a streamed
+// function call (#41257): a tool_call_chunk carrying the call's id/name and
+// provider index with empty args. Fields that arrive late ride the call's
+// content-block-finish.
+func (s *responseStream) emitToolCallStart(ctx context.Context, index int, call *streamToolCall) error {
+	if call.started {
+		return nil
+	}
+	call.started = true
+	return s.emitProtocol(ctx, streamevents.Event{
+		Event: streamevents.EventContentBlockStart,
+		Index: index,
+		Content: messages.ToolCallChunkBlock{
+			ID:    call.ID,
+			Name:  call.Name,
+			Args:  "",
+			Index: index,
+		},
+	})
 }
 
 type streamTextBlock struct {

@@ -639,6 +639,128 @@ func blockFinishes(t *testing.T, recorder *callbacks.Recorder) []streamevents.Ev
 	return finishes
 }
 
+// protocolEvents returns every v3 protocol event, in emission order.
+func protocolEvents(t *testing.T, recorder *callbacks.Recorder) []streamevents.Event {
+	t.Helper()
+	var out []streamevents.Event
+	for _, event := range filterEvents(recorder.Events(), callbacks.EventChatModelProtocol) {
+		chunk, ok := event.Chunk.(streamevents.Event)
+		if !ok {
+			continue
+		}
+		out = append(out, chunk)
+	}
+	return out
+}
+
+// TestResponseStreamToolCallDeltaProtocolSequence locks the #41257 wire shape
+// for streamed function calls: a content-block-start skeleton carrying the
+// call's id/name/index, content-block-delta events carrying ONLY the
+// incremental args slices (tool-call-delta), and the late id/name/args riding
+// content-block-finish.
+func TestResponseStreamToolCallDeltaProtocolSequence(t *testing.T) {
+	server := sseServer(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"search","arguments":""}}`+"\n\n"+
+			`data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"{\"q\":"}`+"\n\n"+
+			`data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"\"x\"}"}`+"\n\n"+
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"search","arguments":"{\"q\":\"x\"}"}}`+"\n\n"+
+			sseCompleted,
+	)
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	)
+	stream, err := model.Stream(
+		t.Context(),
+		[]messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)),
+	)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for {
+		if _, ok, err := stream.Next(t.Context()); err != nil {
+			t.Fatalf("Next: %v", err)
+		} else if !ok {
+			break
+		}
+	}
+
+	events := protocolEvents(t, recorder)
+	type step struct {
+		event streamevents.EventName
+		index int
+		block map[string]any
+	}
+	want := []step{
+		{streamevents.EventMessageStart, 0, nil},
+		{streamevents.EventContentBlockStart, 0, map[string]any{
+			"type":  "tool_call_chunk",
+			"id":    "call_1",
+			"name":  "search",
+			"args":  "",
+			"index": 0,
+		}},
+		{streamevents.EventContentBlockDelta, 0, map[string]any{
+			"type": "tool-call-delta",
+			"args": `{"q":`,
+		}},
+		{streamevents.EventContentBlockDelta, 0, map[string]any{
+			"type": "tool-call-delta",
+			"args": `"x"}`,
+		}},
+		{streamevents.EventContentBlockFinish, 0, map[string]any{
+			"type": "tool_call",
+			"id":   "call_1",
+			"name": "search",
+		}},
+		{streamevents.EventMessageFinish, 0, nil},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("protocol events: got %d want %d: %+v", len(events), len(want), events)
+	}
+	for i, w := range want {
+		got := events[i]
+		if got.Event != w.event || got.Index != w.index {
+			t.Fatalf("event[%d]: got %s/%d want %s/%d", i, got.Event, got.Index, w.event, w.index)
+		}
+		switch got.Event {
+		case streamevents.EventContentBlockStart, streamevents.EventContentBlockFinish:
+			if got.Delta != nil {
+				t.Fatalf("event[%d]: unexpected delta %+v", i, got.Delta)
+			}
+			m := messages.BlockToMap(got.Content)
+			if m["type"] != w.block["type"] || m["id"] != w.block["id"] ||
+				(w.block["name"] != nil && m["name"] != w.block["name"]) {
+				t.Fatalf("event[%d] content: got %#v want %#v", i, m, w.block)
+			}
+			if got.Event == streamevents.EventContentBlockStart {
+				// The skeleton must not carry an args payload (BlockToMap
+				// drops empty args; either way args arrive only on deltas).
+				if args, ok := m["args"].(string); ok && args != "" {
+					t.Fatalf("event[%d] start must not carry args: %#v", i, m)
+				}
+			}
+		case streamevents.EventContentBlockDelta:
+			if got.Content != nil {
+				t.Fatalf("event[%d]: unexpected content %+v", i, got.Content)
+			}
+			m := messages.BlockToMap(got.Delta)
+			if m["type"] != w.block["type"] || m["args"] != w.block["args"] {
+				t.Fatalf("event[%d] delta: got %#v want %#v", i, m, w.block)
+			}
+			if _, hasID := m["id"]; hasID {
+				t.Fatalf("event[%d] delta must not carry id: %#v", i, m)
+			}
+			if _, hasName := m["name"]; hasName {
+				t.Fatalf("event[%d] delta must not carry name: %#v", i, m)
+			}
+		}
+	}
+}
+
 // TestResponseStreamOutputIndexDriftToolCalls covers #41121: after several
 // built-in tool calls the API reports a later output_index on an item's done
 // events than on its added events. Each item's args and id must land on the
