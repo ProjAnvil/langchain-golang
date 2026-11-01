@@ -178,24 +178,43 @@ type Store interface {
 	ListNamespaces(ctx context.Context, opts ListNamespacesOptions) ([][]string, error)
 }
 
-// ErrInvalidNamespace is returned by Put when namespace fails validation,
+// ErrInvalidNamespace is returned when a namespace fails validation,
 // mirroring Python's InvalidNamespaceError. A namespace is invalid when it is
 // empty, contains an empty label, contains a label with "." or "\x00", or has
 // "langgraph" as its root label (the reserved prefix).
 var ErrInvalidNamespace = errors.New("store: invalid namespace")
 
-// validateNamespace mirrors Python's `_validate_namespace` /
-// `_validate_namespace_labels` (base/__init__.py). It is applied on Put (and
-// only Put, matching the documented Put-only validation divergence). Since
-// #9383, labels containing NUL bytes are rejected too: Go joins labels with
-// "\x00" for the internal bucket key (see joinNS), so a label with an
-// embedded NUL would alias a multi-segment namespace (["a\x00b"] collides
-// with ["a","b"]) — Python rejects them for the analogous reason (NUL is its
-// SQLite store's segment separator).
+// validateNamespace mirrors Python's `_validate_namespace`
+// (base/__init__.py:1315) and is applied on Put: in addition to the label
+// rules of validateNamespaceLabels, it rejects empty namespaces and the
+// reserved "langgraph" root label (Python reserves that prefix for its own
+// writes).
 func validateNamespace(namespace []string) error {
 	if len(namespace) == 0 {
 		return fmt.Errorf("%w: namespace cannot be empty", ErrInvalidNamespace)
 	}
+	if err := validateNamespaceLabels(namespace); err != nil {
+		return err
+	}
+	if namespace[0] == "langgraph" {
+		return fmt.Errorf("%w: root label cannot be %q", ErrInvalidNamespace, "langgraph")
+	}
+	return nil
+}
+
+// validateNamespaceLabels mirrors Python's `_validate_namespace_labels`
+// (base/__init__.py:1325) and is applied to EVERY store entry point — Get,
+// Delete, Search prefixes, and ListNamespaces prefix/suffix, like Python —
+// not just Put. Labels must be non-empty and free of "." and "\x00".
+//
+// The NUL rejection (#9383) is load-bearing for reads, not only writes: the
+// store buckets namespaces by their "\x00"-joined labels (see joinNS), so a
+// label with an embedded NUL would alias a multi-segment namespace —
+// ["a\x00b"] resolves to the same bucket as ["a","b"] — letting Get READ and
+// Delete DESTROY another namespace's items. Unlike validateNamespace, an
+// empty namespace itself is legal here (Python's read paths validate labels
+// only; the empty-namespace and "langgraph"-root rules are put-only).
+func validateNamespaceLabels(namespace []string) error {
 	for _, label := range namespace {
 		if label == "" {
 			return fmt.Errorf("%w: namespace labels cannot be empty strings; got %v", ErrInvalidNamespace, namespace)
@@ -207,18 +226,18 @@ func validateNamespace(namespace []string) error {
 			return fmt.Errorf("%w: namespace label %q cannot contain NUL bytes", ErrInvalidNamespace, label)
 		}
 	}
-	if namespace[0] == "langgraph" {
-		return fmt.Errorf("%w: root label cannot be %q", ErrInvalidNamespace, "langgraph")
-	}
 	return nil
 }
 
-// joinNS renders a namespace slice as a stable map key. Segments are joined by
-// a NUL byte, which cannot appear in a validated label (labels are non-empty,
-// period-free, and — since #9383 — NUL-free). The joined key is
-// only used internally as a map bucket — namespace prefix matching always
-// compares the original []string slices element-wise, so the separator never
-// affects matching.
+// joinNS renders a namespace slice as a stable map key: labels joined by a
+// NUL byte separator. Because every store entry point rejects labels
+// containing "\x00" (validateNamespaceLabels, #9383), the joined key is
+// unambiguous: two different namespaces can never produce the same key.
+// BEFORE that validation the separator leaked into bucket addressing — a
+// label like "a\x00b" joined to the same key as ["a","b"], so unvalidated
+// Get/Delete calls reached another namespace's bucket. Bucket keys are
+// internal only: prefix/suffix matching always compares the original
+// []string slices element-wise (nsOf), never joined keys.
 func joinNS(namespace []string) string {
 	return strings.Join(namespace, "\x00")
 }

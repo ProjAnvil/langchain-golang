@@ -102,8 +102,14 @@ func NewInMemoryStoreWithIndex(index IndexConfig) *InMemoryStore {
 }
 
 // Get returns the item stored under (namespace, key), or (nil, nil) when no
-// such item exists. Mirrors Python's InMemoryStore handling of GetOp.
+// such item exists. Mirrors Python's InMemoryStore handling of GetOp, which
+// validates namespace labels before reading (#9383): a label containing a NUL
+// byte would otherwise resolve to another namespace's bucket (labels are
+// joined with "\x00" as the bucket key), reading that namespace's item.
 func (s *InMemoryStore) Get(_ context.Context, namespace []string, key string) (*Item, error) {
+	if err := validateNamespaceLabels(namespace); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	bucket := s.data[joinNS(namespace)]
@@ -301,8 +307,12 @@ func scalarText(v any) string {
 // vectors (Python's PutOp(value=None) pops _vectors[namespace] too). It is NOT
 // an error when no such item exists (mirroring Python, which pops a missing
 // key silently). Empty namespace buckets are pruned so Search never iterates
-// dead buckets.
+// dead buckets. Namespace labels are validated first (#9383): a label with an
+// embedded NUL would otherwise delete through another namespace's bucket.
 func (s *InMemoryStore) Delete(_ context.Context, namespace []string, key string) error {
+	if err := validateNamespaceLabels(namespace); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	j := joinNS(namespace)
@@ -337,6 +347,9 @@ func (s *InMemoryStore) Delete(_ context.Context, namespace []string, key string
 // Limit ranked results exist — mirroring Python's _batch_search. A
 // zero/negative Limit defaults to 10 (Python parity).
 func (s *InMemoryStore) Search(ctx context.Context, namespacePrefix []string, opts SearchOptions) ([]SearchItem, error) {
+	if err := validateNamespaceLabels(namespacePrefix); err != nil {
+		return nil, err
+	}
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 10
@@ -525,8 +538,15 @@ func cosineSimilarity(a, b []float64) float64 {
 // sorted lexicographically by namespace segments, then paginated by
 // opts.Offset/opts.Limit. A zero/negative Limit defaults to 100 (Python
 // parity: Python's default limit is 100). Returned namespace slices are
-// defensive copies.
+// defensive copies. Prefix and suffix labels are validated first, mirroring
+// Python's list_namespaces (#9383).
 func (s *InMemoryStore) ListNamespaces(_ context.Context, opts ListNamespacesOptions) ([][]string, error) {
+	if err := validateNamespaceLabels(opts.Prefix); err != nil {
+		return nil, err
+	}
+	if err := validateNamespaceLabels(opts.Suffix); err != nil {
+		return nil, err
+	}
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100

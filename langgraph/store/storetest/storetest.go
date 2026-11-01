@@ -44,6 +44,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("namespaces_hierarchical", func(t *testing.T) { testNamespacesHierarchical(t, newStore) })
 	t.Run("put_rejects_invalid_namespace", func(t *testing.T) { testPutRejectsInvalidNamespace(t, newStore) })
 	t.Run("put_rejects_nul_bucket_collision", func(t *testing.T) { testPutRejectsNULBucketCollision(t, newStore) })
+	t.Run("read_paths_reject_invalid_namespace_labels", func(t *testing.T) { testReadPathsRejectInvalidNamespaceLabels(t, newStore) })
 	t.Run("concurrent_put_get", func(t *testing.T) { testConcurrentPutGet(t, newStore) })
 	t.Run("list_namespaces", func(t *testing.T) { testListNamespaces(t, newStore) })
 }
@@ -488,19 +489,110 @@ func testPutRejectsNULBucketCollision(t *testing.T, newStore func(t *testing.T) 
 	if got == nil || got.Value["v"] != "original" {
 		t.Fatalf("Get [a b] after rejected collision = %+v, want the original item", got)
 	}
-	// The NUL label is not a usable namespace: search matches element-wise,
-	// so nothing is reachable under ["a\x00b"] as a prefix.
+	// The NUL label is not a usable namespace: read paths reject it instead of
+	// silently resolving to nothing (or worse, to the colliding bucket).
 	results, err := s.Search(ctx, []string{"a\x00b"}, store.SearchOptions{})
-	if err != nil {
-		t.Fatalf("Search [a\\x00b]: %v", err)
-	}
-	if len(results) != 0 {
-		t.Fatalf("Search [a\\x00b] = %d items, want 0 (NUL label must not reach the colliding bucket)", len(results))
+	if err == nil || !strings.Contains(err.Error(), "invalid namespace") {
+		t.Fatalf("Search [a\\x00b] = (%d items, %v), want an invalid-namespace error", len(results), err)
 	}
 	// And the collision must not work in reverse either: any label containing
 	// a NUL byte is rejected, wherever it sits in the namespace.
 	if err := s.Put(ctx, []string{"x\x00y", "z"}, "k", map[string]any{"v": 1}, nil); err == nil {
 		t.Fatal("Put [x\\x00y z] succeeded; want an invalid-namespace error")
+	}
+}
+
+// testReadPathsRejectInvalidNamespaceLabels: every read entry point rejects
+// labels containing NUL bytes, periods, or empty strings — mirroring Python's
+// shared rejection suite over ["get", "delete", "search", "prefix", "suffix"]
+// (#9383). The NUL cases are the load-bearing ones: without read-side
+// validation, Get(["a\x00b"]) READS and Delete(["a\x00b"]) DESTROYS the item
+// stored under ["a","b"], because both address the store by the joined bucket
+// key and "\x00" is the join separator. An empty namespace itself stays legal
+// on read paths (Python's _validate_namespace_labels checks labels only; the
+// empty-namespace and "langgraph"-root rules are put-only).
+func testReadPathsRejectInvalidNamespaceLabels(t *testing.T, newStore func(t *testing.T) store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	s := newStore(t)
+
+	// Seed an item whose bucket key an invalid NUL label would alias.
+	if err := s.Put(ctx, []string{"a", "b"}, "k", map[string]any{"v": "original"}, nil); err != nil {
+		t.Fatalf("Put [a b]: %v", err)
+	}
+
+	invalid := []struct {
+		name string
+		ns   []string
+	}{
+		{"nul_label", []string{"a\x00b"}},
+		{"nul_prefix", []string{"\x00a"}},
+		{"period_label", []string{"a.b"}},
+		{"empty_label", []string{"a", ""}},
+	}
+
+	assertRejected := func(method, name string, call func() error) {
+		t.Helper()
+		err := call()
+		if err == nil {
+			t.Errorf("%s %s (%s) succeeded; want an invalid-namespace error", method, name, name)
+			return
+		}
+		if !strings.Contains(err.Error(), "invalid namespace") {
+			t.Errorf("%s %s (%s) error = %v, want an invalid-namespace error", method, name, name, err)
+		}
+	}
+
+	for _, c := range invalid {
+		assertRejected("Get", c.name, func() error {
+			_, err := s.Get(ctx, c.ns, "k")
+			return err
+		})
+		assertRejected("Delete", c.name, func() error {
+			return s.Delete(ctx, c.ns, "k")
+		})
+		assertRejected("Search", c.name, func() error {
+			_, err := s.Search(ctx, c.ns, store.SearchOptions{})
+			return err
+		})
+		assertRejected("ListNamespaces.prefix", c.name, func() error {
+			_, err := s.ListNamespaces(ctx, store.ListNamespacesOptions{Prefix: c.ns})
+			return err
+		})
+		assertRejected("ListNamespaces.suffix", c.name, func() error {
+			_, err := s.ListNamespaces(ctx, store.ListNamespacesOptions{Suffix: c.ns})
+			return err
+		})
+	}
+
+	// Adversarial core: none of the rejected calls may have touched the
+	// aliased ["a","b"] item — especially Delete, which would have destroyed
+	// it through the colliding bucket key.
+	got, err := s.Get(ctx, []string{"a", "b"}, "k")
+	if err != nil {
+		t.Fatalf("Get [a b]: %v", err)
+	}
+	if got == nil || got.Value["v"] != "original" {
+		t.Fatalf("Get [a b] after rejected reads/deletes = %+v, want the original item intact", got)
+	}
+	results, err := s.Search(ctx, []string{"a"}, store.SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("Search [a]: %v", err)
+	}
+	if len(results) != 1 || results[0].Key != "k" {
+		t.Fatalf("Search [a] = %+v, want the original item to have survived", results)
+	}
+
+	// A VALID read path still works, and an empty namespace is legal on read
+	// (labels-only validation, mirroring Python).
+	if got, err := s.Get(ctx, []string{"a", "b"}, "k"); err != nil || got == nil {
+		t.Fatalf("Get [a b] = (%+v, %v), want the item", got, err)
+	}
+	if _, err := s.Search(ctx, nil, store.SearchOptions{Limit: 10}); err != nil {
+		t.Fatalf("Search with empty prefix: %v", err)
+	}
+	if _, err := s.ListNamespaces(ctx, store.ListNamespacesOptions{}); err != nil {
+		t.Fatalf("ListNamespaces with no prefix/suffix: %v", err)
 	}
 }
 
