@@ -241,13 +241,17 @@ func (m ChatModel) WithEffort(effort string) ChatModel {
 // (the profile's documented default is never resolved client-side).
 func (m ChatModel) Effort() string { return m.reasoningEffort }
 
-// assertValidModelConfiguration mirrors the effort and thinking parts of
-// Python's _assert_valid_model_configuration (chat_models.py:1793-1863),
-// which runs before message conversion on every request:
+// assertValidModelConfiguration mirrors the effort, sampling, and thinking
+// parts of Python's _assert_valid_model_configuration
+// (chat_models.py:1793-1863), which runs before message conversion on every
+// request:
 //
 //   - the effort level must be one of the Literal values — Python enforces
 //     this at construction via pydantic's literal_error; Go surfaces the same
 //     message here because WithEffort cannot fail;
+//   - claude-fable-5* / claude-sonnet-5-5* models support only default
+//     sampling: any top_k and any top_p/temperature other than 1 is rejected
+//     (chat_models.py:1815-1831);
 //   - claude-fable-5* / claude-sonnet-5-5* models reject
 //     thinking={"type":"disabled"} outright (adaptive thinking is their only
 //     mode, chat_models.py:1832-1837);
@@ -281,6 +285,35 @@ func (m ChatModel) assertValidModelConfiguration() error {
 	}
 	fableOrSonnet55 := strings.HasPrefix(m.config.Model, fable5Prefix) ||
 		strings.HasPrefix(m.config.Model, sonnet55Prefix)
+	if fableOrSonnet55 {
+		// Python resolves per-request kwargs over the constructor fields
+		// (chat_models.py:1815-1817: request_config.get("top_k",
+		// self.top_k)); the Go adapter has no call-time channel for these
+		// three parameters — they exist only as constructor modelconfig
+		// options — so the constructor values are the resolved values. Only
+		// values that would reach the payload are validated, mirroring the
+		// type assertions in buildRequest. top_k has no default-value escape;
+		// top_p and temperature pass at the API default 1.
+		if _, ok := m.config.Extra[topKKey].(int); ok {
+			// Python's message verbatim (chat_models.py:1818-1820) except the
+			// trailing period, dropped per staticcheck ST1005.
+			return fmt.Errorf("`top_k` is not supported for %s", m.config.Model)
+		}
+		if topP, ok := m.config.Extra[topPKey].(float64); ok && topP != 1 {
+			// Python's message verbatim (chat_models.py:1821-1825) except the
+			// trailing period.
+			return fmt.Errorf(
+				"`top_p` is not supported for %s at non-default values",
+				m.config.Model)
+		}
+		if m.config.Temperature != nil && *m.config.Temperature != 1 {
+			// Python's message verbatim (chat_models.py:1826-1830) except the
+			// trailing period.
+			return fmt.Errorf(
+				"`temperature` is not supported for %s at non-default values",
+				m.config.Model)
+		}
+	}
 	if fableOrSonnet55 && thinkingType == "disabled" {
 		// Python's message verbatim (chat_models.py:1833-1836) except the
 		// trailing period, dropped per Go error-string convention (staticcheck
@@ -547,9 +580,10 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	)
 
 	// hoistSystemRun folds a run of system messages into the top-level system
-	// field. allowToolChanges mirrors Python's preserve_tool_changes: only the
-	// leading run (gated on the profile's mid_conversation_tools) may carry
-	// tool-change blocks; a hoisted mid-conversation message never does.
+	// field. allowToolChanges mirrors Python's preserve_tool_changes: the
+	// leading run forwards tool-change blocks unconditionally (#40758,
+	// chat_models.py:741-747 — no profile gate), while a hoisted
+	// mid-conversation message never does (chat_models.py:759).
 	hoistSystemRun := func(run []messages.Message, allowToolChanges, warn bool) error {
 		if midSystem && systemClaimed {
 			return fmt.Errorf(
@@ -639,9 +673,11 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 		switch {
 		case !nonSystemSeen:
 			// Leading run: hoisted into the top-level system field without a
-			// warning; tool-change blocks survive only when the profile
-			// declares mid_conversation_tools.
-			if err := hoistSystemRun(run, midTools, false); err != nil {
+			// warning. Tool-change blocks forward unconditionally — Python
+			// formats the first system message with preserve_tool_changes=True
+			// for every model, profile or not (#40758, chat_models.py:741-747):
+			// send and let the server reject.
+			if err := hoistSystemRun(run, true, false); err != nil {
 				return requestPayload{}, err
 			}
 		case midSystem && (len(pending) > 0 || previousTurnAllowsSystem(payload.Messages)):
@@ -727,6 +763,17 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	}
 	if m.inferenceGeo != "" {
 		payload.InferenceGeo = m.inferenceGeo
+	}
+	// Fable drops the sampling trio from the assembled payload
+	// (chat_models.py:1965-1968, applied after thinking and inference_geo —
+	// and after the thinking sampling constraints above, which would
+	// otherwise force temperature=1 back in): validation only ever lets
+	// temperature/top_p reach 1 on fable, and even those defaults never reach
+	// the wire. Sonnet-5-5 validates the same values but keeps them.
+	if strings.HasPrefix(m.config.Model, fable5Prefix) {
+		payload.Temperature = nil
+		payload.TopP = nil
+		payload.TopK = nil
 	}
 	if m.userProfileID != "" {
 		payload.UserProfileID = m.userProfileID

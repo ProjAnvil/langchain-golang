@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -243,9 +244,53 @@ func (g *CompiledGraph) resumeFromTuple(ctx context.Context, rs *runState, tup *
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
+	// Anchored exit-delta writes of the branch that CONSUMED tup are stale
+	// here: an exit run resumes from tup, runs its planned tasks, and
+	// flushExit anchors the accumulated writes on tup (under synthetic
+	// step-prefixed ids) while tup.Next still plans those very tasks — so
+	// reseeding them would apply the rerun tasks' writes twice. Their
+	// embedded step separates them from tup's own state: steps at or before
+	// tup.Metadata.Step are the early-path accumulator putPauseCheckpointExit
+	// anchored on the pause checkpoint itself (pre-checkpoint work, shared by
+	// every branch from tup); later steps are the consuming branch's work.
+	// Python never seeds loaded pending writes into live state (only reapply
+	// feeds them back, and it cannot match a synthetic id, _loop.py:833-845)
+	// and seals their channels — force-snapshotting the delta channels of
+	// loaded writes reapply did not hand back (_loop.py:708-722) and, on a
+	// run replaying from an addressed checkpoint, of every pending-write
+	// channel up front (_loop.py:1011-1015) — so the branch's ancestor walk
+	// never replays the abandoned writes (#8548). The skip keeps them out of
+	// this run's live seed; the seal (deltaOverwriteChs, folded into every
+	// save's snapshot set by saveCheckpoint and flushExit) keeps them out of
+	// this branch's stored state, where a later ancestor walk would replay
+	// them on top of the rerun's own writes.
+	skip := plan.replayedTaskIDs
+	var staleIDs map[string]bool
+	for _, w := range tup.PendingWrites {
+		step, ok := parseExitDeltaTaskID(w.TaskID)
+		if !ok || step <= tup.Metadata.Step {
+			continue
+		}
+		if staleIDs == nil {
+			staleIDs = make(map[string]bool, len(tup.PendingWrites))
+		}
+		staleIDs[w.TaskID] = true
+		if proto, ok := g.channelProtos[w.Channel]; ok && channels.IsDelta(proto) {
+			if rs.deltaOverwriteChs == nil {
+				rs.deltaOverwriteChs = map[string]bool{}
+			}
+			rs.deltaOverwriteChs[w.Channel] = true
+		}
+	}
+	if len(staleIDs) > 0 {
+		// planResume always initializes replayedTaskIDs; the clone keeps the
+		// plan's map untouched.
+		skip = maps.Clone(plan.replayedTaskIDs)
+		maps.Copy(skip, staleIDs)
+	}
 	// Hydrate sentinel delta channels from the ancestor history so the
 	// resumed run continues the accumulated value (Python #8548/#9170).
-	g.hydrateDeltaChannels(ctx, tup, rs, plan.replayedTaskIDs)
+	g.hydrateDeltaChannels(ctx, tup, rs, skip)
 	if len(plan.replayWrites) > 0 {
 		if _, err := rs.applyWrites(plan.replayWrites); err != nil {
 			return nil, nil, "", nil, err

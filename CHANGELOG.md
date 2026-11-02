@@ -4,6 +4,16 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-11-02
+
+Divergence-backlog round — four portable divergences paid down against the wave-4 references (upstream refresh check: no releases past langchain-core 1.7.3 / langchain 1.4.7 / langgraph 1.2.19 / langgraph-redis 0.5.2). Plan: `docs/superpowers/plans/2026-11-02-v0.12.2-backlog-divergences.md`.
+
+### Fixed
+- anthropic: `claude-fable-5*`/`claude-sonnet-5-5*` reject `top_k` and non-default (`!= 1`) `top_p`/`temperature` during request validation with Python's verbatim messages (#40106, #40882), and fable-5 payloads drop `temperature`/`top_k`/`top_p` at build — ordered after the adaptive-thinking constraint injection so the pops win. The Go model exposes no call-time sampling channel, so constructor values are validated (Python's per-request-kwargs half is unreachable in Go).
+- anthropic: a leading system message's tool-change blocks forward unconditionally (Python `preserve_tool_changes=True`, #40758) instead of being gated on the profile's `mid_conversation_tools`; the in-place mid-conversation gate remains a documented divergence (Python forwards unconditionally there too; the Go gate is a client-side guard for the sonnet-5 server rejection the upstream profile data flags).
+- langgraph: pinned (time-travel) resumes from an exit-mode anchor checkpoint no longer double-apply an already-hydrated task's write — stale synthetic-id anchored writes are excluded from the resume hydration seed and their delta channels sealed, mirroring Python's forced-snapshot protection for addressed resumes where reapply is disabled (#8548). The wave-4 invariant holds: the resumed task still re-executes, and a failed final save still does not make it look done.
+- openai: chat-completions stream assembly keeps the first-seen tool-call id/name per index (sticky first-wins, Python `_merge_chunk_into_store`, #36834); args concatenation and per-slice forwarding are unchanged.
+
 ## [0.12.1] - 2026-11-02
 
 Residuals wave — the review-owed debts of parity wave 4: openai streaming tool-call assembly, anthropic system-block narrowing / thinking validations / betas, and the langgraph pause-repair and interrupt_after persistence gaps, plus a mechanical gofmt gate. Spec/plan: `docs/superpowers/{specs,plans}/2026-11-02-v0.12.1-residuals*`.
