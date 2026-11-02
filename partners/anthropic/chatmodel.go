@@ -486,7 +486,7 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 				systemText = append(systemText, message.Content)
 			}
 			if len(message.ContentBlocks) > 0 {
-				blocks, err := formatHoistedSystemBlocks(message.ContentBlocks, allowToolChanges, m.config.Model)
+				blocks, err := formatSystemBlocks(message.ContentBlocks, allowToolChanges, m.config.Model)
 				if err != nil {
 					return err
 				}
@@ -815,7 +815,7 @@ func inPlaceSystemTurns(run []messages.Message, allowToolChanges bool, model str
 			blocks = append(blocks, contentBlock{Type: "text", Text: message.Content})
 		}
 		if len(message.ContentBlocks) > 0 {
-			formatted, err := formatInPlaceSystemBlocks(message.ContentBlocks, allowToolChanges, model)
+			formatted, err := formatSystemBlocks(message.ContentBlocks, allowToolChanges, model)
 			if err != nil {
 				return nil, err
 			}

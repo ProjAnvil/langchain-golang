@@ -167,14 +167,29 @@ func TestRequestToolMessageInvalidBlockFails(t *testing.T) {
 	}
 }
 
-func TestRequestSystemInvalidBlockFails(t *testing.T) {
-	model := NewChatModel(modelconfig.WithBaseURL("http://127.0.0.1:1"), modelconfig.WithModel("m"))
+// TestRequestSystemUnrecognizedBlockDroppedNotValidated mirrors Python's
+// _format_system_content (chat_models.py:635-642): an unrecognized block in a
+// system message is dropped with a warning before any field validation runs,
+// so an image block without a source no longer fails the request.
+func TestRequestSystemUnrecognizedBlockDroppedNotValidated(t *testing.T) {
+	logs := captureAnthropicWarnings(t)
+	var request map[string]any
+	server := newTestServer(t, &request)
+	defer server.Close()
+
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
 	sys := messages.System("")
 	sys.ContentBlocks = []messages.ContentBlock{
 		messages.ParseContentBlock(map[string]any{"type": "image"}),
 	}
-	if _, err := model.Invoke(t.Context(), []messages.Message{sys}); err == nil {
-		t.Fatal("invoke with invalid system block should fail")
+	if _, err := model.Invoke(t.Context(), []messages.Message{sys}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if _, present := request["system"]; present {
+		t.Fatalf("system field should be absent after narrowing: %+v", request["system"])
+	}
+	if !strings.Contains(logs.String(), "image") {
+		t.Fatalf("expected unrecognized-block drop warning, got: %s", logs.String())
 	}
 }
 

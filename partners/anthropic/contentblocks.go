@@ -193,31 +193,16 @@ func parseDataURI(uri string) (mediaType, data string, ok bool) {
 	return mediaType, data, true
 }
 
-// formatHoistedSystemBlocks formats system blocks for a hoisted run (the
-// leading run or a hoisted mid-conversation one): text blocks pass through the
-// standard text formatting; tool_addition / tool_removal blocks are forwarded
-// only when allowToolChanges, otherwise dropped with a warning; other blocks
-// keep the adapter's existing format/passthrough behavior.
-func formatHoistedSystemBlocks(blocks []messages.ContentBlock, allowToolChanges bool, model string) ([]contentBlock, error) {
-	return formatSystemBlocks(blocks, allowToolChanges, false, model)
-}
-
-// formatInPlaceSystemBlocks formats system blocks for an in-place system turn.
-// It additionally narrows unrecognized blocks away with a warning, mirroring
-// Python's _format_system_content (chat_models.py:635-642): Anthropic accepts
-// `text` in any system message plus tool changes on a mid-conversation one, so
-// anything else would be rejected by the API.
-func formatInPlaceSystemBlocks(blocks []messages.ContentBlock, allowToolChanges bool, model string) ([]contentBlock, error) {
-	return formatSystemBlocks(blocks, allowToolChanges, true, model)
-}
-
-// formatSystemBlocks is the shared system-block formatter. Text blocks go
-// through the standard text formatting; tool-change blocks (tool_addition /
-// tool_removal) are forwarded only when allowToolChanges, otherwise dropped
-// with a warning. With narrowUnknown, every other block type is dropped with
-// an unrecognized-block warning (Python parity); without it, they keep the
-// adapter's existing format/passthrough behavior (hoisting-path compat).
-func formatSystemBlocks(blocks []messages.ContentBlock, allowToolChanges, narrowUnknown bool, model string) ([]contentBlock, error) {
+// formatSystemBlocks narrows system message content to the blocks Anthropic
+// accepts in a system message — Python's _format_system_content
+// (chat_models.py:578-643), which serves every call site: the leading run
+// (:742), a hoisted mid-conversation message (:759, :1052), and an in-place
+// system turn. Text blocks go through the standard text formatting;
+// tool-change blocks (tool_addition / tool_removal) are forwarded only when
+// allowToolChanges, otherwise dropped with a warning; every other block type
+// is dropped with an unrecognized-block warning rather than forwarded to an
+// API rejection.
+func formatSystemBlocks(blocks []messages.ContentBlock, allowToolChanges bool, model string) ([]contentBlock, error) {
 	out := make([]contentBlock, 0, len(blocks))
 	for _, block := range blocks {
 		raw := messages.BlockToMap(block)
@@ -229,7 +214,7 @@ func formatSystemBlocks(blocks []messages.ContentBlock, allowToolChanges, narrow
 				continue
 			}
 			out = append(out, passthroughBlock(raw))
-		case narrowUnknown && blockType != "text":
+		case blockType != "text":
 			warnUnrecognizedSystemBlockDropped(blockType, model)
 		default:
 			converted, err := formatContentBlock(block)

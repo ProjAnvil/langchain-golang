@@ -862,28 +862,103 @@ func TestMidConversationUnrecognizedOnlySystemTurnOmitted(t *testing.T) {
 	}
 }
 
-// TestMidConversationLeadingSystemNonToolBlockKept guards the compat scope of
-// the narrowing: the hoisting paths (leading run here) keep the adapter's
-// existing block formatting — only the in-place path narrows.
-func TestMidConversationLeadingSystemNonToolBlockKept(t *testing.T) {
+// --- Unrecognized system block narrowing on the hoisting paths: Python's
+// _format_system_content (chat_models.py:635-642) drops non-text,
+// non-tool-change blocks with a warning at EVERY call site — the leading run
+// (chat_models.py:742), the not-allowed hoist (:759), and the pending-flush
+// hoist (:1052) — not just the in-place path. ---
+
+// TestMidConversationLeadingSystemUnrecognizedBlockDropped covers the leading
+// run: an image block (valid in human content, unrecognized in a system
+// message) is dropped with a warning, and no hoist warning fires because the
+// leading run is never hoisted.
+func TestMidConversationLeadingSystemUnrecognizedBlockDropped(t *testing.T) {
 	logs := captureAnthropicWarnings(t)
 	request := midConvInvoke(t, "claude-sonnet-4-5", []messages.Message{
-		systemWithBlocks(map[string]any{
-			"type": "image",
-			"url":  "https://example.com/diagram.png",
-		}),
+		systemWithBlocks(
+			map[string]any{"type": "text", "text": "Be concise."},
+			map[string]any{
+				"type": "image",
+				"url":  "https://example.com/diagram.png",
+			},
+		),
 		messages.Human("hi"),
 	})
 
 	system, ok := request["system"].([]any)
 	if !ok || len(system) != 1 {
-		t.Fatalf("leading non-tool block should be kept: %+v", request["system"])
+		t.Fatalf("unrecognized block should be dropped from the leading run: %+v", request["system"])
 	}
-	if block := system[0].(map[string]any); block["type"] != "image" {
-		t.Fatalf("leading image block: %+v", block)
+	if text := system[0].(map[string]any); text["text"] != "Be concise." {
+		t.Fatalf("surviving system block: %+v", text)
 	}
-	if logs.String() != "" {
-		t.Fatalf("hoisting paths must not narrow, got: %s", logs.String())
+	logged := logs.String()
+	if !strings.Contains(logged, "image") {
+		t.Fatalf("expected unrecognized-block drop warning, got: %s", logged)
+	}
+	if strings.Contains(logged, "hoisted") {
+		t.Fatalf("leading run is not hoisted; no hoist warning expected, got: %s", logged)
+	}
+}
+
+// TestMidConversationHoistedSystemUnrecognizedBlockDropped covers the
+// not-allowed hoist (model profile without mid_conversation_system_messages):
+// the run is hoisted AND narrowed — both the unrecognized-block and the hoist
+// warnings fire.
+func TestMidConversationHoistedSystemUnrecognizedBlockDropped(t *testing.T) {
+	logs := captureAnthropicWarnings(t)
+	request := midConvInvoke(t, "claude-sonnet-4-5", []messages.Message{
+		messages.Human("Review foo()"),
+		systemWithBlocks(
+			map[string]any{"type": "text", "text": "Be concise."},
+			map[string]any{"type": "made_up_block", "foo": "bar"},
+		),
+		messages.AI("Looks fine."),
+	})
+
+	system, ok := request["system"].([]any)
+	if !ok || len(system) != 1 {
+		t.Fatalf("unrecognized block should be dropped from the hoisted run: %+v", request["system"])
+	}
+	if text := system[0].(map[string]any); text["text"] != "Be concise." {
+		t.Fatalf("surviving system block: %+v", text)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "made_up_block") {
+		t.Fatalf("expected unrecognized-block drop warning, got: %s", logged)
+	}
+	if !strings.Contains(logged, "hoisted") {
+		t.Fatalf("expected hoist warning, got: %s", logged)
+	}
+}
+
+// TestMidConversationPendingFlushHoistUnrecognizedBlockDropped covers the
+// pending-flush hoist (chat_models.py:1047-1054): a deferred system run
+// flushed ahead of a non-assistant turn is hoisted and narrowed the same way.
+func TestMidConversationPendingFlushHoistUnrecognizedBlockDropped(t *testing.T) {
+	logs := captureAnthropicWarnings(t)
+	request := midConvInvoke(t, "claude-opus-5", []messages.Message{
+		messages.Human("first"),
+		systemWithBlocks(
+			map[string]any{"type": "text", "text": "Be concise."},
+			map[string]any{"type": "made_up_block", "foo": "bar"},
+		),
+		messages.Human("second"),
+	})
+
+	system, ok := request["system"].([]any)
+	if !ok || len(system) != 1 {
+		t.Fatalf("unrecognized block should be dropped from the flushed run: %+v", request["system"])
+	}
+	if text := system[0].(map[string]any); text["text"] != "Be concise." {
+		t.Fatalf("surviving system block: %+v", text)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "made_up_block") {
+		t.Fatalf("expected unrecognized-block drop warning, got: %s", logged)
+	}
+	if !strings.Contains(logged, "hoisted") {
+		t.Fatalf("expected hoist warning, got: %s", logged)
 	}
 }
 
