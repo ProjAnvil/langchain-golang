@@ -172,6 +172,70 @@ func TestChatCompletionsStreamToolArgsForwardedIncrementally(t *testing.T) {
 	}
 }
 
+// TestChatCompletionsStreamToolCallIDNameStickyFirstWins locks the sticky
+// first-wins assembly of tool-call id/name, mirroring Python core's
+// _merge_chunk_into_store (introduced with content-block streaming, #36834):
+// `if block.get("id") and "id" not in existing` — a later slice for the same
+// index carrying a DIFFERENT non-empty id/name must not overwrite the
+// first-seen values, while args keep concatenating. The per-slice forwarding
+// (#41257) still emits the raw slice values untouched.
+func TestChatCompletionsStreamToolCallIDNameStickyFirstWins(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w,
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\"}}]}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_2\",\"function\":{\"name\":\"other\",\"arguments\":\"\\\"hi\\\"}\"}}]}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	).WithChatCompletions()
+
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var chunks []messages.Message
+	for {
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3 (two slices + assembled terminal): %+v", len(chunks), chunks)
+	}
+
+	// The #41257 per-slice forwarding is raw: the second slice repeats the
+	// (different) id/name the API sent on it.
+	second := messages.BlockToMap(chunks[1].ContentBlocks[0])
+	if second["id"] != "call_2" || second["name"] != "other" || second["args"] != `"hi"}` {
+		t.Fatalf("second forwarded slice must carry raw values: %#v", second)
+	}
+
+	final := chunks[len(chunks)-1]
+	if len(final.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(final.ToolCalls))
+	}
+	tc := final.ToolCalls[0]
+	if tc.ID != "call_1" || tc.Name != "search" {
+		t.Fatalf("assembled call must keep first-seen id/name, got id=%q name=%q", tc.ID, tc.Name)
+	}
+	if tc.Args["q"] != "hi" {
+		t.Fatalf("args must concatenate unchanged, got %#v", tc.Args)
+	}
+}
+
 // TestChatCompletionsStreamToolsNestedFunctionShape locks the STREAM request
 // payload to the Chat Completions tools shape: the function descriptor must be
 // nested under "function" (regression test for the flat toolSpec leak that

@@ -203,10 +203,15 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 				call = &streamToolCall{}
 				s.toolCalls[tc.Index] = call
 			}
-			if tc.ID != "" {
+			// Sticky first-wins, mirroring Python core's
+			// _merge_chunk_into_store: id/name are only set when not
+			// already present, so a later slice for the same index
+			// repeating a (different) id/name cannot overwrite the
+			// first-seen values. Args concatenate as before.
+			if tc.ID != "" && call.ID == "" {
 				call.ID = tc.ID
 			}
-			if tc.Function.Name != "" {
+			if tc.Function.Name != "" && call.Name == "" {
 				call.Name = tc.Function.Name
 			}
 			call.Arguments += tc.Function.Arguments
