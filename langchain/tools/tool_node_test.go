@@ -275,6 +275,116 @@ func TestToolNodeInvokeParallelPreservesOrder(t *testing.T) {
 	}
 }
 
+// TestToolNodeErrorConvertedOutsideWrapChain pins the _run_one layering of
+// error conversion (mirroring Python langgraph's `_run_one`, prebuilt/
+// tool_node.py:1031): handleToolErrors is applied OUTSIDE the wrap chain, so
+// a ToolCallWrapper observes the RAW tool error, and the node still converts
+// it into an error ToolMessage afterwards. Today's behavior without a
+// wrapper is unchanged (see TestToolNodeInvokeErrorHandledByDefault).
+func TestToolNodeErrorConvertedOutsideWrapChain(t *testing.T) {
+	sentinel := errors.New("kaboom")
+	boom := echoTool(t, "boom", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, sentinel
+	})
+
+	var sawRawError atomic.Bool
+	node, err := NewToolNode([]Tool{boom}, WithToolCallWrapper(
+		func(ctx context.Context, req ToolCallRequest, next ToolHandler) (messages.Message, error) {
+			msg, err := next(ctx, req)
+			if errors.Is(err, sentinel) {
+				sawRawError.Store(true)
+			}
+			return msg, err
+		},
+	))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	msgs := []messages.Message{aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"})}
+	results, err := node.Invoke(t.Context(), msgs, nil)
+	if err != nil {
+		t.Fatalf("Invoke() error = %v, want nil (raw error must still be converted at the runOne level)", err)
+	}
+	if !sawRawError.Load() {
+		t.Fatal("expected the wrapper to observe the raw tool error before conversion")
+	}
+	if len(results) != 1 || results[0].ResponseMetadata["status"] != "error" {
+		t.Fatalf("unexpected results: %+v, want one error-status ToolMessage", results)
+	}
+}
+
+// TestToolNodeUnhandledToolErrorPropagatesUnconverted pins the
+// UnhandledToolError contract: a ToolCallWrapper that explicitly declines to
+// convert an error (mirroring Python's on_error returning None, tool_error.py)
+// wraps it in *UnhandledToolError; the runOne-level conversion recognizes the
+// sentinel and re-raises the ORIGINAL error without conversion, bypassing
+// even the catch-all DefaultHandleToolErrors.
+func TestToolNodeUnhandledToolErrorPropagatesUnconverted(t *testing.T) {
+	sentinel := errors.New("declined")
+	boom := echoTool(t, "boom", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, sentinel
+	})
+	node, err := NewToolNode([]Tool{boom}, WithToolCallWrapper(
+		func(ctx context.Context, req ToolCallRequest, next ToolHandler) (messages.Message, error) {
+			msg, err := next(ctx, req)
+			if err != nil {
+				return messages.Message{}, &UnhandledToolError{Err: err}
+			}
+			return msg, nil
+		},
+	))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	msgs := []messages.Message{aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"})}
+	results, err := node.Invoke(t.Context(), msgs, nil)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected the ORIGINAL error to propagate unconverted, got err=%v results=%+v", err, results)
+	}
+	var unhandled *UnhandledToolError
+	if errors.As(err, &unhandled) {
+		t.Fatalf("the sentinel itself must not leak to the caller, got %T", err)
+	}
+}
+
+// TestToolNodeUnhandledToolErrorStripsNestedSentinels covers two wrappers
+// both declining (two error middlewares composed): the sentinels nest
+// (&UnhandledToolError{&UnhandledToolError{...}}), and runOne must strip
+// them fully so the ORIGINAL error — and never a sentinel — reaches the
+// caller, mirroring Python's bare `raise` of the original exception.
+func TestToolNodeUnhandledToolErrorStripsNestedSentinels(t *testing.T) {
+	sentinel := errors.New("declined twice")
+	boom := echoTool(t, "boom", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, sentinel
+	})
+	node, err := NewToolNode([]Tool{boom}, WithToolCallWrapper(
+		// An outer wrapper declining an error an inner wrapper already
+		// declined: the outer sentinel wraps the inner sentinel.
+		func(ctx context.Context, req ToolCallRequest, next ToolHandler) (messages.Message, error) {
+			msg, err := next(ctx, req)
+			if err != nil {
+				return messages.Message{}, &UnhandledToolError{Err: &UnhandledToolError{Err: err}}
+			}
+			return msg, nil
+		},
+	))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	msgs := []messages.Message{aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"})}
+	_, err = node.Invoke(t.Context(), msgs, nil)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected the ORIGINAL error after stripping nested sentinels, got %v", err)
+	}
+	var unhandled *UnhandledToolError
+	if errors.As(err, &unhandled) {
+		t.Fatalf("no sentinel may leak past runOne, got %T: %v", err, err)
+	}
+}
+
 func TestToolNodeWithToolCallWrapper(t *testing.T) {
 	echo := echoTool(t, "echo", func(_ context.Context, input map[string]any) (Result, error) {
 		return Result{Content: fmt.Sprintf("%v", input["x"])}, nil
