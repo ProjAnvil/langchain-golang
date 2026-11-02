@@ -4,6 +4,20 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-11-02
+
+ToolErrorMiddleware port — Python's per-exception tool-error disclosure middleware (#38781) as a first-class agent middleware, plus the ToolNode error-path layering it needs to observe raw tool errors. Plan: `docs/superpowers/plans/2026-11-02-tool-error-middleware.md`.
+
+### Added
+- agents: `middleware.ToolErrorMiddleware` — `OnError` receives each tool-execution error with its `ToolCallRequest`; returning content (string or content blocks) converts it into an error `ToolMessage` (status=error, tool name, call id), declining propagates the original error and fails the run (`tools.UnhandledToolError` sentinel bypasses the default conversion). Tool filter (`WithToolErrorToolInstances`), constructor validation, control-flow signals never reach the handler, and the ToolRetryMiddleware composition ordering (retry inner / error-format outer) is documented and pinned. Upstream's async-only split (`aon_error`) has no Go analog — single execution path.
+- tools: `UnhandledToolError` — the decline marker `ToolErrorMiddleware` wraps propagated errors in; `ToolNode` strips it (all direct layers) at the conversion point and re-raises the original unconverted.
+
+### Changed
+- tools: `ToolNode` applies `handleToolErrors` at the runOne level, OUTSIDE the wrap chain, mirroring langgraph's `_run_one` — wrap middleware now observe raw tool errors instead of pre-converted messages. With no wrap chain the observable behavior is unchanged; one intended flip for existing `ToolRetryMiddleware` users inside create_agent's always-installed chain: retries now actually fire on tool failures (previously the in-chain conversion hid them, so the retry path was dead) and "continue"-mode failures carry the retry-formatted text. Wrapper-thrown errors (e.g. an HITL edit naming an unregistered tool) are now default-converted where they previously failed the run — matching Python's `handle_tool_errors=True` mode.
+
+### Known issues
+- With create_agent's always-installed wrap chain, `tool_end` stream events for default-converted tool errors carry a nil ToolResult (previously the converted text). Python emits no `on_tool_end` at all for failing tools (only `on_tool_error`), so neither shape has an upstream analog; see DIVERGENCES.md.
+
 ## [0.12.2] - 2026-11-02
 
 Divergence-backlog round — four portable divergences paid down against the wave-4 references (upstream refresh check: no releases past langchain-core 1.7.3 / langchain 1.4.7 / langgraph 1.2.19 / langgraph-redis 0.5.2). Plan: `docs/superpowers/plans/2026-11-02-v0.12.2-backlog-divergences.md`.
