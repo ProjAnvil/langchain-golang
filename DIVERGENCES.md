@@ -64,7 +64,6 @@ Deliberate design decisions where this port does not mirror Python. Each entry s
 
 ## Known limitations
 
-- **Exit-mode pause write failure repairs nothing (#9235)** — an exit-mode `putPauseWrites` (checkpoint_sink.go) that fails its `PutWrites` poisons the sink but never runs the `repairPut` its sibling write paths perform, so the exit-mode pause checkpoint stays as-put while later paths learn of the failure only via the poison. Reachable only through an injected write failure (a real saver failing between the checkpoint put and the write put).
 - **interrupt_after pause checkpoints under-persist below-cadence delta writes (pre-existing)** — the triggering superstep's writes are committed to channel state before the pause, but the interrupt_after save anchors no per-task pending writes on the pause checkpoint, so below-cadence delta channels read short at that checkpoint until the run resumes. The in-node interrupt path anchors completed sibling writes correctly.
 
 ## Cleared as non-gaps (audited 2026-09-16)

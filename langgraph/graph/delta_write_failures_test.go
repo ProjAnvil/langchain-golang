@@ -211,3 +211,89 @@ func TestDeltaAsyncRunTerminatesAfterFailure(t *testing.T) {
 		t.Fatal("async invoke hung after a failed delta write")
 	}
 }
+
+// pauseExitRepairGraph builds START -> w1 -> w2 -> (a || b): `a` interrupts
+// in-node, `b` writes the delta `log` (snapshotFrequency=2 — the pause save
+// suppresses its snapshot, b's write anchors on the checkpoint), and `w1`
+// also writes `other`, a delta channel whose cadence never fires and which
+// receives no anchored pause write — so `other` stays in the pause
+// checkpoint's repair payload while `log` is excluded from it.
+func pauseExitRepairGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
+	t.Helper()
+	g := NewStateGraph()
+	g.AddChannel("log", channels.NewDeltaChannel(stringBatchReducer, func() any { return []string{} }, 2))
+	g.AddChannel("other", channels.NewDeltaChannel(stringBatchReducer, func() any { return []string{} }, 100))
+	g.AddNode("w1", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"log": []string{"w1"}, "other": []string{"w1"}}, nil
+	})
+	g.AddNode("w2", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"log": []string{"w2"}}, nil
+	})
+	g.AddNode("a", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		Interrupt(rt, "stop")
+		return nil, nil
+	})
+	g.AddNode("b", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"log": []string{"b"}}, nil
+	})
+	g.AddEdge(types.START, "w1")
+	g.AddEdge("w1", "w2")
+	g.AddEdge("w2", "a")
+	g.AddEdge("w2", "b")
+	g.AddEdge("a", types.END)
+	g.AddEdge("b", types.END)
+	cg, err := g.Compile(opts...)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	return cg
+}
+
+// TestExitPauseWriteFailureRepairsPauseCheckpoint pins the exit-mode branch
+// of putPauseWrites to the same repair treatment its sibling write paths
+// (sync putWrites, the async worker, putPauseCheckpointExit's accumulated
+// writes) already perform (#9235): a PutWrites failure against the pause
+// checkpoint must poison the run AND re-put the checkpoint with its forced
+// delta snapshots — minus the channels suppressed by the pause save, which
+// stay blob-free so their anchored writes survive the walk.
+func TestExitPauseWriteFailureRepairsPauseCheckpoint(t *testing.T) {
+	ctx := t.Context()
+	saver := &failWritesOnceSaver{MemorySaver: checkpoint.NewMemorySaver(), channel: "log", value: []string{"b"}}
+	cg := pauseExitRepairGraph(t, WithCheckpointer(saver), WithDurability(DurabilityExit))
+	cfg := Options{ThreadID: "t"}
+
+	// The pause persists under exit mode; b's anchored delta write fails.
+	_, err := cg.InvokeWithOptions(ctx, map[string]any{"log": []string{"in"}}, cfg)
+	if !errors.Is(err, errDeltaWriteBoom) {
+		t.Fatalf("pause Invoke() error = %v, want %v", err, errDeltaWriteBoom)
+	}
+
+	pauseTup, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil || pauseTup == nil {
+		t.Fatalf("GetTuple(latest) = (%v, %v), want the pause checkpoint", pauseTup, err)
+	}
+	// The suppressed channel stays blob-free through the repair (its blob
+	// would predate b's anchored write and strand it).
+	if _, isBlob := channels.UnwrapDeltaSnapshot(pauseTup.Checkpoint.ChannelValues["log"]); isBlob {
+		t.Fatalf("pause checkpoint %s carries a log blob after repair — suppressed channels must stay sentinel", pauseTup.Checkpoint.ID)
+	}
+	// The repair re-put happened: `other` (not suppressed, below cadence —
+	// sentinel as-put) is materialized by the repair payload, exactly as a
+	// failed write against a sync-mode checkpoint would leave it.
+	if _, isBlob := channels.UnwrapDeltaSnapshot(pauseTup.Checkpoint.ChannelValues["other"]); !isBlob {
+		t.Fatalf("pause checkpoint %s left as-put — the exit-mode failed pause write must re-put it with the repair payload (materialize `other`) like the sibling write paths", pauseTup.Checkpoint.ID)
+	}
+
+	// Reads stay consistent: b's write failed, so `log` reads its full
+	// pre-pause value from the accumulated writes anchored on the pause.
+	snap, err := cg.GetState(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("GetState() error = %v", err)
+	}
+	if got, _ := snap.Values["log"].([]string); !reflect.DeepEqual(got, []string{"in", "w1", "w2"}) {
+		t.Fatalf("log at the pause checkpoint = %v, want [in w1 w2]", got)
+	}
+	if got, _ := snap.Values["other"].([]string); !reflect.DeepEqual(got, []string{"w1"}) {
+		t.Fatalf("other at the pause checkpoint = %v, want [w1]", got)
+	}
+}

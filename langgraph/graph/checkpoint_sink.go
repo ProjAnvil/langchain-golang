@@ -407,6 +407,11 @@ func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpo
 		return checkpoint.Config{}, err
 	}
 	lastPut := &putRecord{cfg: parentCfg, cp: cloneForSink(cp), md: md, newVersions: maps.Clone(newVersions), repair: repair}
+	// Record the pause checkpoint as the sink's lastPut: a pause write that
+	// fails after this (putPauseWrites's exit branch) repairs it the same way
+	// the sibling write paths repair their checkpoint (#9235). Exit mode
+	// otherwise never sets lastPut (its puts defer to flushExit).
+	s.lastPut = lastPut
 
 	// Delta channels whose cadence fired at this save embed a snapshot blob in
 	// the pause checkpoint itself (saveCheckpoint already advanced the
@@ -448,7 +453,12 @@ func (s *checkpointSink) putPauseCheckpointExit(ctx context.Context, cfg checkpo
 // enqueues on the same FIFO channel as the pause checkpoint (which therefore
 // lands first), and exit writes directly to the saver. A nil/empty writes
 // slice is a no-op so callers need not pre-check. delta marks a batch with
-// DeltaChannel writes (repair/poison gating, #9235).
+// DeltaChannel writes (repair/poison gating, #9235): on failure every mode
+// poisons the run, and the failed write's pause checkpoint gets the same
+// repairPut its sibling write paths perform (the sync putWrites branch, the
+// async worker, putPauseCheckpointExit's accumulated writes) — re-put with
+// its forced delta snapshots (minus the pause save's suppressed channels,
+// which stay sentinel so their anchored writes survive the ancestor walk).
 func (s *checkpointSink) putPauseWrites(ctx context.Context, cfg checkpoint.Config, writes []checkpoint.Write, taskID, taskPath string, delta bool) error {
 	if len(writes) == 0 {
 		return nil
@@ -459,6 +469,11 @@ func (s *checkpointSink) putPauseWrites(ctx context.Context, cfg checkpoint.Conf
 		}
 		if err := s.saver.PutWrites(ctx, cfg, writes, taskID, taskPath); err != nil {
 			s.poison(err)
+			if delta && s.lastPut != nil && s.lastPut.cp.ID == cfg.CheckpointID {
+				if rerr := s.repairPut(ctx, s.lastPut); rerr != nil {
+					return errors.Join(err, fmt.Errorf("repairing pause checkpoint %q after a failed write: %w", cfg.CheckpointID, rerr))
+				}
+			}
 			return err
 		}
 		return nil
