@@ -580,9 +580,10 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	)
 
 	// hoistSystemRun folds a run of system messages into the top-level system
-	// field. allowToolChanges mirrors Python's preserve_tool_changes: only the
-	// leading run (gated on the profile's mid_conversation_tools) may carry
-	// tool-change blocks; a hoisted mid-conversation message never does.
+	// field. allowToolChanges mirrors Python's preserve_tool_changes: the
+	// leading run forwards tool-change blocks unconditionally (#40758,
+	// chat_models.py:741-747 — no profile gate), while a hoisted
+	// mid-conversation message never does (chat_models.py:759).
 	hoistSystemRun := func(run []messages.Message, allowToolChanges, warn bool) error {
 		if midSystem && systemClaimed {
 			return fmt.Errorf(
@@ -672,9 +673,11 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 		switch {
 		case !nonSystemSeen:
 			// Leading run: hoisted into the top-level system field without a
-			// warning; tool-change blocks survive only when the profile
-			// declares mid_conversation_tools.
-			if err := hoistSystemRun(run, midTools, false); err != nil {
+			// warning. Tool-change blocks forward unconditionally — Python
+			// formats the first system message with preserve_tool_changes=True
+			// for every model, profile or not (#40758, chat_models.py:741-747):
+			// send and let the server reject.
+			if err := hoistSystemRun(run, true, false); err != nil {
 				return requestPayload{}, err
 			}
 		case midSystem && (len(pending) > 0 || previousTurnAllowsSystem(payload.Messages)):

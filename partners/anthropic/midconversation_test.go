@@ -8,6 +8,11 @@ package anthropic
 //   - claude-opus-5:     mid_conversation_system_messages=true, mid_conversation_tools=true
 //   - claude-sonnet-5:   mid_conversation_system_messages=true, mid_conversation_tools=false
 //   - claude-sonnet-4-5: neither key (legacy hoisting behavior)
+//
+// The profile gates only the in-place (non-leading) mechanism: Python formats
+// the leading system run with preserve_tool_changes=True unconditionally
+// (#40758, chat_models.py:741-747), so leading-run tool-change blocks forward
+// for every model, profile or not.
 
 import (
 	"fmt"
@@ -535,8 +540,7 @@ func TestMidConversationToolChangeDroppedOnUnsupportedModel(t *testing.T) {
 // TestMidConversationLeadingSystemToolChangeForwarded mirrors Python
 // test__format_messages_leading_system_tool_change_block_forwarded: the
 // leading system run may carry tool-change blocks into the top-level system
-// field when the profile declares mid_conversation_tools (Anthropic validates
-// them there).
+// field for every model, profile or not (Anthropic validates them there).
 func TestMidConversationLeadingSystemToolChangeForwarded(t *testing.T) {
 	logs := captureAnthropicWarnings(t)
 	request := midConvInvoke(t, "claude-opus-5", []messages.Message{
@@ -560,11 +564,14 @@ func TestMidConversationLeadingSystemToolChangeForwarded(t *testing.T) {
 	}
 }
 
-// TestMidConversationLeadingSystemToolChangeDroppedOnToolsFalseModel is the
-// leading-run side of the mid_conversation_tools gate: on claude-sonnet-5 the
-// block is dropped from the top-level system field with a warning, and no
-// hoist warning fires (the leading run is never hoisted).
-func TestMidConversationLeadingSystemToolChangeDroppedOnToolsFalseModel(t *testing.T) {
+// TestMidConversationLeadingSystemToolChangeForwardedOnToolsFalseModel pins
+// the leading run against Python's unconditional preserve_tool_changes
+// (#40758, chat_models.py:741-747): the mid_conversation_tools profile key
+// gates only the in-place path, so on claude-sonnet-5 (system messages
+// allowed, tool changes not) the leading run's tool-change block still
+// reaches the top-level system field, with no warnings (the leading run is
+// never hoisted).
+func TestMidConversationLeadingSystemToolChangeForwardedOnToolsFalseModel(t *testing.T) {
 	logs := captureAnthropicWarnings(t)
 	request := midConvInvoke(t, "claude-sonnet-5", []messages.Message{
 		systemWithBlocks(
@@ -575,18 +582,54 @@ func TestMidConversationLeadingSystemToolChangeDroppedOnToolsFalseModel(t *testi
 	})
 
 	system, ok := request["system"].([]any)
-	if !ok || len(system) != 1 {
+	if !ok || len(system) != 2 {
 		t.Fatalf("system field: %+v", request["system"])
 	}
 	if text := system[0].(map[string]any); text["text"] != "Be concise." {
-		t.Fatalf("surviving system block: %+v", text)
+		t.Fatalf("leading text block: %+v", text)
 	}
-	logged := logs.String()
-	if !strings.Contains(logged, "tool_removal") {
-		t.Fatalf("expected tool-change drop warning, got: %s", logged)
+	removal, _ := system[1].(map[string]any)
+	if removal["type"] != "tool_removal" {
+		t.Fatalf("leading tool_removal block: %+v", removal)
 	}
-	if strings.Contains(logged, "hoisted") {
-		t.Fatalf("leading run is not hoisted; no hoist warning expected, got: %s", logged)
+	if tool, _ := removal["tool"].(map[string]any); tool["name"] != "get_weather" {
+		t.Fatalf("leading tool_removal tool map: %+v", tool)
+	}
+	if logs.Len() > 0 {
+		t.Fatalf("forwarding a leading tool change must not warn, got: %s", logs.String())
+	}
+}
+
+// TestMidConversationLeadingSystemToolChangeForwardedWithoutProfile covers
+// the models Python's leading-run test never needed a capability flag for:
+// the leading run's preserve_tool_changes has no profile gate at all
+// (#40758, chat_models.py:741-747), so an ID whose profile carries no
+// mid_conversation keys — and an ID absent from the bundle entirely —
+// forward the block too.
+func TestMidConversationLeadingSystemToolChangeForwardedWithoutProfile(t *testing.T) {
+	models := map[string]string{
+		"claude-sonnet-4-5": "in the bundle, no mid_conversation keys",
+		"claude-future-9":   "absent from the bundle entirely",
+	}
+	for model, why := range models {
+		t.Run(model+" ("+why+")", func(t *testing.T) {
+			logs := captureAnthropicWarnings(t)
+			request := midConvInvoke(t, model, []messages.Message{
+				systemWithBlocks(toolRemovalBlock()),
+				messages.Human("Review foo()"),
+			})
+
+			system, ok := request["system"].([]any)
+			if !ok || len(system) != 1 {
+				t.Fatalf("system field: %+v", request["system"])
+			}
+			if block, _ := system[0].(map[string]any); block["type"] != "tool_removal" {
+				t.Fatalf("leading tool_removal block: %+v", block)
+			}
+			if logs.Len() > 0 {
+				t.Fatalf("forwarding a leading tool change must not warn, got: %s", logs.String())
+			}
+		})
 	}
 }
 
