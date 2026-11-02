@@ -22,6 +22,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -67,7 +68,9 @@ type ToolCallWrapper func(context.Context, ToolCallRequest, ToolHandler) (messag
 // HandleToolErrors converts a tool execution error into ToolMessage content.
 // It returns (content, true) if the error should be converted into an error
 // ToolMessage, or ("", false) if the error should instead propagate out of
-// Invoke/InvokeToolCalls.
+// Invoke/InvokeToolCalls. The conversion is applied by runOne, OUTSIDE the
+// ToolCallWrapper chain (mirroring Python's ToolNode._run_one), so wrappers
+// observe raw tool errors.
 type HandleToolErrors func(error) (string, bool)
 
 // DefaultHandleToolErrors mirrors Python's `handle_tool_errors=True` mode: it
@@ -75,11 +78,37 @@ type HandleToolErrors func(error) (string, bool)
 // default additionally distinguishes tool *invocation* errors (invalid
 // arguments) from tool *execution* errors (re-raised); Go's core/tools does
 // not expose that distinction uniformly, so this simpler catch-all default is
-// used instead. Callers that need the stricter behavior can supply their own
-// HandleToolErrors via WithHandleToolErrors.
+// used instead (see DIVERGENCES.md, "Default tool-error handling stays
+// catch-all"). Callers that need the stricter behavior can supply their own
+// HandleToolErrors via WithHandleToolErrors, or opt in per-error through
+// agents/middleware.ToolErrorMiddleware.
 func DefaultHandleToolErrors(err error) (string, bool) {
 	return fmt.Sprintf("Error: %v\n Please fix your mistakes.", err), true
 }
+
+// UnhandledToolError marks a tool error that a ToolCallWrapper explicitly
+// declined to convert into an error ToolMessage — the Go analog of Python's
+// ToolErrorMiddleware.on_error returning None (langchain/agents/middleware/
+// tool_error.py), where the exception propagates and the run fails. The
+// ToolNode's runOne-level error conversion recognizes the sentinel and
+// re-raises the wrapped Err WITHOUT conversion, bypassing even the catch-all
+// DefaultHandleToolErrors. Wrap middleware that decline an error return it
+// wrapped in this type; the sentinel itself never leaks past runOne.
+type UnhandledToolError struct {
+	// Err is the original tool error the wrapper declined to convert.
+	Err error
+}
+
+func (e *UnhandledToolError) Error() string {
+	if e.Err == nil {
+		return "tools: unhandled tool error"
+	}
+	return fmt.Sprintf("tools: unhandled tool error: %v", e.Err)
+}
+
+// Unwrap exposes the original error so errors.Is/As chain through the
+// sentinel while it travels through the remainder of the wrap chain.
+func (e *UnhandledToolError) Unwrap() error { return e.Err }
 
 // ToolCallOutcome is the full result of executing a single tool call: the
 // resulting message plus, when the tool signaled graph control flow by
@@ -307,9 +336,39 @@ func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map
 			return outcome.Message, err
 		}
 		msg, err := n.wrap(ctx, request, next)
-		return ToolCallOutcome{Message: msg, Command: cmd}, err
+		if err != nil {
+			// Error handling mirrors the except block of Python's _run_one
+			// (langgraph/prebuilt/tool_node.py:1031+): the wrap chain saw the
+			// raw error, and conversion happens here — outside it.
+			return n.convertToolError(call, err)
+		}
+		return ToolCallOutcome{Message: msg, Command: cmd}, nil
 	}
-	return n.execute(ctx, request)
+	outcome, err := n.execute(ctx, request)
+	if err != nil {
+		return n.convertToolError(call, err)
+	}
+	return outcome, nil
+}
+
+// convertToolError applies the node's HandleToolErrors strategy to an error
+// escaping the tool dispatch (the raw execute error, or any error the wrap
+// chain let propagate), mirroring the error handling of Python's
+// ToolNode._run_one: control-flow panics never reach here (Go interrupts are
+// panics recovered by the graph executor), an *UnhandledToolError — a wrapper
+// that explicitly declined conversion, Python's on_error returning None —
+// re-raises its ORIGINAL error without conversion so the run fails, and
+// everything else is converted (or propagated) per the configured handler.
+func (n *ToolNode) convertToolError(call messages.ToolCall, err error) (ToolCallOutcome, error) {
+	var unhandled *UnhandledToolError
+	if errors.As(err, &unhandled) && unhandled.Err != nil {
+		return ToolCallOutcome{}, unhandled.Err
+	}
+	content, handled := n.handleToolErrors(err)
+	if !handled {
+		return ToolCallOutcome{}, err
+	}
+	return ToolCallOutcome{Message: errorToolMessage(call.ID, call.Name, content)}, nil
 }
 
 func (n *ToolNode) execute(ctx context.Context, req ToolCallRequest) (ToolCallOutcome, error) {
@@ -320,11 +379,9 @@ func (n *ToolNode) execute(ctx context.Context, req ToolCallRequest) (ToolCallOu
 
 	result, err := req.Tool.Invoke(ctx, call.Args)
 	if err != nil {
-		content, handled := n.handleToolErrors(err)
-		if !handled {
-			return ToolCallOutcome{}, err
-		}
-		return ToolCallOutcome{Message: errorToolMessage(call.ID, call.Name, content)}, nil
+		// Raw error: conversion is deferred to runOne (outside the wrap
+		// chain) so ToolCallWrappers observe the error as raised.
+		return ToolCallOutcome{}, err
 	}
 
 	msg := messages.Tool(call.ID, result.Content)
