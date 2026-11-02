@@ -349,6 +349,222 @@ func TestEffortNonPinnedThinkingModesAllowedOnNewModels(t *testing.T) {
 	}
 }
 
+// --- Fable/Sonnet-5-5 sampling-param validation (chat_models.py:1815-1831)
+// and the fable payload pops (chat_models.py:1965-1968): both families support
+// only default sampling — any top_k and any top_p/temperature other than 1 is
+// rejected before the request is built. Python resolves per-request kwargs
+// over the constructor fields (request_config.get("top_k", self.top_k),
+// chat_models.py:1815-1817); the Go adapter has no call-time channel for
+// these three parameters (they exist only as constructor modelconfig
+// options), so the constructor values are the resolved values. ---
+
+// TestFableSonnet55RejectNonDefaultSamplingParams mirrors Python
+// test_fable_5_1_rejects_unsupported_parameters (test_chat_models.py:5035-
+// 5051) and sonnet-5-5 test_invalid_configuration (test_sonnet55.py:81-93):
+// top_k in any form — there is no default-value escape as for top_p and
+// temperature — and top_p/temperature at non-default values. Messages
+// verbatim minus the trailing period (staticcheck ST1005).
+func TestFableSonnet55RejectNonDefaultSamplingParams(t *testing.T) {
+	cases := []struct {
+		name    string
+		model   string
+		opts    []modelconfig.Option
+		wantMsg string
+	}{
+		{
+			name:    "fable top_k",
+			model:   "claude-fable-5-1",
+			opts:    []modelconfig.Option{WithTopK(10)},
+			wantMsg: "`top_k` is not supported for claude-fable-5-1",
+		},
+		{
+			name:    "fable top_k at 1 still rejected",
+			model:   "claude-fable-5-1",
+			opts:    []modelconfig.Option{WithTopK(1)},
+			wantMsg: "`top_k` is not supported for claude-fable-5-1",
+		},
+		{
+			name:    "fable top_p",
+			model:   "claude-fable-5-1",
+			opts:    []modelconfig.Option{WithTopP(0.9)},
+			wantMsg: "`top_p` is not supported for claude-fable-5-1 at non-default values",
+		},
+		{
+			name:    "fable temperature",
+			model:   "claude-fable-5-1",
+			opts:    []modelconfig.Option{modelconfig.WithTemperature(0.1)},
+			wantMsg: "`temperature` is not supported for claude-fable-5-1 at non-default values",
+		},
+		{
+			name:    "sonnet-5-5 top_k",
+			model:   "claude-sonnet-5-5",
+			opts:    []modelconfig.Option{WithTopK(10)},
+			wantMsg: "`top_k` is not supported for claude-sonnet-5-5",
+		},
+		{
+			name:    "sonnet-5-5 top_p",
+			model:   "claude-sonnet-5-5",
+			opts:    []modelconfig.Option{WithTopP(0.5)},
+			wantMsg: "`top_p` is not supported for claude-sonnet-5-5 at non-default values",
+		},
+		{
+			name:    "sonnet-5-5 temperature",
+			model:   "claude-sonnet-5-5",
+			opts:    []modelconfig.Option{modelconfig.WithTemperature(0)},
+			wantMsg: "`temperature` is not supported for claude-sonnet-5-5 at non-default values",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var request map[string]any
+			server := newTestServer(t, &request)
+			t.Cleanup(server.Close)
+			model := NewChatModel(append([]modelconfig.Option{
+				modelconfig.WithBaseURL(server.URL),
+				modelconfig.WithModel(tc.model),
+			}, tc.opts...)...)
+			_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")})
+			if err == nil {
+				t.Fatal("invoke succeeded, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("error = %q, want it to contain %q", err.Error(), tc.wantMsg)
+			}
+		})
+	}
+}
+
+// TestFableSonnet55AllowDefaultSamplingValues guards the passing side of
+// Python's rule: 1 is the API default, so top_p=1 and temperature=1 stay
+// legal on both families (chat_models.py:1821,1826 — only non-1 values
+// reject).
+func TestFableSonnet55AllowDefaultSamplingValues(t *testing.T) {
+	for _, modelID := range []string{"claude-fable-5-1", "claude-sonnet-5-5"} {
+		t.Run(modelID, func(t *testing.T) {
+			var request map[string]any
+			server := newTestServer(t, &request)
+			t.Cleanup(server.Close)
+			model := NewChatModel(
+				modelconfig.WithBaseURL(server.URL),
+				modelconfig.WithModel(modelID),
+				modelconfig.WithTemperature(1),
+				WithTopP(1),
+			)
+			if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+				t.Fatalf("invoke: %v", err)
+			}
+		})
+	}
+}
+
+// TestSamplingValidationScopedToNewModels guards the prefix scoping: the
+// sampling rules key on claude-fable-5* / claude-sonnet-5-5* startswith only,
+// so every other model — including the opus-5* family that shares the
+// thinking rules — accepts and forwards arbitrary sampling values.
+func TestSamplingValidationScopedToNewModels(t *testing.T) {
+	for _, modelID := range []string{"claude-sonnet-4-5", "claude-opus-5"} {
+		t.Run(modelID, func(t *testing.T) {
+			var request map[string]any
+			server := newTestServer(t, &request)
+			t.Cleanup(server.Close)
+			model := NewChatModel(
+				modelconfig.WithBaseURL(server.URL),
+				modelconfig.WithModel(modelID),
+				modelconfig.WithTemperature(0.1),
+				WithTopP(0.9),
+				WithTopK(10),
+			)
+			if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+				t.Fatalf("invoke: %v", err)
+			}
+			if request["temperature"] != float64(0.1) {
+				t.Fatalf("temperature = %v, want 0.1", request["temperature"])
+			}
+			if request["top_p"] != float64(0.9) {
+				t.Fatalf("top_p = %v, want 0.9", request["top_p"])
+			}
+			if request["top_k"] != float64(10) {
+				t.Fatalf("top_k = %v, want 10", request["top_k"])
+			}
+		})
+	}
+}
+
+// TestFablePopsSamplingParamsFromPayload mirrors the fable-only payload pops
+// (chat_models.py:1965-1968): even validation-passing values (temperature=1,
+// top_p=1) never reach the wire for claude-fable-5*. Sonnet-5-5 validates the
+// same values but keeps them — its payload may carry the explicit defaults.
+func TestFablePopsSamplingParamsFromPayload(t *testing.T) {
+	t.Run("fable pops even default values", func(t *testing.T) {
+		var request map[string]any
+		server := newTestServer(t, &request)
+		t.Cleanup(server.Close)
+		model := NewChatModel(
+			modelconfig.WithBaseURL(server.URL),
+			modelconfig.WithModel("claude-fable-5-1"),
+			modelconfig.WithTemperature(1),
+			WithTopP(1),
+		)
+		if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		for _, key := range []string{"temperature", "top_p", "top_k"} {
+			if _, ok := request[key]; ok {
+				t.Fatalf("%s should be popped from fable payloads: %+v", key, request)
+			}
+		}
+	})
+	t.Run("sonnet-5-5 keeps default values", func(t *testing.T) {
+		var request map[string]any
+		server := newTestServer(t, &request)
+		t.Cleanup(server.Close)
+		model := NewChatModel(
+			modelconfig.WithBaseURL(server.URL),
+			modelconfig.WithModel("claude-sonnet-5-5"),
+			modelconfig.WithTemperature(1),
+			WithTopP(1),
+		)
+		if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		if request["temperature"] != float64(1) {
+			t.Fatalf("temperature = %v, want 1", request["temperature"])
+		}
+		if request["top_p"] != float64(1) {
+			t.Fatalf("top_p = %v, want 1", request["top_p"])
+		}
+	})
+}
+
+// TestFablePopsWinOverThinkingConstraints pins the ordering: Python's pops
+// run after thinking is applied (chat_models.py:1960-1968), so on fable they
+// must also override the Go adaptive-thinking sampling constraints
+// (applyThinkingConstraints), which would otherwise force temperature=1 into
+// the payload. Final fable state: thinking present, no sampling keys.
+func TestFablePopsWinOverThinkingConstraints(t *testing.T) {
+	var request map[string]any
+	server := newTestServer(t, &request)
+	t.Cleanup(server.Close)
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("claude-fable-5-1"),
+		modelconfig.WithTemperature(1),
+		WithTopP(1),
+	).WithEffort("high")
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	thinking, ok := request["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "adaptive" {
+		t.Fatalf("thinking = %v, want adaptive default", request["thinking"])
+	}
+	for _, key := range []string{"temperature", "top_p", "top_k"} {
+		if _, ok := request[key]; ok {
+			t.Fatalf("%s must stay popped after thinking constraints: %+v", key, request)
+		}
+	}
+}
+
 // --- Constructor output_config dict (chat_models.py:1495, 1970-1998): merged
 // ahead of the effort-derived key; WithEffort's level wins over a constructor
 // effort key. Keys are not validated client-side (Python's field is a plain
