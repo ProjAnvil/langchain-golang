@@ -128,9 +128,17 @@ func TestDeltaChannelInputWritesReconstruction(t *testing.T) {
 // every checkpoint must read log == plain — any divergence means a delta
 // write the run failed to persist beside its checkpoint.
 func interruptAfterDeltaGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
+	return interruptAfterDeltaGraphFreq(t, 100, opts...)
+}
+
+// interruptAfterDeltaGraphFreq is interruptAfterDeltaGraph with the delta
+// channel's snapshot cadence parameterized: freq=100 (the default helper)
+// keeps the channel below cadence for the whole run, while freq=1 fires a
+// snapshot blob at every checkpoint that folds a write.
+func interruptAfterDeltaGraphFreq(t *testing.T, freq int, opts ...CompileOption) *CompiledGraph {
 	t.Helper()
 	g := NewStateGraph()
-	g.AddChannel("log", channels.NewDeltaChannel(intBatchReducer, func() any { return []int{} }, 100))
+	g.AddChannel("log", channels.NewDeltaChannel(intBatchReducer, func() any { return []int{} }, freq))
 	g.AddReducer("plain", channels.AppendSliceReducer)
 	for _, name := range []string{"a", "b"} {
 		letter := int(name[0])
@@ -216,6 +224,94 @@ func TestInterruptAfterPersistsSuperstepWrites(t *testing.T) {
 			// is asserted only before the resume there (above).
 			if d != DurabilityExit {
 				assertHistoryConsistent(t, cg, "t")
+			}
+		})
+	}
+}
+
+// TestInterruptAfterCadenceFiresAtPause is the cadence counterpart of
+// TestInterruptAfterPersistsSuperstepWrites: the delta channel's snapshot
+// cadence is 1, so the pause checkpoint stores a real `log` blob ALONGSIDE
+// the per-task writes newly anchored on it for the same superstep. Reads and
+// history must stay consistent: the present() shadowing rule (snapshot.go's
+// walkKeys skips channels the checkpoint already carries) means the blob wins
+// and the anchored writes for the blob-stored channel are shadowed, not
+// double-applied on top of it.
+func TestInterruptAfterCadenceFiresAtPause(t *testing.T) {
+	for _, d := range []Durability{DurabilitySync, DurabilityAsync, DurabilityExit} {
+		t.Run(string(d), func(t *testing.T) {
+			ctx := t.Context()
+			saver := checkpoint.NewMemorySaver()
+			cg := interruptAfterDeltaGraphFreq(t, 1, WithCheckpointer(saver), WithDurability(d))
+			thread := "cadence-pause"
+			cfg := Options{ThreadID: thread}
+
+			res, err := cg.InvokeWithOptions(ctx, map[string]any{"log": []int{}, "plain": []int{}}, cfg)
+			if err != nil {
+				t.Fatalf("[%s] pause Invoke() error = %v", d, err)
+			}
+			if len(res.Interrupts) != 1 {
+				t.Fatalf("[%s] interrupts = %+v, want the interrupt_after pause", d, res.Interrupts)
+			}
+
+			// Cadence 1 fired: the pause checkpoint (List is newest-first, so
+			// history[0]) must carry a real `log` snapshot blob — the
+			// {"type": "__delta_snapshot__", "value": …} envelope of
+			// channels/delta.go — not the sentinel (absent key) the freq-100
+			// variant stores, while `a`'s per-task writes are anchored on it
+			// all the same.
+			history, err := saver.List(ctx, checkpoint.Config{ThreadID: thread}, checkpoint.ListOptions{})
+			if err != nil {
+				t.Fatalf("List() error = %v", err)
+			}
+			if len(history) == 0 {
+				t.Fatal("expected checkpoints, got none")
+			}
+			raw, ok := history[0].Checkpoint.ChannelValues["log"].(map[string]any)
+			if !ok || raw["type"] != "__delta_snapshot__" {
+				t.Fatalf("[%s] pause checkpoint carries log entry %v (envelope=%t), want a __delta_snapshot__ blob — cadence 1 must fire at the pause", d, history[0].Checkpoint.ChannelValues["log"], ok)
+			}
+			blob, ok := raw["value"].([]int)
+			if !ok || !reflect.DeepEqual(blob, []int{'a'}) {
+				t.Fatalf("[%s] pause checkpoint log blob value = %v ([]int=%t), want [a]", d, raw["value"], ok)
+			}
+
+			// The blob shadows the anchored writes: reads at the pause see
+			// [a] exactly once on both channels, and so does every history
+			// read.
+			snap, err := cg.GetState(ctx, checkpoint.Config{ThreadID: thread})
+			if err != nil {
+				t.Fatalf("GetState() error = %v", err)
+			}
+			if got, _ := snap.Values["log"].([]int); !reflect.DeepEqual(got, []int{'a'}) {
+				t.Fatalf("[%s] log at the interrupt_after pause = %v, want [a] — the blob must shadow, not stack on, the anchored writes", d, got)
+			}
+			if got, _ := snap.Values["plain"].([]int); !reflect.DeepEqual(got, []int{'a'}) {
+				t.Fatalf("[%s] plain at the interrupt_after pause = %v, want [a]", d, got)
+			}
+			assertHistoryConsistent(t, cg, thread)
+
+			// Resume (nil input): `b` runs; both channels read the full run —
+			// the shadowed anchored writes neither double-apply nor vanish.
+			if _, err := cg.InvokeWithOptions(ctx, nil, cfg); err != nil {
+				t.Fatalf("[%s] resume Invoke() error = %v", d, err)
+			}
+			if got := logOf(t, cg, thread); !reflect.DeepEqual(got, []int{'a', 'b'}) {
+				t.Fatalf("[%s] log after resume = %v, want [a b]", d, got)
+			}
+			snap, err = cg.GetState(ctx, checkpoint.Config{ThreadID: thread})
+			if err != nil {
+				t.Fatalf("GetState() after resume error = %v", err)
+			}
+			if got, _ := snap.Values["plain"].([]int); !reflect.DeepEqual(got, []int{'a', 'b'}) {
+				t.Fatalf("[%s] plain after resume = %v, want [a b]", d, got)
+			}
+			// Same exit-mode caveat as TestInterruptAfterPersistsSuperstepWrites:
+			// exit anchors the resumed run's accumulated writes on its START
+			// (pause) checkpoint, so the strict per-checkpoint history
+			// invariant is asserted only for sync/async after the resume.
+			if d != DurabilityExit {
+				assertHistoryConsistent(t, cg, thread)
 			}
 		})
 	}
