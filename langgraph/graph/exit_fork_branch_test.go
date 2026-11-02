@@ -146,6 +146,229 @@ func TestExitDurabilityPinnedForkKeepsNewerBranchClean(t *testing.T) {
 	}
 }
 
+// exitPinResumeGraph builds in -> a -> q -> r under exit durability: `a` and
+// `r` write to both `log` (a DeltaChannel whose cadence never fires, so its
+// value lives only as anchored pending writes) and `plain` (the plain
+// always-stored oracle channel), and `q` interrupts in-node until its
+// interrupt is answered by a resume value.
+func exitPinResumeGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
+	t.Helper()
+	g := NewStateGraph()
+	g.AddChannel("log", channels.NewDeltaChannel(stringBatchReducer, func() any { return []string{} }, 100))
+	g.AddReducer("plain", channels.AppendSliceReducer)
+	g.AddNode("a", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"log": []string{"a"}, "plain": []string{"a"}}, nil
+	})
+	g.AddNode("q", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		Interrupt(rt, "q?")
+		return nil, nil
+	})
+	g.AddNode("r", func(_ runtime.Runtime, _ map[string]any) (any, error) {
+		return map[string]any{"log": []string{"r"}, "plain": []string{"r"}}, nil
+	})
+	g.AddEdge(types.START, "a")
+	g.AddEdge("a", "q")
+	g.AddEdge("q", "r")
+	g.AddEdge("r", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver), WithDurability(DurabilityExit))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	return cg
+}
+
+// TestExitPinnedResumeDoesNotReplayAnchoredWrites pins the exit-mode time
+// travel hazard (#8548's anchored-shape counterpart): an exit run that resumes
+// from pause checkpoint P anchors its accumulated writes on P under synthetic
+// step-prefixed task ids while P.Next still plans the very tasks that ran. A
+// later resume pinned at P must re-execute those tasks (the synthetic ids keep
+// them from LOOKING done — the wave4/#9114 invariant) against P's own state,
+// not against state seeded with the consuming branch's anchored writes: r's
+// write would otherwise apply twice. The fork's checkpoints must also seal the
+// channel (forced snapshot) so the abandoned anchored write never replays into
+// the fork's stored state either. Mirrors Python, whose loaded pending writes
+// never hydrate live state (only reapply, which cannot match a synthetic id,
+// feeds them back — _loop.py:833-845) and which force-snapshots the delta
+// channels of loaded writes that did not go back to their task
+// (_loop.py:708-722) and of every pending-write channel on a replaying run
+// (_loop.py:1011-1015, #8548).
+func TestExitPinnedResumeDoesNotReplayAnchoredWrites(t *testing.T) {
+	ctx := t.Context()
+	saver := checkpoint.NewMemorySaver()
+	cg := exitPinResumeGraph(t, saver)
+
+	// Turn 1: pause at q. P anchors the input write and a's write (early-path
+	// synthetic ids — P's own pre-checkpoint state) and plans q in Next.
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"log": []string{"in"}, "plain": []string{"in"}}, Options{ThreadID: "t"}); err != nil {
+		t.Fatalf("turn 1 Invoke() error = %v", err)
+	}
+	snapP, err := cg.GetState(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("GetState() after turn 1 error = %v", err)
+	}
+	cpP := snapP.Config.CheckpointID
+
+	// Turn 2: a LIVE resume completes the thread; flushExit anchors r's
+	// accumulated write (a later-superstep synthetic id) on P and saves the
+	// final checkpoint past it.
+	res, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "go"})
+	if err != nil {
+		t.Fatalf("turn 2 resume Invoke() error = %v", err)
+	}
+	if got, _ := res.Values["log"].([]string); !reflect.DeepEqual(got, []string{"in", "a", "r"}) {
+		t.Fatalf("turn 2 live log = %v, want [in a r]", got)
+	}
+
+	// Turn 3: pin P (time travel). Both durability modes of the fork must
+	// re-derive the branch from P's own state: q re-executes (wave4: the
+	// paused task does not look done) and r's write applies exactly once —
+	// live, on read, and against the plain-channel oracle.
+	for _, tc := range []struct {
+		name string
+		opts Options
+	}{
+		{"exit", Options{ThreadID: "t", CheckpointID: cpP, Resume: "again"}},
+		{"sync", Options{ThreadID: "t", CheckpointID: cpP, Resume: "again"}.WithRunDurability(DurabilitySync)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := cg.InvokeWithOptions(ctx, nil, tc.opts)
+			if err != nil {
+				t.Fatalf("pinned resume Invoke() error = %v", err)
+			}
+			want := []string{"in", "a", "r"}
+			log, _ := res.Values["log"].([]string)
+			if !reflect.DeepEqual(log, want) {
+				t.Fatalf("pinned resume live log = %v, want %v (the consuming branch's anchored r write replayed into the fork)", log, want)
+			}
+			plain, _ := res.Values["plain"].([]string)
+			if !reflect.DeepEqual(log, plain) {
+				t.Fatalf("pinned resume log = %v diverged from plain oracle = %v", log, plain)
+			}
+			if got := mustGetLog(t, cg, checkpoint.Config{ThreadID: "t"}); !reflect.DeepEqual(got, want) {
+				t.Fatalf("pinned resume stored log = %v, want %v (the anchored r write leaked into the fork branch's stored state)", got, want)
+			}
+		})
+	}
+
+	// The plain-channel oracle must hold across the whole mixed-branch
+	// history for every checkpoint that does not itself carry anchored
+	// exit-delta log writes: such a checkpoint's read legitimately folds its
+	// own pending writes in (Python's get_state of the fork base does the
+	// same — #8548's "fork base" line includes the pending 'first-out'
+	// write), while every FORK checkpoint must be sealed against the
+	// abandoned branch's anchored writes.
+	hist, err := cg.GetStateHistory(ctx, checkpoint.Config{ThreadID: "t"}, checkpoint.ListOptions{})
+	if err != nil {
+		t.Fatalf("GetStateHistory() error = %v", err)
+	}
+	for _, s := range hist {
+		anchored := false
+		tup, err := saver.GetTuple(ctx, s.Config)
+		if err != nil || tup == nil {
+			t.Fatalf("GetTuple(%s) = (%v, %v)", s.Config.CheckpointID, tup, err)
+		}
+		for _, w := range tup.PendingWrites {
+			if _, ok := parseExitDeltaTaskID(w.TaskID); ok && w.Channel == "log" {
+				anchored = true
+				break
+			}
+		}
+		if anchored {
+			continue
+		}
+		log, _ := s.Values["log"].([]string)
+		plain, _ := s.Values["plain"].([]string)
+		if !reflect.DeepEqual(log, plain) {
+			t.Fatalf("checkpoint %s: log = %v, plain = %v (delta reconstruction diverged from plain state)", s.Config.CheckpointID, log, plain)
+		}
+	}
+}
+
+// exitPauseBoundaryGraph builds in -> a -> q1 -> b -> q2 -> r under exit
+// durability: `a` and `b` write to `log`/`plain`, and q1/q2 interrupt in-node
+// until answered by a resume value — so the second pause checkpoint P2 anchors
+// b's early-path write at a step exactly equal to P2's own metadata step.
+func exitPauseBoundaryGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
+	t.Helper()
+	g := NewStateGraph()
+	g.AddChannel("log", channels.NewDeltaChannel(stringBatchReducer, func() any { return []string{} }, 100))
+	g.AddReducer("plain", channels.AppendSliceReducer)
+	write := func(token string) func(runtime.Runtime, map[string]any) (any, error) {
+		return func(_ runtime.Runtime, _ map[string]any) (any, error) {
+			return map[string]any{"log": []string{token}, "plain": []string{token}}, nil
+		}
+	}
+	ask := func(name string) func(runtime.Runtime, map[string]any) (any, error) {
+		return func(rt runtime.Runtime, _ map[string]any) (any, error) {
+			Interrupt(rt, name+"?")
+			return nil, nil
+		}
+	}
+	g.AddNode("a", write("a"))
+	g.AddNode("q1", ask("q1"))
+	g.AddNode("b", write("b"))
+	g.AddNode("q2", ask("q2"))
+	g.AddNode("r", write("r"))
+	g.AddEdge(types.START, "a")
+	g.AddEdge("a", "q1")
+	g.AddEdge("q1", "b")
+	g.AddEdge("b", "q2")
+	g.AddEdge("q2", "r")
+	g.AddEdge("r", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver), WithDurability(DurabilityExit))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	return cg
+}
+
+// TestExitPinnedResumeKeepsPauseAnchoredWrites guards the boundary of the
+// stale-anchored-write exclusion (see TestExitPinnedResumeDoesNotReplay
+// AnchoredWrites): putPauseCheckpointExit anchors the run's accumulated
+// writes on the pause checkpoint ITSELF (the Go-only early path), and those
+// writes' embedded steps are at or before the pause checkpoint's metadata
+// step — they are the checkpoint's OWN state, not a consuming branch's work.
+// A pinned resume from such a checkpoint must keep seeding them.
+func TestExitPinnedResumeKeepsPauseAnchoredWrites(t *testing.T) {
+	ctx := t.Context()
+	saver := checkpoint.NewMemorySaver()
+	cg := exitPauseBoundaryGraph(t, saver)
+
+	// Turn 1: pause at q1.
+	if _, err := cg.InvokeWithOptions(ctx, map[string]any{"log": []string{"in"}, "plain": []string{"in"}}, Options{ThreadID: "t"}); err != nil {
+		t.Fatalf("turn 1 Invoke() error = %v", err)
+	}
+	// Turn 2: answer q1, run b, pause again at q2. P2 anchors b's write
+	// (early path) at a step equal to P2's own metadata step.
+	res, err := cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", Resume: "go"})
+	if err != nil {
+		t.Fatalf("turn 2 resume Invoke() error = %v", err)
+	}
+	if got, _ := res.Values["log"].([]string); !reflect.DeepEqual(got, []string{"in", "a", "b"}) {
+		t.Fatalf("turn 2 live log = %v, want [in a b]", got)
+	}
+	snapP2, err := cg.GetState(ctx, checkpoint.Config{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("GetState() after turn 2 error = %v", err)
+	}
+	cpP2 := snapP2.Config.CheckpointID
+
+	// Turn 3: pin P2 (now superseded by the completed fork below is NOT
+	// required — P2 is the latest; the pin itself makes the run addressed)
+	// and answer q2: the run must continue from P2's full state.
+	res, err = cg.InvokeWithOptions(ctx, nil, Options{ThreadID: "t", CheckpointID: cpP2, Resume: "done"})
+	if err != nil {
+		t.Fatalf("pinned resume Invoke() error = %v", err)
+	}
+	want := []string{"in", "a", "b", "r"}
+	if got, _ := res.Values["log"].([]string); !reflect.DeepEqual(got, want) {
+		t.Fatalf("pinned resume live log = %v, want %v (the pause checkpoint's own anchored b write was dropped)", got, want)
+	}
+	if got := mustGetLog(t, cg, checkpoint.Config{ThreadID: "t"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("pinned resume stored log = %v, want %v", got, want)
+	}
+}
+
 // TestExitDurabilityPinnedAtLatestSnapshotsForFutureForks freezes the widened
 // #9269 gate: Python force-snapshots whenever a run was loaded by an
 // ADDRESSED checkpoint_id (`not _loaded_latest`) — even when that checkpoint

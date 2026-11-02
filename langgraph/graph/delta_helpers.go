@@ -1,6 +1,12 @@
 package graph
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
+)
 
 // dispatchPath renders a task's position within its superstep as the task
 // path persisted in checkpoint.Write.TaskPath. The Go executor has no
@@ -59,4 +65,39 @@ func exitDeltaLatePath(step int, path string) string {
 // counterpart upstream.
 func exitDeltaEarlyPath(step int, path string) string {
 	return fmt.Sprintf("!%010d%s", step, path)
+}
+
+// parseExitDeltaTaskID reports whether tid is one of the synthetic task IDs
+// exit durability anchors accumulated writes under, returning the superstep
+// embedded in the prefix. Recognizes both forms — exitDeltaTaskID (an 8-digit
+// decimal step before a real 16-hex task ID) and exitDeltaLateTaskID (the
+// "ffffffff" prefix plus an 8-hex step) — and rejects everything else: real
+// task IDs are 16 chars, boundary interrupt writes carry node names, and the
+// input-write form (exitDeltaTaskID over checkpoint.NullTaskID) is the anchor
+// checkpoint's OWN write, which every reader applies (Python's
+// exit_delta_task_id: "readers apply writes under it as the anchor
+// checkpoint's own pending writes", _checkpoint.py:65-77), so it never counts
+// as a task's stale anchored write. Python needs no counterpart recognizer:
+// its loaded pending writes never hydrate live state at all (they reenter only
+// via reapply, which pairs by task id and so can never match a synthetic one,
+// _loop.py:833-845); Go's hydration seeds them, so the resume path must tell
+// the consuming branch's anchored writes from the anchor's own state by the
+// embedded step (see resumeFromTuple).
+func parseExitDeltaTaskID(tid string) (step int, ok bool) {
+	if strings.HasSuffix(tid, checkpoint.NullTaskID) {
+		return 0, false // input write: the anchor checkpoint's own state
+	}
+	if len(tid) == len("ffffffff")+8+16 && strings.HasPrefix(tid, "ffffffff") {
+		if s, err := strconv.ParseUint(tid[len("ffffffff"):len("ffffffff")+8], 16, 64); err == nil {
+			return int(s), true
+		}
+		return 0, false
+	}
+	if len(tid) == 8+16 {
+		if s, err := strconv.ParseUint(tid[:8], 10, 64); err == nil {
+			return int(s), true
+		}
+		return 0, false
+	}
+	return 0, false
 }
