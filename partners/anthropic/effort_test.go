@@ -246,3 +246,105 @@ func TestNoEffortOmitsOutputConfig(t *testing.T) {
 		t.Fatalf("output_config present without effort, want absent: %+v", request)
 	}
 }
+
+// --- New-model thinking validations (chat_models.py:1812-1849): the model
+// set is hardcoded startswith prefixes, not profile lookups —
+// claude-opus-5*, claude-fable-5*, claude-sonnet-5-5*. ---
+
+// TestEffortRejectsManualEnabledThinkingOnNewModels mirrors Python
+// test_opus_5_rejects_manual_thinking_at_all_effort_levels and
+// test_fable_5_1_rejects_manual_thinking (test_chat_models.py:5054,5177):
+// opus-5* / fable-5* / sonnet-5-5* reject thinking={"type":"enabled"} at
+// every effort level and with no effort at all.
+func TestEffortRejectsManualEnabledThinkingOnNewModels(t *testing.T) {
+	for _, modelID := range []string{"claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"} {
+		for _, effort := range []string{"", "low", "medium", "high", "xhigh", "max"} {
+			t.Run(modelID+"/"+effort, func(t *testing.T) {
+				var request map[string]any
+				model := effortModel(t, modelID, &request).
+					WithThinking(map[string]any{"type": "enabled", "budget_tokens": 1_024})
+				if effort != "" {
+					model = model.WithEffort(effort)
+				}
+				_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")})
+				if err == nil {
+					t.Fatal("invoke succeeded, want error")
+				}
+				for _, want := range []string{
+					"`thinking={\"type\": \"enabled\", \"budget_tokens\": ...}` is not supported for " + modelID,
+					"use adaptive thinking and `output_config.effort` instead",
+				} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error %q missing %q", err.Error(), want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestEffortFableSonnet55RejectDisabledThinking mirrors Python's fable/sonnet
+// disabled-thinking rejections (chat_models.py:1832-1837; Python cases
+// test_fable_5_1_rejects_unsupported_parameters and test_sonnet55
+// test_invalid_configuration): fable-5* and sonnet-5-5* cannot disable
+// thinking — adaptive thinking is their only mode, so the remedy is to omit
+// the parameter entirely.
+func TestEffortFableSonnet55RejectDisabledThinking(t *testing.T) {
+	for _, modelID := range []string{"claude-fable-5-1", "claude-sonnet-5-5"} {
+		t.Run(modelID, func(t *testing.T) {
+			var request map[string]any
+			model := effortModel(t, modelID, &request).
+				WithThinking(map[string]any{"type": "disabled"})
+			_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")})
+			if err == nil {
+				t.Fatal("invoke succeeded, want error")
+			}
+			for _, want := range []string{
+				"`thinking={\"type\": \"disabled\"}` is not supported for " + modelID,
+				"omit `thinking` to use adaptive thinking",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q missing %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+// TestEffortOpus5DisabledStillAllowedWithoutEffort guards the reconciled rule
+// set: opus-5* rejects disabled thinking only at xhigh/max effort
+// (chat_models.py:1851-1863); with no effort set, disabled stays legal — the
+// unconditional disabled rejection belongs to fable-5*/sonnet-5-5* only.
+func TestEffortOpus5DisabledStillAllowedWithoutEffort(t *testing.T) {
+	var request map[string]any
+	model := effortModel(t, "claude-opus-5", &request).
+		WithThinking(map[string]any{"type": "disabled"})
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if thinking, _ := request["thinking"].(map[string]any); thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %v, want disabled", request["thinking"])
+	}
+}
+
+// TestEffortNonPinnedThinkingModesAllowedOnNewModels guards the positive
+// scope: only enabled/disabled are pinned; adaptive and between_tools stay
+// valid on all three families (Python test_between_tools).
+func TestEffortNonPinnedThinkingModesAllowedOnNewModels(t *testing.T) {
+	for _, modelID := range []string{"claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"} {
+		for _, thinkingType := range []string{"adaptive", "between_tools"} {
+			t.Run(modelID+"/"+thinkingType, func(t *testing.T) {
+				var request map[string]any
+				model := effortModel(t, modelID, &request).
+					WithThinking(map[string]any{"type": thinkingType})
+				if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+					t.Fatalf("invoke: %v", err)
+				}
+				thinking, _ := request["thinking"].(map[string]any)
+				if thinking["type"] != thinkingType {
+					t.Fatalf("thinking = %v, want type=%s", thinking, thinkingType)
+				}
+			})
+		}
+	}
+}

@@ -209,10 +209,14 @@ func (m ChatModel) WithThinking(thinking map[string]any) ChatModel {
 // client-side.
 var validEffortLevels = []string{"max", "xhigh", "high", "medium", "low"}
 
-// opus5Prefix names the model family whose members reject disabled thinking at
-// xhigh/max effort (chat_models.py:1851-1863 checks
-// model.startswith("claude-opus-5")).
-const opus5Prefix = "claude-opus-5"
+// Model-family prefixes for the new-model thinking rules. Python hardcodes
+// them as startswith checks in _assert_valid_model_configuration
+// (chat_models.py:1812-1813,1840) — not profile lookups.
+const (
+	opus5Prefix    = "claude-opus-5"
+	fable5Prefix   = "claude-fable-5"
+	sonnet55Prefix = "claude-sonnet-5-5"
+)
 
 // WithEffort returns a copy of the model with the reasoning-effort level set
 // (Python ChatAnthropic's `effort`/`reasoning_effort` constructor fields, #41536).
@@ -235,30 +239,60 @@ func (m ChatModel) WithEffort(effort string) ChatModel {
 // (the profile's documented default is never resolved client-side).
 func (m ChatModel) Effort() string { return m.reasoningEffort }
 
-// assertValidEffort mirrors the effort parts of Python's
-// _assert_valid_model_configuration (chat_models.py:1793-1863), which runs
-// before message conversion on every request:
+// assertValidModelConfiguration mirrors the effort and thinking parts of
+// Python's _assert_valid_model_configuration (chat_models.py:1793-1863),
+// which runs before message conversion on every request:
 //
-//   - the level must be one of the Literal values — Python enforces this at
-//     construction via pydantic's literal_error; Go surfaces the same message
-//     here because WithEffort cannot fail;
+//   - the effort level must be one of the Literal values — Python enforces
+//     this at construction via pydantic's literal_error; Go surfaces the same
+//     message here because WithEffort cannot fail;
+//   - claude-fable-5* / claude-sonnet-5-5* models reject
+//     thinking={"type":"disabled"} outright (adaptive thinking is their only
+//     mode, chat_models.py:1832-1837);
+//   - claude-opus-5* / claude-fable-5* / claude-sonnet-5-5* models reject
+//     thinking={"type":"enabled"} at every effort level, manual budgets
+//     included (chat_models.py:1839-1849);
 //   - claude-opus-5* models reject thinking={"type":"disabled"} combined with
-//     xhigh/max effort ("permits disabled thinking only through `high` effort").
-func (m ChatModel) assertValidEffort() error {
-	if m.reasoningEffort == "" {
-		return nil
+//     xhigh/max effort ("permits disabled thinking only through `high`
+//     effort", chat_models.py:1851-1863).
+func (m ChatModel) assertValidModelConfiguration() error {
+	thinkingType := ""
+	if m.thinking != nil {
+		thinkingType, _ = m.thinking["type"].(string)
 	}
-	if !slices.Contains(validEffortLevels, m.reasoningEffort) {
-		return fmt.Errorf(
-			"anthropic %s: effort %q is invalid: Input should be 'max', 'xhigh', 'high', 'medium' or 'low'",
-			m.config.Model, m.reasoningEffort)
+	if m.reasoningEffort != "" {
+		if !slices.Contains(validEffortLevels, m.reasoningEffort) {
+			return fmt.Errorf(
+				"anthropic %s: effort %q is invalid: Input should be 'max', 'xhigh', 'high', 'medium' or 'low'",
+				m.config.Model, m.reasoningEffort)
+		}
 	}
-	if strings.HasPrefix(m.config.Model, opus5Prefix) &&
-		m.thinking != nil && m.thinking["type"] == "disabled" &&
-		(m.reasoningEffort == "xhigh" || m.reasoningEffort == "max") {
-		// Python's message verbatim (chat_models.py:1857-1862) except the
+	fableOrSonnet55 := strings.HasPrefix(m.config.Model, fable5Prefix) ||
+		strings.HasPrefix(m.config.Model, sonnet55Prefix)
+	if fableOrSonnet55 && thinkingType == "disabled" {
+		// Python's message verbatim (chat_models.py:1833-1836) except the
 		// trailing period, dropped per Go error-string convention (staticcheck
 		// ST1005).
+		return fmt.Errorf(
+			"`thinking={\"type\": \"disabled\"}` is not supported for %s; "+
+				"omit `thinking` to use adaptive thinking",
+			m.config.Model)
+	}
+	if (fableOrSonnet55 || strings.HasPrefix(m.config.Model, opus5Prefix)) &&
+		thinkingType == "enabled" {
+		// Python's message verbatim (chat_models.py:1844-1848) except the
+		// trailing period.
+		return fmt.Errorf(
+			"`thinking={\"type\": \"enabled\", \"budget_tokens\": ...}` is not "+
+				"supported for %s; use adaptive thinking and "+
+				"`output_config.effort` instead",
+			m.config.Model)
+	}
+	if strings.HasPrefix(m.config.Model, opus5Prefix) &&
+		thinkingType == "disabled" &&
+		(m.reasoningEffort == "xhigh" || m.reasoningEffort == "max") {
+		// Python's message verbatim (chat_models.py:1857-1862) except the
+		// trailing period.
 		return fmt.Errorf(
 			"`thinking={\"type\": \"disabled\"}` is not supported for %s with "+
 				"`output_config.effort='%s'`; use adaptive thinking, omit `thinking`, "+
@@ -428,7 +462,7 @@ func (m ChatModel) createMessage(
 }
 
 func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error) {
-	if err := m.assertValidEffort(); err != nil {
+	if err := m.assertValidModelConfiguration(); err != nil {
 		return requestPayload{}, err
 	}
 	payload := requestPayload{
