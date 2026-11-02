@@ -632,3 +632,20 @@ func TestGetStateNoAnsweredInterruptsAfterResume(t *testing.T) {
 		t.Fatalf("answer = %v, want me", snap.Values["answer"])
 	}
 }
+
+// TestSnapshotFromTupleNilChannelValues pins the nil-map guard in
+// snapshotFromTuple: a checkpoint whose ChannelValues round-tripped through a
+// persistent saver as an empty (or omitted) map decodes to nil, and the
+// projected Values must stay a non-nil, assignable map — reconstructDeltaChannels
+// writes reconstructed delta channels into it, which panics on a nil map.
+func TestSnapshotFromTupleNilChannelValues(t *testing.T) {
+	cg := snapshotLinearGraph(t, checkpoint.NewMemorySaver(), map[string]int{})
+	snap := cg.snapshotFromTuple(&checkpoint.Tuple{Checkpoint: checkpoint.Checkpoint{ChannelValues: nil}})
+	if snap.Values == nil {
+		t.Fatal("snapshotFromTuple(nil ChannelValues).Values = nil, want a non-nil assignable map")
+	}
+	snap.Values["reconstructed"] = "v" // must not panic (reconstruction writes here)
+	if snap.Values["reconstructed"] != "v" {
+		t.Fatalf("Values is not assignable: %v", snap.Values)
+	}
+}
