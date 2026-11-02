@@ -1,4 +1,4 @@
-.PHONY: test test-sqlite test-postgres test-redis test-integration vet-integration check-dep-alignment coverage coverage-html
+.PHONY: test test-sqlite test-postgres test-redis test-integration vet-integration check-dep-alignment fmt-check coverage coverage-html
 
 ## Statement-coverage gate for the 2026-09 parity catch-up packages.
 ## COVERAGE_THRESHOLD is the per-package red line in percent (>= passes).
@@ -92,6 +92,20 @@ test-integration:
 ## Type-check integration tests without running them (no network needed).
 vet-integration:
 	go vet -tags=integration ./integration/...
+
+## gofmt gate: the whole tree must be gofmt-clean. One `gofmt -l .` from the
+## repo root suffices — gofmt is module-blind and walks the nested checkpoint
+## modules too (the golangci-lint gofmt formatter covers only the root module:
+## `golangci-lint run ./...` does not cross nested-module boundaries).
+## Exits non-zero listing any unformatted file.
+fmt-check:
+	@out=$$(gofmt -l .); \
+	if [ -n "$$out" ]; then \
+		printf '%s\n' "$$out"; \
+		echo "ERROR: gofmt gate failed: run gofmt -w on the files above"; \
+		exit 1; \
+	fi; \
+	echo "OK: gofmt clean (root + nested checkpoint modules)"
 
 ## Verify the root go.mod pins of pgx/go-redis match the nested checkpoint
 ## modules (spec §10 dependency policy: partners/pgvector and

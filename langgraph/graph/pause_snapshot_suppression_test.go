@@ -113,15 +113,15 @@ func TestPauseCadenceSnapshotDoesNotStrandSiblingWrites(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetStateHistory() error = %v", err)
 			}
-		for _, s := range hist {
-			got, _ := s.Values["log"].([]string)
-			if len(got) == 0 {
-				t.Fatalf("[%s] checkpoint %s (step %d) reads an empty log", d, s.Config.CheckpointID, s.Metadata.Step)
+			for _, s := range hist {
+				got, _ := s.Values["log"].([]string)
+				if len(got) == 0 {
+					t.Fatalf("[%s] checkpoint %s (step %d) reads an empty log", d, s.Config.CheckpointID, s.Metadata.Step)
+				}
+				if got[0] != "in" {
+					t.Fatalf("[%s] checkpoint %s (step %d) log = %v — reconstruction lost the thread's prefix", d, s.Config.CheckpointID, s.Metadata.Step, got)
+				}
 			}
-			if got[0] != "in" {
-				t.Fatalf("[%s] checkpoint %s (step %d) log = %v — reconstruction lost the thread's prefix", d, s.Config.CheckpointID, s.Metadata.Step, got)
-			}
-		}
 		})
 	}
 }

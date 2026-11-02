@@ -208,10 +208,12 @@ func TestInterruptAfterPersistsSuperstepWrites(t *testing.T) {
 			// so log == plain holds across the whole history. Exit mode
 			// anchors the resumed run's accumulated writes on its START
 			// checkpoint (Python _put_exit_delta_writes' anchor-on-start,
-			// _loop.py) — the pause checkpoint's read then includes the
-			// resumed run's write, exactly like a Python read applies a
-			// checkpoint's own pending writes — so the strict invariant is
-			// asserted only before the resume there (above).
+			// _loop.py). The LIVE read above — the latest checkpoint is the
+			// pause checkpoint — folds those anchored writes in, matching
+			// how a Python read of the latest checkpoint applies its pending
+			// writes; no such equivalence is claimed for history reads of
+			// the pause checkpoint, so the strict per-checkpoint invariant
+			// is asserted only before the resume there (above).
 			if d != DurabilityExit {
 				assertHistoryConsistent(t, cg, "t")
 			}

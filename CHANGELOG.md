@@ -4,6 +4,22 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-02
+
+Residuals wave — the review-owed debts of parity wave 4: openai streaming tool-call assembly, anthropic system-block narrowing / thinking validations / betas, and the langgraph pause-repair and interrupt_after persistence gaps, plus a mechanical gofmt gate. Spec/plan: `docs/superpowers/{specs,plans}/2026-11-02-v0.12.1-residuals*`.
+
+### Fixed
+- openai: chat-completions stream assembly keeps sparse-index tool calls — the final chunk iterated a dense 0..n-1 range over a streamed-index map, silently dropping any call whose index left gaps below the highest streamed index (Python `_merge_chunk_into_store` iterates the present indices in sorted order); dense index sets are unchanged.
+- anthropic: unrecognized non-text/non-tool-change system blocks are dropped with the Python-shaped warning on the hoist path too (previously only in-place turns narrowed; the hoist kept the first block and failed); manual thinking config is rejected on the thinking-pinned model families (`claude-fable-5*`/`claude-sonnet-5-5*` reject any manual thinking, `claude-opus-5*` rejects enabled) with Python's verbatim remedies, effort-independently.
+- langgraph: the #9235 injected-failure pause-repair family is uniform across durability modes — repair payloads keep snapshot-suppressed channels blob-free (a suppressed pause checkpoint cannot be re-materialized by its own repair), the exit-mode pause checkpoint gets the same failure repair its sibling write paths perform, and interrupt_after pause checkpoints persist the triggering superstep's below-cadence delta writes instead of deferring them until the run resumes.
+
+### Added
+- anthropic: the remaining #41180/#41536 request surfaces — thinking `display: updates` and `user_profile_id` auto-append their betas (task_budget → thinking-display → tool-change → user-profiles order), `WithUserProfileID` sets the constructor field, and `WithOutputConfig(map[string]any)` emits the constructor `output_config` (effort/format/task_budget, dict-then-`WithEffort` merge, `task_budget` auto-append).
+- CI: gofmt gate — the `gofmt` formatter in golangci-lint (root module) plus a `make fmt-check` step; gofmt is module-blind so one `gofmt -l .` walk covers the nested checkpoint modules too, which `golangci-lint run ./...` cannot reach.
+
+### Testing
+- langgraph: dedicated unit test pinning the nil-ChannelValues decode guard (a tuple with no channel values must decode to a non-nil assignable map).
+
 ## [0.12.0] - 2026-11-01
 
 Parity wave 4 — the late-October 2026 upstream releases (langchain-core 1.7.3 · langchain 1.4.7 · langgraph 1.2.19 · checkpoint 4.3.1 · prebuilt 1.1.1): the second DeltaChannel-correctness wave, the core 1.7.0 tool-call stream protocol, and partner catch-up. Spec/plan: `docs/superpowers/{specs,plans}/2026-11-01-parity-wave4*`; gap analysis: `reports/14-latest-release-port-gap.md`.
@@ -191,7 +207,11 @@ Initial public parity line: agents, graphs, checkpoint savers, partners (openai/
 ## [0.5.x] - 2026-08
 Early development line preceding the parity baseline.
 
-[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/ProjAnvil/langchain-golang/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.11.1...v0.12.0
+[0.11.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/ProjAnvil/langchain-golang/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/ProjAnvil/langchain-golang/compare/v0.8.1...v0.9.1

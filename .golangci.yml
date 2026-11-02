@@ -13,6 +13,14 @@ linters:
       - path: _test\.go
         linters:
           - errcheck
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      # Match plain `gofmt -l` exactly (the default `simplify: true` would
+      # flag files that the gofmt binary considers formatted).
+      simplify: false
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
