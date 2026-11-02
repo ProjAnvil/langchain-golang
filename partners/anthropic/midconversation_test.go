@@ -763,6 +763,157 @@ func TestMidConversationPlainSystemTurnNoBeta(t *testing.T) {
 	}
 }
 
+// --- thinking-display / user-profiles beta auto-append
+// (chat_models.py:2130-2138, 2162-2169) ---
+
+const (
+	testThinkingDisplayBeta = "thinking-display-updates-2026-08-18"
+	testUserProfilesBeta    = "user-profiles-2026-03-24"
+)
+
+// midConvInvokeChatModel invokes a caller-built ChatModel against a capture
+// server, for options expressed as ChatModel methods (WithThinking,
+// WithUserProfileID) rather than modelconfig.Option.
+func midConvInvokeChatModel(t *testing.T, build func(baseURL string) ChatModel, input []messages.Message) *midConvCapture {
+	t.Helper()
+	captured := &midConvCapture{}
+	server := newMidConvCaptureServer(t, captured)
+	if _, err := build(server.URL).Invoke(t.Context(), input); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	return captured
+}
+
+// TestThinkingDisplayUpdatesAutoAppendsBeta mirrors Python
+// test_thinking_display_updates_enables_beta (test_chat_models.py:6349): the
+// `updates` thinking display mode is beta-gated, so its flag is auto-appended
+// and the request routes to the beta endpoint.
+func TestThinkingDisplayUpdatesAutoAppendsBeta(t *testing.T) {
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+		).WithThinking(map[string]any{"type": "adaptive", "display": "updates"})
+	}, []messages.Message{messages.Human("think")})
+
+	if captured.beta != testThinkingDisplayBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, testThinkingDisplayBeta)
+	}
+	if captured.path != "/messages?beta=true" {
+		t.Fatalf("request path: got %q want /messages?beta=true", captured.path)
+	}
+	thinking, _ := captured.body["thinking"].(map[string]any)
+	if thinking["display"] != "updates" {
+		t.Fatalf("thinking should reach the wire unchanged: %+v", captured.body["thinking"])
+	}
+}
+
+// TestThinkingDisplaySummarizedNoBeta mirrors Python
+// test_thinking_display_summarized_does_not_enable_beta
+// (test_chat_models.py:6358): other display values are generally available.
+func TestThinkingDisplaySummarizedNoBeta(t *testing.T) {
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+		).WithThinking(map[string]any{"type": "adaptive", "display": "summarized"})
+	}, []messages.Message{messages.Human("think")})
+
+	if captured.beta != "" {
+		t.Fatalf("anthropic-beta header should stay unset, got %q", captured.beta)
+	}
+	if captured.path != "/messages" {
+		t.Fatalf("request path: got %q want /messages", captured.path)
+	}
+}
+
+// TestUserProfileIDAutoAppendsBeta mirrors Python test_user_profile_id_init_
+// param (test_chat_models.py:3772): the id reaches the wire and its beta flag
+// is auto-appended, routing to the beta endpoint.
+func TestUserProfileIDAutoAppendsBeta(t *testing.T) {
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+		).WithUserProfileID("uprof_1")
+	}, []messages.Message{messages.Human("hello")})
+
+	if captured.beta != testUserProfilesBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, testUserProfilesBeta)
+	}
+	if captured.path != "/messages?beta=true" {
+		t.Fatalf("request path: got %q want /messages?beta=true", captured.path)
+	}
+	if captured.body["user_profile_id"] != "uprof_1" {
+		t.Fatalf("user_profile_id: %+v", captured.body["user_profile_id"])
+	}
+}
+
+// TestUserProfileIDAbsentByDefault mirrors Python
+// test_user_profile_id_absent_by_default: unset means neither the id nor any
+// beta flag reaches the wire.
+func TestUserProfileIDAbsentByDefault(t *testing.T) {
+	captured := midConvInvokeCaptured(t, "claude-sonnet-4-5", nil, []messages.Message{messages.Human("hello")})
+
+	if captured.beta != "" {
+		t.Fatalf("anthropic-beta header should stay unset, got %q", captured.beta)
+	}
+	if _, present := captured.body["user_profile_id"]; present {
+		t.Fatalf("user_profile_id should be absent: %+v", captured.body["user_profile_id"])
+	}
+}
+
+// TestUserProfileBetaNotDuplicated mirrors Python's append-if-absent rule
+// (chat_models.py:2165-2167): a caller-supplied flag is not repeated.
+func TestUserProfileBetaNotDuplicated(t *testing.T) {
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+			WithBetaHeaders(testUserProfilesBeta),
+		).WithUserProfileID("uprof_1")
+	}, []messages.Message{messages.Human("hello")})
+
+	if got := strings.Count(captured.beta, testUserProfilesBeta); got != 1 {
+		t.Fatalf("anthropic-beta header should contain the beta exactly once, got %q", captured.beta)
+	}
+}
+
+// TestThinkingDisplayBetaPrecedesToolChangeBeta pins the append order per
+// Python's payload build: thinking-display is appended (chat_models.py:2130)
+// before the tool-change betas (:2140-2160), so both flags land in that
+// order.
+func TestThinkingDisplayBetaPrecedesToolChangeBeta(t *testing.T) {
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-opus-5"),
+		).WithThinking(map[string]any{"type": "adaptive", "display": "updates"})
+	}, toolChangeConversation)
+
+	want := testThinkingDisplayBeta + "," + testToolChangeBeta
+	if captured.beta != want {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, want)
+	}
+}
+
+// TestUserProfileBetaFollowsToolChangeBeta pins the other side of the order:
+// user-profiles is appended last (chat_models.py:2162), after the tool-change
+// betas.
+func TestUserProfileBetaFollowsToolChangeBeta(t *testing.T) {
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-opus-5"),
+		).WithUserProfileID("uprof_1")
+	}, toolChangeConversation)
+
+	want := testToolChangeBeta + "," + testUserProfilesBeta
+	if captured.beta != want {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, want)
+	}
+}
+
 // TestMidConversationStreamToolChangeAutoAppendsBeta checks the streaming
 // path applies the same auto-append.
 func TestMidConversationStreamToolChangeAutoAppendsBeta(t *testing.T) {

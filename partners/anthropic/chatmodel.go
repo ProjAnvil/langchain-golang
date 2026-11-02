@@ -34,6 +34,7 @@ type ChatModel struct {
 	parallelToolCalls *bool
 	contextManagement map[string]any
 	inferenceGeo      string
+	userProfileID     string
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -326,6 +327,18 @@ func (m ChatModel) WithContextManagement(contextManagement map[string]any) ChatM
 func (m ChatModel) WithInferenceGeo(inferenceGeo string) ChatModel {
 	next := m
 	next.inferenceGeo = inferenceGeo
+	return next
+}
+
+// WithUserProfileID returns a copy of the model with the Anthropic
+// user_profile_id request parameter set, e.g. "uprof_..." (Python
+// ChatAnthropic's user_profile_id constructor field, chat_models.py:1599).
+// A non-empty id auto-appends the user-profiles beta flag
+// (chat_models.py:2162-2169) and routes the request through the beta
+// endpoint.
+func (m ChatModel) WithUserProfileID(userProfileID string) ChatModel {
+	next := m
+	next.userProfileID = userProfileID
 	return next
 }
 
@@ -628,7 +641,6 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	} else if len(systemText) > 0 {
 		payload.System = strings.Join(systemText, "\n")
 	}
-	payload.requiredBetas = requiredBetaHeaders(payload.Messages, splitBetaHeader(m.config.Headers[anthropicBetaHeader]))
 	for _, tool := range m.boundTools {
 		payload.Tools = append(payload.Tools, toolSpec{
 			Name:        tool.Name(),
@@ -680,6 +692,13 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	if m.inferenceGeo != "" {
 		payload.InferenceGeo = m.inferenceGeo
 	}
+	if m.userProfileID != "" {
+		payload.UserProfileID = m.userProfileID
+	}
+	// Beta auto-appends run last, on the assembled payload: the
+	// thinking-display flag keys on the final thinking map, mirroring
+	// Python's tail-of-build betas section (chat_models.py:2130-2169).
+	payload.requiredBetas = requiredBetaHeaders(payload, splitBetaHeader(m.config.Headers[anthropicBetaHeader]))
 	return payload, nil
 }
 
@@ -697,17 +716,47 @@ const (
 	// inlineToolsBeta enables defining a tool inline in a tool_addition block
 	// (tool_definition); it supersedes toolChangeBeta when both apply.
 	inlineToolsBeta = "inline-tools-2026-09-15"
+	// thinkingDisplayBeta gates the `updates` thinking display mode
+	// (chat_models.py:2130-2138).
+	thinkingDisplayBeta = "thinking-display-updates-2026-08-18"
+	// userProfilesBeta gates the user_profile_id request parameter
+	// (chat_models.py:2162-2169).
+	userProfilesBeta = "user-profiles-2026-03-24"
 )
 
-// requiredBetaHeaders mirrors Python's beta auto-append decision
-// (chat_models.py:2140-2161): scan the in-place system turns (payload messages
-// with role "system" — the top-level system field is NOT scanned) for
-// tool-change blocks. An inline tool_definition requires the inline-tools beta
+// requiredBetaHeaders mirrors Python's beta auto-append decisions, in the
+// payload-build order of _get_request_payload: the `updates` thinking display
+// mode (chat_models.py:2130-2138), then the tool-change betas (:2140-2160),
+// then user_profile_id (:2162-2169). All are append-if-absent against the
+// caller-supplied flags. The tool-change scan covers the in-place system turns
+// (payload messages with role "system" — the top-level system field is NOT
+// scanned): an inline tool_definition requires the inline-tools beta
 // (superseding the reference beta even when both block kinds are present);
 // otherwise any tool_addition/tool_removal block requires the tool-changes
-// beta, unless the inline beta is already caller-supplied. explicit holds the
-// caller-supplied anthropic-beta flags. Returns the flags to append, if any.
-func requiredBetaHeaders(messages []requestMessage, explicit []string) []string {
+// beta, unless the inline beta is already caller-supplied. Returns the flags
+// to append, in order, if any.
+func requiredBetaHeaders(payload requestPayload, explicit []string) []string {
+	var required []string
+	appendIfAbsent := func(flag string) {
+		if !slices.Contains(explicit, flag) && !slices.Contains(required, flag) {
+			required = append(required, flag)
+		}
+	}
+	if display, _ := payload.Thinking["display"].(string); display == "updates" {
+		appendIfAbsent(thinkingDisplayBeta)
+	}
+	if beta := toolChangeBetaFor(payload.Messages, explicit); beta != "" {
+		appendIfAbsent(beta)
+	}
+	if payload.UserProfileID != "" {
+		appendIfAbsent(userProfilesBeta)
+	}
+	return required
+}
+
+// toolChangeBetaFor returns the beta flag the payload's in-place tool-change
+// system turns require, if any.
+func toolChangeBetaFor(messages []requestMessage, explicit []string) string {
 	hasToolChange := false
 	hasInlineDefinition := false
 	for _, message := range messages {
@@ -727,14 +776,14 @@ func requiredBetaHeaders(messages []requestMessage, explicit []string) []string 
 	switch {
 	case hasInlineDefinition:
 		if !slices.Contains(explicit, inlineToolsBeta) {
-			return []string{inlineToolsBeta}
+			return inlineToolsBeta
 		}
 	case hasToolChange && !slices.Contains(explicit, inlineToolsBeta):
 		if !slices.Contains(explicit, toolChangeBeta) {
-			return []string{toolChangeBeta}
+			return toolChangeBeta
 		}
 	}
-	return nil
+	return ""
 }
 
 // configWithRequiredBetas returns a copy of the model config with the required
@@ -915,6 +964,7 @@ type requestPayload struct {
 	OutputConfig      map[string]any   `json:"output_config,omitempty"`
 	ContextManagement map[string]any   `json:"context_management,omitempty"`
 	InferenceGeo      string           `json:"inference_geo,omitempty"`
+	UserProfileID     string           `json:"user_profile_id,omitempty"`
 
 	// requiredBetas carries beta flags the payload's in-place tool-change
 	// system turns require; senders merge them into the anthropic-beta header
