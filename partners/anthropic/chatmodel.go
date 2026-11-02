@@ -35,6 +35,7 @@ type ChatModel struct {
 	contextManagement map[string]any
 	inferenceGeo      string
 	userProfileID     string
+	outputConfig      map[string]any
 }
 
 // Compile-time guard: ChatModel (value receiver) satisfies
@@ -255,7 +256,9 @@ func (m ChatModel) Effort() string { return m.reasoningEffort }
 //     included (chat_models.py:1839-1849);
 //   - claude-opus-5* models reject thinking={"type":"disabled"} combined with
 //     xhigh/max effort ("permits disabled thinking only through `high`
-//     effort", chat_models.py:1851-1863).
+//     effort", chat_models.py:1851-1863). The effort is the resolved level —
+//     the WithOutputConfig "effort" key overridden by WithEffort
+//     (chat_models.py:1800-1802).
 func (m ChatModel) assertValidModelConfiguration() error {
 	thinkingType := ""
 	if m.thinking != nil {
@@ -267,6 +270,14 @@ func (m ChatModel) assertValidModelConfiguration() error {
 				"anthropic %s: effort %q is invalid: Input should be 'max', 'xhigh', 'high', 'medium' or 'low'",
 				m.config.Model, m.reasoningEffort)
 		}
+	}
+	// resolvedEffort mirrors Python's preflight merge (chat_models.py:1800-
+	// 1802): the constructor output_config dict first, reasoning_effort on
+	// top. Only the WithEffort level is literal-validated above — Python's
+	// pydantic Literal governs the reasoning_effort field, not the dict.
+	resolvedEffort, _ := m.outputConfig["effort"].(string)
+	if m.reasoningEffort != "" {
+		resolvedEffort = m.reasoningEffort
 	}
 	fableOrSonnet55 := strings.HasPrefix(m.config.Model, fable5Prefix) ||
 		strings.HasPrefix(m.config.Model, sonnet55Prefix)
@@ -291,14 +302,14 @@ func (m ChatModel) assertValidModelConfiguration() error {
 	}
 	if strings.HasPrefix(m.config.Model, opus5Prefix) &&
 		thinkingType == "disabled" &&
-		(m.reasoningEffort == "xhigh" || m.reasoningEffort == "max") {
+		(resolvedEffort == "xhigh" || resolvedEffort == "max") {
 		// Python's message verbatim (chat_models.py:1857-1862) except the
 		// trailing period.
 		return fmt.Errorf(
 			"`thinking={\"type\": \"disabled\"}` is not supported for %s with "+
 				"`output_config.effort='%s'`; use adaptive thinking, omit `thinking`, "+
 				"or set effort to `high` or below",
-			m.config.Model, m.reasoningEffort)
+			m.config.Model, resolvedEffort)
 	}
 	return nil
 }
@@ -339,6 +350,23 @@ func (m ChatModel) WithInferenceGeo(inferenceGeo string) ChatModel {
 func (m ChatModel) WithUserProfileID(userProfileID string) ChatModel {
 	next := m
 	next.userProfileID = userProfileID
+	return next
+}
+
+// WithOutputConfig returns a copy of the model with the constructor
+// output_config dict set (Python ChatAnthropic's output_config field,
+// chat_models.py:1495). Documented keys: "effort" (one of the WithEffort
+// levels), "format" (structured-output format configuration), and
+// "task_budget" (e.g. {"type":"tokens","total":128000}; auto-appends the
+// task-budgets beta, chat_models.py:2120-2128). Keys are not validated
+// client-side, matching Python's plain-dict field. At request build the dict
+// is merged AHEAD of the effort-derived key, so WithEffort's level overrides
+// a constructor "effort" while the other keys survive (chat_models.py:1970-
+// 1998); a constructor "effort" alone does not trigger the adaptive-thinking
+// default (that keys on an explicit reasoning effort only).
+func (m ChatModel) WithOutputConfig(outputConfig map[string]any) ChatModel {
+	next := m
+	next.outputConfig = cloneAnyMap(outputConfig)
 	return next
 }
 
@@ -655,19 +683,27 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 	if m.thinking != nil {
 		payload.Thinking = m.thinking
 	}
-	// Effort → output_config (#41536, chat_models.py:1970-1998). Python merges
-	// the constructor output_config dict and then applies effort on top; effort
-	// is the only Go source, so the emitted map is exactly {"effort": level}.
-	// The adaptive-thinking default (chat_models.py:2005-2010) fires only when
-	// no explicit thinking is set and the model's profile declares xhigh
-	// support — sending the adaptive+summarized shape to an older model (Opus
-	// 4.5/4.6) is rejected with "adaptive thinking is not supported on this
-	// model".
+	// output_config (#41536, chat_models.py:1970-1998): Python starts from the
+	// constructor dict and applies reasoning_effort on top, so WithEffort's
+	// level overrides a constructor "effort" while task_budget/format survive.
+	// The adaptive-thinking default (chat_models.py:2005-2010) fires only for
+	// an explicit reasoning effort — a constructor output_config effort does
+	// not set reasoning_effort_applied — and only when no explicit thinking is
+	// set and the model's profile declares xhigh support — sending the
+	// adaptive+summarized shape to an older model (Opus 4.5/4.6) is rejected
+	// with "adaptive thinking is not supported on this model".
+	outputConfig := cloneAnyMap(m.outputConfig)
 	if m.reasoningEffort != "" {
-		payload.OutputConfig = map[string]any{"effort": m.reasoningEffort}
+		if outputConfig == nil {
+			outputConfig = map[string]any{}
+		}
+		outputConfig["effort"] = m.reasoningEffort
 		if payload.Thinking == nil && m.profileSupportsXHighEffort() {
 			payload.Thinking = map[string]any{"type": "adaptive", "display": "summarized"}
 		}
+	}
+	if len(outputConfig) > 0 {
+		payload.OutputConfig = outputConfig
 	}
 	if payload.Thinking != nil {
 		applyThinkingConstraints(&payload)
@@ -696,8 +732,9 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 		payload.UserProfileID = m.userProfileID
 	}
 	// Beta auto-appends run last, on the assembled payload: the
-	// thinking-display flag keys on the final thinking map, mirroring
-	// Python's tail-of-build betas section (chat_models.py:2130-2169).
+	// thinking-display flag keys on the final thinking map and the
+	// task-budget flag on the final output_config, mirroring Python's
+	// tail-of-build betas section (chat_models.py:2120-2169).
 	payload.requiredBetas = requiredBetaHeaders(payload, splitBetaHeader(m.config.Headers[anthropicBetaHeader]))
 	return payload, nil
 }
@@ -722,12 +759,16 @@ const (
 	// userProfilesBeta gates the user_profile_id request parameter
 	// (chat_models.py:2162-2169).
 	userProfilesBeta = "user-profiles-2026-03-24"
+	// taskBudgetsBeta gates the output_config task_budget parameter
+	// (chat_models.py:2120-2128).
+	taskBudgetsBeta = "task-budgets-2026-03-13"
 )
 
 // requiredBetaHeaders mirrors Python's beta auto-append decisions, in the
-// payload-build order of _get_request_payload: the `updates` thinking display
-// mode (chat_models.py:2130-2138), then the tool-change betas (:2140-2160),
-// then user_profile_id (:2162-2169). All are append-if-absent against the
+// payload-build order of _get_request_payload: a task_budget in the resolved
+// output_config (chat_models.py:2120-2128), the `updates` thinking display
+// mode (:2130-2138), then the tool-change betas (:2140-2160), then
+// user_profile_id (:2162-2169). All are append-if-absent against the
 // caller-supplied flags. The tool-change scan covers the in-place system turns
 // (payload messages with role "system" — the top-level system field is NOT
 // scanned): an inline tool_definition requires the inline-tools beta
@@ -741,6 +782,11 @@ func requiredBetaHeaders(payload requestPayload, explicit []string) []string {
 		if !slices.Contains(explicit, flag) && !slices.Contains(required, flag) {
 			required = append(required, flag)
 		}
+	}
+	// Python checks truthiness (`resolved_oc.get("task_budget")`); the
+	// documented shape is a non-empty dict, mirrored as presence + non-nil.
+	if budget, ok := payload.OutputConfig["task_budget"]; ok && budget != nil {
+		appendIfAbsent(taskBudgetsBeta)
 	}
 	if display, _ := payload.Thinking["display"].(string); display == "updates" {
 		appendIfAbsent(thinkingDisplayBeta)

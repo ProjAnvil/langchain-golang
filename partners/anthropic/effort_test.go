@@ -348,3 +348,195 @@ func TestEffortNonPinnedThinkingModesAllowedOnNewModels(t *testing.T) {
 		}
 	}
 }
+
+// --- Constructor output_config dict (chat_models.py:1495, 1970-1998): merged
+// ahead of the effort-derived key; WithEffort's level wins over a constructor
+// effort key. Keys are not validated client-side (Python's field is a plain
+// dict); documented keys are effort / format / task_budget. ---
+
+func TestOutputConfigEmitsConstructorDict(t *testing.T) {
+	// Python test_output_config_top_level_field (test_chat_models.py:5761):
+	// the constructor dict reaches the wire alongside the effort default.
+	var request map[string]any
+	model := effortModel(t, "claude-opus-4-5-20251101", &request).WithOutputConfig(map[string]any{
+		"effort":      "low",
+		"task_budget": map[string]any{"type": "tokens", "total": 50_000},
+	})
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	outputConfig, ok := request["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing output_config: %+v", request)
+	}
+	if outputConfig["effort"] != "low" {
+		t.Fatalf("output_config.effort = %v, want low", outputConfig["effort"])
+	}
+	budget, _ := outputConfig["task_budget"].(map[string]any)
+	if budget["type"] != "tokens" || budget["total"] != float64(50_000) {
+		t.Fatalf("output_config.task_budget = %v, want tokens/50000", outputConfig["task_budget"])
+	}
+}
+
+func TestOutputConfigEffortFromWithEffortWins(t *testing.T) {
+	// Python's merge applies reasoning_effort on top of the constructor dict
+	// (chat_models.py:1973-1978), so WithEffort overrides a constructor
+	// effort key while other keys survive.
+	var request map[string]any
+	model := effortModel(t, "claude-opus-4-5-20251101", &request).
+		WithOutputConfig(map[string]any{
+			"effort":      "low",
+			"task_budget": map[string]any{"type": "tokens", "total": 50_000},
+		}).
+		WithEffort("high")
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	outputConfig, ok := request["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing output_config: %+v", request)
+	}
+	if outputConfig["effort"] != "high" {
+		t.Fatalf("output_config.effort = %v, want high (WithEffort wins)", outputConfig["effort"])
+	}
+	if _, present := outputConfig["task_budget"]; !present {
+		t.Fatalf("task_budget should survive the merge: %+v", outputConfig)
+	}
+}
+
+func TestOutputConfigAloneDoesNotDefaultAdaptiveThinking(t *testing.T) {
+	// Python's adaptive default keys on reasoning_effort_applied
+	// (chat_models.py:1976-1979, 2005-2010), which only an explicit
+	// reasoning_effort/effort sets — a constructor output_config effort does
+	// not trigger it even on an xhigh-capable model.
+	var request map[string]any
+	model := effortModel(t, "claude-opus-5", &request).
+		WithOutputConfig(map[string]any{"effort": "high"})
+	if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+
+	if _, present := request["thinking"]; present {
+		t.Fatalf("constructor output_config must not default thinking: %+v", request["thinking"])
+	}
+	outputConfig, _ := request["output_config"].(map[string]any)
+	if outputConfig["effort"] != "high" {
+		t.Fatalf("output_config.effort = %v, want high", request["output_config"])
+	}
+}
+
+func TestOutputConfigTaskBudgetAutoAppendsBeta(t *testing.T) {
+	// Python test_task_budget_auto_appends_beta (test_chat_models.py:5799):
+	// a task_budget in the resolved output_config requires its beta flag and
+	// beta-endpoint routing.
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+		).WithOutputConfig(map[string]any{
+			"task_budget": map[string]any{"type": "tokens", "total": 128_000},
+		})
+	}, []messages.Message{messages.Human("run the errand")})
+
+	const taskBudgetsBeta = "task-budgets-2026-03-13"
+	if captured.beta != taskBudgetsBeta {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, taskBudgetsBeta)
+	}
+	if captured.path != "/messages?beta=true" {
+		t.Fatalf("request path: got %q want /messages?beta=true", captured.path)
+	}
+}
+
+func TestOutputConfigTaskBudgetBetaNotDuplicated(t *testing.T) {
+	// Python test_task_budget_beta_not_duplicated (test_chat_models.py:5810).
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+			WithBetaHeaders("task-budgets-2026-03-13"),
+		).WithOutputConfig(map[string]any{
+			"task_budget": map[string]any{"type": "tokens", "total": 128_000},
+		})
+	}, []messages.Message{messages.Human("run the errand")})
+
+	if got := strings.Count(captured.beta, "task-budgets-2026-03-13"); got != 1 {
+		t.Fatalf("anthropic-beta header should contain the beta exactly once, got %q", captured.beta)
+	}
+}
+
+func TestOutputConfigNoTaskBudgetNoBeta(t *testing.T) {
+	// Python test_no_task_budget_no_beta (test_chat_models.py:5821): an
+	// output_config without task_budget triggers no beta.
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+		).WithOutputConfig(map[string]any{"effort": "high"})
+	}, []messages.Message{messages.Human("run the errand")})
+
+	if strings.Contains(captured.beta, "task-budgets") {
+		t.Fatalf("task-budgets beta should not be appended, got %q", captured.beta)
+	}
+}
+
+func TestOutputConfigTaskBudgetPrecedesThinkingDisplayBeta(t *testing.T) {
+	// Python appends the task-budget beta (chat_models.py:2120) before the
+	// thinking-display beta (:2130); the combined header preserves that order.
+	captured := midConvInvokeChatModel(t, func(baseURL string) ChatModel {
+		return NewChatModel(
+			modelconfig.WithBaseURL(baseURL),
+			modelconfig.WithModel("claude-sonnet-4-5"),
+		).
+			WithOutputConfig(map[string]any{
+				"task_budget": map[string]any{"type": "tokens", "total": 128_000},
+			}).
+			WithThinking(map[string]any{"type": "adaptive", "display": "updates"})
+	}, []messages.Message{messages.Human("run the errand")})
+
+	want := "task-budgets-2026-03-13," + testThinkingDisplayBeta
+	if captured.beta != want {
+		t.Fatalf("anthropic-beta header: got %q want %q", captured.beta, want)
+	}
+}
+
+func TestOutputConfigEffortFeedsOpus5Conflict(t *testing.T) {
+	// Python's _assert_valid_model_configuration resolves the constructor
+	// output_config effort (chat_models.py:1800-1805) before the opus-5
+	// disabled-thinking conflict (test_chat_models.py:5133,5149): a
+	// constructor effort of xhigh/max rejects disabled thinking with the
+	// resolved level in the message, and high stays legal.
+	t.Run("rejects at max", func(t *testing.T) {
+		var request map[string]any
+		model := effortModel(t, "claude-opus-5", &request).
+			WithThinking(map[string]any{"type": "disabled"}).
+			WithOutputConfig(map[string]any{"effort": "max"})
+		_, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")})
+		if err == nil {
+			t.Fatal("invoke succeeded, want error")
+		}
+		for _, want := range []string{
+			"is not supported for claude-opus-5",
+			"`output_config.effort='max'`",
+			"set effort to `high` or below",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q missing %q", err.Error(), want)
+			}
+		}
+	})
+	t.Run("allows at high", func(t *testing.T) {
+		var request map[string]any
+		model := effortModel(t, "claude-opus-5", &request).
+			WithThinking(map[string]any{"type": "disabled"}).
+			WithOutputConfig(map[string]any{"effort": "high"})
+		if _, err := model.Invoke(t.Context(), []messages.Message{messages.Human("think")}); err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+		thinking, _ := request["thinking"].(map[string]any)
+		if thinking["type"] != "disabled" {
+			t.Fatalf("thinking = %v, want disabled", request["thinking"])
+		}
+	})
+}
