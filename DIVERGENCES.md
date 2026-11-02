@@ -62,10 +62,6 @@ Deliberate design decisions where this port does not mirror Python. Each entry s
 - **TracePolicy processor failures** — for a processor that errors mid-transform, upstream records the untransformed payload; the Go port drops the payload (fail-closed) since the feature's motivation is PII/compliance.
 - **Error-handler abort semantics** — a failed superstep's successful handler outcomes are not committed (Go commits writes at superstep end vs Python's per-task `put_writes`), so a resume after a sibling-task failure re-runs an already-succeeded handler; effects must therefore be idempotent.
 
-## Known limitations
-
-- **interrupt_after pause checkpoints under-persist below-cadence delta writes (pre-existing)** — the triggering superstep's writes are committed to channel state before the pause, but the interrupt_after save anchors no per-task pending writes on the pause checkpoint, so below-cadence delta channels read short at that checkpoint until the run resumes. The in-node interrupt path anchors completed sibling writes correctly.
-
 ## Cleared as non-gaps (audited 2026-09-16)
 
 - `tool_choice=any` (openai→required, anthropic→any) and openai multimodal inputs: verified implemented with tests.

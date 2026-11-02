@@ -121,3 +121,100 @@ func TestDeltaChannelInputWritesReconstruction(t *testing.T) {
 		t.Fatalf("GetState().Values['items'] = %v, want %v", got, want)
 	}
 }
+
+// interruptAfterDeltaGraph builds START -> a -> b -> END paused by
+// interrupt_after("a"): both nodes write their letter to `log` (a DeltaChannel
+// whose cadence never fires here) and to `plain` (an AppendSliceReducer), so
+// every checkpoint must read log == plain — any divergence means a delta
+// write the run failed to persist beside its checkpoint.
+func interruptAfterDeltaGraph(t *testing.T, opts ...CompileOption) *CompiledGraph {
+	t.Helper()
+	g := NewStateGraph()
+	g.AddChannel("log", channels.NewDeltaChannel(intBatchReducer, func() any { return []int{} }, 100))
+	g.AddReducer("plain", channels.AppendSliceReducer)
+	for _, name := range []string{"a", "b"} {
+		letter := int(name[0])
+		g.AddNode(name, func(_ runtime.Runtime, _ map[string]any) (any, error) {
+			return map[string]any{"log": []int{letter}, "plain": []int{letter}}, nil
+		})
+	}
+	g.AddEdge(types.START, "a")
+	g.AddEdge("a", "b")
+	g.AddEdge("b", types.END)
+	opts = append(opts, WithInterruptAfter("a"))
+	cg, err := g.Compile(opts...)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	return cg
+}
+
+// TestInterruptAfterPersistsSuperstepWrites pins the interrupt_after pause to
+// Python's write durability: Python persists each task's writes as the task
+// completes (put_writes, _loop.py:515-543) — before the superstep's loop
+// checkpoint save and the interrupt_after pause that follows it (after_tick,
+// _loop.py:766-775) — and under exit durability _suppress_interrupt
+// force-persists the accumulated writes at the pause (_loop.py:1513-1517).
+// Go's interrupt_after block returned early, skipping the commit path's
+// per-task putWrites: the pause checkpoint (whose values fold the superstep)
+// stored below-cadence delta channels as sentinels with no anchored writes,
+// so reads and resumes at the pause reconstructed them short.
+func TestInterruptAfterPersistsSuperstepWrites(t *testing.T) {
+	for _, d := range []Durability{DurabilitySync, DurabilityAsync, DurabilityExit} {
+		t.Run(string(d), func(t *testing.T) {
+			ctx := t.Context()
+			saver := checkpoint.NewMemorySaver()
+			cg := interruptAfterDeltaGraph(t, WithCheckpointer(saver), WithDurability(d))
+			cfg := Options{ThreadID: "t"}
+
+			res, err := cg.InvokeWithOptions(ctx, map[string]any{"log": []int{}, "plain": []int{}}, cfg)
+			if err != nil {
+				t.Fatalf("[%s] pause Invoke() error = %v", d, err)
+			}
+			if len(res.Interrupts) != 1 {
+				t.Fatalf("[%s] interrupts = %+v, want the interrupt_after pause", d, res.Interrupts)
+			}
+
+			// At the pause, `a` has committed: the below-cadence delta channel
+			// must read exactly as full as the plain one — at the latest
+			// checkpoint and across the whole history that exists so far.
+			snap, err := cg.GetState(ctx, checkpoint.Config{ThreadID: "t"})
+			if err != nil {
+				t.Fatalf("GetState() error = %v", err)
+			}
+			if got, _ := snap.Values["log"].([]int); !reflect.DeepEqual(got, []int{'a'}) {
+				t.Fatalf("[%s] log at the interrupt_after pause = %v, want [a] — the superstep's writes must anchor on the pause checkpoint", d, got)
+			}
+			if got, _ := snap.Values["plain"].([]int); !reflect.DeepEqual(got, []int{'a'}) {
+				t.Fatalf("[%s] plain at the interrupt_after pause = %v, want [a]", d, got)
+			}
+			assertHistoryConsistent(t, cg, "t")
+
+			// Resume (nil input): `b` runs; both channels read the full run.
+			if _, err := cg.InvokeWithOptions(ctx, nil, cfg); err != nil {
+				t.Fatalf("[%s] resume Invoke() error = %v", d, err)
+			}
+			if got := logOf(t, cg, "t"); !reflect.DeepEqual(got, []int{'a', 'b'}) {
+				t.Fatalf("[%s] log after resume = %v, want [a b]", d, got)
+			}
+			snap, err = cg.GetState(ctx, checkpoint.Config{ThreadID: "t"})
+			if err != nil {
+				t.Fatalf("GetState() after resume error = %v", err)
+			}
+			if got, _ := snap.Values["plain"].([]int); !reflect.DeepEqual(got, []int{'a', 'b'}) {
+				t.Fatalf("[%s] plain after resume = %v, want [a b]", d, got)
+			}
+			// Sync/async anchor each write on the checkpoint that folds it,
+			// so log == plain holds across the whole history. Exit mode
+			// anchors the resumed run's accumulated writes on its START
+			// checkpoint (Python _put_exit_delta_writes' anchor-on-start,
+			// _loop.py) — the pause checkpoint's read then includes the
+			// resumed run's write, exactly like a Python read applies a
+			// checkpoint's own pending writes — so the strict invariant is
+			// asserted only before the resume there (above).
+			if d != DurabilityExit {
+				assertHistoryConsistent(t, cg, "t")
+			}
+		})
+	}
+}

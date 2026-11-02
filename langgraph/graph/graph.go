@@ -2048,6 +2048,37 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 				if err := cpSink.putPauseWrites(ctx, *currentCfg, interruptWrites([]types.Interrupt{interrupt}), pausedAfter, "", false); err != nil {
 					return Result{}, err
 				}
+				// The pause checkpoint's values FOLD the superstep (it is
+				// saved post-commit), but below-cadence delta channels are
+				// stored as sentinels — without the superstep's per-task
+				// writes anchored on the checkpoint, reads and resumes at
+				// the pause reconstruct them short. Python persists each
+				// task's writes as the task completes, before the superstep's
+				// checkpoint save and the interrupt_after pause that follows
+				// it (put_writes + after_tick, _loop.py:515-543,766-775);
+				// under exit durability _suppress_interrupt force-persists
+				// the accumulated writes at the pause (_loop.py:1513-1517).
+				// Anchor the same writes here (the commit path's putWrites
+				// the early return skips), keyed the way the commit path keys
+				// them (TaskID against the observing checkpoint, M5) and
+				// persisted like every pause write (durable under all three
+				// Durability modes via putPauseWrites). No suppression is
+				// needed: this checkpoint folds the writes it anchors.
+				ranPlanned := plannedTasks(active)
+				for i := range ranPlanned {
+					ranPlanned[i].ID = TaskID(currentCfg.CheckpointID, rs.step+1, ranPlanned[i].Node, ranPlanned[i].Arg)
+				}
+				for i := range active {
+					writes, err := completedTaskWrites(outcomes[i].update, outcomes[i].cmd)
+					if err != nil {
+						return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
+					}
+					if len(writes) > 0 {
+						if err := cpSink.putPauseWrites(ctx, *currentCfg, writes, ranPlanned[i].ID, active[i].path, g.deltaBatch(writes)); err != nil {
+							return Result{}, fmt.Errorf("graph: persisting task writes for thread %q: %w", opts.ThreadID, err)
+						}
+					}
+				}
 			}
 			em.emitPause(merged, []types.Interrupt{interrupt})
 			return Result{Values: merged, Interrupts: []types.Interrupt{interrupt}}, nil
