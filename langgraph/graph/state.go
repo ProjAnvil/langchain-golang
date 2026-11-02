@@ -145,9 +145,19 @@ func (rs *runState) checkpointValues(channelsToSnapshot map[string]bool) map[str
 // with these blobs materialized — the failed write's effect is already folded
 // into the channel value, so the repaired checkpoint reads complete without
 // the write that never landed (#9235; see checkpointSink.repairPut).
-func (rs *runState) deltaRepairSnapshots() map[string]any {
+//
+// exclude names channels suppressed by THIS pause save (see saveCheckpoint):
+// their anchored pause writes postdate the checkpoint's values, so the blob —
+// computed from the same pre-write live state — would not fold them in, and
+// materializing it would strand every landed write (the ancestor walk stops
+// at a stored value). Suppressed channels stay sentinel in the repair too;
+// the walk then reconstructs them from the writes that did land.
+func (rs *runState) deltaRepairSnapshots(exclude map[string]bool) map[string]any {
 	var out map[string]any
 	for key, ch := range rs.channels {
+		if exclude[key] {
+			continue
+		}
 		d, ok := channels.AsDelta(ch)
 		if !ok || !d.IsAvailable() {
 			continue

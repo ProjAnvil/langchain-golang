@@ -2272,7 +2272,10 @@ func (g *CompiledGraph) saveCheckpoint(ctx context.Context, cpSink *checkpointSi
 	// #9235: carry forced snapshots of every available delta channel with the
 	// put, so a delta write that later fails against this checkpoint can
 	// repair it (re-put with the blobs) instead of leaving it reading short.
-	cfg, err := put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil, rs.deltaRepairSnapshots())
+	// Channels suppressed by THIS pause save are excluded from the payload:
+	// their blob predates the anchored pause writes and would strand them
+	// (see deltaRepairSnapshots).
+	cfg, err := put(ctx, checkpoint.Config{ThreadID: opts.ThreadID, CheckpointNS: opts.checkpointNS, CheckpointID: parent.CheckpointID}, cp, md, nil, rs.deltaRepairSnapshots(suppress))
 	if err != nil {
 		return checkpoint.Config{}, fmt.Errorf("graph: saving checkpoint for thread %q: %w", opts.ThreadID, err)
 	}
