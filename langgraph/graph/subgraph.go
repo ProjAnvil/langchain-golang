@@ -319,7 +319,7 @@ func invokeSubgraph(ctx context.Context, name string, child *CompiledGraph, stat
 		}
 	}
 
-	res, err := runner.run(ctx, state, opts, nil)
+	res, err := runner.run(ctx, state, opts, nil, nil)
 	if err != nil {
 		if pce, ok := errors.AsType[*ParentCommandError](err); ok {
 			cmd := *pce.Command

@@ -4,7 +4,24 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
-## [0.12.4] - 2026-11-03
+## [0.12.5] - 2026-11-03
+
+Nested Stream emitter regression — v0.12.0's #9458 strip also dropped a
+nested Stream's OWN emitter, so a graph node that streamed a child graph
+with its own ThreadID received zero chunks (the run ended cleanly with no
+events). Found by woca's goal mode (outer goal graph node streaming the
+inner agent graph per cycle). Fix: `CompiledGraph.run` takes Stream's
+emitter as an `own` parameter and installs it after the #9458 strip, so
+the strip only ever drops carriers inherited from an enclosing run.
+
+### Fixed
+- langgraph: a nested own-thread `Stream` delivers its own chunks again
+  (v0.11.1 semantics); a nested same-thread `Stream` keeps shadowing the
+  caller's emitter; the #9458 drop for nested own-thread Invoke/AddSubgraph
+  behavior is unchanged. Pinned by TestNestedStreamOwnThreadStillYields and
+  TestNestedStreamSameThreadShadowsCallerEmitter.
+
+
 
 tool_end payload fix — closes the v0.12.3 known issue where default-converted tool errors emitted a nil ToolResult.
 

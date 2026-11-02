@@ -190,7 +190,7 @@ func (g *CompiledGraph) Stream(ctx context.Context, input map[string]any, opts S
 			defer close(done)
 			defer close(chunks)
 			defer emitter.closed.Store(true)
-			_, err := g.run(contextWithEmitter(ctx, emitter), input, opts.Options, nil)
+			_, err := g.run(ctx, input, opts.Options, nil, emitter)
 			runErr = topLevelParentCommandError(err)
 		}()
 
@@ -353,8 +353,10 @@ func stripStreamCarriers(ctx context.Context) context.Context {
 // handlers "whatever their subgraphs" for a child not run as a task of the
 // caller — one invoked with its own thread_id OR checkpoint_id), such a run
 // drops every inherited stream carrier: emitter, messages bridge, and custom
-// writer. A node that STREAMS the child itself still gets its events — the
-// child then installs its own carriers (Stream).
+// writer. A node that STREAMS the child itself still gets its events:
+// Stream passes its emitter to run as the own parameter, which run installs
+// AFTER this strip — only carriers inherited from an enclosing run ever
+// reach it, so the strip can never drop a run's own emission.
 //
 // "Of its own" means the value differs from the enclosing run's: re-supplying
 // the caller's own ThreadID/CheckpointID continues the caller's namespace

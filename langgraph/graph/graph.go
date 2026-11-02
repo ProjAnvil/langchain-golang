@@ -1015,7 +1015,7 @@ func (g *CompiledGraph) Invoke(ctx context.Context, input map[string]any) (Resul
 // functions observe a nil sink from EventSinkFromContext and take their
 // non-streaming code path with zero added overhead.
 func (g *CompiledGraph) InvokeWithOptions(ctx context.Context, input map[string]any, opts Options) (Result, error) {
-	res, err := g.run(ctx, input, opts, nil)
+	res, err := g.run(ctx, input, opts, nil, nil)
 	if err != nil {
 		return Result{}, topLevelParentCommandError(err)
 	}
@@ -1037,7 +1037,7 @@ func (g *CompiledGraph) InvokeWithOptions(ctx context.Context, input map[string]
 // superstep, their events interleave on sink. Consumers can disambiguate via
 // the RawEvent.Node field (mapped to agents.StreamEvent.Node by CreateAgent).
 func (g *CompiledGraph) InvokeStream(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink) (Result, error) {
-	res, err := g.run(ctx, input, opts, sink)
+	res, err := g.run(ctx, input, opts, sink, nil)
 	if err != nil {
 		return Result{}, topLevelParentCommandError(err)
 	}
@@ -1064,8 +1064,9 @@ func topLevelParentCommandError(err error) error {
 var checkpointSeq atomic.Int64
 
 // run is the shared execution loop backing both InvokeWithOptions (sink==nil,
-// non-streaming, zero overhead) and InvokeStream (sink!=nil, event-ified). See
-// each public entry point's doc comment for the contract.
+// non-streaming, zero overhead) and InvokeStream (sink!=nil, event-ified), plus
+// Stream (own!=nil, its emitter passed as a parameter so the #9458 strip can
+// never drop it). See each public entry point's doc comment for the contract.
 //
 // Stream emission: when a *streamEmitter is installed in ctx (by Stream, or
 // by a parent run's invokeSubgraph), the loop calls its hooks at the input
@@ -1073,11 +1074,21 @@ var checkpointSeq atomic.Int64
 // save points, and observes context cancellation at superstep boundaries. A
 // nil emitter makes every hook a no-op, so Invoke/InvokeStream keep their
 // exact prior behavior.
-func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink) (result Result, err error) {
+func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Options, sink NodeEventSink, own *streamEmitter) (result Result, err error) {
 	// #9458: a nested invoke carrying its own thread identity must not adopt
 	// the caller's stream carriers (see stripNestedInvokeCarriers). This must
 	// precede the emitter read below, which then sees no inherited emitter.
+	// Stream passes its own emitter as the own parameter (NOT via ctx), so the
+	// strip below can only ever see carriers inherited from an enclosing run —
+	// a nested Stream's own emission survives it.
 	ctx = stripNestedInvokeCarriers(ctx, opts)
+	if own != nil {
+		// Stream entry: install this run's emitter, shadowing whatever an
+		// enclosing run left (same-thread nested Stream keeps shadowing the
+		// caller's emitter, exactly as before #9458; top-level installs onto
+		// a carrier-free ctx).
+		ctx = contextWithEmitter(ctx, own)
+	}
 	em := emitterFromContext(ctx)
 	runCtx := ctx
 	if sink != nil {
