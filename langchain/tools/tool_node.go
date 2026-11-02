@@ -93,7 +93,11 @@ func DefaultHandleToolErrors(err error) (string, bool) {
 // ToolNode's runOne-level error conversion recognizes the sentinel and
 // re-raises the wrapped Err WITHOUT conversion, bypassing even the catch-all
 // DefaultHandleToolErrors. Wrap middleware that decline an error return it
-// wrapped in this type; the sentinel itself never leaks past runOne.
+// wrapped in this type. Detection at the conversion point is deep
+// (errors.As), but only DIRECT UnhandledToolError layers are stripped: a
+// sentinel further wrapped in %w context by another middleware survives in
+// the error chain past runOne (deep errors.Is/As still find it), and a
+// degenerate sentinel with a nil Err propagates as itself.
 type UnhandledToolError struct {
 	// Err is the original tool error the wrapper declined to convert.
 	Err error
