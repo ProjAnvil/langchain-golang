@@ -30,6 +30,7 @@ Parity wave 4 — the late-October 2026 upstream releases (langchain-core 1.7.3 
 - langgraph: **delta snapshot cadence defaults to 100 updates** (was 1000, #9420) — tighter replay-latency bound, more frequent full snapshots; pass an explicit `snapshotFrequency` to `NewDeltaChannel`/`NewMessagesDeltaChannel` to keep the old spacing.
 - core/partners: **tool-call streaming uses the `tool-call-delta` protocol** (#41257) — consumers of content-block events see a start skeleton plus id/name-free args slices instead of repeated self-describing chunks; the assembled final chunk is unchanged.
 - anthropic: requests requiring beta flags (in-place tool-change system blocks) automatically append the tool-change betas and post to `/messages?beta=true` (#41180).
+- Publish checkpoint/sqlite and checkpoint/postgres v0.3.9 with the root module pinned to v0.12.0.
 
 ## [0.11.1] - 2026-10-24
 
