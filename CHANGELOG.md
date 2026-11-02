@@ -4,6 +4,13 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-11-03
+
+tool_end payload fix — closes the v0.12.3 known issue where default-converted tool errors emitted a nil ToolResult.
+
+### Fixed
+- agents: `tool_end` StreamEvents are emitted from the tools node's ordered post-conversion outcomes instead of from inside the wrap chain (which only observes raw errors since the v0.12.3 layering move). Default-converted tool errors carry their converted content and `status=error` again; a declined error (`ToolErrorMiddleware` propagation path, run failing) emits no `tool_end`, matching Python's no-`on_tool_end`-for-failing-tools shape; and concurrent siblings' `tool_end`s follow the call order rather than the completion order (batched at the tools node). In a mixed batch where one sibling's error is declined, the completed siblings' `tool_end`s are suppressed with it. TDD: three reproduction tests plus two regression pins (lifecycle ordering, middleware-converted path).
+
 ## [0.12.3] - 2026-11-02
 
 ToolErrorMiddleware port — Python's per-exception tool-error disclosure middleware (#38781) as a first-class agent middleware, plus the ToolNode error-path layering it needs to observe raw tool errors. Plan: `docs/superpowers/plans/2026-11-02-tool-error-middleware.md`.
