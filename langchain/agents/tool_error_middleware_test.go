@@ -19,6 +19,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
+	agenttools "github.com/projanvil/langchain-golang/langchain/tools"
 )
 
 // newFailingTool builds a tool that always fails, mirroring the upstream
@@ -201,10 +202,58 @@ func TestToolErrorMiddlewareToolFilter(t *testing.T) {
 	}
 	toolMsgs := toolMessagesOf(result)
 	if len(toolMsgs) != 1 || toolMsgs[0].ResponseMetadata["status"] != "error" {
-		t.Fatalf("expected one default-converted error ToolMessage, got %+v", toolMsgs)
+		t.Fatalf("expected one error-status ToolMessage, got %+v", toolMsgs)
 	}
 	if !strings.Contains(toolMsgs[0].Content, "Please fix your mistakes.") {
 		t.Fatalf("expected the default-handled content, got %q", toolMsgs[0].Content)
+	}
+}
+
+// decliningWrapMiddleware is a second decline layer for the double-decline
+// test: it wraps any handler error in tools.UnhandledToolError exactly like
+// a ToolErrorMiddleware whose OnError declines (CreateAgent rejects two
+// same-type middleware instances, so the outer layer is hand-rolled).
+type decliningWrapMiddleware struct{}
+
+func (decliningWrapMiddleware) WrapToolCall(ctx context.Context, req middleware.ToolCallRequest, handler middleware.ToolHandler) (messages.Message, error) {
+	msg, err := handler(ctx, req)
+	if err != nil {
+		return messages.Message{}, &agenttools.UnhandledToolError{Err: err}
+	}
+	return msg, nil
+}
+
+// TestToolErrorMiddlewareDoubleDeclinePropagatesOriginal: when two wrap
+// layers both decline (the inner ToolErrorMiddleware, then an outer
+// declining layer), the sentinels nest — and the runOne-level conversion
+// strips them fully so the ORIGINAL tool error (never a sentinel) escapes
+// agent.Invoke, mirroring Python's bare `raise` of the original exception.
+func TestToolErrorMiddlewareDoubleDeclinePropagatesOriginal(t *testing.T) {
+	innerMW, err := middleware.NewToolErrorMiddleware(func(error, middleware.ToolCallRequest) (any, bool) {
+		return nil, false
+	})
+	if err != nil {
+		t.Fatalf("new middleware: %v", err)
+	}
+
+	// First-listed wraps outermost: the declining layer sees the inner
+	// middleware's sentinel and declines again by wrapping it.
+	agent, err := CreateAgent(failingToolModel(), []coretools.Tool{newFailingTool(t)},
+		WithAgentMiddleware(decliningWrapMiddleware{}, innerMW))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	_, err = agent.Invoke(t.Context(), []messages.Message{messages.Human("go")})
+	if err == nil {
+		t.Fatal("expected the original error to propagate out of Invoke")
+	}
+	if !strings.Contains(err.Error(), "secret detail") {
+		t.Fatalf("expected the ORIGINAL tool error, got: %v", err)
+	}
+	var unhandled *agenttools.UnhandledToolError
+	if errors.As(err, &unhandled) {
+		t.Fatalf("no sentinel may leak past runOne, got %T: %v", err, err)
 	}
 }
 

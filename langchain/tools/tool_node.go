@@ -357,12 +357,25 @@ func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map
 // ToolNode._run_one: control-flow panics never reach here (Go interrupts are
 // panics recovered by the graph executor), an *UnhandledToolError — a wrapper
 // that explicitly declined conversion, Python's on_error returning None —
-// re-raises its ORIGINAL error without conversion so the run fails, and
+// re-raises the ORIGINAL error without conversion so the run fails, and
 // everything else is converted (or propagated) per the configured handler.
 func (n *ToolNode) convertToolError(call messages.ToolCall, err error) (ToolCallOutcome, error) {
 	var unhandled *UnhandledToolError
-	if errors.As(err, &unhandled) && unhandled.Err != nil {
-		return ToolCallOutcome{}, unhandled.Err
+	if errors.As(err, &unhandled) {
+		// A wrapper declined this error (a later wrapper may have declined a
+		// declined error again, nesting sentinels). Strip the sentinel
+		// layers fully — Python's bare `raise` re-raises the original
+		// exception — so the sentinel never leaks past runOne. Context a
+		// middleware wrapped around a declined error (fmt.Errorf %w) is
+		// preserved, and errors.Is/As still chain to the original.
+		for {
+			sentinel, ok := err.(*UnhandledToolError)
+			if !ok || sentinel.Err == nil {
+				break
+			}
+			err = sentinel.Err
+		}
+		return ToolCallOutcome{}, err
 	}
 	content, handled := n.handleToolErrors(err)
 	if !handled {

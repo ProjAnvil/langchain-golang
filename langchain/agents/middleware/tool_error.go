@@ -38,12 +38,15 @@ type ToolErrorHandler func(err error, request ToolCallRequest) (content any, han
 // Python's `except GraphBubbleUp: raise` clause.
 //
 // This middleware does not retry. For retries, compose with
-// ToolRetryMiddleware placed INNER (listed before this middleware in the
-// agent's middleware slice — earlier middleware wrap outer) and configured
-// with WithToolRetryOnFailure("error") so exhausted retries' exceptions
-// escape the retry layer and reach this middleware; with the retry layer's
-// default on_failure ("continue") it converts failures itself and this
-// middleware never sees them.
+// ToolRetryMiddleware placed INNER — i.e. listed AFTER this middleware in
+// the agent's middleware slice (the first-listed middleware wraps OUTERMOST;
+// see CreateAgent's WrapToolCall composition) — and configured with
+// WithToolRetryOnFailure("error") so exhausted retries' exceptions escape
+// the retry layer and reach this middleware; with the retry layer's default
+// on_failure ("continue") it converts failures itself and this middleware
+// never sees them. Listing the retry middleware first would make it the
+// outer layer: this middleware would convert the error first and the
+// retries would never fire.
 //
 // Unlike Python, whose on_error sees only execution errors (argument-binding
 // and validation errors are converted by ToolNode inside the wrap chain
@@ -125,7 +128,10 @@ func WithToolErrorToolInstances(instances ...coretools.Tool) ToolErrorOption {
 // for the tool, and declined errors propagate wrapped in
 // tools.UnhandledToolError — the sentinel the ToolNode's runOne-level
 // conversion unwraps to re-raise the ORIGINAL error unconverted, so the run
-// fails like Python's None path.
+// fails like Python's None path. When an inner wrap layer already declined,
+// OnError receives that decline as the sentinel-wrapped error (errors.Is/As
+// chain through it to the original error); declining again nests sentinels,
+// which runOne strips.
 func (m *ToolErrorMiddleware) WrapToolCall(ctx context.Context, request ToolCallRequest, handler ToolHandler) (messages.Message, error) {
 	toolName := request.ToolCall.Name
 	if request.Tool != nil {

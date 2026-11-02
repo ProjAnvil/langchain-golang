@@ -117,6 +117,49 @@ func TestToolErrorMiddlewareDeclineWrapsUnhandledToolError(t *testing.T) {
 	}
 }
 
+// TestToolErrorMiddlewareDeclineNestsSentinels documents the double-decline
+// shape: when this middleware is composed OUTSIDE another error middleware
+// that already declined, its own decline wraps the inner sentinel
+// (&UnhandledToolError{&UnhandledToolError{original}}) — OnError saw the
+// inner sentinel, and errors.Is/As chain through to the original error. The
+// ToolNode's runOne-level conversion strips the nesting (see
+// langchain/tools TestToolNodeUnhandledToolErrorStripsNestedSentinels).
+func TestToolErrorMiddlewareDeclineNestsSentinels(t *testing.T) {
+	toolErr := errors.New("propagate me")
+	inner, err := NewToolErrorMiddleware(func(error, ToolCallRequest) (any, bool) {
+		return nil, false
+	})
+	if err != nil {
+		t.Fatalf("NewToolErrorMiddleware() error = %v", err)
+	}
+	outer, err := NewToolErrorMiddleware(func(error, ToolCallRequest) (any, bool) {
+		return nil, false
+	})
+	if err != nil {
+		t.Fatalf("NewToolErrorMiddleware() error = %v", err)
+	}
+
+	_, err = outer.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "failing_tool", ID: "call_1"}},
+		func(ctx context.Context, r ToolCallRequest) (messages.Message, error) {
+			return inner.WrapToolCall(ctx, r, func(context.Context, ToolCallRequest) (messages.Message, error) {
+				return messages.Message{}, toolErr
+			})
+		})
+	if err == nil {
+		t.Fatal("expected the declined error to be returned")
+	}
+	if !errors.Is(err, toolErr) {
+		t.Fatalf("errors.Is must chain through nested sentinels to the original, got %v", err)
+	}
+	outerSentinel, ok := err.(*agenttools.UnhandledToolError)
+	if !ok {
+		t.Fatalf("expected the outer decline's sentinel, got %T", err)
+	}
+	if _, nested := outerSentinel.Err.(*agenttools.UnhandledToolError); !nested {
+		t.Fatalf("expected a nested inner sentinel, got %T", outerSentinel.Err)
+	}
+}
+
 func TestToolErrorMiddlewareToolFilter(t *testing.T) {
 	var handledErrs int
 	m, err := NewToolErrorMiddleware(

@@ -349,6 +349,42 @@ func TestToolNodeUnhandledToolErrorPropagatesUnconverted(t *testing.T) {
 	}
 }
 
+// TestToolNodeUnhandledToolErrorStripsNestedSentinels covers two wrappers
+// both declining (two error middlewares composed): the sentinels nest
+// (&UnhandledToolError{&UnhandledToolError{...}}), and runOne must strip
+// them fully so the ORIGINAL error — and never a sentinel — reaches the
+// caller, mirroring Python's bare `raise` of the original exception.
+func TestToolNodeUnhandledToolErrorStripsNestedSentinels(t *testing.T) {
+	sentinel := errors.New("declined twice")
+	boom := echoTool(t, "boom", func(context.Context, map[string]any) (Result, error) {
+		return Result{}, sentinel
+	})
+	node, err := NewToolNode([]Tool{boom}, WithToolCallWrapper(
+		// An outer wrapper declining an error an inner wrapper already
+		// declined: the outer sentinel wraps the inner sentinel.
+		func(ctx context.Context, req ToolCallRequest, next ToolHandler) (messages.Message, error) {
+			msg, err := next(ctx, req)
+			if err != nil {
+				return messages.Message{}, &UnhandledToolError{Err: &UnhandledToolError{Err: err}}
+			}
+			return msg, nil
+		},
+	))
+	if err != nil {
+		t.Fatalf("NewToolNode() error = %v", err)
+	}
+
+	msgs := []messages.Message{aiMessageWithCalls(messages.ToolCall{ID: "1", Name: "boom"})}
+	_, err = node.Invoke(t.Context(), msgs, nil)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected the ORIGINAL error after stripping nested sentinels, got %v", err)
+	}
+	var unhandled *UnhandledToolError
+	if errors.As(err, &unhandled) {
+		t.Fatalf("no sentinel may leak past runOne, got %T: %v", err, err)
+	}
+}
+
 func TestToolNodeWithToolCallWrapper(t *testing.T) {
 	echo := echoTool(t, "echo", func(_ context.Context, input map[string]any) (Result, error) {
 		return Result{Content: fmt.Sprintf("%v", input["x"])}, nil
