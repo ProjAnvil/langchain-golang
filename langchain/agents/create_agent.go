@@ -3348,9 +3348,21 @@ func newToolsNode(toolList []coretools.Tool, mws []any, logger *slog.Logger, s s
 			}
 			logger.Info("agents: tools node entry", slog.Int("pending_tool_calls", pending))
 		}
-		outcomes, err := toolNode.InvokeToolCallsFull(rt, unansweredToolCalls(msgs), state)
+		calls := unansweredToolCalls(msgs)
+		outcomes, err := toolNode.InvokeToolCallsFull(rt, calls, state)
 		if err != nil {
 			return nil, err
+		}
+		// Streaming: emit the paired tool_end per call from the ordered
+		// outcomes — after the ToolNode's error conversion, so default-
+		// converted errors carry their converted content and status (the
+		// wrap chain only observes raw errors). Outcomes preserve the call
+		// order, so concurrent siblings' tool_end events follow the calls,
+		// not the completion order.
+		if sink := sinkFromContext(rt); sink != nil {
+			for i, outcome := range outcomes {
+				sink.emitToolEnd(calls[i], toolResultMap(outcome.Message))
+			}
 		}
 		results := make([]messages.Message, len(outcomes))
 		var commands []*types.Command
@@ -3424,7 +3436,7 @@ func composeToolCallWrapper(mws []any, logger *slog.Logger) agenttools.ToolCallW
 	}
 	// Always install a wrapper so that, when an event sink is active (i.e. the
 	// run was started via Agent.StreamEvents / graph.InvokeStream), tool_start
-	// / tool_end events can be emitted around each tool dispatch. The wrapper's
+	// events can be emitted ahead of each tool dispatch. The wrapper's
 	// cost on the non-streaming path is a single context.Value lookup that
 	// returns nil (sinkFromContext short-circuits to a no-op when no sink is
 	// installed); when there is also no logger and no WrapToolCallHook
@@ -3432,27 +3444,29 @@ func composeToolCallWrapper(mws []any, logger *slog.Logger) agenttools.ToolCallW
 	// work. This is the single chokepoint every tool call flows through, so
 	// emitting here covers both the direct execute path and any
 	// WrapToolCallHook middleware.
-
+	//
+	// tool_end is NOT emitted here: the ToolNode applies its error conversion
+	// OUTSIDE this wrap chain (runOne level, mirroring Python's _run_one), so
+	// an error observed here would emit a nil result. The paired tool_end is
+	// emitted by the tools node from the ordered InvokeToolCallsFull outcomes,
+	// after conversion — carrying the converted error content on the error
+	// path, and following the call order for concurrent siblings. A declined
+	// error (conversion bypassed, run failing) emits no tool_end at all,
+	// matching Python's no-on_tool_end-for-failing-tools shape.
 	return func(ctx context.Context, req agenttools.ToolCallRequest, next agenttools.ToolHandler) (messages.Message, error) {
 		if logger != nil {
 			logger.Info("agents: tool dispatch",
 				slog.String("tool", req.ToolCall.Name),
 				slog.String("call_id", req.ToolCall.ID))
 		}
-		// Streaming: when an event sink is active, emit tool_start/tool_end
-		// around the (middleware-wrapped) tool dispatch. sinkFromContext returns
-		// nil on the non-streaming path, so the emit calls are skipped with no
+		// Streaming: when an event sink is active, emit tool_start ahead of
+		// the (middleware-wrapped) tool dispatch. sinkFromContext returns nil
+		// on the non-streaming path, so the emit call is skipped with no
 		// per-tool overhead beyond the lookup.
-		sink := sinkFromContext(ctx)
-		if sink != nil {
+		if sink := sinkFromContext(ctx); sink != nil {
 			sink.emitToolStart(req.ToolCall)
 		}
-		result, err := dispatchThroughMiddleware(ctx, req, next, hooks)
-		if sink != nil {
-			resultMap := toolResultMap(result)
-			sink.emitToolEnd(req.ToolCall, resultMap)
-		}
-		return result, err
+		return dispatchThroughMiddleware(ctx, req, next, hooks)
 	}
 }
 
