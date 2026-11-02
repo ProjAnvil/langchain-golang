@@ -378,9 +378,11 @@ func TestChatCompletionsStreamEmitErrors(t *testing.T) {
 }
 
 // TestChatCompletionsStreamSparseToolCallIndex covers the finalToolCallChunk
-// path where streamed tool call indices leave gaps below the highest index.
+// path where streamed tool call indices leave gaps below the highest index:
+// mirroring Python's _merge_chunk_into_store, every streamed call survives
+// final assembly, ordered by index.
 func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
-	t.Run("gaps below highest index are skipped", func(t *testing.T) {
+	t.Run("gaps below highest index keep all calls", func(t *testing.T) {
 		server := sseServer(t,
 			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":2,\"id\":\"call_2\",\"function\":{\"name\":\"search\",\"arguments\":\"{}\"}}]}}]}\n\n"+
 				"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_0\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n"+
@@ -413,18 +415,22 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 			t.Fatalf("second slice = %#v", block)
 		}
 
-		// Index 1 never streamed: finalToolCallChunk iterates 0..len-1, so the
-		// missing slot is skipped — but the call at index 2 is also dropped
-		// (same lossy assembly locked by the second subtest).
+		// Index 1 never streamed: the final chunk still keeps every streamed
+		// call, ordered by index (call_0 before call_2).
 		if chunk, ok, err = stream.Next(t.Context()); err != nil || !ok {
 			t.Fatalf("Next: ok=%v err=%v", ok, err)
 		}
-		if len(chunk.ToolCalls) != 1 || chunk.ToolCalls[0].ID != "call_0" {
+		if len(chunk.ToolCalls) != 2 ||
+			chunk.ToolCalls[0].ID != "call_0" || chunk.ToolCalls[0].Name != "lookup" ||
+			chunk.ToolCalls[1].ID != "call_2" || chunk.ToolCalls[1].Name != "search" {
 			t.Fatalf("tool calls = %#v", chunk.ToolCalls)
+		}
+		if _, ok, err = stream.Next(t.Context()); err != nil || ok {
+			t.Fatalf("expected stream end, ok=%v err=%v", ok, err)
 		}
 	})
 
-	t.Run("single high index yields no final chunk", func(t *testing.T) {
+	t.Run("single high index is assembled", func(t *testing.T) {
 		server := sseServer(t,
 			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":2,\"id\":\"call_2\",\"function\":{\"name\":\"search\",\"arguments\":\"{}\"}}]}}]}\n\n"+
 				"data: [DONE]\n\n",
@@ -440,7 +446,7 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 		defer stream.Close()
 
 		// The slice itself is forwarded incrementally (#41257), so the sparse
-		// call is no longer invisible mid-stream...
+		// call surfaces mid-stream...
 		chunk, ok, err := stream.Next(t.Context())
 		if err != nil || !ok {
 			t.Fatalf("Next: ok=%v err=%v", ok, err)
@@ -448,12 +454,16 @@ func TestChatCompletionsStreamSparseToolCallIndex(t *testing.T) {
 		if block := messages.BlockToMap(chunk.ContentBlocks[0]); block["id"] != "call_2" {
 			t.Fatalf("slice = %#v", block)
 		}
-		// ...but NOTE: finalToolCallChunk iterates 0..len(toolCalls)-1, so a
-		// lone tool call at index 2 is still never assembled — the stream ends
-		// without a final chunk. This locks the current (lossy) assembly; it
-		// looks like a production bug worth reporting rather than covering up.
-		if _, ok, err := stream.Next(t.Context()); err != nil || ok {
-			t.Fatalf("expected stream end without chunk, ok=%v err=%v", ok, err)
+		// ...and the final chunk assembles it too: a lone call at a high index
+		// is kept, not dropped, matching Python's index-keyed merge.
+		if chunk, ok, err = stream.Next(t.Context()); err != nil || !ok {
+			t.Fatalf("Next: ok=%v err=%v", ok, err)
+		}
+		if len(chunk.ToolCalls) != 1 || chunk.ToolCalls[0].ID != "call_2" || chunk.ToolCalls[0].Name != "search" {
+			t.Fatalf("tool calls = %#v", chunk.ToolCalls)
+		}
+		if _, ok, err = stream.Next(t.Context()); err != nil || ok {
+			t.Fatalf("expected stream end, ok=%v err=%v", ok, err)
 		}
 	})
 }

@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -237,17 +239,16 @@ func (s *chatCompletionsStream) Close() error {
 }
 
 // finalToolCallChunk assembles any streamed tool calls into a single message
-// chunk, in index order.
+// chunk, in index order. Sparse index sets (gaps below the highest streamed
+// index) keep every call: like Python's _merge_chunk_into_store, iteration is
+// over the actually-present indices, sorted — never a dense 0..len-1 range.
 func (s *chatCompletionsStream) finalToolCallChunk() (messages.Message, bool) {
 	if len(s.toolCalls) == 0 {
 		return messages.Message{}, false
 	}
 	chunk := messages.AI("")
-	for i := 0; i < len(s.toolCalls); i++ {
+	for _, i := range slices.Sorted(maps.Keys(s.toolCalls)) {
 		call := s.toolCalls[i]
-		if call == nil {
-			continue
-		}
 		toolCall, ok := call.toToolCall()
 		if ok {
 			chunk.ToolCalls = append(chunk.ToolCalls, toolCall)
