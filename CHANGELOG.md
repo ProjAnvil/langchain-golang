@@ -21,7 +21,7 @@ the strip only ever drops carriers inherited from an enclosing run.
   behavior is unchanged. Pinned by TestNestedStreamOwnThreadStillYields and
   TestNestedStreamSameThreadShadowsCallerEmitter.
 
-
+## [0.12.4] - 2026-11-03
 
 tool_end payload fix — closes the v0.12.3 known issue where default-converted tool errors emitted a nil ToolResult.
 
