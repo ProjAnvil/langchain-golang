@@ -344,6 +344,71 @@ func TestNonStrictResumeUnknownIDIgnored(t *testing.T) {
 	}
 }
 
+// TestStrictResumeExitDurabilityKeepsPauseCheckpoint: under exit durability a
+// strict-resume rejection errors BEFORE the run saves any checkpoint. The
+// deferred exit flush must then write nothing: its final checkpoint would
+// reuse the pause checkpoint's ID with an empty Next, clobbering the resume
+// plan so a later legal resume completes without rerunning the node
+// (Python: _put_checkpoint skips the exit save when checkpoint["id"] ==
+// checkpoint_id_saved, _loop.py).
+func TestStrictResumeExitDurabilityKeepsPauseCheckpoint(t *testing.T) {
+	ctx := t.Context()
+	saver := checkpoint.NewMemorySaver()
+	g := NewStateGraph()
+	g.AddNode("ask", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		v := Interrupt(rt, "q1")
+		return map[string]any{"answer": v}, nil
+	})
+	g.AddEdge(types.START, "ask")
+	g.AddEdge("ask", types.END)
+	cg, err := g.Compile(WithCheckpointer(saver), WithDurability(DurabilityExit))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"})
+	if err != nil {
+		t.Fatalf("first Invoke() error = %v", err)
+	}
+	if len(res.Interrupts) != 1 || res.Interrupts[0].ID != "ask-1" {
+		t.Fatalf("Interrupts = %+v, want one interrupt (id ask-1)", res.Interrupts)
+	}
+
+	before := threadSaverFingerprint(t, saver, "t")
+	_, err = cg.InvokeWithOptions(ctx, nil, Options{
+		ThreadID:     "t",
+		Resume:       map[string]any{"bogus-id": 42},
+		StrictResume: true,
+	})
+	var uiErr *types.UnknownInterruptError
+	if !errors.As(err, &uiErr) {
+		t.Fatalf("resume error = %v (%T), want *types.UnknownInterruptError", err, err)
+	}
+	if uiErr.Reason != "not_pending" {
+		t.Fatalf("Reason = %q, want %q", uiErr.Reason, "not_pending")
+	}
+	if got := threadSaverFingerprint(t, saver, "t"); got != before {
+		t.Fatalf("saver fingerprint changed after failed strict resume under exit durability\nbefore: %s\nafter:  %s", before, got)
+	}
+
+	// The pause checkpoint's resume plan survived: a legal resume must rerun
+	// the interrupted node and complete.
+	res, err = cg.InvokeWithOptions(ctx, nil, Options{
+		ThreadID:     "t",
+		Resume:       map[string]any{"ask-1": "yes"},
+		StrictResume: true,
+	})
+	if err != nil {
+		t.Fatalf("legal resume error = %v, want completion", err)
+	}
+	if len(res.Interrupts) != 0 {
+		t.Fatalf("Interrupts = %+v, want none (run must complete)", res.Interrupts)
+	}
+	if res.Values["answer"] != "yes" {
+		t.Fatalf("answer = %v, want %q (the interrupted node must rerun)", res.Values["answer"], "yes")
+	}
+}
+
 // TestStaticBreakpointScalarResumeAllowed: a run paused by interrupt_before
 // has exactly one pending (boundary) interrupt; a scalar resume under strict
 // mode is legal (Python: a single static-breakpoint value is still accepted).
