@@ -1128,6 +1128,7 @@ type contentBlock struct {
 	IsError      bool           `json:"is_error,omitzero"`
 	Source       map[string]any `json:"source,omitempty"`
 	CacheControl map[string]any `json:"cache_control,omitempty"`
+	Caller       map[string]any `json:"caller,omitempty"`
 	Thinking     string         `json:"thinking,omitempty"`
 	Signature    string         `json:"signature,omitempty"`
 	Data         string         `json:"data,omitempty"`

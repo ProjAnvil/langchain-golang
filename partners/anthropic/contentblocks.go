@@ -248,6 +248,14 @@ func passthroughBlock(m map[string]any) contentBlock {
 	for key, value := range m {
 		setContentBlockField(&out, key, value)
 	}
+	// #41678: server-side tool blocks echoing a direct caller are
+	// rejected by the API; client tool_use passes its caller verbatim
+	// (chat_models.py:834-835 vs 853-855/965-967).
+	if out.Caller != nil && out.Type != "tool_use" {
+		if t, _ := out.Caller["type"].(string); t == "direct" {
+			out.Caller = nil
+		}
+	}
 	return out
 }
 
@@ -298,6 +306,14 @@ func setContentBlockField(out *contentBlock, key string, value any) {
 	case "cache_control":
 		if isMap {
 			out.CacheControl = m
+		}
+	case "content":
+		out.Content = value
+	case "caller":
+		// caller 的门控依赖块类型，而 map 迭代无序（Type 未必先设置），
+		// 所以这里暂存，由 passthroughBlock 循环后统一归置。
+		if isMap {
+			out.Caller = m
 		}
 	}
 }
