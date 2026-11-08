@@ -2,7 +2,9 @@ package sqlite_test
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
@@ -37,15 +39,35 @@ func strictResumeAskGraph(t *testing.T, saver checkpoint.Saver) *graph.CompiledG
 	return cg
 }
 
-// threadCheckpointCount counts the checkpoints stored for thread, used to pin
-// the strict-resume "fails BEFORE anything is written" guarantee.
-func threadCheckpointCount(t *testing.T, saver checkpoint.Saver, thread string) int {
+// threadSaverFingerprint captures a saver's stored state for thread as one
+// comparable string: the ordered set of stored checkpoint IDs, plus — for the
+// latest (head) tuple — the head checkpoint ID, its full checkpoint content
+// (including Next), and its serialized pending writes. Comparing fingerprints
+// around a rejected resume pins the "fails BEFORE anything is written"
+// guarantee: a bare checkpoint-count check would miss a same-ID overwrite
+// (INSERT OR REPLACE) or a stray PutWrites against an existing checkpoint.
+func threadSaverFingerprint(t *testing.T, saver checkpoint.Saver, thread string) string {
 	t.Helper()
-	tups, err := saver.List(t.Context(), checkpoint.Config{ThreadID: thread}, checkpoint.ListOptions{})
+	ctx := t.Context()
+	tups, err := saver.List(ctx, checkpoint.Config{ThreadID: thread}, checkpoint.ListOptions{})
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	return len(tups)
+	var sb strings.Builder
+	for _, tup := range tups {
+		fmt.Fprintf(&sb, "cp:%s;", tup.Config.CheckpointID)
+	}
+	head, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: thread})
+	if err != nil {
+		t.Fatalf("GetTuple() error = %v", err)
+	}
+	if head != nil {
+		fmt.Fprintf(&sb, "head:%s;ckpt:%#v;", head.Config.CheckpointID, head.Checkpoint)
+		for _, w := range head.PendingWrites {
+			fmt.Fprintf(&sb, "pw:%s/%s/%#v;", w.TaskID, w.Channel, w.Value)
+		}
+	}
+	return sb.String()
 }
 
 // TestStrictResumeUnknownIDSqlite is the sqlite leg of
@@ -64,7 +86,7 @@ func TestStrictResumeUnknownIDSqlite(t *testing.T) {
 		t.Fatalf("Interrupts = %+v, want one interrupt (id ask-1)", res.Interrupts)
 	}
 
-	before := threadCheckpointCount(t, saver, "t")
+	before := threadSaverFingerprint(t, saver, "t")
 	_, err = cg.InvokeWithOptions(ctx, nil, graph.Options{
 		ThreadID:     "t",
 		Resume:       map[string]any{"bogus-id": 42},
@@ -83,8 +105,8 @@ func TestStrictResumeUnknownIDSqlite(t *testing.T) {
 	if !reflect.DeepEqual(uiErr.PendingIDs, []string{"ask-1"}) {
 		t.Fatalf("PendingIDs = %v, want [ask-1]", uiErr.PendingIDs)
 	}
-	if got := threadCheckpointCount(t, saver, "t"); got != before {
-		t.Fatalf("checkpoints after failed resume = %d, want %d (nothing written)", got, before)
+	if got := threadSaverFingerprint(t, saver, "t"); got != before {
+		t.Fatalf("saver fingerprint changed after failed resume\nbefore: %s\nafter:  %s", before, got)
 	}
 }
 
@@ -96,7 +118,7 @@ func TestStrictResumeEmptyMapSqlite(t *testing.T) {
 	if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, graph.Options{ThreadID: "t"}); err != nil {
 		t.Fatalf("first Invoke() error = %v", err)
 	}
-	before := threadCheckpointCount(t, saver, "t")
+	before := threadSaverFingerprint(t, saver, "t")
 	_, err := cg.InvokeWithOptions(ctx, nil, graph.Options{
 		ThreadID:     "t",
 		Resume:       map[string]any{},
@@ -112,8 +134,8 @@ func TestStrictResumeEmptyMapSqlite(t *testing.T) {
 	if !reflect.DeepEqual(uiErr.PendingIDs, []string{"ask-1"}) {
 		t.Fatalf("PendingIDs = %v, want [ask-1]", uiErr.PendingIDs)
 	}
-	if got := threadCheckpointCount(t, saver, "t"); got != before {
-		t.Fatalf("checkpoints after failed resume = %d, want %d (nothing written)", got, before)
+	if got := threadSaverFingerprint(t, saver, "t"); got != before {
+		t.Fatalf("saver fingerprint changed after failed resume\nbefore: %s\nafter:  %s", before, got)
 	}
 }
 
@@ -151,6 +173,7 @@ func TestStrictResumeAmbiguousScalarSqlite(t *testing.T) {
 		t.Fatalf("Interrupts = %+v, want two pending interrupts", res.Interrupts)
 	}
 
+	before := threadSaverFingerprint(t, saver, "t")
 	_, err = cg.InvokeWithOptions(ctx, nil, graph.Options{
 		ThreadID:     "t",
 		Resume:       42,
@@ -165,5 +188,72 @@ func TestStrictResumeAmbiguousScalarSqlite(t *testing.T) {
 	}
 	if !reflect.DeepEqual(uiErr.PendingIDs, []string{"a-1", "b-1"}) {
 		t.Fatalf("PendingIDs = %v, want [a-1 b-1]", uiErr.PendingIDs)
+	}
+	if got := threadSaverFingerprint(t, saver, "t"); got != before {
+		t.Fatalf("saver fingerprint changed after failed strict resume\nbefore: %s\nafter:  %s", before, got)
+	}
+}
+
+// TestStrictResumeAnsweredIDSqlite is the sqlite leg of
+// TestStrictResumeAnsweredID: an id that WAS pending in an earlier pause but
+// is already consumed by the time of this resume is "not pending" too, and
+// the rejection leaves the saver byte-identical.
+func TestStrictResumeAnsweredIDSqlite(t *testing.T) {
+	ctx := t.Context()
+	saver := newSaver(t, dbPath(t))
+	g := graph.NewStateGraph()
+	g.AddNode("chain", func(rt runtime.Runtime, _ map[string]any) (any, error) {
+		a := graph.Interrupt(rt, "q0")
+		b := graph.Interrupt(rt, "q1")
+		return map[string]any{"data": fmt.Sprintf("%v,%v", a, b)}, nil
+	})
+	g.AddEdge(types.START, "chain")
+	g.AddEdge("chain", types.END)
+	cg, err := g.Compile(graph.WithCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	res, err := cg.InvokeWithOptions(ctx, map[string]any{}, graph.Options{ThreadID: "t"})
+	if err != nil || len(res.Interrupts) != 1 || res.Interrupts[0].ID != "chain-1" {
+		t.Fatalf("first Invoke() = (%+v, %v), want one interrupt (chain-1)", res.Interrupts, err)
+	}
+	// Answer the first interrupt for real — this resume must succeed.
+	res, err = cg.InvokeWithOptions(ctx, nil, graph.Options{
+		ThreadID:     "t",
+		Resume:       map[string]any{"chain-1": "a"},
+		StrictResume: true,
+	})
+	if err != nil {
+		t.Fatalf("second Invoke() error = %v, want pause at q1", err)
+	}
+	if len(res.Interrupts) != 1 || res.Interrupts[0].ID != "chain-2" {
+		t.Fatalf("second Invoke() Interrupts = %+v, want one interrupt (chain-2)", res.Interrupts)
+	}
+
+	// chain-1 is already consumed: re-answering it is not_pending — and the
+	// rejection must leave the saver byte-identical (no same-ID overwrite, no
+	// stray PutWrites).
+	before := threadSaverFingerprint(t, saver, "t")
+	_, err = cg.InvokeWithOptions(ctx, nil, graph.Options{
+		ThreadID:     "t",
+		Resume:       map[string]any{"chain-1": "again"},
+		StrictResume: true,
+	})
+	var uiErr *types.UnknownInterruptError
+	if !errors.As(err, &uiErr) {
+		t.Fatalf("resume error = %v (%T), want *types.UnknownInterruptError", err, err)
+	}
+	if uiErr.Reason != "not_pending" {
+		t.Fatalf("Reason = %q, want %q", uiErr.Reason, "not_pending")
+	}
+	if !reflect.DeepEqual(uiErr.InterruptIDs, []string{"chain-1"}) {
+		t.Fatalf("InterruptIDs = %v, want [chain-1]", uiErr.InterruptIDs)
+	}
+	if !reflect.DeepEqual(uiErr.PendingIDs, []string{"chain-2"}) {
+		t.Fatalf("PendingIDs = %v, want [chain-2]", uiErr.PendingIDs)
+	}
+	if got := threadSaverFingerprint(t, saver, "t"); got != before {
+		t.Fatalf("saver fingerprint changed after failed resume\nbefore: %s\nafter:  %s", before, got)
 	}
 }

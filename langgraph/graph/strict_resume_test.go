@@ -44,15 +44,35 @@ func strictResumeAskGraph(t *testing.T, saver checkpoint.Saver) *CompiledGraph {
 	return cg
 }
 
-// threadCheckpointCount counts the checkpoints stored for thread, used to pin
-// the strict-resume "fails BEFORE anything is written" guarantee.
-func threadCheckpointCount(t *testing.T, saver checkpoint.Saver, thread string) int {
+// threadSaverFingerprint captures a saver's stored state for thread as one
+// comparable string: the ordered set of stored checkpoint IDs, plus — for the
+// latest (head) tuple — the head checkpoint ID, its full checkpoint content
+// (including Next), and its serialized pending writes. Comparing fingerprints
+// around a rejected resume pins the "fails BEFORE anything is written"
+// guarantee: a bare checkpoint-count check would miss a same-ID overwrite or
+// a stray PutWrites against an existing checkpoint.
+func threadSaverFingerprint(t *testing.T, saver checkpoint.Saver, thread string) string {
 	t.Helper()
-	tups, err := saver.List(t.Context(), checkpoint.Config{ThreadID: thread}, checkpoint.ListOptions{})
+	ctx := t.Context()
+	tups, err := saver.List(ctx, checkpoint.Config{ThreadID: thread}, checkpoint.ListOptions{})
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	return len(tups)
+	var sb strings.Builder
+	for _, tup := range tups {
+		fmt.Fprintf(&sb, "cp:%s;", tup.Config.CheckpointID)
+	}
+	head, err := saver.GetTuple(ctx, checkpoint.Config{ThreadID: thread})
+	if err != nil {
+		t.Fatalf("GetTuple() error = %v", err)
+	}
+	if head != nil {
+		fmt.Fprintf(&sb, "head:%s;ckpt:%#v;", head.Config.CheckpointID, head.Checkpoint)
+		for _, w := range head.PendingWrites {
+			fmt.Fprintf(&sb, "pw:%s/%s/%#v;", w.TaskID, w.Channel, w.Value)
+		}
+	}
+	return sb.String()
 }
 
 // TestStrictResumeUnknownID: resuming with a map key that names no pending
@@ -77,7 +97,7 @@ func TestStrictResumeUnknownID(t *testing.T) {
 				t.Fatalf("Interrupts = %+v, want one interrupt (id ask-1)", res.Interrupts)
 			}
 
-			before := threadCheckpointCount(t, tc.saver, "t")
+			before := threadSaverFingerprint(t, tc.saver, "t")
 			_, err = cg.InvokeWithOptions(ctx, nil, Options{
 				ThreadID:     "t",
 				Resume:       map[string]any{"bogus-id": 42},
@@ -99,8 +119,8 @@ func TestStrictResumeUnknownID(t *testing.T) {
 			if want := "Unknown or already-consumed interrupt: bogus-id"; uiErr.Error() != want {
 				t.Fatalf("Error() = %q, want %q", uiErr.Error(), want)
 			}
-			if got := threadCheckpointCount(t, tc.saver, "t"); got != before {
-				t.Fatalf("checkpoints after failed resume = %d, want %d (nothing written)", got, before)
+			if got := threadSaverFingerprint(t, tc.saver, "t"); got != before {
+				t.Fatalf("saver fingerprint changed after failed resume\nbefore: %s\nafter:  %s", before, got)
 			}
 		})
 	}
@@ -141,7 +161,10 @@ func TestStrictResumeAnsweredID(t *testing.T) {
 		t.Fatalf("second Invoke() Interrupts = %+v, want one interrupt (chain-2)", res.Interrupts)
 	}
 
-	// chain-1 is already consumed: re-answering it is not_pending.
+	// chain-1 is already consumed: re-answering it is not_pending — and the
+	// rejection must leave the saver byte-identical (no same-ID overwrite, no
+	// stray PutWrites).
+	before := threadSaverFingerprint(t, saver, "t")
 	_, err = cg.InvokeWithOptions(ctx, nil, Options{
 		ThreadID:     "t",
 		Resume:       map[string]any{"chain-1": "again"},
@@ -159,6 +182,9 @@ func TestStrictResumeAnsweredID(t *testing.T) {
 	}
 	if !reflect.DeepEqual(uiErr.PendingIDs, []string{"chain-2"}) {
 		t.Fatalf("PendingIDs = %v, want [chain-2]", uiErr.PendingIDs)
+	}
+	if got := threadSaverFingerprint(t, saver, "t"); got != before {
+		t.Fatalf("saver fingerprint changed after failed resume\nbefore: %s\nafter:  %s", before, got)
 	}
 }
 
@@ -178,7 +204,7 @@ func TestStrictResumeEmptyMap(t *testing.T) {
 			if _, err := cg.InvokeWithOptions(ctx, map[string]any{}, Options{ThreadID: "t"}); err != nil {
 				t.Fatalf("first Invoke() error = %v", err)
 			}
-			before := threadCheckpointCount(t, tc.saver, "t")
+			before := threadSaverFingerprint(t, tc.saver, "t")
 			_, err := cg.InvokeWithOptions(ctx, nil, Options{
 				ThreadID:     "t",
 				Resume:       map[string]any{},
@@ -197,8 +223,8 @@ func TestStrictResumeEmptyMap(t *testing.T) {
 			if want := "The resume map names no interrupt"; uiErr.Error() != want {
 				t.Fatalf("Error() = %q, want %q", uiErr.Error(), want)
 			}
-			if got := threadCheckpointCount(t, tc.saver, "t"); got != before {
-				t.Fatalf("checkpoints after failed resume = %d, want %d (nothing written)", got, before)
+			if got := threadSaverFingerprint(t, tc.saver, "t"); got != before {
+				t.Fatalf("saver fingerprint changed after failed resume\nbefore: %s\nafter:  %s", before, got)
 			}
 		})
 	}
@@ -253,6 +279,7 @@ func TestStrictResumeAmbiguousScalar(t *testing.T) {
 				t.Fatalf("Interrupts = %+v, want two pending interrupts", res.Interrupts)
 			}
 
+			before := threadSaverFingerprint(t, tc.saver, "t")
 			_, err = cg.InvokeWithOptions(ctx, nil, Options{
 				ThreadID:     "t",
 				Resume:       42,
@@ -267,6 +294,9 @@ func TestStrictResumeAmbiguousScalar(t *testing.T) {
 			}
 			if !reflect.DeepEqual(uiErr.PendingIDs, []string{"a-1", "b-1"}) {
 				t.Fatalf("PendingIDs = %v, want [a-1 b-1]", uiErr.PendingIDs)
+			}
+			if got := threadSaverFingerprint(t, tc.saver, "t"); got != before {
+				t.Fatalf("saver fingerprint changed after failed strict resume\nbefore: %s\nafter:  %s", before, got)
 			}
 			wantMsg := "When there are multiple pending interrupts, you must specify the interrupt id when resuming. " +
 				"Docs: https://docs.langchain.com/oss/python/langgraph/interrupts#handling-multiple-interrupts."

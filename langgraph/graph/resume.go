@@ -406,6 +406,7 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 	}
 	if resume != nil {
 		if _, isMap := resume.(map[string]any); !isMap && len(pending) > 1 {
+			//nolint:staticcheck // ST1005: 文案逐字对齐上游 _loop.py:1060-1062
 			return resumePlan{}, fmt.Errorf(
 				"graph: resume with %d pending interrupts requires a map[string]any keyed by interrupt ID (a scalar resume only supports a single pending interrupt) Docs: https://docs.langchain.com/oss/python/langgraph/interrupts#handling-multiple-interrupts.",
 				len(pending))
