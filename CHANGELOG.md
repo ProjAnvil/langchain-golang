@@ -24,6 +24,7 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 ### Fixed
 
 - anthropic: streaming terminal chunk carrying stop_reason/stop_details is emitted regardless of the stream-usage gate (usage itself stays gated) (#41582 wave).
+- langgraph: exit-durability flush no longer overwrites the pause checkpoint when a run fails before saving any checkpoint (strict-resume rejections and other early errors left `Next` cleared, silently breaking later resumes); mirrors Python's `_put_checkpoint` early return (#9574 wave).
 
 ## [0.12.5] - 2026-11-03
 
