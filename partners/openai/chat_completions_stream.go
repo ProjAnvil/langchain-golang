@@ -94,7 +94,10 @@ type chatCompletionsStream struct {
 	chunkTimeout   time.Duration
 	model          string
 	chunksReceived int
-	guard          chunkTimeoutGuard
+	// refusal 累积 delta.refusal 切片；仅在 [DONE] 终态 chunk 上作为
+	// RefusalBlock 挂出（对齐上游"仅终态可见"的形状，不逐 delta 发块）。
+	refusal string
+	guard   chunkTimeoutGuard
 }
 
 // Next arms the per-chunk timeout (stream_chunk_timeout, spec 4.6) around the
@@ -146,6 +149,10 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 		if data == "[DONE]" {
 			s.done = true
 			chunk, ok := s.finalToolCallChunk()
+			if s.refusal != "" {
+				chunk.ContentBlocks = append(chunk.ContentBlocks, messages.RefusalBlock{Refusal: s.refusal})
+				ok = true
+			}
 			if ok {
 				if err := emitStream(ctx, s.cfg, chunk); err != nil {
 					return messages.Message{}, false, err
@@ -176,6 +183,7 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 			continue
 		}
 		delta := event.Choices[0].Delta
+		s.refusal += delta.Refusal
 
 		if reasoning := delta.reasoningText(); reasoning != "" {
 			// DeepSeek-style reasoning_content / OpenRouter-style reasoning
@@ -281,6 +289,7 @@ type chatCompletionsStreamChoice struct {
 type chatCompletionsStreamDelta struct {
 	Content   string               `json:"content"`
 	ToolCalls []chatStreamToolCall `json:"tool_calls"`
+	Refusal   string               `json:"refusal"`
 	// ReasoningContent is the chain-of-thought delta on OpenAI-compatible
 	// gateways that expose it (DeepSeek's reasoner models, GLM with thinking
 	// enabled); Reasoning is OpenRouter's spelling of the same field.

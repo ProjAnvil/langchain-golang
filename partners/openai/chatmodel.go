@@ -12,6 +12,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/language"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
+	"github.com/projanvil/langchain-golang/core/outputparser"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/structuredoutput"
@@ -359,7 +360,14 @@ func (m ChatModel) InvokeStructured(
 	if title, ok := sch["title"].(string); ok && title != "" {
 		name = title
 	}
-	return m.WithStructuredOutput(name, sch, true).Invoke(ctx, input)
+	msg, err := m.WithStructuredOutput(name, sch, true).Invoke(ctx, input)
+	if err != nil {
+		return messages.Message{}, err
+	}
+	if err := outputparser.RaiseIfRefused(msg); err != nil {
+		return messages.Message{}, err
+	}
+	return msg, nil
 }
 
 // Capabilities returns the adapter capability declaration. Every flag is
@@ -483,9 +491,39 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 				Content: message.Content,
 			})
 		case messages.RoleAI:
-			// A blocks-only AI message (e.g. a bare custom_tool_call) emits no
-			// empty assistant text item, mirroring Python's block pass-through.
-			if message.Content != "" {
+			// 收集非空 refusal 块（_compat.py:451-455：空文本 refusal 不发送）。
+			var refusalParts []any
+			var refusalID, refusalPhase string
+			for _, block := range message.ContentBlocks {
+				if rb, ok := block.(messages.RefusalBlock); ok && rb.Refusal != "" {
+					refusalParts = append(refusalParts, map[string]any{"type": "refusal", "refusal": rb.Refusal})
+					if refusalID == "" {
+						refusalID = rb.ID
+					}
+					if refusalPhase == "" {
+						refusalPhase, _ = rb.Extras["phase"].(string)
+					}
+				}
+			}
+			if len(refusalParts) > 0 {
+				// refusal 回放对齐上游 _construct_responses_api_input：part 只带
+				// type+refusal，id/phase 提升到 item 级。
+				parts := make([]any, 0, 1+len(refusalParts))
+				if message.Content != "" {
+					parts = append(parts, map[string]any{"type": "output_text", "text": message.Content})
+				}
+				parts = append(parts, refusalParts...)
+				item := inputItem{Type: "message", Role: "assistant", Content: parts}
+				if refusalID != "" {
+					item.ID = refusalID
+				}
+				if refusalPhase != "" {
+					item.Phase = refusalPhase
+				}
+				payload.Input = append(payload.Input, item)
+			} else if message.Content != "" {
+				// A blocks-only AI message (e.g. a bare custom_tool_call) emits no
+				// empty assistant text item, mirroring Python's block pass-through.
 				payload.Input = append(payload.Input, inputItem{
 					Role:    "assistant",
 					Content: message.Content,
@@ -581,6 +619,7 @@ type inputItem struct {
 	Content any    `json:"content,omitempty"`
 	Type    string `json:"type,omitempty"`
 	ID      string `json:"id,omitempty"`
+	Phase   string `json:"phase,omitempty"`
 	CallID  string `json:"call_id,omitempty"`
 	Name    string `json:"name,omitempty"`
 	Input   string `json:"input,omitempty"`
@@ -617,6 +656,7 @@ type outputItem struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`
 	Role      string          `json:"role"`
+	Phase     string          `json:"phase,omitempty"`
 	Content   []contentOutput `json:"content"`
 	CallID    string          `json:"call_id"`
 	Name      string          `json:"name"`
@@ -643,6 +683,9 @@ func (o *outputItem) UnmarshalJSON(data []byte) error {
 type contentOutput struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	// Refusal 是 responses API refusal content part 的文本；part 不带 id
+	// （id/phase 在 message item 级）。
+	Refusal string `json:"refusal,omitempty"`
 }
 
 type usagePayload struct {
@@ -667,6 +710,7 @@ func (r responsePayload) toMessage() messages.Message {
 	var toolCalls []messages.ToolCall
 	var invalidToolCalls []messages.ToolCall
 	var contentBlocks []messages.ContentBlock
+	var refusalText string
 	for _, output := range r.Output {
 		switch output.Type {
 		case "message":
@@ -676,6 +720,16 @@ func (r responsePayload) toMessage() messages.Message {
 			for _, content := range output.Content {
 				if content.Type == "output_text" && content.Text != "" {
 					parts = append(parts, content.Text)
+				}
+				if content.Type == "refusal" {
+					// id 挂在 message item 上（base.py:5269-5277 取 output.id），
+					// phase 同理（base.py:5250）；content part 自身不带 id。
+					rb := messages.RefusalBlock{Refusal: content.Refusal, ID: output.ID}
+					if output.Phase != "" {
+						rb.Extras = map[string]any{"phase": output.Phase}
+					}
+					contentBlocks = append(contentBlocks, rb)
+					refusalText = content.Refusal
 				}
 			}
 		case "function_call":
@@ -711,6 +765,12 @@ func (r responsePayload) toMessage() messages.Message {
 	message.ToolCalls = toolCalls
 	message.InvalidToolCalls = invalidToolCalls
 	message.ContentBlocks = contentBlocks
+	if refusalText != "" {
+		if message.AdditionalKwargs == nil {
+			message.AdditionalKwargs = map[string]any{}
+		}
+		message.AdditionalKwargs["refusal"] = refusalText
+	}
 	message.ResponseMetadata = map[string]any{
 		"model":          r.Model,
 		"model_provider": "openai",

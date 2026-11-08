@@ -177,6 +177,7 @@ type chatCompletionsMessage struct {
 	Role      string         `json:"role"`
 	Content   string         `json:"content"`
 	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
+	Refusal   string         `json:"refusal"`
 }
 
 func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) (chatCompletionsRequest, error) {
@@ -254,6 +255,26 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) (chatCo
 			}
 		case messages.RoleAI:
 			cm.Role = "assistant"
+			// refusal 回放对齐上游 _convert_from_v1_to_chat_completions
+			// （_compat.py:179-184）的 content parts 形状：AI 消息带非空
+			// refusal 块时，Content 从纯字符串改为 parts 列表。
+			var refusalParts []any
+			for _, block := range message.ContentBlocks {
+				if rb, ok := block.(messages.RefusalBlock); ok && rb.Refusal != "" {
+					refusalParts = append(refusalParts, map[string]any{"type": "refusal", "refusal": rb.Refusal})
+				}
+			}
+			if refusal, ok := message.AdditionalKwargs["refusal"].(string); ok && refusal != "" && len(refusalParts) == 0 {
+				refusalParts = append(refusalParts, map[string]any{"type": "refusal", "refusal": refusal})
+			}
+			if len(refusalParts) > 0 {
+				parts := make([]any, 0, 1+len(refusalParts))
+				if message.Content != "" {
+					parts = append(parts, map[string]any{"type": "text", "text": message.Content})
+				}
+				parts = append(parts, refusalParts...)
+				cm.Content = parts
+			}
 			for _, tc := range message.ToolCalls {
 				argsJSON, _ := json.Marshal(tc.Args)
 				cm.ToolCalls = append(cm.ToolCalls, chatToolCall{
@@ -320,6 +341,13 @@ func (r chatCompletionsResponse) toResponsesPayload() responsePayload {
 			CallID:    tc.ID,
 			Name:      tc.Function.Name,
 			Arguments: tc.Function.Arguments,
+		})
+	}
+	if msg.Refusal != "" {
+		out.Output = append(out.Output, outputItem{
+			Type:    "message",
+			Role:    "assistant",
+			Content: []contentOutput{{Type: "refusal", Refusal: msg.Refusal}},
 		})
 	}
 	return out
