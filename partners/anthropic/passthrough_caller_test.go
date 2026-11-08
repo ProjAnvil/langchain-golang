@@ -7,11 +7,11 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 )
 
-// Ports anthropic #41678 的 caller 用例与 #41637 的 compaction 用例
-//（tests/unit_tests/test_chat_models.py 相应段）。
+// Ports the anthropic #41678 caller cases and the #41637 compaction case
+// (the corresponding sections of tests/unit_tests/test_chat_models.py).
 
-// compaction 块 replay 保留 content、不带 index（#41637；Go 构造无 index 字段，
-// 本用例钉死 content 不丢）。
+// A compaction block replay keeps content and drops index (#41637; the Go
+// construction has no index field — this case pins that content is not lost).
 func TestCompactionBlockKeepsContentDropsIndex(t *testing.T) {
 	msg := messages.AI("")
 	msg.ContentBlocks = []messages.ContentBlock{
@@ -39,13 +39,13 @@ func TestCompactionBlockKeepsContentDropsIndex(t *testing.T) {
 	if _, has := wire["index"]; has {
 		t.Fatalf("index must never reach the wire: %v", wire)
 	}
-	// 调用方 map 不被原地修改（#40213 同类保证）。
+	// The caller's map must not be mutated in place (the same guarantee as #40213).
 	if msg.ContentBlocks[0].(messages.NonStandardContentBlock).Value["index"] != 0 {
 		t.Fatal("caller map must not be mutated")
 	}
 }
 
-// 非 direct 的嵌套 caller 透传（#41678）；direct 被剥（server 族）。
+// A non-direct nested caller passes through (#41678); direct is stripped (server family).
 func TestNestedCallerPreservedServerToolResult(t *testing.T) {
 	caller := map[string]any{"type": "code_execution_20250825", "tool_id": "srvtool_1"}
 	msg := messages.AI("")
@@ -92,7 +92,7 @@ func TestDirectCallerStrippedOnServerBlocks(t *testing.T) {
 	}
 }
 
-// client tool_use 的 caller 无条件透传（上游 chat_models.py:834-835 的非对称行为）。
+// A client tool_use caller passes through unconditionally (the asymmetric behavior of upstream chat_models.py:834-835).
 func TestClientToolUseCallerPassesVerbatim(t *testing.T) {
 	msg := messages.AI("")
 	msg.ContentBlocks = []messages.ContentBlock{

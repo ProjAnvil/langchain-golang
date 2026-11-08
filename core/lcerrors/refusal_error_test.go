@@ -7,7 +7,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 )
 
-// Ports core/tests/unit_tests/test_exceptions.py::test_model_refusal_error{,_defaults}（#41582）。
+// Ports core/tests/unit_tests/test_exceptions.py::test_model_refusal_error{,_defaults} (#41582).
 
 func TestModelRefusalError(t *testing.T) {
 	raw := messages.AI("")
@@ -39,17 +39,17 @@ func TestModelRefusalErrorDefaults(t *testing.T) {
 
 func TestModelRefusalFromBlock(t *testing.T) {
 	raw := messages.AI("")
-	// 无 category 无文本
+	// no category, no text
 	e1 := ModelRefusalFromBlock(messages.RefusalBlock{}, raw)
 	if e1.Error() != "Model refused to produce the requested output" {
 		t.Fatalf("bare: %q", e1.Error())
 	}
-	// 仅 category
+	// category only
 	e2 := ModelRefusalFromBlock(messages.RefusalBlock{Extras: map[string]any{"category": "safety"}}, raw)
 	if e2.Error() != "Model refused to produce the requested output (category='safety')" {
 		t.Fatalf("category: %q", e2.Error())
 	}
-	// 全量
+	// full
 	e3 := ModelRefusalFromBlock(messages.RefusalBlock{
 		Refusal: "Cannot comply.",
 		Extras:  map[string]any{"category": "safety"},

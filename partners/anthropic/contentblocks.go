@@ -310,8 +310,9 @@ func setContentBlockField(out *contentBlock, key string, value any) {
 	case "content":
 		out.Content = value
 	case "caller":
-		// caller 的门控依赖块类型，而 map 迭代无序（Type 未必先设置），
-		// 所以这里暂存，由 passthroughBlock 循环后统一归置。
+		// The caller gate depends on the block type, and map iteration is
+		// unordered (Type may not be set yet), so the value is staged here and
+		// resolved by passthroughBlock after the loop.
 		if isMap {
 			out.Caller = m
 		}

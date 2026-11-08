@@ -16,10 +16,11 @@ import (
 	"github.com/projanvil/langchain-golang/core/schema"
 )
 
-// Ports partners/openai/tests/unit_tests/chat_models/test_refusal.py（#41582，
-// openai 1.7.4）。roundTripFunc 复用 stream_errors_test.go 的定义。
+// Ports partners/openai/tests/unit_tests/chat_models/test_refusal.py
+// (#41582, openai 1.7.4). roundTripFunc reuses the definition from
+// stream_errors_test.go.
 
-// --- chat completions 非流式：message.refusal → AdditionalKwargs + RefusalBlock ---
+// --- Chat Completions non-streaming: message.refusal -> AdditionalKwargs + RefusalBlock ---
 
 func TestChatCompletionsRefusalNonStream(t *testing.T) {
 	raw := `{
@@ -48,9 +49,10 @@ func TestChatCompletionsRefusalNonStream(t *testing.T) {
 	}
 }
 
-// --- responses API 非流式：refusal content part → RefusalBlock ---
-// id 挂在 message ITEM 上（上游 base.py:5269-5277 取 output.id），
-// phase 同理（base.py:5250）；content part 自身不带 id。
+// --- Responses API non-streaming: refusal content part -> RefusalBlock ---
+// The id hangs on the message ITEM (upstream base.py:5269-5277 reads
+// output.id), as does phase (base.py:5250); the content part itself carries
+// no id.
 
 func TestResponsesRefusalNonStream(t *testing.T) {
 	raw := `{
@@ -84,8 +86,8 @@ func TestResponsesRefusalNonStream(t *testing.T) {
 	}
 }
 
-// --- 回写方向（responses）：part 只带 type+refusal，id/phase 提升到 item 级 ---
-// 上游 test_refusal.py:39-47 钉死的 wire 形状。
+// --- Replay direction (responses): the part carries only type+refusal; id/phase are lifted to the item level ---
+// The wire shape pinned by upstream test_refusal.py:39-47.
 
 func TestResponsesRefusalReplayWireShape(t *testing.T) {
 	ai := messages.AI("")
@@ -120,7 +122,7 @@ func TestResponsesRefusalReplayWireShape(t *testing.T) {
 	}
 }
 
-// 空文本 refusal 不发送（_compat.py:451-455）。
+// An empty-text refusal is not sent (_compat.py:451-455).
 func TestResponsesEmptyRefusalSkipped(t *testing.T) {
 	ai := messages.AI("")
 	ai.ContentBlocks = []messages.ContentBlock{messages.RefusalBlock{Refusal: ""}}
@@ -135,7 +137,7 @@ func TestResponsesEmptyRefusalSkipped(t *testing.T) {
 	}
 }
 
-// --- CC 回写方向：refusal 块 → content parts（上游 _compat.py:179-184 形状）---
+// --- CC replay direction: refusal block -> content parts (upstream _compat.py:179-184 shape) ---
 
 func TestChatCompletionsRefusalReplayWireShape(t *testing.T) {
 	ai := messages.AI("partial")
@@ -170,10 +172,11 @@ func TestChatCompletionsRefusalReplayWireShape(t *testing.T) {
 	}
 }
 
-// --- CC 流式：delta.refusal 累积，仅在 [DONE] 终态 chunk 挂 RefusalBlock ---
-// 覆盖 chat_completions_stream.go 的 s.refusal 累积与 [DONE] 挂块路径
-// （对齐上游"仅终态可见"形状）。SSE fixture 模式沿用
-// chat_completions_stream_test.go 的 httptest server。
+// --- CC streaming: delta.refusal accumulates; a RefusalBlock is attached only on the terminal [DONE] chunk ---
+// Covers the s.refusal accumulation and [DONE] attachment paths of
+// chat_completions_stream.go (matching the upstream "visible only at the
+// terminal" shape). The SSE fixture pattern follows
+// chat_completions_stream_test.go's httptest server.
 
 func TestChatCompletionsStreamRefusalAccumulatesToDone(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -209,14 +212,14 @@ func TestChatCompletionsStreamRefusalAccumulatesToDone(t *testing.T) {
 		}
 		chunks = append(chunks, chunk)
 	}
-	// 2 content chunks + 1 [DONE] 终态 chunk；refusal delta 自身不产生 chunk。
+	// 2 content chunks + 1 terminal [DONE] chunk; a refusal delta produces no chunk of its own.
 	if len(chunks) != 3 {
 		t.Fatalf("chunks = %d, want 3 (two content deltas + terminal): %+v", len(chunks), chunks)
 	}
 	if chunks[0].Content != "partial" || chunks[1].Content != " answer" {
 		t.Fatalf("content chunks = %q, %q", chunks[0].Content, chunks[1].Content)
 	}
-	// refusal 块不逐 delta 发射：中间 chunk 不得携带 RefusalBlock。
+	// Refusal blocks are not emitted per delta: intermediate chunks must carry no RefusalBlock.
 	for i, c := range chunks[:len(chunks)-1] {
 		for _, b := range c.ContentBlocks {
 			if _, isRefusal := b.(messages.RefusalBlock); isRefusal {
@@ -224,7 +227,7 @@ func TestChatCompletionsStreamRefusalAccumulatesToDone(t *testing.T) {
 			}
 		}
 	}
-	// 终态 chunk 携带值类型 RefusalBlock，文本正确。
+	// The terminal chunk carries a value-type RefusalBlock with the correct text.
 	final := chunks[len(chunks)-1]
 	var found bool
 	for _, b := range final.ContentBlocks {
@@ -240,7 +243,7 @@ func TestChatCompletionsStreamRefusalAccumulatesToDone(t *testing.T) {
 	}
 }
 
-// --- responses 流式：response.refusal.done → RefusalBlock chunk ---
+// --- Responses streaming: response.refusal.done -> RefusalBlock chunk ---
 
 func TestResponsesStreamRefusalBlock(t *testing.T) {
 	sse := "event: response.refusal.done\n" +
@@ -283,8 +286,8 @@ func TestResponsesStreamRefusalBlock(t *testing.T) {
 	}
 }
 
-// --- 结构化输出：refusal → ModelRefusalError（fake HTTPClient 端到端）---
-// config.HTTPClient 可注入 fake RoundTripper（stream.go:54-57 先例）。
+// --- Structured output: refusal -> ModelRefusalError (fake HTTPClient end to end) ---
+// config.HTTPClient accepts an injected fake RoundTripper (precedent: stream.go:54-57).
 
 func refusalResponseBody() string {
 	return `{"id":"resp-r","model":"gpt-x","output":[{"type":"message","role":"assistant",

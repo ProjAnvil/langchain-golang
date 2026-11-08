@@ -10,10 +10,10 @@ import (
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 )
 
-// Ports partners/anthropic/tests/unit_tests/test_refusal.py（144 行，
-// anthropic 1.7.10 + 未发布 #41715）。
+// Ports partners/anthropic/tests/unit_tests/test_refusal.py (144 lines,
+// anthropic 1.7.10 + unreleased #41715).
 
-// --- stop_reason=refusal → RefusalBlock，category/explanation 进 extras/文本 ---
+// --- stop_reason=refusal -> RefusalBlock; category/explanation land in extras/text ---
 
 func TestRefusalStopReasonProducesBlock(t *testing.T) {
 	raw := `{
@@ -44,7 +44,7 @@ func TestRefusalStopReasonProducesBlock(t *testing.T) {
 	if rb.Extras["category"] != "safety" {
 		t.Fatalf("extras = %v", rb.Extras)
 	}
-	// 不设固定 index（#41658 后上游 translator 产出端无 index）。
+	// No fixed index (the upstream translator's output side carries no index after #41658).
 	if rb.Index != nil {
 		t.Fatalf("index must be nil, got %v", rb.Index)
 	}
@@ -56,7 +56,7 @@ func TestRefusalStopReasonProducesBlock(t *testing.T) {
 	}
 }
 
-// --- 输入方向：refusal 块不发往 API ---
+// --- Input direction: refusal blocks are not sent to the API ---
 
 func TestRefusalBlockDroppedOnInput(t *testing.T) {
 	msg := messages.AI("")
@@ -78,12 +78,12 @@ func TestRefusalBlockDroppedOnInput(t *testing.T) {
 	}
 }
 
-// --- #41715：结构化输出 no-tool_call + refusal → ModelRefusalError ---
+// --- #41715: structured output no-tool_call + refusal -> ModelRefusalError ---
 
 func TestInvokeStructuredRefusalNotParseError(t *testing.T) {
-	// 构造 stop_reason=refusal 且无 tool_use 的响应，走 InvokeStructured 的
-	// 报错分支。无 HTTP fake 时直接测试判定函数（见 Step 3 提取的
-	// refusalOrNoToolCallError）。
+	// Build a response with stop_reason=refusal and no tool_use to hit
+	// InvokeStructured's error branch. Without an HTTP fake, test the decision
+	// function directly (refusalOrNoToolCallError, extracted in Step 3).
 	payload := messagePayload{StopReason: "refusal"}
 	msg := payload.toMessage()
 	err := noToolCallError(msg)
@@ -99,7 +99,7 @@ func TestInvokeStructuredRefusalNotParseError(t *testing.T) {
 	}
 }
 
-// --- 流式：message_delta 的 stop chunk 不受 streamUsage 门控 ---
+// --- Streaming: a message_delta stop chunk is not gated by streamUsage ---
 
 // TestStreamStopChunkEmittedWithoutStreamUsage drives messageStream with the
 // stream_usage_test.go SSE fixture pattern: message_start(usage) →
@@ -163,7 +163,7 @@ func TestStreamStopChunkWithStreamUsage(t *testing.T) {
 	}
 }
 
-// --- 流式：message_delta 的 refusal → RefusalBlock 进最终消息 ---
+// --- Streaming: a message_delta refusal becomes a RefusalBlock on the final message ---
 
 func TestStreamRefusalProducesBlock(t *testing.T) {
 	server := streamServer(

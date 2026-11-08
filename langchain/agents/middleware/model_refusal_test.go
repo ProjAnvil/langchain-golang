@@ -18,7 +18,7 @@ import (
 )
 
 // Ports langchain tests/unit_tests/agents/middleware/implementations/
-// test_model_refusal.py（164 行，#41582 + #41689）。
+// test_model_refusal.py (164 lines, #41582 + #41689).
 
 func refusedHandler(_ context.Context, _ middleware.ModelRequest) (middleware.ModelResponse, error) {
 	msg := messages.AI("")
@@ -50,8 +50,9 @@ func TestModelRefusalMiddlewarePassesClean(t *testing.T) {
 	}
 }
 
-// refusal 藏在 StructuredOutputValidationError 的 AI 消息里也要抛出（上游
-// wrap_model_call 先查 exc.ai_message 再 re-raise 的分支）。
+// A refusal hidden in a StructuredOutputValidationError's AI message must
+// also raise (the upstream wrap_model_call branch that checks exc.ai_message
+// before re-raising).
 func TestModelRefusalMiddlewareChecksValidationErrorMessage(t *testing.T) {
 	refused := messages.AI("")
 	refused.ContentBlocks = []messages.ContentBlock{messages.RefusalBlock{Refusal: "no"}}
@@ -66,7 +67,7 @@ func TestModelRefusalMiddlewareChecksValidationErrorMessage(t *testing.T) {
 	}
 }
 
-// 校验错误里的消息不含 refusal 时，原错误原样传播。
+// When the validation error's message carries no refusal, the original error propagates unchanged.
 func TestModelRefusalMiddlewareReraisesUnrelatedValidationError(t *testing.T) {
 	clean := messages.AI("not a refusal")
 	handler := func(_ context.Context, _ middleware.ModelRequest) (middleware.ModelResponse, error) {
@@ -80,7 +81,7 @@ func TestModelRefusalMiddlewareReraisesUnrelatedValidationError(t *testing.T) {
 	}
 }
 
-// #41689：trace policy omit inputs。
+// #41689: the trace policy omits inputs.
 func TestModelRefusalMiddlewareTracePolicyOmitsInputs(t *testing.T) {
 	mw := middleware.NewModelRefusalMiddleware()
 	policy := mw.TracePolicy()
@@ -97,10 +98,12 @@ func TestModelRefusalMiddlewareTracePolicyOmitsInputs(t *testing.T) {
 	}
 }
 
-// #41689 端到端：fake tracer 断言 wrap_model_call 层内 inputs 被 omit。
-// 复用 trace_policy_test.go 的 invokeTracePolicyAgent / tracePolicyChatStart
-// fixture（同 package middleware_test）：模型正常应答 "done"，断言 tracer
-// 收到的 chat_model_start 输入是 omitted marker 而非原始消息。
+// #41689 end to end: a fake tracer asserts inputs are omitted inside the
+// wrap_model_call layer. Reuses the invokeTracePolicyAgent /
+// tracePolicyChatStart fixtures from trace_policy_test.go (same package
+// middleware_test): the model answers "done" normally, and the test asserts
+// the chat_model_start input the tracer receives is the omitted marker, not
+// the original messages.
 func TestModelRefusalMiddlewareTracePolicyOmitsInputsEndToEnd(t *testing.T) {
 	model := &tracePolicyModel{response: messages.AI("done")}
 	start := tracePolicyChatStart(t, invokeTracePolicyAgent(t, model, middleware.NewModelRefusalMiddleware()))
@@ -116,17 +119,18 @@ func TestModelRefusalMiddlewareTracePolicyOmitsInputsEndToEnd(t *testing.T) {
 	}
 }
 
-// --- 上游中间件联动用例（test_model_refusal.py, #41582）---
+// --- Upstream middleware interplay cases (test_model_refusal.py, #41582) ---
 
-// refusalMessage 构造一条只带 refusal 块的 AI 消息。
+// refusalMessage builds an AI message carrying only a refusal block.
 func refusalMessage(text string) messages.Message {
 	msg := messages.AI("")
 	msg.ContentBlocks = []messages.ContentBlock{messages.RefusalBlock{Refusal: text}}
 	return msg
 }
 
-// refusalCountingModel 恒返回 refusal 消息并记录 Invoke 次数。不用
-// language.FakeChatModel：它的 BindTools 返回副本，计数无法共享给断言。
+// refusalCountingModel always returns a refusal message and records its
+// Invoke count. language.FakeChatModel is not usable here: its BindTools
+// returns a copy, so the counter could not be shared with the assertions.
 type refusalCountingModel struct {
 	calls atomic.Int32
 	msg   messages.Message
@@ -167,8 +171,9 @@ func (m *refusalCountingModel) Capabilities() language.ChatModelCapabilities {
 	return language.ChatModelCapabilities{}
 }
 
-// 对应上游 test_fallback_can_handle_refusal：fallback 中间件在外层，能把
-// refusal 错误落到 fallback 模型并拿到成功应答。
+// Mirrors upstream test_fallback_can_handle_refusal: the fallback middleware
+// sits outside, routes the refusal error to the fallback model, and returns
+// a successful answer.
 func TestFallbackCanHandleRefusal(t *testing.T) {
 	primary := language.NewFakeChatModel(language.WithResponses(refusalMessage("blocked")))
 	fallback := language.NewFakeChatModel(language.WithResponses(messages.AI("fallback answer")))
@@ -188,10 +193,13 @@ func TestFallbackCanHandleRefusal(t *testing.T) {
 	}
 }
 
-// 对应上游 test_retry_middleware_does_not_retry_refusal：retry 中间件在外层、
-// max_retries=2、默认 on_failure=continue，模型恒 refusal。refusal 不可重试
-// 且必须立即传播（Python: retry_on 拒绝时绕过 on_failure 直接 raise），所以
-// 模型只被调用一次，调用方拿到 ModelRefusalError 而不是 continue 消息。
+// Mirrors upstream test_retry_middleware_does_not_retry_refusal: the retry
+// middleware sits outside with max_retries=2 and the default
+// on_failure=continue, and the model always refuses. A refusal is not
+// retryable and must propagate immediately (Python: when retry_on declines,
+// on_failure is bypassed and the error raises directly), so the model is
+// invoked exactly once and the caller gets ModelRefusalError instead of a
+// continue message.
 func TestRetryMiddlewareDoesNotRetryRefusal(t *testing.T) {
 	model := &refusalCountingModel{msg: refusalMessage("blocked")}
 	retry, err := middleware.NewModelRetryMiddleware(
@@ -219,9 +227,10 @@ func TestRetryMiddlewareDoesNotRetryRefusal(t *testing.T) {
 	}
 }
 
-// 对应上游 test_stream_surfaces_refusal：流式路径下 refusal 块先以
-// content-block-finish delta 透传给消费者，聚合完成后 ModelRefusalMiddleware
-// 抛出，终止事件携带 ModelRefusalError。
+// Mirrors upstream test_stream_surfaces_refusal: on the streaming path the
+// refusal block first reaches the consumer as a content-block-finish delta;
+// once aggregation completes ModelRefusalMiddleware raises, and the terminal
+// event carries ModelRefusalError.
 func TestStreamSurfacesRefusal(t *testing.T) {
 	model := language.NewFakeChatModel(language.WithStreamChunks(refusalMessage("blocked")))
 	agent, err := agents.CreateAgent(model, nil, agents.WithAgentMiddleware(
@@ -248,8 +257,8 @@ func TestStreamSurfacesRefusal(t *testing.T) {
 		if !ok {
 			break
 		}
-		// 消费者在错误抛出前就能看到 refusal 块（bridge 的
-		// content-block-finish 事件以 model_delta 形式透传）。
+		// The consumer sees the refusal block before the error is raised (the
+		// bridge forwards the content-block-finish event as a model_delta).
 		if ev.Type == agents.StreamModelDelta && ev.Delta != nil && ev.Delta.Content != nil {
 			if messages.BlockToMap(ev.Delta.Content)["type"] == "refusal" {
 				sawRefusalDelta = true

@@ -12,12 +12,14 @@ import (
 	"github.com/projanvil/langchain-golang/core/tools"
 )
 
-// 上游 base.py 的 checked_parser 语义（#41582）：结构化输出路径遇 refusal
-// 抛 ModelRefusalError 而非 schema/parse 错误。Go 落点为 InvokeStructured
-// 默认路径（partner StructuredCaller 各自接，见 wave5 spec D3/D4）。
+// Upstream base.py checked_parser semantics (#41582): the structured-output
+// path raises ModelRefusalError on a refusal instead of a schema/parse
+// error. The Go landing point is the InvokeStructured default path (partner
+// StructuredCallers handle it individually; see wave5 spec D3/D4).
 
-// refusalModel 是一个不实现 StructuredCaller 的最小 ChatModel，恒返回
-// refusal 块消息，强制走 InvokeStructured 默认路径。
+// refusalModel is a minimal ChatModel that does not implement
+// StructuredCaller and always returns a refusal-block message, forcing the
+// InvokeStructured default path.
 type refusalModel struct{}
 
 func (m *refusalModel) Invoke(_ context.Context, _ []messages.Message, _ ...runnables.Option) (messages.Message, error) {

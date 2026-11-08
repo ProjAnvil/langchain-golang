@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Ports core/tests/unit_tests/messages/test_refusal.py（#41582）的块级用例。
+// Ports the block-level cases of core/tests/unit_tests/messages/test_refusal.py (#41582).
 
 func TestRefusalBlockRoundTrip(t *testing.T) {
 	m := map[string]any{
@@ -13,7 +13,7 @@ func TestRefusalBlockRoundTrip(t *testing.T) {
 		"refusal":  "I cannot help with that.",
 		"id":       "ref-1",
 		"index":    "lc_0",
-		"category": "safety", // 未知键 → Extras
+		"category": "safety", // unknown key -> Extras
 	}
 	block := ParseContentBlock(m)
 	rb, ok := block.(RefusalBlock)
@@ -33,7 +33,7 @@ func TestRefusalBlockRoundTrip(t *testing.T) {
 	if back["id"] != "ref-1" || back["index"] != "lc_0" {
 		t.Fatalf("BlockToMap lost id/index: %v", back)
 	}
-	// Extras 摊平到顶层（mergeExtras 惯例，无 "extras" 键）。
+	// Extras flatten to the top level (mergeExtras convention, no "extras" key).
 	if back["category"] != "safety" {
 		t.Fatalf("BlockToMap must flatten extras, got: %v", back)
 	}

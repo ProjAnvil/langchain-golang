@@ -8,7 +8,7 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 )
 
-// Ports core/tests/unit_tests/output_parsers/test_refusal.py（#41582）。
+// Ports core/tests/unit_tests/output_parsers/test_refusal.py (#41582).
 
 func refusalMessage() messages.Message {
 	m := messages.AI("")

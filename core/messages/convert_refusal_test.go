@@ -4,8 +4,9 @@ import (
 	"testing"
 )
 
-// Ports core/tests/unit_tests/messages/test_refusal.py 的 convert_to_openai_messages
-// 用例（#41582，utils.py:1955-1959）：非空 refusal 文本发出，空文本不发。
+// Ports the convert_to_openai_messages cases of
+// core/tests/unit_tests/messages/test_refusal.py (#41582,
+// utils.py:1955-1959): non-empty refusal text is sent, empty text is not.
 
 func TestConvertToOpenAIMessagesRefusal(t *testing.T) {
 	msg := AI("")
@@ -36,7 +37,7 @@ func TestConvertToOpenAIMessagesEmptyRefusalSkipped(t *testing.T) {
 	msg := AI("")
 	msg.ContentBlocks = []ContentBlock{
 		TextBlock{Text: "ok"},
-		RefusalBlock{Refusal: ""}, // Anthropic 式无文本 refusal
+		RefusalBlock{Refusal: ""}, // Anthropic-style textless refusal
 	}
 	out, err := ConvertToOpenAIMessages([]Message{msg})
 	if err != nil {
@@ -50,7 +51,7 @@ func TestConvertToOpenAIMessagesEmptyRefusalSkipped(t *testing.T) {
 	}
 }
 
-// Ports test_refusal.py:200-207：id/index/extras 不上 wire，只发 type+refusal。
+// Ports test_refusal.py:200-207: id/index/extras stay off the wire; only type+refusal is sent.
 func TestConvertToOpenAIMessagesRefusalDropsExtras(t *testing.T) {
 	msg := AI("")
 	msg.ContentBlocks = []ContentBlock{

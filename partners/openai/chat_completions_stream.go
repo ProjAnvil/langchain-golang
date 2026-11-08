@@ -94,8 +94,9 @@ type chatCompletionsStream struct {
 	chunkTimeout   time.Duration
 	model          string
 	chunksReceived int
-	// refusal 累积 delta.refusal 切片；仅在 [DONE] 终态 chunk 上作为
-	// RefusalBlock 挂出（对齐上游"仅终态可见"的形状，不逐 delta 发块）。
+	// refusal accumulates the delta.refusal slices; it is surfaced as a
+	// RefusalBlock only on the terminal [DONE] chunk (matching the upstream
+	// "visible only at the terminal" shape — no per-delta block emission).
 	refusal string
 	guard   chunkTimeoutGuard
 }

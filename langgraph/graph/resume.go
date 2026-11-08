@@ -354,11 +354,11 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 		}
 		pending = hits
 	}
-	// Strict resume（#9574）：仅 root 非 pinned 恢复启用。pinned 恢复是
-	// Go 中 superseded 的唯一入口（对齐 checkpoint_sink.go:684 的 exit 路径
-	// flushOpts.CheckpointID != "" 门），此时已完成的 task 可能重跑并再次
-	// interrupt，上游同样跳过检查（_loop.py:1029-1036 的
-	// _addressed_checkpoint_superseded）。
+	// Strict resume (#9574): enabled only for root non-pinned resumes. A
+	// pinned resume is Go's only entry to supersession (mirroring the
+	// exit-path gate flushOpts.CheckpointID != "" at checkpoint_sink.go:684),
+	// where completed tasks may re-run and interrupt again; upstream likewise
+	// skips the check (_addressed_checkpoint_superseded, _loop.py:1029-1036).
 	if strict && !pinned && resume != nil {
 		pendingKeys := map[string]bool{}
 		var pendingIDs []string
@@ -367,8 +367,8 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 				pendingKeys[p.ID] = true
 				pendingIDs = append(pendingIDs, p.ID)
 			}
-			// Go 支持 NS 寻址（resumeValuesFor NS 优先），strict 的合法键
-			// 集合 = ID ∪ NS。
+			// Go supports NS addressing (resumeValuesFor prefers NS), so the
+			// strict legal key set is the union of ID and NS.
 			if p.NS != "" {
 				pendingKeys[p.NS] = true
 			}
@@ -376,8 +376,8 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 		sort.Strings(pendingIDs)
 		switch r := resume.(type) {
 		case map[string]any:
-			// Go 现状把任何 map[string]any 当 resume map（不同于 Python 的
-			// xxh3 键检查），strict 沿用同一判定。
+			// Go currently treats any map[string]any as a resume map (unlike
+			// Python's xxh3 key check); strict keeps the same test.
 			if len(r) == 0 {
 				return resumePlan{}, &types.UnknownInterruptError{
 					Reason: "empty_map", PendingIDs: pendingIDs,
@@ -401,12 +401,12 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 					Reason: "ambiguous", PendingIDs: pendingIDs,
 				}
 			}
-			// pending == 0 时单值合法（静态断点恢复，上游同）。
+			// A single value is legal when pending == 0 (static-breakpoint resume; same upstream).
 		}
 	}
 	if resume != nil {
 		if _, isMap := resume.(map[string]any); !isMap && len(pending) > 1 {
-			//nolint:staticcheck // ST1005: 文案逐字对齐上游 _loop.py:1060-1062
+			//nolint:staticcheck // ST1005: message text mirrors upstream _loop.py:1060-1062 verbatim
 			return resumePlan{}, fmt.Errorf(
 				"graph: resume with %d pending interrupts requires a map[string]any keyed by interrupt ID (a scalar resume only supports a single pending interrupt) Docs: https://docs.langchain.com/oss/python/langgraph/interrupts#handling-multiple-interrupts.",
 				len(pending))

@@ -491,7 +491,7 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 				Content: message.Content,
 			})
 		case messages.RoleAI:
-			// 收集非空 refusal 块（_compat.py:451-455：空文本 refusal 不发送）。
+			// Collect non-empty refusal blocks (_compat.py:451-455: empty-text refusals are not sent).
 			var refusalParts []any
 			var refusalID, refusalPhase string
 			for _, block := range message.ContentBlocks {
@@ -506,8 +506,9 @@ func (m ChatModel) buildRequest(input []messages.Message) (requestPayload, error
 				}
 			}
 			if len(refusalParts) > 0 {
-				// refusal 回放对齐上游 _construct_responses_api_input：part 只带
-				// type+refusal，id/phase 提升到 item 级。
+				// Refusal replay mirrors upstream _construct_responses_api_input:
+				// the part carries only type+refusal; id/phase are lifted to the
+				// item level.
 				parts := make([]any, 0, 1+len(refusalParts))
 				if message.Content != "" {
 					parts = append(parts, map[string]any{"type": "output_text", "text": message.Content})
@@ -683,8 +684,8 @@ func (o *outputItem) UnmarshalJSON(data []byte) error {
 type contentOutput struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
-	// Refusal 是 responses API refusal content part 的文本；part 不带 id
-	// （id/phase 在 message item 级）。
+	// Refusal is the text of a Responses API refusal content part; the part
+	// carries no id (id/phase live at the message-item level).
 	Refusal string `json:"refusal,omitempty"`
 }
 
@@ -722,8 +723,8 @@ func (r responsePayload) toMessage() messages.Message {
 					parts = append(parts, content.Text)
 				}
 				if content.Type == "refusal" {
-					// id 挂在 message item 上（base.py:5269-5277 取 output.id），
-					// phase 同理（base.py:5250）；content part 自身不带 id。
+					// The id hangs on the message item (base.py:5269-5277 reads output.id),
+					// as does phase (base.py:5250); the content part itself carries no id.
 					rb := messages.RefusalBlock{Refusal: content.Refusal, ID: output.ID}
 					if output.Phase != "" {
 						rb.Extras = map[string]any{"phase": output.Phase}

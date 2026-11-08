@@ -7,8 +7,8 @@ import (
 	"google.golang.org/genai"
 )
 
-// Ports core/tests/unit_tests/messages/test_refusal.py 的 gemini 段
-//（test_refusal.py:210-284，#41658）。
+// Ports the gemini section of core/tests/unit_tests/messages/test_refusal.py
+// (test_refusal.py:210-284, #41658).
 
 func TestRefusalFromSafetyFinishReason(t *testing.T) {
 	meta := map[string]any{
@@ -57,7 +57,7 @@ func TestNoRefusalOnCleanFinish(t *testing.T) {
 }
 
 func TestRefusalReasonEnumTail(t *testing.T) {
-	// _reason_name 对齐：枚举串取尾段（"FinishReason.SAFETY" → "SAFETY"）。
+	// _reason_name parity: take the tail of the enum string ("FinishReason.SAFETY" -> "SAFETY").
 	meta := map[string]any{"finish_reason": "FinishReason.SAFETY"}
 	rb := refusalFromMetadata(meta)
 	if rb == nil || rb.Extras["finish_reason"] != "SAFETY" {
@@ -65,7 +65,7 @@ func TestRefusalReasonEnumTail(t *testing.T) {
 	}
 }
 
-// responseToMessage 端到端：SAFETY finish 的响应须在内容块尾部带 refusal 块。
+// responseToMessage end to end: a SAFETY-finish response must carry a refusal block at the tail of its content blocks.
 func TestResponseToMessageAppendsSafetyRefusal(t *testing.T) {
 	response := &genai.GenerateContentResponse{
 		Candidates: []*genai.Candidate{{
@@ -93,9 +93,10 @@ func TestResponseToMessageAppendsSafetyRefusal(t *testing.T) {
 	}
 }
 
-// TestBuildContentsSkipsRefusalBlocks: 一次 safety 阻断产出的 AI 消息再次
-// 进入历史时，refusal 块必须被静默跳过（Gemini 请求 schema 无对应 part），
-// 而非触发 "unsupported content block" 错误。
+// TestBuildContentsSkipsRefusalBlocks: when an AI message produced by a
+// safety block re-enters the history, its refusal block must be silently
+// skipped (the Gemini request schema has no corresponding part) instead of
+// triggering an "unsupported content block" error.
 func TestBuildContentsSkipsRefusalBlocks(t *testing.T) {
 	blocked := messages.AI("")
 	blocked.ContentBlocks = []messages.ContentBlock{
@@ -119,7 +120,7 @@ func TestBuildContentsSkipsRefusalBlocks(t *testing.T) {
 	if model.Role != "model" {
 		t.Fatalf("contents[1].Role = %q, want model", model.Role)
 	}
-	// 空 model turn 保留一个占位空文本 part；refusal 不得出现在任何 part 里。
+	// An empty model turn keeps one placeholder empty text part; the refusal must not appear in any part.
 	if len(model.Parts) != 1 || model.Parts[0].Text != "" {
 		t.Fatalf("model parts = %+v, want the single empty placeholder", model.Parts)
 	}
@@ -130,8 +131,9 @@ func TestBuildContentsSkipsRefusalBlocks(t *testing.T) {
 	}
 }
 
-// TestBuildContentsRefusalAlongsideText: 同一 AI 消息中 refusal 块与普通
-// 文本并存时，只跳过 refusal 块，文本照常序列化。
+// TestBuildContentsRefusalAlongsideText: when a refusal block and plain text
+// coexist in one AI message, only the refusal block is skipped; the text
+// serializes as usual.
 func TestBuildContentsRefusalAlongsideText(t *testing.T) {
 	blocked := messages.AI("")
 	blocked.ContentBlocks = []messages.ContentBlock{

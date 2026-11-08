@@ -255,9 +255,10 @@ func (m ChatModel) buildChatCompletionsRequest(input []messages.Message) (chatCo
 			}
 		case messages.RoleAI:
 			cm.Role = "assistant"
-			// refusal 回放对齐上游 _convert_from_v1_to_chat_completions
-			// （_compat.py:179-184）的 content parts 形状：AI 消息带非空
-			// refusal 块时，Content 从纯字符串改为 parts 列表。
+			// Refusal replay mirrors the content-parts shape of upstream
+			// _convert_from_v1_to_chat_completions (_compat.py:179-184): when an
+			// AI message carries a non-empty refusal block, Content changes from
+			// a plain string to a parts list.
 			var refusalParts []any
 			for _, block := range message.ContentBlocks {
 				if rb, ok := block.(messages.RefusalBlock); ok && rb.Refusal != "" {
