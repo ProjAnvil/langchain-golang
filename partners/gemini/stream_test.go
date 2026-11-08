@@ -550,10 +550,11 @@ func TestGenaiStreamHandleResponseNil(t *testing.T) {
 
 // TestStreamSafetyFinishYieldsRefusal: finishReason=SAFETY 的流式响应必须
 // yield 一个携带 RefusalBlock 的 chunk（钉住 handleResponse 中 refusal 块的
-// 追加与非空 chunk 不被静默吞掉的条件）。
+// 追加与非空 chunk 不被静默吞掉的条件）。帧特意不带 usageMetadata：无内容、
+// 无 usage 时唯一阻止静默吞掉的就是 len(chunk.ContentBlocks) == 0 守卫。
 func TestStreamSafetyFinishYieldsRefusal(t *testing.T) {
 	server := newStreamServer(t,
-		`{"candidates":[{"content":{"role":"model"},"finishReason":"SAFETY","finishMessage":"Blocked for safety."}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":0,"totalTokenCount":3}}`,
+		`{"candidates":[{"content":{"role":"model"},"finishReason":"SAFETY","finishMessage":"Blocked for safety."}]}`,
 	)
 	defer server.Close()
 
