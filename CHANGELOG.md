@@ -4,7 +4,7 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
-## [0.13.0] - Unreleased
+## [0.13.0] - 2026-11-08
 
 ### Added
 
