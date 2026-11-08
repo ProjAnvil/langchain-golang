@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/outputparser"
 	"github.com/projanvil/langchain-golang/core/schema"
 )
 
@@ -36,12 +37,22 @@ func InvokeStructured(
 	// Prefer the provider-native structured-output path when available so that
 	// partners (e.g. OpenAI response_format) can enforce the schema upstream.
 	if native, ok := m.(StructuredCaller); ok {
-		return native.InvokeStructured(ctx, input, sch)
+		msg, err := native.InvokeStructured(ctx, input, sch)
+		if err != nil {
+			return msg, err
+		}
+		if err := outputparser.RaiseIfRefused(msg); err != nil {
+			return messages.Message{}, err
+		}
+		return msg, nil
 	}
 
 	response, err := m.Invoke(ctx, input)
 	if err != nil {
 		return messages.Message{}, fmt.Errorf("structured output: invoke model: %w", err)
+	}
+	if err := outputparser.RaiseIfRefused(response); err != nil {
+		return messages.Message{}, err
 	}
 
 	text := messages.Text(response)

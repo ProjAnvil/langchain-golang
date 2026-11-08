@@ -112,6 +112,9 @@ type JSONOutputToolsParser struct {
 // ParseMessage parses all tool calls from message.ToolCalls or
 // additional_kwargs["tool_calls"].
 func (p JSONOutputToolsParser) ParseMessage(message messages.Message) (any, error) {
+	if err := RaiseIfRefused(message); err != nil {
+		return nil, err
+	}
 	calls, err := toolCallsFromMessage(message, toolParseOptions{ReturnID: p.ReturnID, Partial: p.Partial})
 	if err != nil {
 		return nil, err
@@ -135,6 +138,9 @@ type JSONOutputKeyToolsParser struct {
 
 // ParseMessage parses and filters tool calls.
 func (p JSONOutputKeyToolsParser) ParseMessage(message messages.Message) (any, error) {
+	if err := RaiseIfRefused(message); err != nil {
+		return nil, err
+	}
 	calls, err := toolCallsFromMessage(message, toolParseOptions{ReturnID: p.ReturnID, Partial: p.Partial})
 	if err != nil {
 		return nil, err
