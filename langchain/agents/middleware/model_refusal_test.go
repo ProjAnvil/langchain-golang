@@ -154,8 +154,12 @@ func (m *refusalCountingModel) Stream(context.Context, []messages.Message, ...ru
 	return runnables.NewSliceStream([]messages.Message{m.msg}), nil
 }
 
-func (m *refusalCountingModel) InputSchema() schema.Schema  { return schema.Object(map[string]schema.Schema{}) }
-func (m *refusalCountingModel) OutputSchema() schema.Schema { return schema.Object(map[string]schema.Schema{}) }
+func (m *refusalCountingModel) InputSchema() schema.Schema {
+	return schema.Object(map[string]schema.Schema{})
+}
+func (m *refusalCountingModel) OutputSchema() schema.Schema {
+	return schema.Object(map[string]schema.Schema{})
+}
 func (m *refusalCountingModel) BindTools([]coretools.Tool) (language.ChatModel, error) {
 	return m, nil
 }
