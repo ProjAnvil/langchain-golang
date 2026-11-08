@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/langgraph/channels"
@@ -229,7 +230,7 @@ type resumePlan struct {
 // interrupts whose NS it hits (strict NS addressing). All current entry
 // points pass "" (match by interrupt ID, or by interrupt NS for map resumes
 // — see resumeValuesFor).
-func (g *CompiledGraph) resumeFromTuple(ctx context.Context, rs *runState, tup *checkpoint.Tuple, resume any, graphNS string) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
+func (g *CompiledGraph) resumeFromTuple(ctx context.Context, rs *runState, tup *checkpoint.Tuple, resume any, graphNS string, strict bool, pinned bool) (tasks []task, resumeValues map[string][]any, skipNode string, replay []taskWrites, err error) {
 	rs.restore(tup.Checkpoint)
 	rs.step = tup.Metadata.Step
 	// Seed deltaCounters from the loaded checkpoint so resume continues the
@@ -240,7 +241,7 @@ func (g *CompiledGraph) resumeFromTuple(ctx context.Context, rs *runState, tup *
 	// completed siblings' writes below, so the hydration seed must skip
 	// exactly those tasks' delta writes on THIS tuple — seeding them would
 	// double-count (Python #9114).
-	plan, err := g.planResume(tup, resume, graphNS)
+	plan, err := g.planResume(tup, resume, graphNS, strict, pinned)
 	if err != nil {
 		return nil, nil, "", nil, err
 	}
@@ -330,7 +331,7 @@ func (g *CompiledGraph) resumeFromTuple(ctx context.Context, rs *runState, tup *
 // exactly one pending interrupt hits even if others remain unmatched (they
 // re-fire and the run re-pauses). A graphNS hitting nothing is a descriptive
 // error listing the available NS values.
-func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS string) (resumePlan, error) {
+func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS string, strict bool, pinned bool) (resumePlan, error) {
 	pending := interruptsFromWrites(tup.PendingWrites)
 	if graphNS != "" {
 		var hits []types.Interrupt
@@ -353,10 +354,61 @@ func (g *CompiledGraph) planResume(tup *checkpoint.Tuple, resume any, graphNS st
 		}
 		pending = hits
 	}
+	// Strict resume (#9574): enabled only for root non-pinned resumes. A
+	// pinned resume is Go's only entry to supersession (mirroring the
+	// exit-path gate flushOpts.CheckpointID != "" at checkpoint_sink.go:684),
+	// where completed tasks may re-run and interrupt again; upstream likewise
+	// skips the check (_addressed_checkpoint_superseded, _loop.py:1029-1036).
+	if strict && !pinned && resume != nil {
+		pendingKeys := map[string]bool{}
+		var pendingIDs []string
+		for _, p := range pending {
+			if p.ID != "" {
+				pendingKeys[p.ID] = true
+				pendingIDs = append(pendingIDs, p.ID)
+			}
+			// Go supports NS addressing (resumeValuesFor prefers NS), so the
+			// strict legal key set is the union of ID and NS.
+			if p.NS != "" {
+				pendingKeys[p.NS] = true
+			}
+		}
+		sort.Strings(pendingIDs)
+		switch r := resume.(type) {
+		case map[string]any:
+			// Go currently treats any map[string]any as a resume map (unlike
+			// Python's xxh3 key check); strict keeps the same test.
+			if len(r) == 0 {
+				return resumePlan{}, &types.UnknownInterruptError{
+					Reason: "empty_map", PendingIDs: pendingIDs,
+				}
+			}
+			var unknown []string
+			for k := range r {
+				if !pendingKeys[k] {
+					unknown = append(unknown, k)
+				}
+			}
+			if len(unknown) > 0 {
+				sort.Strings(unknown)
+				return resumePlan{}, &types.UnknownInterruptError{
+					Reason: "not_pending", InterruptIDs: unknown, PendingIDs: pendingIDs,
+				}
+			}
+		default:
+			if len(pending) > 1 {
+				return resumePlan{}, &types.UnknownInterruptError{
+					Reason: "ambiguous", PendingIDs: pendingIDs,
+				}
+			}
+			// A single value is legal when pending == 0 (static-breakpoint resume; same upstream).
+		}
+	}
 	if resume != nil {
 		if _, isMap := resume.(map[string]any); !isMap && len(pending) > 1 {
+			//nolint:staticcheck // ST1005: message text mirrors upstream _loop.py:1060-1062 verbatim
 			return resumePlan{}, fmt.Errorf(
-				"graph: resume with %d pending interrupts requires a map[string]any keyed by interrupt ID (a scalar resume only supports a single pending interrupt)",
+				"graph: resume with %d pending interrupts requires a map[string]any keyed by interrupt ID (a scalar resume only supports a single pending interrupt) Docs: https://docs.langchain.com/oss/python/langgraph/interrupts#handling-multiple-interrupts.",
 				len(pending))
 		}
 	}

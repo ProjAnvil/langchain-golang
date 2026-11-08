@@ -651,7 +651,7 @@ func TestPlanResumeSkipsEndDestinations(t *testing.T) {
 			},
 		},
 	}
-	plan, err := (&CompiledGraph{}).planResume(tup, nil, "")
+	plan, err := (&CompiledGraph{}).planResume(tup, nil, "", false, false)
 	if err != nil {
 		t.Fatalf("planResume() error = %v", err)
 	}

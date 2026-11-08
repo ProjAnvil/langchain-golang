@@ -5,6 +5,12 @@
 
 package lcerrors
 
+import (
+	"errors"
+
+	"github.com/projanvil/langchain-golang/core/messages"
+)
+
 // ErrorCode mirrors Python's ErrorCode enum. The string values are stable and
 // are used verbatim when building the troubleshooting URL in CreateMessage.
 type ErrorCode string
@@ -109,3 +115,51 @@ type TracerException struct {
 
 // Error implements the error interface.
 func (e *TracerException) Error() string { return e.Message }
+
+// ErrModelRefusal is the sentinel matched by ModelRefusalError.Is.
+var ErrModelRefusal = errors.New("model refusal")
+
+// ModelRefusalError mirrors Python's ModelRefusalError (langchain-core 1.7.5,
+// #41582): the model declined to produce the requested output. Providers
+// report refusals as successful responses (Anthropic stop_reason="refusal",
+// OpenAI's refusal field), so plain model calls return the message as-is;
+// paths that need the withheld content (structured output, output parsers,
+// ModelRefusalMiddleware) surface this error instead.
+//
+// It is NOT a ProviderError: a refusal arrives with HTTP 200.
+type ModelRefusalError struct {
+	// Message is the error text; empty means the default.
+	Message string
+	// RawMessage is the model response that contained the refusal; its
+	// ContentBlocks hold the refusal block including provider extras.
+	RawMessage *messages.Message
+}
+
+// Error implements the error interface, defaulting the message.
+func (e *ModelRefusalError) Error() string {
+	if e.Message == "" {
+		return "Model refused to produce the requested output"
+	}
+	return e.Message
+}
+
+// Is matches ErrModelRefusal.
+func (e *ModelRefusalError) Is(target error) bool { return target == ErrModelRefusal }
+
+// IsModelRetryable reports false — retrying the same request is unlikely to
+// succeed (Python: ModelRefusalError.is_retryable = False).
+func (e *ModelRefusalError) IsModelRetryable() bool { return false }
+
+// ModelRefusalFromBlock builds a ModelRefusalError from a standard refusal
+// block, mirroring Python's ModelRefusalError.from_refusal: the message
+// carries the refusal's category and text when present.
+func ModelRefusalFromBlock(block messages.RefusalBlock, raw messages.Message) *ModelRefusalError {
+	msg := "Model refused to produce the requested output"
+	if category, ok := block.Extras["category"].(string); ok && category != "" {
+		msg += " (category='" + category + "')"
+	}
+	if block.Refusal != "" {
+		msg += ": " + block.Refusal
+	}
+	return &ModelRefusalError{Message: msg, RawMessage: &raw}
+}

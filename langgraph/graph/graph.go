@@ -841,6 +841,18 @@ type Options struct {
 	// ancestor namespace of its NS works at any depth.
 	Graph string
 
+	// StrictResume opts into langgraph 1.2.20's strict resume mode (#9574,
+	// CONFIG_KEY_STRICT_RESUME): a resume naming an interrupt that is not
+	// pending (or an empty resume map, or a scalar with several interrupts
+	// pending) fails with *types.UnknownInterruptError BEFORE anything is
+	// written, instead of being silently ignored. Root runs only — the
+	// AddSubgraph wrapper builds child Options field-by-field and does not
+	// propagate this flag (Python: skipped for nested graphs). Also skipped
+	// when resuming a checkpoint the thread has moved past (a finished task
+	// can rerun and interrupt again there). Default false keeps today's
+	// behavior.
+	StrictResume bool
+
 	// forceResume marks Options built by the AddSubgraph wrapper for a child
 	// run dispatched by a RESUMING parent: the child must enter the run loop's
 	// resume branch (continuing from its own pinned pause checkpoint) instead
@@ -1339,12 +1351,12 @@ func (g *CompiledGraph) run(ctx context.Context, input map[string]any, opts Opti
 		if tup == nil {
 			return Result{}, fmt.Errorf("graph: no checkpoint found for thread %q", opts.ThreadID)
 		}
-		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, opts.Resume, opts.Graph)
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, opts.Resume, opts.Graph, opts.StrictResume, opts.CheckpointID != "")
 		if err != nil {
 			return Result{}, err
 		}
 	case tup != nil && len(input) == 0:
-		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, nil, "")
+		tasks, resumeValues, resumingNode, replayWrites, err = g.resumeFromTuple(ctx, rs, tup, nil, "", false, false)
 		if err != nil {
 			return Result{}, err
 		}

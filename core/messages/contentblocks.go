@@ -182,6 +182,32 @@ func (ReasoningBlock) BlockType() string { return "reasoning" }
 // isContentBlock seals ReasoningBlock.
 func (ReasoningBlock) isContentBlock() {}
 
+// RefusalBlock is the standardized model-refusal content block (Python's
+// RefusalContentBlock, langchain-core 1.7.5, #41582). Providers report
+// refusals differently — OpenAI returns refusal content, Anthropic reports a
+// refusal stop reason, Gemini reports safety finish reasons — and each
+// partner translates its shape into this block so callers detect refusals
+// without provider-specific code. Refusals the model writes as ordinary text
+// are not detected.
+type RefusalBlock struct {
+	// Refusal is the human-readable refusal message, or "" when the provider
+	// gave none (e.g. Anthropic's stop_reason-only refusal).
+	Refusal string
+	// ID is the optional provider-side block identifier.
+	ID string
+	// Index positions the block during streaming aggregation.
+	Index any
+	// Extras carries provider-specific metadata, e.g. Anthropic's refusal
+	// "category" or Gemini's finish_reason/block_reason.
+	Extras map[string]any
+}
+
+// BlockType returns "refusal".
+func (RefusalBlock) BlockType() string { return "refusal" }
+
+// isContentBlock seals RefusalBlock.
+func (RefusalBlock) isContentBlock() {}
+
 // ToolCallBlock mirrors Python's ToolCall (type="tool_call"). It is distinct
 // from the legacy ToolCall struct used on Message.ToolCalls: this is a content
 // block carrying a tool call as part of a message's ContentBlocks.
@@ -307,6 +333,7 @@ var (
 	_ ContentBlock = FileBlock{}
 	_ ContentBlock = PlainTextBlock{}
 	_ ContentBlock = ReasoningBlock{}
+	_ ContentBlock = RefusalBlock{}
 	_ ContentBlock = ToolCallBlock{}
 	_ ContentBlock = ToolCallChunkBlock{}
 	_ ContentBlock = InvalidToolCallBlock{}
@@ -321,6 +348,7 @@ var (
 var KNOWN_BLOCK_TYPES = map[string]bool{ //nolint:staticcheck // ST1003: exported name mirrors Python's KNOWN_BLOCK_TYPES
 	"text":                   true,
 	"reasoning":              true,
+	"refusal":                true,
 	"tool_call":              true,
 	"invalid_tool_call":      true,
 	"tool_call_chunk":        true,
@@ -361,6 +389,8 @@ func ParseContentBlock(m map[string]any) ContentBlock {
 		return parsePlainTextBlock(m)
 	case "reasoning":
 		return parseReasoningBlock(m)
+	case "refusal":
+		return parseRefusalBlock(m)
 	case "tool_call":
 		return parseToolCallBlock(m)
 	case "tool_call_chunk":
@@ -445,6 +475,16 @@ func BlockToMap(b ContentBlock) map[string]any {
 		}
 		if v.Reasoning != "" {
 			out["reasoning"] = v.Reasoning
+		}
+		if v.Index != nil {
+			out["index"] = v.Index
+		}
+		mergeExtras(out, v.Extras)
+		return out
+	case RefusalBlock:
+		out := map[string]any{"type": "refusal", "refusal": v.Refusal}
+		if v.ID != "" {
+			out["id"] = v.ID
 		}
 		if v.Index != nil {
 			out["index"] = v.Index
@@ -652,6 +692,13 @@ func CloneBlock(b ContentBlock) ContentBlock {
 			Index:     v.Index,
 			Extras:    cloneMap(v.Extras),
 		}
+	case RefusalBlock:
+		return RefusalBlock{
+			Refusal: v.Refusal,
+			ID:      v.ID,
+			Index:   v.Index,
+			Extras:  cloneMap(v.Extras),
+		}
 	case ToolCallBlock:
 		return ToolCallBlock{
 			ID:     v.ID,
@@ -780,6 +827,15 @@ func parseReasoningBlock(m map[string]any) ReasoningBlock {
 	b.Reasoning, _ = m["reasoning"].(string)
 	b.Index = m["index"]
 	b.Extras = extractExtras(m, "type", "id", "reasoning", "index")
+	return b
+}
+
+func parseRefusalBlock(m map[string]any) RefusalBlock {
+	b := RefusalBlock{}
+	b.Refusal, _ = m["refusal"].(string)
+	b.ID, _ = m["id"].(string)
+	b.Index = m["index"]
+	b.Extras = extractExtras(m, "type", "refusal", "id", "index")
 	return b
 }
 

@@ -388,12 +388,8 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		}
 		return messages.Message{}, false, nil
 	case "response.refusal.done":
-		block := messages.NonStandardContentBlock{
-			Type:  "refusal",
-			Value: map[string]any{"refusal": event.Refusal},
-		}
 		chunk := messages.AI("")
-		chunk.ContentBlocks = []messages.ContentBlock{block}
+		chunk.ContentBlocks = []messages.ContentBlock{messages.RefusalBlock{Refusal: event.Refusal}}
 		if err := emitStream(ctx, s.cfg, chunk); err != nil {
 			return messages.Message{}, false, err
 		}

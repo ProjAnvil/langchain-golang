@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -46,7 +45,10 @@ func TestModelRetryMiddlewareRetriesUntilSuccess(t *testing.T) {
 	}
 }
 
-func TestModelRetryMiddlewareNonRetryableFailureContinues(t *testing.T) {
+// Python parity (model_retry.py wrap_model_call): an error retry_on rejects
+// propagates IMMEDIATELY and is NOT passed to on_failure — even the default
+// "continue" must not convert it into an AIMessage.
+func TestModelRetryMiddlewareNonRetryableFailurePropagates(t *testing.T) {
 	retry, err := NewModelRetryMiddleware(
 		WithModelRetryMaxRetries(5),
 		WithModelRetryOn(func(error) bool { return false }),
@@ -56,19 +58,17 @@ func TestModelRetryMiddlewareNonRetryableFailureContinues(t *testing.T) {
 		t.Fatalf("new retry middleware: %v", err)
 	}
 
+	noRetry := errors.New("no retry")
 	calls := 0
-	response, err := retry.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, err = retry.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		calls++
-		return ModelResponse{}, errors.New("no retry")
+		return ModelResponse{}, noRetry
 	})
-	if err != nil {
-		t.Fatalf("wrap model call: %v", err)
+	if !errors.Is(err, noRetry) {
+		t.Fatalf("non-retryable error must propagate, got %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("call count mismatch: got %d", calls)
-	}
-	if !strings.Contains(response.Result[0].Content, "Model call failed after 1 attempt") {
-		t.Fatalf("failure message mismatch: %q", response.Result[0].Content)
 	}
 }
 
@@ -115,25 +115,24 @@ func TestModelRetryMiddlewareCustomFailureFormatter(t *testing.T) {
 func TestModelRetryDefaultRetryOnClassifiedErrors(t *testing.T) {
 	// A non-retryable classified model error (401) must NOT be retried under
 	// the default predicate (Python langchain 1.4 default_retry_on, #39538):
-	// exactly one handler call, OnFailure=continue swallows into an AIMessage.
+	// exactly one handler call, and — Python parity — the error propagates
+	// immediately WITHOUT on_failure ("continue") converting it into an
+	// AIMessage.
 	calls := 0
 	mw, err := NewModelRetryMiddleware(WithModelRetrySleep(func(time.Duration) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	authErr := lcerrors.NewProviderError("openai", "/responses", 401, "", 0)
-	out, rerr := mw.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
+	_, rerr := mw.WrapModelCall(t.Context(), ModelRequest{}, func(context.Context, ModelRequest) (ModelResponse, error) {
 		calls++
 		return ModelResponse{}, authErr
 	})
 	if calls != 1 {
 		t.Fatalf("handler called %d times, want 1 (non-retryable classified error)", calls)
 	}
-	if rerr != nil {
-		t.Fatalf("OnFailure=continue must swallow the failure: %v", rerr)
-	}
-	if len(out.Result) != 1 {
-		t.Fatalf("expected failure AIMessage, got %+v", out.Result)
+	if !errors.Is(rerr, lcerrors.ErrModelAuth) {
+		t.Fatalf("non-retryable classified error must propagate, got %v", rerr)
 	}
 
 	// A retryable classified error (429) must be retried MaxRetries times.

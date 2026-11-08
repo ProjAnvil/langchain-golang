@@ -4,6 +4,28 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-08
+
+### Added
+
+- core: standardized `RefusalBlock` content block + `lcerrors.ModelRefusalError` + `outputparser.RaiseIfRefused`, wired into the tool-call output parsers and `language.InvokeStructured` (langchain-core 1.7.5, #41582).
+- core: `ConvertToOpenAIMessages` emits non-empty refusal blocks and skips empty ones (#41582).
+- openai: refusal blocks both directions (chat-completions + responses APIs), including stream aggregation and structured-output refusal errors (#41582).
+- anthropic: `stop_reason="refusal"` produces a `RefusalBlock` with category/explanation extras; refusal blocks are dropped on input; structured output raises `ModelRefusalError` on refusal instead of a no-tool-call parse error (#41582, #41715).
+- anthropic: replayed compaction blocks keep their content and never leak `index`; nested non-direct `caller` passes through on server tool blocks, verbatim on client `tool_use` (#41637, #41678).
+- gemini: safety-blocked responses (SAFETY / PROHIBITED_CONTENT / BLOCKLIST finish reasons, prompt block feedback) produce refusal blocks (#41658).
+- langchain: `middleware.ModelRefusalMiddleware` with omit-inputs trace policy (#41582, #41689).
+- langgraph: opt-in strict resume mode (`Options.StrictResume`) raising `types.UnknownInterruptError` for stale/empty/ambiguous resumes before any write (#9574, #9590).
+
+### Changed
+
+- langchain/agents: ModelRetryMiddleware now propagates non-retryable errors immediately instead of routing them through on_failure ("continue" no longer swallows them into an AIMessage) — aligns with Python model_retry, where RetryOn=False bypasses on_failure.
+
+### Fixed
+
+- anthropic: streaming terminal chunk carrying stop_reason/stop_details is emitted regardless of the stream-usage gate (usage itself stays gated) (#41582 wave).
+- langgraph: exit-durability flush no longer overwrites the pause checkpoint when a run fails before saving any checkpoint (strict-resume rejections and other early errors left `Next` cleared, silently breaking later resumes); mirrors Python's `_put_checkpoint` early return (#9574 wave).
+
 ## [0.12.5] - 2026-11-03
 
 Nested Stream emitter regression — v0.12.0's #9458 strip also dropped a

@@ -645,6 +645,20 @@ func (s *checkpointSink) flushExit() error {
 	if s.exitPauseFlushed {
 		return nil
 	}
+	// The run errored before saving ANY checkpoint of its own (e.g. a strict
+	// resume rejection): flushCfg still names the checkpoint the run LOADED
+	// (empty for a fresh thread that never reached its first save), so the
+	// final checkpoint this method would write reuses that loaded checkpoint's
+	// ID with an empty Next — clobbering its resume plan, exactly like the
+	// pause case above. Skip, mirroring Python's _put_checkpoint exit guard
+	// (`exiting and checkpoint["id"] == checkpoint_id_saved`, _loop.py: the
+	// loaded checkpoint is already saved, so the exit save is a no-op). Exit
+	// mode defers its puts, so "saved" is tracked structurally: every save
+	// advances flushCfg to a freshly minted ID, leaving the loaded ID behind
+	// exactly when no save ran.
+	if s.flushCfg.CheckpointID == s.initialCfg.CheckpointID {
+		return nil
+	}
 
 	// 1. Compute channelsToSnapshot from the counters the (deferred)
 	// saveCheckpoint calls already advanced — flushExit must NOT advance

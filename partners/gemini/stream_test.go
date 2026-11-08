@@ -547,3 +547,44 @@ func TestGenaiStreamHandleResponseNil(t *testing.T) {
 		t.Fatalf("nil response must not yield, got %+v", chunk)
 	}
 }
+
+// TestStreamSafetyFinishYieldsRefusal: a streaming response with
+// finishReason=SAFETY must yield a chunk carrying a RefusalBlock (pinning
+// the refusal-block append in handleResponse and the condition that keeps a
+// non-empty chunk from being silently swallowed). The frame deliberately
+// carries no usageMetadata: with neither content nor usage, the only thing
+// preventing a silent swallow is the len(chunk.ContentBlocks) == 0 guard.
+func TestStreamSafetyFinishYieldsRefusal(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"role":"model"},"finishReason":"SAFETY","finishMessage":"Blocked for safety."}]}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithAPIKey("test-key"),
+	)
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	chunks := drainStream(t, stream)
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %+v, want the single refusal chunk", chunks)
+	}
+	chunk := chunks[0]
+	var refusal *messages.RefusalBlock
+	for _, block := range chunk.ContentBlocks {
+		if rb, ok := block.(messages.RefusalBlock); ok {
+			refusal = &rb
+		}
+	}
+	if refusal == nil {
+		t.Fatalf("chunk carries no RefusalBlock: %+v", chunk.ContentBlocks)
+	}
+	if refusal.Extras["finish_reason"] != "SAFETY" {
+		t.Fatalf("refusal extras = %v", refusal.Extras)
+	}
+}

@@ -227,16 +227,37 @@ func (s *messageStream) consumeEvent(ctx context.Context) (messages.Message, boo
 			}
 			s.output.ResponseMetadata["stop_reason"] = event.Delta.StopReason
 		}
+		if event.Delta.StopReason == "refusal" {
+			explanation, category := "", ""
+			if event.Delta.StopDetails != nil {
+				explanation = event.Delta.StopDetails.Explanation
+				category = event.Delta.StopDetails.Category
+				s.output.ResponseMetadata["stop_details"] = map[string]any{
+					"category": category, "explanation": explanation,
+				}
+			}
+			rb := messages.RefusalBlock{Refusal: explanation}
+			if category != "" {
+				rb.Extras = map[string]any{"category": category}
+			}
+			s.output.ContentBlocks = append(s.output.ContentBlocks, rb)
+		}
 		// Python's _stream yields this event as a terminal empty-content
 		// chunk carrying usage_metadata and the stop info
 		// (chat_models.py:1702-1725), so chunk-aggregating consumers see the
 		// token counts; Go previously surfaced usage only through the
-		// EventChatModelEnd callback. Stream usage defaults on
-		// (WithStreamUsage(false) to suppress), and a fully-zero usage never
-		// yields a chunk (some gateways send empty usage objects).
-		if s.streamUsage && !s.usage.isZero() {
+		// EventChatModelEnd callback. The stop info gates emission on its
+		// own (spec D4): a stop_reason/stop_sequence chunk is yielded even
+		// with stream usage disabled or usage fully zero, so consumers never
+		// lose the terminal signal. Usage rides along only when stream usage
+		// is on (default; WithStreamUsage(false) suppresses it) and non-zero
+		// (some gateways send empty usage objects).
+		hasStopInfo := event.Delta.StopReason != "" || event.Delta.StopSequence != ""
+		if hasStopInfo || (s.streamUsage && !s.usage.isZero()) {
 			chunk := messages.AI("")
-			chunk.UsageMetadata = s.output.UsageMetadata
+			if s.streamUsage && !s.usage.isZero() {
+				chunk.UsageMetadata = s.output.UsageMetadata
+			}
 			chunk.ResponseMetadata = map[string]any{}
 			if event.Delta.StopReason != "" {
 				chunk.ResponseMetadata["stop_reason"] = event.Delta.StopReason
@@ -288,13 +309,14 @@ type streamEvent struct {
 }
 
 type streamDelta struct {
-	Type         string `json:"type"`
-	Text         string `json:"text"`
-	PartialJSON  string `json:"partial_json"`
-	Thinking     string `json:"thinking"`
-	Signature    string `json:"signature"`
-	StopReason   string `json:"stop_reason"`
-	StopSequence string `json:"stop_sequence"`
+	Type         string              `json:"type"`
+	Text         string              `json:"text"`
+	PartialJSON  string              `json:"partial_json"`
+	Thinking     string              `json:"thinking"`
+	Signature    string              `json:"signature"`
+	StopReason   string              `json:"stop_reason"`
+	StopSequence string              `json:"stop_sequence"`
+	StopDetails  *stopDetailsPayload `json:"stop_details"`
 }
 
 type streamError struct {

@@ -60,6 +60,14 @@ func (e *StructuredOutputValidationError) Unwrap() error {
 	return e.Source
 }
 
+// RefusalMessage returns the AI message the validation error was built from.
+// It exists for the middleware package (which agents imports, so middleware
+// cannot import agents back): ModelRefusalMiddleware matches it through a
+// local interface with errors.As.
+func (e *StructuredOutputValidationError) RefusalMessage() messages.Message {
+	return e.AIMessage
+}
+
 type SchemaSpec struct {
 	Schema      schema.Schema
 	Name        string
