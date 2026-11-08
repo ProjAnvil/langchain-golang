@@ -3,8 +3,10 @@ package openai
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -165,6 +167,76 @@ func TestChatCompletionsRefusalReplayWireShape(t *testing.T) {
 	}
 	if !sawText || !sawRefusal {
 		t.Fatalf("want text+refusal parts: %s", encoded)
+	}
+}
+
+// --- CC 流式：delta.refusal 累积，仅在 [DONE] 终态 chunk 挂 RefusalBlock ---
+// 覆盖 chat_completions_stream.go 的 s.refusal 累积与 [DONE] 挂块路径
+// （对齐上游"仅终态可见"形状）。SSE fixture 模式沿用
+// chat_completions_stream_test.go 的 httptest server。
+
+func TestChatCompletionsStreamRefusalAccumulatesToDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w,
+			"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\" answer\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"refusal\":\"I can't help with that.\"}}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	).WithChatCompletions()
+
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+
+	var chunks []messages.Message
+	for {
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		chunks = append(chunks, chunk)
+	}
+	// 2 content chunks + 1 [DONE] 终态 chunk；refusal delta 自身不产生 chunk。
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3 (two content deltas + terminal): %+v", len(chunks), chunks)
+	}
+	if chunks[0].Content != "partial" || chunks[1].Content != " answer" {
+		t.Fatalf("content chunks = %q, %q", chunks[0].Content, chunks[1].Content)
+	}
+	// refusal 块不逐 delta 发射：中间 chunk 不得携带 RefusalBlock。
+	for i, c := range chunks[:len(chunks)-1] {
+		for _, b := range c.ContentBlocks {
+			if _, isRefusal := b.(messages.RefusalBlock); isRefusal {
+				t.Fatalf("chunk[%d] must not carry a per-delta RefusalBlock: %+v", i, c.ContentBlocks)
+			}
+		}
+	}
+	// 终态 chunk 携带值类型 RefusalBlock，文本正确。
+	final := chunks[len(chunks)-1]
+	var found bool
+	for _, b := range final.ContentBlocks {
+		if rb, isRefusal := b.(messages.RefusalBlock); isRefusal {
+			found = true
+			if rb.Refusal != "I can't help with that." {
+				t.Fatalf("refusal text = %q", rb.Refusal)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("terminal chunk must carry a RefusalBlock, got %+v", final.ContentBlocks)
 	}
 }
 
