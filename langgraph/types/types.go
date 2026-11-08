@@ -113,6 +113,39 @@ func (e *GraphInterrupt) Error() string {
 	return fmt.Sprintf("types: interrupted with value %v (id=%s)", e.Interrupt.Value, e.Interrupt.ID)
 }
 
+// UnknownInterruptError is raised by strict resume mode (langgraph 1.2.20,
+// #9574, CONFIG_KEY_STRICT_RESUME="__pregel_strict_resume"): a resume map
+// names an interrupt that is not pending, is empty, or a scalar resume meets
+// multiple pending interrupts. Without strict mode these are silently
+// ignored (or a plain error for the ambiguous case), which hides double- or
+// mis-answered interrupts from clients.
+type UnknownInterruptError struct {
+	// Reason is "not_pending", "empty_map", or "ambiguous".
+	Reason string
+	// InterruptIDs carries the offending resume ids (Reason "not_pending").
+	InterruptIDs []string
+	// PendingIDs carries the pending interrupt ids at check time, sorted.
+	PendingIDs []string
+}
+
+// Error implements the error interface.
+func (e *UnknownInterruptError) Error() string {
+	switch e.Reason {
+	case "empty_map":
+		return "The resume map names no interrupt"
+	case "not_pending":
+		if len(e.InterruptIDs) > 0 {
+			return "Unknown or already-consumed interrupt: " + e.InterruptIDs[0]
+		}
+		return "Unknown or already-consumed interrupt"
+	case "ambiguous":
+		return "When there are multiple pending interrupts, you must specify the interrupt id when resuming. " +
+			"Docs: https://docs.langchain.com/oss/python/langgraph/interrupts#handling-multiple-interrupts."
+	default:
+		return "unknown interrupt error: " + e.Reason
+	}
+}
+
 // GraphRecursionError reports that a run exceeded its recursion limit (the
 // maximum number of supersteps) before reaching a terminal state, mirroring
 // Python's langgraph.errors.GraphRecursionError.
