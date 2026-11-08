@@ -102,7 +102,15 @@ func (m *ModelRetryMiddleware) WrapModelCall(ctx context.Context, request ModelR
 			return response, nil
 		}
 		attemptsMade := attempt + 1
-		if !m.RetryOn(err) || attempt == m.MaxRetries {
+		// Python parity (model_retry.py: `if not should_retry_exception(...):
+		// raise`): an error RetryOn rejects propagates IMMEDIATELY, bypassing
+		// on_failure — otherwise a refusal would surface as a "continue"
+		// failure message instead of the ModelRefusalError upstream pins
+		// (test_retry_middleware_does_not_retry_refusal, #41582).
+		if !m.RetryOn(err) {
+			return ModelResponse{}, err
+		}
+		if attempt == m.MaxRetries {
 			return m.handleFailure(err, attemptsMade)
 		}
 		delay := calculateRetryDelay(attempt, m.BackoffFactor, m.InitialDelay, m.MaxDelay, m.Jitter)
