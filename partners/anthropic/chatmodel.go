@@ -12,8 +12,10 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/language"
+	"github.com/projanvil/langchain-golang/core/lcerrors"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
+	"github.com/projanvil/langchain-golang/core/outputparser"
 	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/core/schema"
 	"github.com/projanvil/langchain-golang/core/tools"
@@ -474,9 +476,7 @@ func (m ChatModel) InvokeStructured(
 		return messages.Message{}, fmt.Errorf("anthropic structured output: invoke: %w", err)
 	}
 	if len(response.ToolCalls) == 0 {
-		return messages.Message{}, fmt.Errorf(
-			"anthropic structured output: model returned no tool_call (stop_reason=%v)",
-			response.ResponseMetadata["stop_reason"])
+		return messages.Message{}, noToolCallError(response)
 	}
 
 	encoded, err := json.Marshal(response.ToolCalls[0].Args)
@@ -488,6 +488,33 @@ func (m ChatModel) InvokeStructured(
 	out.ResponseMetadata = response.ResponseMetadata
 	out.UsageMetadata = response.UsageMetadata
 	return out, nil
+}
+
+// noToolCallError builds the structured-output failure for a response
+// without tool calls. A refusal surfaces as ModelRefusalError instead of
+// the generic "no tool_call" parse error (anthropic #41715: refusal
+// semantics win over schema enforcement). Go's InvokeStructured always
+// forces tool_choice to the synthesized tool, so #41715's "not forced"
+// gate has no Go counterpart — this branch is its only reachable form.
+func noToolCallError(response messages.Message) error {
+	if err := refusalErrorOf(response); err != nil {
+		return err
+	}
+	return fmt.Errorf(
+		"anthropic structured output: model returned no tool_call (stop_reason=%v)",
+		response.ResponseMetadata["stop_reason"])
+}
+
+// refusalErrorOf returns a *lcerrors.ModelRefusalError when the message
+// carries a refusal block or stop_reason="refusal", else nil.
+func refusalErrorOf(msg messages.Message) error {
+	if err := outputparser.RaiseIfRefused(msg); err != nil {
+		return err
+	}
+	if msg.ResponseMetadata["stop_reason"] == "refusal" {
+		return lcerrors.ModelRefusalFromBlock(messages.RefusalBlock{}, msg)
+	}
+	return nil
 }
 
 // messagesEndpoint is the Messages API endpoint a request posts to. When the
@@ -1114,13 +1141,22 @@ type toolSpec struct {
 }
 
 type messagePayload struct {
-	ID         string         `json:"id"`
-	Type       string         `json:"type"`
-	Role       string         `json:"role"`
-	Model      string         `json:"model"`
-	Content    []contentBlock `json:"content"`
-	StopReason string         `json:"stop_reason"`
-	Usage      usagePayload   `json:"usage"`
+	ID          string              `json:"id"`
+	Type        string              `json:"type"`
+	Role        string              `json:"role"`
+	Model       string              `json:"model"`
+	Content     []contentBlock      `json:"content"`
+	StopReason  string              `json:"stop_reason"`
+	StopDetails *stopDetailsPayload `json:"stop_details"`
+	Usage       usagePayload        `json:"usage"`
+}
+
+// stopDetailsPayload carries Anthropic's refusal details on a
+// stop_reason="refusal" response (both non-streaming message payloads
+// and streaming message_delta deltas).
+type stopDetailsPayload struct {
+	Category    string `json:"category"`
+	Explanation string `json:"explanation"`
 }
 
 type usagePayload struct {
@@ -1254,6 +1290,27 @@ func (r messagePayload) toMessage() messages.Message {
 		"model":          r.Model,
 		"model_provider": "anthropic",
 		"stop_reason":    r.StopReason,
+	}
+	if r.StopReason == "refusal" {
+		explanation := ""
+		if r.StopDetails != nil {
+			explanation = r.StopDetails.Explanation
+			if r.StopDetails.Category != "" {
+				message.ContentBlocks = append(message.ContentBlocks, messages.RefusalBlock{
+					Refusal: explanation,
+					Extras:  map[string]any{"category": r.StopDetails.Category},
+				})
+			}
+		}
+		if r.StopDetails == nil || r.StopDetails.Category == "" {
+			message.ContentBlocks = append(message.ContentBlocks, messages.RefusalBlock{Refusal: explanation})
+		}
+		if r.StopDetails != nil {
+			message.ResponseMetadata["stop_details"] = map[string]any{
+				"category":    r.StopDetails.Category,
+				"explanation": r.StopDetails.Explanation,
+			}
+		}
 	}
 	message.UsageMetadata = r.Usage.toUsageMetadata()
 	return message

@@ -1,11 +1,19 @@
 package anthropic
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 )
+
+// errSkipBlock marks a content block that has no wire representation and must
+// be silently dropped by formatContentBlocks. It is internal: only
+// formatContentBlocks handles it; every other formatContentBlock caller
+// (formatSystemBlocks reaches it only for text blocks) never sees it, so
+// per-block error behavior elsewhere is unchanged.
+var errSkipBlock = errors.New("anthropic: block not sendable")
 
 // formatHumanContent converts a human message into Anthropic content blocks.
 // Structured content blocks take precedence over the plain-text Content field.
@@ -24,6 +32,9 @@ func formatContentBlocks(blocks []messages.ContentBlock) ([]contentBlock, error)
 	out := make([]contentBlock, 0, len(blocks))
 	for _, block := range blocks {
 		converted, err := formatContentBlock(block)
+		if errors.Is(err, errSkipBlock) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -61,6 +72,9 @@ func formatContentBlock(block messages.ContentBlock) (contentBlock, error) {
 	case "text":
 		text, _ := m["text"].(string)
 		return contentBlock{Type: "text", Text: text, CacheControl: cacheControl}, nil
+	case "refusal":
+		// The Messages API has no refusal input block (#41582, _compat.py:125-127).
+		return contentBlock{}, errSkipBlock
 	default:
 		return passthroughBlock(m), nil
 	}
