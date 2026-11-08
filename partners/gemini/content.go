@@ -306,8 +306,59 @@ func responseToMessage(response *genai.GenerateContentResponse) (messages.Messag
 	if candidate.FinishMessage != "" {
 		message.ResponseMetadata["finish_message"] = candidate.FinishMessage
 	}
+	if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
+		message.ResponseMetadata["prompt_feedback"] = map[string]any{
+			"block_reason": string(response.PromptFeedback.BlockReason),
+		}
+	}
+	if rb := refusalFromMetadata(message.ResponseMetadata); rb != nil {
+		blocks = append(blocks, *rb)
+		message.ContentBlocks = blocks
+	}
 	message.UsageMetadata = usageToMetadata(response.UsageMetadata)
 	return message, nil
+}
+
+// refusalFinishReasons are the candidate finish reasons meaning Gemini
+// blocked the response (Python google_genai.py #41658:
+// _REFUSAL_FINISH_REASONS).
+var refusalFinishReasons = map[string]bool{
+	"SAFETY":             true,
+	"PROHIBITED_CONTENT": true,
+	"BLOCKLIST":          true,
+}
+
+// reasonName normalizes a Gemini finish/block reason to its enum member name
+// tail (Python's _reason_name: str(getattr(reason, "name", reason)).rsplit(".", 1)[-1]).
+func reasonName(reason any) string {
+	s, _ := reason.(string)
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndex(s, "."); i >= 0 {
+		s = s[i+1:]
+	}
+	return s
+}
+
+// refusalFromMetadata builds a refusal content block from Gemini's finish or
+// prompt-block reason metadata, or returns nil when neither signals a block
+// (Python's _refusal_from_metadata, #41658).
+func refusalFromMetadata(meta map[string]any) *messages.RefusalBlock {
+	extras := map[string]any{}
+	if fr := reasonName(meta["finish_reason"]); refusalFinishReasons[fr] {
+		extras["finish_reason"] = fr
+	}
+	if feedback, ok := meta["prompt_feedback"].(map[string]any); ok {
+		if br := reasonName(feedback["block_reason"]); br != "" && br != "BLOCKED_REASON_UNSPECIFIED" {
+			extras["block_reason"] = br
+		}
+	}
+	if len(extras) == 0 {
+		return nil
+	}
+	refusal, _ := meta["finish_message"].(string)
+	return &messages.RefusalBlock{Refusal: refusal, Extras: extras}
 }
 
 // usageToMetadata applies Python's _response_to_result token accounting

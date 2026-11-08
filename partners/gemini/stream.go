@@ -205,16 +205,29 @@ func (s *genaiStream) handleResponse(response *genai.GenerateContentResponse) (m
 		s.output.ResponseMetadata["model_provider"] = providerName
 	}
 
+	if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
+		if s.output.ResponseMetadata == nil {
+			s.output.ResponseMetadata = map[string]any{}
+		}
+		s.output.ResponseMetadata["prompt_feedback"] = map[string]any{
+			"block_reason": string(response.PromptFeedback.BlockReason),
+		}
+	}
+
 	if finish != "" {
 		if s.output.ResponseMetadata == nil {
 			s.output.ResponseMetadata = map[string]any{}
 		}
 		s.output.ResponseMetadata["finish_reason"] = finish
+		if rb := refusalFromMetadata(s.output.ResponseMetadata); rb != nil {
+			s.output.ContentBlocks = append(s.output.ContentBlocks, *rb)
+			chunk.ContentBlocks = append(chunk.ContentBlocks, *rb)
+		}
 		if s.lastUsage != nil && !s.usageAttached {
 			chunk.UsageMetadata = *s.lastUsage
 			s.usageAttached = true
 		}
-		if !hasContent && chunk.UsageMetadata == (messages.UsageMetadata{}) {
+		if !hasContent && len(chunk.ContentBlocks) == 0 && chunk.UsageMetadata == (messages.UsageMetadata{}) {
 			// A finish-only response with nothing to say: end silently.
 			return messages.Message{}, false
 		}
