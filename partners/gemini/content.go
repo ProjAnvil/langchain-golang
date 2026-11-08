@@ -145,6 +145,11 @@ func blockToPart(block messages.ContentBlock) (*genai.Part, error) {
 	case messages.ToolCallChunkBlock, messages.InvalidToolCallBlock:
 		// Streaming-only shapes never appear on requests.
 		return nil, nil
+	case messages.RefusalBlock:
+		// A refusal block is response-side state (safety blocks, #41658);
+		// the Gemini request schema has no matching part, so a blocked AI
+		// message re-entering the history is skipped, not rejected.
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("gemini: unsupported content block %T", block)
 	}

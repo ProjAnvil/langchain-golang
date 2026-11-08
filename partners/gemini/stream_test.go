@@ -547,3 +547,41 @@ func TestGenaiStreamHandleResponseNil(t *testing.T) {
 		t.Fatalf("nil response must not yield, got %+v", chunk)
 	}
 }
+
+// TestStreamSafetyFinishYieldsRefusal: finishReason=SAFETY 的流式响应必须
+// yield 一个携带 RefusalBlock 的 chunk（钉住 handleResponse 中 refusal 块的
+// 追加与非空 chunk 不被静默吞掉的条件）。
+func TestStreamSafetyFinishYieldsRefusal(t *testing.T) {
+	server := newStreamServer(t,
+		`{"candidates":[{"content":{"role":"model"},"finishReason":"SAFETY","finishMessage":"Blocked for safety."}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":0,"totalTokenCount":3}}`,
+	)
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithAPIKey("test-key"),
+	)
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	chunks := drainStream(t, stream)
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %+v, want the single refusal chunk", chunks)
+	}
+	chunk := chunks[0]
+	var refusal *messages.RefusalBlock
+	for _, block := range chunk.ContentBlocks {
+		if rb, ok := block.(messages.RefusalBlock); ok {
+			refusal = &rb
+		}
+	}
+	if refusal == nil {
+		t.Fatalf("chunk carries no RefusalBlock: %+v", chunk.ContentBlocks)
+	}
+	if refusal.Extras["finish_reason"] != "SAFETY" {
+		t.Fatalf("refusal extras = %v", refusal.Extras)
+	}
+}

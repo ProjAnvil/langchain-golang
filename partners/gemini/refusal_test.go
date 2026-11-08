@@ -92,3 +92,57 @@ func TestResponseToMessageAppendsSafetyRefusal(t *testing.T) {
 		t.Fatalf("extras = %v", last.Extras)
 	}
 }
+
+// TestBuildContentsSkipsRefusalBlocks: 一次 safety 阻断产出的 AI 消息再次
+// 进入历史时，refusal 块必须被静默跳过（Gemini 请求 schema 无对应 part），
+// 而非触发 "unsupported content block" 错误。
+func TestBuildContentsSkipsRefusalBlocks(t *testing.T) {
+	blocked := messages.AI("")
+	blocked.ContentBlocks = []messages.ContentBlock{
+		messages.RefusalBlock{
+			Refusal: "Blocked for safety.",
+			Extras:  map[string]any{"finish_reason": "SAFETY"},
+		},
+	}
+	_, contents, err := buildContents([]messages.Message{
+		messages.Human("hi"),
+		blocked,
+		messages.Human("try again"),
+	})
+	if err != nil {
+		t.Fatalf("buildContents must not reject a refusal block: %v", err)
+	}
+	if len(contents) != 3 {
+		t.Fatalf("contents = %+v", contents)
+	}
+	model := contents[1]
+	if model.Role != "model" {
+		t.Fatalf("contents[1].Role = %q, want model", model.Role)
+	}
+	// 空 model turn 保留一个占位空文本 part；refusal 不得出现在任何 part 里。
+	if len(model.Parts) != 1 || model.Parts[0].Text != "" {
+		t.Fatalf("model parts = %+v, want the single empty placeholder", model.Parts)
+	}
+	for _, part := range model.Parts {
+		if part.Text == "Blocked for safety." {
+			t.Fatal("refusal text must not leak into request parts")
+		}
+	}
+}
+
+// TestBuildContentsRefusalAlongsideText: 同一 AI 消息中 refusal 块与普通
+// 文本并存时，只跳过 refusal 块，文本照常序列化。
+func TestBuildContentsRefusalAlongsideText(t *testing.T) {
+	blocked := messages.AI("")
+	blocked.ContentBlocks = []messages.ContentBlock{
+		messages.TextBlock{Text: "partial answer"},
+		messages.RefusalBlock{Extras: map[string]any{"finish_reason": "BLOCKLIST"}},
+	}
+	_, contents, err := buildContents([]messages.Message{blocked})
+	if err != nil {
+		t.Fatalf("buildContents: %v", err)
+	}
+	if len(contents) != 1 || len(contents[0].Parts) != 1 || contents[0].Parts[0].Text != "partial answer" {
+		t.Fatalf("contents = %+v, want one model content with the text part only", contents)
+	}
+}
