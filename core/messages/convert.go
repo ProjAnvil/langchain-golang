@@ -254,12 +254,23 @@ func openAIRole(role Role) (string, error) {
 }
 
 // openAIContent returns the OpenAI content value: the message's string content,
-// or a list of block maps (via BlockToMap) when structured blocks are present.
+// or a list of block maps when structured blocks are present.
+// Refusal blocks are emitted as bare {"type","refusal"} parts — id/index/extras
+// are NOT forwarded (Python utils.py:1955-1959 builds a fresh two-key dict, and
+// test_refusal.py:200-207 pins extras staying off the wire); empty-text
+// refusals are dropped ("Refusals without text have nothing to send").
 func openAIContent(message Message) any {
 	if len(message.ContentBlocks) > 0 {
-		blocks := make([]map[string]any, len(message.ContentBlocks))
-		for i, block := range message.ContentBlocks {
-			blocks[i] = BlockToMap(block)
+		blocks := make([]map[string]any, 0, len(message.ContentBlocks))
+		for _, block := range message.ContentBlocks {
+			if rb, ok := block.(RefusalBlock); ok {
+				if rb.Refusal == "" {
+					continue
+				}
+				blocks = append(blocks, map[string]any{"type": "refusal", "refusal": rb.Refusal})
+				continue
+			}
+			blocks = append(blocks, BlockToMap(block))
 		}
 		return blocks
 	}
