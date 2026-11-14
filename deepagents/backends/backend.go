@@ -83,8 +83,13 @@ type LsResult struct {
 
 // LsEntry is one directory entry. Type is "file" or "directory" (the Python
 // reference's FileInfo uses path/is_dir/size; the Go port keeps the name,
-// kind, and modification time). ModifiedAt comes from the filesystem stat
-// mtime, like the modified_at field in the reference's ls().
+// kind, and modification time). A directory entry's Name carries a trailing
+// "/" — the port's stand-in for the reference's FileInfo.path directory
+// marker ("Directories have a trailing `/` in their path and `is_dir=True`",
+// backends/state.py ls docstring; both upstream backends append it), so the
+// ls tool's rendered paths distinguish directories from files. ModifiedAt
+// comes from the filesystem stat mtime, like the modified_at field in the
+// reference's ls().
 type LsEntry struct {
 	Name       string
 	Type       string

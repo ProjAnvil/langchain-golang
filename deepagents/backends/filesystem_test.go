@@ -254,7 +254,7 @@ func TestFilesystemBackendLs(t *testing.T) {
 		if len(res.Entries) != 4 {
 			t.Fatalf("len(Entries) = %d, want 4 (%+v)", len(res.Entries), res.Entries)
 		}
-		wantNames := []string{"a.txt", "b.txt", "mdir", "zdir"}
+		wantNames := []string{"a.txt", "b.txt", "mdir/", "zdir/"}
 		wantTypes := []string{"file", "file", "directory", "directory"}
 		for i, e := range res.Entries {
 			if e.Name != wantNames[i] {

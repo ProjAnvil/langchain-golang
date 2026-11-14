@@ -524,7 +524,7 @@ func TestStateBackendRoundtrip(t *testing.T) {
 		}
 		want := []LsEntry{
 			{Name: "a.txt", Type: "file", ModifiedAt: view.Files()["/a.txt"].ModifiedAt},
-			{Name: "sub", Type: "directory"},
+			{Name: "sub/", Type: "directory"},
 		}
 		if !reflect.DeepEqual(res.Entries, want) {
 			t.Errorf("Ls(/) = %+v, want %+v", res.Entries, want)

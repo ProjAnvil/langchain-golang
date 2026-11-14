@@ -354,12 +354,15 @@ func filterStateFiles(files map[string]FileMeta, root string) []stateScopedFile 
 // Ls lists the direct children of the directory at path, mirroring ls() in
 // the Python reference, deepagents/backends/state.py:125-173: files directly
 // under the directory are listed as file entries with their stored
-// modification time, deeper keys surface as directory entries (upstream
-// directories carry no timestamp, hence the zero ModifiedAt), and the result
-// is sorted by name. A path with no stored files yields empty entries, not an
-// error — there is no directory to be missing in an in-memory map. Unlike the
-// reference's raw prefix matching, the path is normalized first (see the
-// StateBackend divergence notes).
+// modification time, deeper keys surface as directory entries whose Name
+// carries a trailing "/" (the reference's FileInfo.path for a directory is
+// normalized_path + subdir + "/", state.py:158; upstream directories carry
+// no timestamp, hence the zero ModifiedAt), and the result is sorted by
+// name — with the directory marker included, the same path-with-slash key
+// the reference sorts by. A path with no stored files yields empty entries,
+// not an error — there is no directory to be missing in an in-memory map.
+// Unlike the reference's raw prefix matching, the path is normalized first
+// (see the StateBackend divergence notes).
 func (b *StateBackend) Ls(ctx context.Context, vpath string) (LsResult, error) {
 	v, err := b.view(ctx)
 	if err != nil {
@@ -384,7 +387,7 @@ func (b *StateBackend) Ls(ctx context.Context, vpath string) (LsResult, error) {
 			subdir := rel[:idx]
 			if !seenDirs[subdir] {
 				seenDirs[subdir] = true
-				entries = append(entries, LsEntry{Name: subdir, Type: "directory"})
+				entries = append(entries, LsEntry{Name: subdir + "/", Type: "directory"})
 			}
 			continue
 		}

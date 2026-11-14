@@ -130,8 +130,11 @@ func statNotExist(err error) bool {
 
 // Ls lists the direct children of the directory at path, sorted by name,
 // mirroring ls() in the Python reference, deepagents/backends/filesystem.py.
-// A missing path reports the upstream "Path '<path>': path_not_found"
-// wording with the file_not_found code, and a non-directory reports
+// Directory entries carry a trailing "/" in Name (the reference's FileInfo
+// path for a directory is the child path + "/", filesystem.py:371), so the
+// sort key matches the reference's path-with-slash ordering. A missing path
+// reports the upstream "Path '<path>': path_not_found" wording with the
+// file_not_found code, and a non-directory reports
 // "Path '<path>': not_a_directory" (the reference maps NotADirectoryError to
 // INVALID_PATH in _map_exception_to_standard_error).
 func (b *FilesystemBackend) Ls(ctx context.Context, vpath string) (LsResult, error) {
@@ -172,11 +175,13 @@ func (b *FilesystemBackend) Ls(ctx context.Context, vpath string) (LsResult, err
 		if !withinDir(b.root, resolveExisting(child)) {
 			continue
 		}
-		entry := LsEntry{Name: de.Name(), ModifiedAt: ci.ModTime()}
+		entry := LsEntry{ModifiedAt: ci.ModTime()}
 		if ci.IsDir() {
 			entry.Type = "directory"
+			entry.Name = de.Name() + "/"
 		} else {
 			entry.Type = "file"
+			entry.Name = de.Name()
 		}
 		entries = append(entries, entry)
 	}

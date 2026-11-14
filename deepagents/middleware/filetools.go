@@ -471,6 +471,52 @@ func formatGrepResult(res backends.GrepResult, outputMode string) string {
 	}
 }
 
+// --- Regex no-match hint (UP backends/utils.py:1210-1245) ------------------
+
+// grepRegexEscapedClassChars lists the characters that, when preceded by a
+// backslash, mark a grep pattern as regex-written: the dot, the class/digit/
+// word shorthand letters, and the escaped metacharacters — the member set of
+// _REGEX_SIGNAL_RE's third alternative (UP backends/utils.py:1210-1218).
+const grepRegexEscapedClassChars = `.wWdDsSbB(){}[]|+*?^$`
+
+// looksLikeGrepRegex heuristically detects regex syntax in a pattern meant
+// for literal grep, mirroring _looks_like_regex over _REGEX_SIGNAL_RE (UP
+// backends/utils.py:1224-1227): a "|" alternation, a ".*" or ".+" wildcard,
+// or a backslash-escaped regex metacharacter/class ("\.", "\d", "\(", ...).
+// Deliberately conservative, like upstream: bare ".", "(", ")", "[", "]", "?",
+// "^", "$" are omitted because they appear routinely in literal code
+// searches (e.g. "self.tools", "def __init__(self):", "arr[0]"), which would
+// cause false hints.
+func looksLikeGrepRegex(pattern string) bool {
+	if strings.Contains(pattern, "|") ||
+		strings.Contains(pattern, ".*") ||
+		strings.Contains(pattern, ".+") {
+		return true
+	}
+	for i := 0; i+1 < len(pattern); i++ {
+		if pattern[i] == '\\' && strings.ContainsRune(grepRegexEscapedClassChars, rune(pattern[i+1])) {
+			return true
+		}
+	}
+	return false
+}
+
+// grepRegexLiteralHint returns the hint appended to an EMPTY grep result
+// whose pattern looks like an (unsupported) regex, mirroring
+// regex_literal_hint verbatim (UP backends/utils.py:1229-1245): grep matches
+// literal text, so regex metacharacters are searched verbatim and silently
+// miss. Callers gate this on a no-match result; the function itself only
+// inspects the pattern.
+func grepRegexLiteralHint(pattern string) string {
+	if !looksLikeGrepRegex(pattern) {
+		return ""
+	}
+	return "Note: grep matches literal text, not regex, so characters like " +
+		"`|`, `.*`, and `\\.` are searched verbatim. Search for the literal " +
+		"text you need instead; for `|` alternation, run a separate search " +
+		"per alternative."
+}
+
 // --- Argument coercion ---------------------------------------------------
 
 // argString reads a string argument, defaulting to "".
@@ -533,9 +579,10 @@ func fsRequiredArg(name string) (coretools.Result, error) {
 // newLsTool builds the ls tool, mirroring _create_ls_tool,
 // filesystem.py:2148ff. Entries are rendered as full virtual paths in a
 // Python list literal (the reference's _format_file_paths over the entries'
-// path field; this port's LsEntry carries only the name, so the tool joins it
-// onto the normalized directory). After the backend call, entries under
-// read-denied rules are dropped (_apply_permissions_to_ls_results,
+// path field; this port's LsEntry carries the entry name — with the
+// upstream trailing-"/" directory marker — so the tool joins it onto the
+// normalized directory). After the backend call, entries under read-denied
+// rules are dropped (_apply_permissions_to_ls_results,
 // filesystem.py:2183-2185) — the readDenied post-filter family glob/grep
 // already use.
 func (m *FilesystemMiddleware) newLsTool() (coretools.Func, error) {
@@ -841,6 +888,7 @@ func (m *FilesystemMiddleware) newGrepTool() (coretools.Func, error) {
 				}
 				return fsErrorResult(fsErrText(err))
 			}
+			backendHadMatches := len(res.Matches) > 0
 			matches := make([]backends.GrepFileMatches, 0, len(res.Matches))
 			for _, fm := range res.Matches {
 				if !m.readDenied(fm.Path) {
@@ -848,7 +896,21 @@ func (m *FilesystemMiddleware) newGrepTool() (coretools.Func, error) {
 				}
 			}
 			res.Matches = matches
-			return coretools.Result{Content: formatGrepResult(res, outputMode)}, nil
+			formatted := formatGrepResult(res, outputMode)
+			// Regex no-match hint (UP _format_grep_tool_result,
+			// filesystem.py:932-934): when the result is empty, the backend
+			// itself had no matches either (permission filtering removed
+			// nothing — upstream's `not backend_had_matches` gate), and the
+			// pattern carries regex signals, append the literal-search hint
+			// so the model learns grep is not a regex engine. This port has
+			// no truncation flags, so upstream's `not result.truncated` side
+			// of the gate is always satisfied.
+			if len(res.Matches) == 0 && !backendHadMatches {
+				if hint := grepRegexLiteralHint(argString(input, "pattern")); hint != "" {
+					formatted += "\n\n" + hint
+				}
+			}
+			return coretools.Result{Content: formatted}, nil
 		},
 	)
 }

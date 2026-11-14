@@ -222,7 +222,7 @@ func TestLsTool(t *testing.T) {
 			backend:  backends.NewStateBackend(),
 			ctxFiles: seed,
 			args:     map[string]any{"path": "/"},
-			want:     "['/a.txt', '/sub']",
+			want:     "['/a.txt', '/sub/']",
 		},
 		{
 			// Task 5 review handoff: ls drops entries under read-denied rules
@@ -705,6 +705,31 @@ func TestGrepTool(t *testing.T) {
 			want: "No matches found",
 		},
 		{
+			// UP _format_grep_tool_result (filesystem.py:932-934) appends the
+			// regex_literal_hint (backends/utils.py:1229-1245) when the result
+			// is empty and the pattern carries a regex signal (".*" here).
+			name: "no-match regex-looking pattern appends the literal-search hint",
+			args: map[string]any{"pattern": "needle.*here"},
+			want: "No matches found\n\nNote: grep matches literal text, not regex, so characters like `|`, `.*`, and `\\.` are searched verbatim. Search for the literal text you need instead; for `|` alternation, run a separate search per alternative.",
+		},
+		{
+			name: "alternation pattern with no match also hints",
+			args: map[string]any{"pattern": "needle|pin"},
+			want: "No matches found\n\nNote: grep matches literal text, not regex, so characters like `|`, `.*`, and `\\.` are searched verbatim. Search for the literal text you need instead; for `|` alternation, run a separate search per alternative.",
+		},
+		{
+			name: "escaped regex class with no match hints",
+			args: map[string]any{"pattern": "\\d+"},
+			want: "No matches found\n\nNote: grep matches literal text, not regex, so characters like `|`, `.*`, and `\\.` are searched verbatim. Search for the literal text you need instead; for `|` alternation, run a separate search per alternative.",
+		},
+		{
+			// _REGEX_SIGNAL_RE deliberately omits bare `.`, `(`, `[`, ... —
+			// they appear routinely in literal code searches (utils.py:1215-1221).
+			name: "bare brackets are not a regex signal (conservative set)",
+			args: map[string]any{"pattern": "arr[0]"},
+			want: "No matches found",
+		},
+		{
 			name: "include glob filters the search",
 			args: map[string]any{"pattern": "needle", "glob": "*.txt"},
 			want: "No matches found",
@@ -747,6 +772,29 @@ func TestGrepTool(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("match present with a regex-looking pattern gets no hint", func(t *testing.T) {
+		// A literal match can itself contain regex signals ("a.*b" matching
+		// the text "a.*b"); the hint is gated on the no-match result only.
+		files := map[string]backends.FileMeta{"/re.txt": meta("a.*b\n")}
+		m := mustNewFilesystemMiddleware(t, backends.NewStateBackend())
+		res := invokeFileTool(t, stateCtx(files), m, "grep", map[string]any{"pattern": "a.*b"})
+		if res.Content != "/re.txt" {
+			t.Fatalf("Content = %q, want /re.txt with no hint", res.Content)
+		}
+	})
+
+	t.Run("permission-filtered matches get no hint (backend had matches)", func(t *testing.T) {
+		// UP gates the hint on `not backend_had_matches`: when matches existed
+		// but permission filtering removed them all, the emptiness is the
+		// permission system's doing, not a regex-literal mismatch.
+		files := map[string]backends.FileMeta{"/secret/k.txt": meta("x.*y\n")}
+		m := mustNewFilesystemMiddleware(t, backends.NewStateBackend(), denySecretsRead)
+		res := invokeFileTool(t, stateCtx(files), m, "grep", map[string]any{"pattern": "x.*y"})
+		if res.Content != "No matches found" {
+			t.Fatalf("Content = %q, want the bare no-matches text with no hint", res.Content)
+		}
+	})
 
 	t.Run("default max_count of 1000 is applied when omitted", func(t *testing.T) {
 		rec := newRecordingBackend(backends.NewStateBackend())

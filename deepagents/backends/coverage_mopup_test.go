@@ -52,8 +52,8 @@ func TestFilesystemBackendLsEdgePaths(t *testing.T) {
 	for _, e := range res.Entries {
 		names = append(names, e.Name)
 	}
-	if strings.Join(names, ",") != "note.md,sub" {
-		t.Fatalf("ls entries = %v, want the file and dir only (broken symlink skipped)", names)
+	if strings.Join(names, ",") != "note.md,sub/" {
+		t.Fatalf("ls entries = %v, want the file and dir only (broken symlink skipped; dir carries the trailing-/ marker)", names)
 	}
 }
 
