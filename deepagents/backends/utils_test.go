@@ -14,7 +14,9 @@ func TestNormalizePath(t *testing.T) {
 		wantErr bool
 	}{
 		{"relative becomes rooted", "x/y", "/x/y", false},
-		{"dotdot within root resolves", "/a/../b", "/b", false},
+		{"dotdot component rejected even within root", "/a/../b", "", true},
+		{"trailing dotdot rejected", "a/..", "", true},
+		{"dotdot via backslashes rejected", "a\\..\\b", "", true},
 		{"dotdot escaping root rejected", "a/../../x", "", true},
 		{"double slash collapses", "//a", "/a", false},
 		{"leading dotdot rejected", "../etc/passwd", "", true},

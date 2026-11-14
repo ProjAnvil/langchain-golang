@@ -37,21 +37,22 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 //
 //   - backslashes are rewritten to forward slashes (to_posix_path)
 //   - a leading '~' is rejected as path traversal
+//   - any path containing '..' as a whole path component is rejected as path
+//     traversal, even when it would resolve inside the root (so "/a/../b" is
+//     rejected, not resolved to "/b") — matching the upstream security
+//     semantics; substrings like the ".." in "foo..bar.txt" are fine
 //   - Windows absolute paths such as "C:/..." or "C:\\..." are rejected
 //   - '.' and duplicate-slash segments are resolved, and relative results
 //     are rooted with a leading '/' (so "." and "" normalize to "/.")
-//   - a path whose lexical resolution escapes the root (a leading '..' after
-//     cleaning, e.g. "a/../../x") is rejected as path traversal
 //
-// Divergences from the Python reference, per the porting contract: the
-// reference rejects any path containing a '..' component outright (so
-// "/a/../b" raises) and preserves POSIX double leading slashes ("//a"), while
-// this port resolves '..' segments lexically ("/a/../b" -> "/b") and collapses
-// duplicate leading slashes ("//a" -> "/a"), rejecting only paths that escape
-// the root. Errors carry the upstream invalid_path code and the upstream
-// ValueError wording.
+// Divergence from the Python reference, intentional: the reference's
+// os.path.normpath preserves exactly two leading slashes ("//a" stays "//a"),
+// while this port collapses duplicate leading slashes ("//a" -> "/a"), which
+// is more robust against malformed tool input. Errors carry the upstream
+// invalid_path code and the upstream ValueError wording.
 func NormalizePath(p string) (string, error) {
-	if strings.HasPrefix(p, "~") {
+	posix := strings.ReplaceAll(p, "\\", "/")
+	if strings.HasPrefix(p, "~") || hasDotDotComponent(posix) {
 		return "", &Error{
 			Code:    ErrInvalidPath,
 			Message: fmt.Sprintf("Path traversal not allowed: %s", p),
@@ -66,17 +67,24 @@ func NormalizePath(p string) (string, error) {
 			),
 		}
 	}
-	cleaned := path.Clean(strings.ReplaceAll(p, "\\", "/"))
-	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", &Error{
-			Code:    ErrInvalidPath,
-			Message: fmt.Sprintf("Path traversal not allowed: %s", p),
-		}
-	}
+	cleaned := path.Clean(posix)
 	if !strings.HasPrefix(cleaned, "/") {
 		cleaned = "/" + cleaned
 	}
 	return cleaned, nil
+}
+
+// hasDotDotComponent reports whether any whole path component of the
+// slash-separated path is "..", mirroring the PurePosixPath(...).parts check
+// in validate_path, deepagents/backends/utils.py. Only traversal as a whole
+// component is rejected, so filenames like "foo..bar.txt" pass.
+func hasDotDotComponent(posix string) bool {
+	for _, part := range strings.Split(posix, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // isAlpha reports whether c is an ASCII letter, matching the [a-zA-Z] class
