@@ -472,6 +472,9 @@ func TestFilesystemBackendGlob(t *testing.T) {
 	mustWriteFile(t, root, "a.txt", "x")
 	mustWriteFile(t, root, "sub/b.go", "x")
 	mustWriteFile(t, root, "sub/deep/c.go", "x")
+	mustWriteFile(t, root, "visible.py", "x")
+	mustWriteFile(t, root, ".hidden.py", "x")
+	mustWriteFile(t, root, ".git/config", "x")
 
 	tests := []struct {
 		name    string
@@ -480,12 +483,19 @@ func TestFilesystemBackendGlob(t *testing.T) {
 		want    []string
 		wantErr string // error code, empty means no error
 	}{
-		{"doublestar everything", "/", "**", []string{"/a.go", "/a.txt", "/sub/b.go", "/sub/deep/c.go"}, ""},
-		{"single star stays in segment", "/", "*.go", []string{"/a.go"}, ""},
+		{"doublestar everything skips dotfiles", "/", "**",
+			[]string{"/a.go", "/a.txt", "/sub/b.go", "/sub/deep/c.go", "/visible.py"}, ""},
+		{"slash-less pattern matches basenames at any depth", "/", "*.go",
+			[]string{"/a.go", "/sub/b.go", "/sub/deep/c.go"}, ""},
+		{"slash pattern is relative and depth-locked", "/", "sub/*.go",
+			[]string{"/sub/b.go"}, ""},
 		{"doublestar between segments", "/", "sub/**/*.go", []string{"/sub/b.go", "/sub/deep/c.go"}, ""},
 		{"leading slash anchors to search root", "/", "/sub/**/*.go", []string{"/sub/b.go", "/sub/deep/c.go"}, ""},
 		{"search under subdir", "/sub", "**", []string{"/sub/b.go", "/sub/deep/c.go"}, ""},
-		{"pattern relative to search path", "/sub", "*.go", []string{"/sub/b.go"}, ""},
+		{"slash-less under subdir matches any depth", "/sub", "*.go",
+			[]string{"/sub/b.go", "/sub/deep/c.go"}, ""},
+		{"dotfiles excluded without explicit dot", "/", "*.py", []string{"/visible.py"}, ""},
+		{"explicit dot pattern reaches dotfiles", "/", ".git/**", []string{"/.git/config"}, ""},
 		{"no matches is empty not error", "/", "*.md", []string{}, ""},
 		{"missing search path is empty not error", "/missing", "**", []string{}, ""},
 		{"dotdot pattern rejected", "/", "..", nil, ErrInvalidPath},
@@ -508,12 +518,92 @@ func TestFilesystemBackendGlob(t *testing.T) {
 	}
 }
 
+func TestFilesystemBackendCRLFNormalization(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("read normalizes crlf and lone cr like universal newlines", func(t *testing.T) {
+		b, root := newTestBackend(t)
+		mustWriteFile(t, root, "mix.txt", "a\r\nb\rc\n")
+		res, err := b.Read(ctx, "/mix.txt", 0, 100)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if res.Content != "a\nb\nc\n" {
+			t.Errorf("Content = %q, want %q", res.Content, "a\nb\nc\n")
+		}
+		if res.StartLine != 1 || res.EndLine != 3 || res.TotalLines != 3 || res.NextOffset != 0 {
+			t.Errorf("pagination = start %d end %d total %d next %d, want 1/3/3/0",
+				res.StartLine, res.EndLine, res.TotalLines, res.NextOffset)
+		}
+	})
+
+	t.Run("edit matches lf pattern in crlf file and stores lf", func(t *testing.T) {
+		b, root := newTestBackend(t)
+		mustWriteFile(t, root, "f.txt", "one\r\ntwo\r\n")
+		res, err := b.Edit(ctx, "/f.txt", "one\ntwo", "ONE\nTWO", false)
+		if err != nil {
+			t.Fatalf("Edit: %v", err)
+		}
+		if res.Replaced != 1 {
+			t.Errorf("Replaced = %d, want 1", res.Replaced)
+		}
+		got, _ := os.ReadFile(filepath.Join(root, "f.txt"))
+		if string(got) != "ONE\nTWO\n" {
+			t.Errorf("on-disk content = %q, want %q", got, "ONE\nTWO\n")
+		}
+	})
+
+	t.Run("edit rewrites whole file as lf", func(t *testing.T) {
+		b, root := newTestBackend(t)
+		mustWriteFile(t, root, "f.txt", "keep\r\nswap\r\n")
+		if _, err := b.Edit(ctx, "/f.txt", "swap", "X", false); err != nil {
+			t.Fatalf("Edit: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(root, "f.txt"))
+		if string(got) != "keep\nX\n" {
+			t.Errorf("on-disk content = %q, want %q", got, "keep\nX\n")
+		}
+	})
+
+	t.Run("write stores lf", func(t *testing.T) {
+		b, root := newTestBackend(t)
+		if _, err := b.Write(ctx, "/c.txt", "a\r\nb\r\n"); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(root, "c.txt"))
+		if string(got) != "a\nb\n" {
+			t.Errorf("on-disk content = %q, want %q", got, "a\nb\n")
+		}
+		res, err := b.Read(ctx, "/c.txt", 0, 10)
+		if err != nil || res.Content != "a\nb\n" {
+			t.Errorf("read back = %q, %v; want %q", res.Content, err, "a\nb\n")
+		}
+	})
+
+	t.Run("grep line text has crlf stripped", func(t *testing.T) {
+		b, root := newTestBackend(t)
+		mustWriteFile(t, root, "g.txt", "x\r\nneedle here\r\n")
+		res, err := b.Grep(ctx, "needle here", "/", "", 0)
+		if err != nil {
+			t.Fatalf("Grep: %v", err)
+		}
+		if len(res.Matches) != 1 || len(res.Matches[0].Lines) != 1 {
+			t.Fatalf("matches = %+v, want one line in /g.txt", res.Matches)
+		}
+		if res.Matches[0].Lines[0].Text != "needle here" {
+			t.Errorf("text = %q, want %q (no trailing CR)", res.Matches[0].Lines[0].Text, "needle here")
+		}
+	})
+}
+
 func TestFilesystemBackendGrep(t *testing.T) {
 	b, root := newTestBackend(t)
+	mustWriteFile(t, root, ".hid.txt", "needle hidden\n")
 	mustWriteFile(t, root, "alpha.txt", "needle here\nplain line\nneedle again\n")
 	mustWriteFile(t, root, "beta.txt", "other\nneedle two\n")
 	mustWriteFile(t, root, "gam.go", "needle in go\n")
 	mustWriteFile(t, root, "lit.txt", "abc\nxa.cy\n")
+	mustWriteFile(t, root, "sub/deep/d.txt", "needle deep\n")
 
 	paths := func(m []GrepFileMatches) string {
 		parts := make([]string, 0, len(m))
@@ -535,16 +625,22 @@ func TestFilesystemBackendGrep(t *testing.T) {
 		maxCount int
 		want     string
 	}{
-		{"all matches grouped by file", "needle", "/", "", 0,
-			"/alpha.txt[1:needle here 3:needle again] /beta.txt[2:needle two] /gam.go[1:needle in go]"},
+		{"all matches grouped by file incl dotfiles", "needle", "/", "", 0,
+			"/.hid.txt[1:needle hidden] /alpha.txt[1:needle here 3:needle again] " +
+				"/beta.txt[2:needle two] /gam.go[1:needle in go] /sub/deep/d.txt[1:needle deep]"},
 		{"maxCount caps total across files", "needle", "/", "", 2,
-			"/alpha.txt[1:needle here 3:needle again]"},
+			"/.hid.txt[1:needle hidden] /alpha.txt[1:needle here]"},
 		{"maxCount exactly at cap", "needle", "/", "", 3,
+			"/.hid.txt[1:needle hidden] /alpha.txt[1:needle here 3:needle again]"},
+		{"include glob basenames any depth, dotfiles excluded", "needle", "/", "*.txt", 0,
+			"/alpha.txt[1:needle here 3:needle again] /beta.txt[2:needle two] /sub/deep/d.txt[1:needle deep]"},
+		{"anchored include glob is depth-locked", "needle", "/", "/*.txt", 0,
 			"/alpha.txt[1:needle here 3:needle again] /beta.txt[2:needle two]"},
-		{"include glob filters files", "needle", "/", "*.txt", 0,
-			"/alpha.txt[1:needle here 3:needle again] /beta.txt[2:needle two]"},
-		{"anchored include glob", "needle", "/", "/*.txt", 0,
-			"/alpha.txt[1:needle here 3:needle again] /beta.txt[2:needle two]"},
+		{"slash include glob is path-relative", "needle", "/", "sub/*.txt", 0, ""},
+		{"doublestar include glob", "needle", "/", "sub/**/*.txt", 0, "/sub/deep/d.txt[1:needle deep]"},
+		{"bare doublestar include glob skips dotfiles", "needle", "/", "**", 0,
+			"/alpha.txt[1:needle here 3:needle again] /beta.txt[2:needle two] " +
+				"/gam.go[1:needle in go] /sub/deep/d.txt[1:needle deep]"},
 		{"include glob with slash is path-relative", "needle", "/", "sub/**/*.go", 0, ""},
 		{"literal match is not regex", "a.c", "/", "", 0, "/lit.txt[2:xa.cy]"},
 		{"single file base", "needle", "/alpha.txt", "", 0,

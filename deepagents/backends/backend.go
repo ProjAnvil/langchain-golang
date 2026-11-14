@@ -93,10 +93,10 @@ type LsEntry struct {
 
 // ReadResult mirrors ReadResult in the Python reference,
 // deepagents/backends/protocol.py, carrying the raw (unformatted) content
-// window plus pagination metadata. Content is the requested window with
-// CRLF/CR line endings normalized to LF across the window only, exactly as
-// slice_read_response does in the Python reference,
-// deepagents/backends/utils.py.
+// window plus pagination metadata. FilesystemBackend normalizes CRLF/CR
+// content to LF on read (universal newlines), so Content is LF text;
+// slice_read_response in the reference additionally normalizes the returned
+// window, which state-backed stores rely on (deepagents/backends/utils.py).
 //
 // The pagination fields are 0 (unset) when no window was returned. NextOffset
 // is the 0-indexed resume offset for the next unread line; it is 0 exactly
@@ -187,16 +187,22 @@ type Backend interface {
 	// perform_string_replacement, deepagents/backends/utils.py.
 	Edit(ctx context.Context, path string, oldString, newString string, replaceAll bool) (EditResult, error)
 
-	// Glob finds files under path whose path relative to the search root
-	// matches pattern (full-path matching via MatchGlob, `**` spanning
-	// separators). Missing or non-directory search paths return an empty
-	// result, mirroring glob() in deepagents/backends/filesystem.py.
+	// Glob finds files under path matching pattern, mirroring glob() in
+	// deepagents/backends/filesystem.py: a pattern without '/' matches
+	// basenames at any depth under the search path; a pattern containing
+	// '/' (a leading '/' anchors) matches the full path relative to the
+	// search path; dotfiles require an explicit leading '.' in the pattern
+	// segment, and a bare '**' is matched against the full relative path
+	// so it never descends into dot directories
+	// (compile_grep_include_glob, deepagents/backends/utils.py). Missing
+	// or non-directory search paths return an empty result.
 	Glob(ctx context.Context, path string, pattern string) (GlobResult, error)
 
 	// Grep searches for pattern as a literal substring (not a regex) in
 	// files under path, optionally filtered by the include glob (a glob
 	// without '/' matches basenames at any depth; one with '/' matches
-	// the path relative to the search root), mirroring grep() in
+	// the path relative to the search root; a bare '**' matches the full
+	// relative path so it skips dot directories), mirroring grep() in
 	// deepagents/backends/filesystem.py. maxCount caps the total number
 	// of matches across all files; a non-positive value means unlimited.
 	// The middleware applies the upstream default cap (1000); this

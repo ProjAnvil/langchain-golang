@@ -23,6 +23,19 @@ func TestMatchGlob(t *testing.T) {
 		{"full path must match", "a/*.go", "b/b.go", false},
 		{"rooted pattern matches rooted path", "/a/*.go", "/a/b.go", true},
 		{"rooted pattern rejects unrooted path", "/a/*.go", "a/b.go", false},
+
+		// Dotfile semantics (wcmatch without DOTMATCH, UP utils.py:271-274):
+		// a name segment starting with '.' matches only pattern segments
+		// that also start with '.'.
+		{"star does not match dotfile basename", "*.py", ".hidden.py", false},
+		{"doublestar alone skips dotfile", "**", ".git", false},
+		{"doublestar does not descend into dotdir", "**/config", ".git/config", false},
+		{"doublestar glob skips dotdir contents", "**/*.yml", ".github/workflows/ci.yml", false},
+		{"pattern with explicit dot matches dotdir", ".github/**/*.yml", ".github/workflows/ci.yml", true},
+		{"dot wildcard matches dotfile", ".*", ".git", true},
+		{"literal dot segment matches", ".git/config", ".git/config", true},
+		{"dot rule applies at any depth", "a/*.py", "a/.b.py", false},
+		{"dot inside a name is not a dotfile", "*.py", "a..py", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

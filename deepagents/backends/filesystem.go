@@ -185,11 +185,12 @@ func (b *FilesystemBackend) Ls(ctx context.Context, vpath string) (LsResult, err
 }
 
 // Read reads the requested line window of the file at path, mirroring read()
-// in the Python reference, deepagents/backends/filesystem.py, which routes
-// text through slice_read_response (deepagents/backends/utils.py). A missing
-// path or directory reports "File '<path>'" not found (the reference's
-// exists()+is_file() check); an offset past EOF reports the upstream
-// "Line offset N exceeds file length (M lines)" wording.
+// in the Python reference, deepagents/backends/filesystem.py, which reads in
+// text mode (universal newlines: CRLF and CR become LF on input) and routes
+// the content through slice_read_response (deepagents/backends/utils.py). A
+// missing path or directory reports "File '<path>' not found" (the
+// reference's exists()+is_file() check); an offset past EOF reports the
+// upstream "Line offset N exceeds file length (M lines)" wording.
 func (b *FilesystemBackend) Read(ctx context.Context, vpath string, offset, limit int) (ReadResult, error) {
 	full, err := b.resolvePath(vpath)
 	if err != nil {
@@ -215,7 +216,10 @@ func (b *FilesystemBackend) Read(ctx context.Context, vpath string, offset, limi
 	if err != nil {
 		return ReadResult{}, osError(fmt.Sprintf("Error reading file '%s'", vpath), err)
 	}
-	return sliceReadResponse(string(data), offset, limit)
+	// Universal newlines, like the reference's text-mode read: the whole
+	// content is LF before slicing, so pagination and the EOF-newline
+	// mismatch hints see normalized lines.
+	return sliceReadResponse(normalizeLineEndings(string(data)), offset, limit)
 }
 
 // sliceReadResponse slices content to the requested line window with
@@ -294,8 +298,10 @@ func splitLinesKeepEnds(s string) []string {
 
 // Write writes content to the file at path, creating parent directories and
 // creating or overwriting the file, mirroring write() in the Python
-// reference, deepagents/backends/filesystem.py (mode 0644, UTF-8, no newline
-// translation).
+// reference, deepagents/backends/filesystem.py (mode 0644, UTF-8). Content
+// is normalized to LF (CRLF and CR input stored as LF), keeping on-disk
+// bytes consistent with what Read returns; the reference writes with
+// newline="" so it never introduces CRLF either.
 func (b *FilesystemBackend) Write(ctx context.Context, vpath string, content string) (WriteResult, error) {
 	full, err := b.resolvePath(vpath)
 	if err != nil {
@@ -304,7 +310,7 @@ func (b *FilesystemBackend) Write(ctx context.Context, vpath string, content str
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return WriteResult{}, osError(fmt.Sprintf("Error writing file '%s'", vpath), err)
 	}
-	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(full, []byte(normalizeLineEndings(content)), 0o644); err != nil {
 		return WriteResult{}, osError(fmt.Sprintf("Error writing file '%s'", vpath), err)
 	}
 	return WriteResult{Path: vpath}, nil
@@ -312,9 +318,11 @@ func (b *FilesystemBackend) Write(ctx context.Context, vpath string, content str
 
 // Edit replaces occurrences of oldString with newString in the file at path,
 // mirroring edit() in the Python reference, deepagents/backends/filesystem.py:
-// the search strings are LF-normalized before matching, replacement
-// validation and error messages come from perform_string_replacement
-// (deepagents/backends/utils.py), and the file is rewritten in place.
+// the file content and the search strings are LF-normalized before matching
+// (the reference reads with universal newlines), replacement validation and
+// error messages come from perform_string_replacement
+// (deepagents/backends/utils.py), and the file is rewritten in place — as
+// upstream, an edit stores the whole file LF-normalized.
 func (b *FilesystemBackend) Edit(ctx context.Context, vpath string, oldString, newString string, replaceAll bool) (EditResult, error) {
 	full, err := b.resolvePath(vpath)
 	if err != nil {
@@ -341,7 +349,8 @@ func (b *FilesystemBackend) Edit(ctx context.Context, vpath string, oldString, n
 		return EditResult{}, osError(fmt.Sprintf("Error editing file '%s'", vpath), err)
 	}
 	newContent, occurrences, err := performStringReplacement(
-		string(data), normalizeLineEndings(oldString), normalizeLineEndings(newString), replaceAll,
+		normalizeLineEndings(string(data)),
+		normalizeLineEndings(oldString), normalizeLineEndings(newString), replaceAll,
 	)
 	if err != nil {
 		return EditResult{}, err
@@ -352,9 +361,11 @@ func (b *FilesystemBackend) Edit(ctx context.Context, vpath string, oldString, n
 	return EditResult{Replaced: occurrences}, nil
 }
 
-// normalizeLineEndings rewrites CRLF and bare CR to LF, as edit() in the
-// Python reference, deepagents/backends/filesystem.py, does for the search
-// strings (the file content itself is not rewritten).
+// normalizeLineEndings rewrites CRLF and bare CR to LF, matching Python's
+// universal-newline text reads that the Python reference performs
+// everywhere it ingests file content (read, edit, and the grep fallback in
+// deepagents/backends/filesystem.py) as well as edit()'s normalization of
+// the search strings.
 func normalizeLineEndings(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 }
@@ -441,15 +452,19 @@ func (b *FilesystemBackend) Delete(ctx context.Context, vpath string) (DeleteRes
 	return DeleteResult{Success: true}, nil
 }
 
-// Glob finds files under path whose path relative to the search root matches
-// pattern, mirroring glob() in the Python reference,
-// deepagents/backends/filesystem.py. Matching is the shared MatchGlob
-// contract applied to the full search-root-relative path; only regular files
-// match; results are virtual paths sorted lexicographically. A pattern or
-// path containing a `..` segment is refused with the upstream
-// "Path traversal not allowed in glob pattern '<p>'" wording (the reference
-// raises InvalidGlobPatternError from compile_grep_include_glob). A missing
-// or non-directory search path returns an empty result, not an error.
+// Glob finds files under path matching pattern, mirroring glob() in the
+// Python reference, deepagents/backends/filesystem.py, which routes through
+// the shared include-glob contract (compile_grep_include_glob,
+// deepagents/backends/utils.py): a pattern without '/' matches basenames at
+// any depth under the search path ('*.py' matches 'a/b.py'), a pattern
+// containing '/' matches the full path relative to the search path
+// ('src/*.py' is top of src only; a leading '/' anchors to the search
+// root), and dotfiles need an explicit leading '.' in the pattern segment.
+// Only regular files match; results are virtual paths sorted
+// lexicographically. A pattern or path containing a `..` segment is refused
+// with the upstream "Path traversal not allowed in glob pattern '<p>'"
+// wording (the reference raises InvalidGlobPatternError). A missing or
+// non-directory search path returns an empty result, not an error.
 func (b *FilesystemBackend) Glob(ctx context.Context, vpath string, pattern string) (GlobResult, error) {
 	// Compile before touching the filesystem, as upstream: a refused
 	// pattern is a property of the pattern alone.
@@ -459,9 +474,6 @@ func (b *FilesystemBackend) Glob(ctx context.Context, vpath string, pattern stri
 			Message: fmt.Sprintf("Path traversal not allowed in glob pattern '%s'", pattern),
 		}
 	}
-	// A leading '/' anchors to the search root (the docstring of glob() in
-	// the reference): relative paths never start with '/', so strip it.
-	pattern = strings.TrimPrefix(pattern, "/")
 	search, err := b.resolvePath(vpath)
 	if err != nil {
 		return GlobResult{}, err
@@ -491,7 +503,7 @@ func (b *FilesystemBackend) Glob(ctx context.Context, vpath string, pattern stri
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
-		if !MatchGlob(pattern, relSlash) {
+		if !includeGlobMatches(pattern, relSlash) {
 			return nil
 		}
 		files = append(files, path.Join(normSearch, relSlash))
@@ -607,7 +619,9 @@ func (b *FilesystemBackend) Grep(ctx context.Context, pattern string, vpath stri
 				break
 			}
 		}
-		lines := GrepLines(string(data), pattern, remaining)
+		// Universal newlines, like the reference's Python-fallback search:
+		// matched line text never carries a trailing CR.
+		lines := GrepLines(normalizeLineEndings(string(data)), pattern, remaining)
 		if len(lines) == 0 {
 			continue
 		}
@@ -623,16 +637,28 @@ func (b *FilesystemBackend) Grep(ctx context.Context, pattern string, vpath stri
 	return GrepResult{Matches: matches}, nil
 }
 
-// includeGlobMatches applies the grep include-glob contract from
+// includeGlobMatches applies the shared include-glob contract from
 // compile_grep_include_glob in the Python reference,
-// deepagents/backends/utils.py: a pattern without '/' matches the basename
-// at any depth; a pattern with '/' (leading '/' anchors) matches the full
-// path relative to the search root.
+// deepagents/backends/utils.py — the single source of truth for both
+// grep(..., glob=...) and backend glob() (filesystem.py:1357): a pattern
+// without '/' matches the basename at any depth; a pattern containing '/'
+// (a leading '/' anchors) matches the full path relative to the search
+// root.
+//
+// A bare '**' is matched against the full relative path: it spans
+// directories by definition, so the dot rule keeps it out of dot
+// directories ('**' must not return '.git/...', review round 1) — the
+// basename route would otherwise collapse '.git/config' to 'config' and
+// lose that context.
 func includeGlobMatches(glob, relSlash string) bool {
-	if !strings.Contains(glob, "/") {
-		return MatchGlob(glob, path.Base(relSlash))
+	if glob == "**" {
+		return MatchGlob("**", relSlash)
 	}
-	return MatchGlob(strings.TrimPrefix(glob, "/"), relSlash)
+	pattern := strings.TrimPrefix(glob, "/")
+	if !strings.Contains(glob, "/") {
+		return MatchGlob(pattern, path.Base(relSlash))
+	}
+	return MatchGlob(pattern, relSlash)
 }
 
 // mustRel returns filepath.Rel(base, p) with a slash-separator fallback to

@@ -17,6 +17,13 @@ import (
 //   - braces have no special meaning; "a.{x,y}" matches only the literal
 //     string "a.{x,y}"
 //
+// Dotfiles: a name segment beginning with '.' matches only pattern segments
+// that themselves begin with '.', and '**' never descends into dot
+// directories, so "**" does not match ".git/config" and "**/*.yml" does not
+// match ".github/workflows/ci.yml" while "*.yml" does match "ci.yml". This
+// mirrors wcmatch without DOTMATCH as used by compile_grep_include_glob in
+// the Python reference, deepagents/backends/utils.py.
+//
 // Pattern and name are both split on '/', so wildcards never span a slash
 // unless they are a standalone "**" segment. A malformed character class in
 // the pattern never matches. This mirrors the glob contract implemented by
@@ -26,9 +33,12 @@ func MatchGlob(pattern, name string) bool {
 }
 
 // matchSegments matches name segments against pattern segments recursively.
-// A "**" pattern segment consumes zero or more name segments; every other
-// segment is matched with path.Match, which keeps '*', '?', and '[...]'
-// confined to a single segment.
+// A "**" pattern segment consumes zero or more name segments (never a
+// dot-segment); every other segment is matched with path.Match, which keeps
+// '*', '?', and '[...]' confined to a single segment. A name segment
+// beginning with '.' only matches pattern segments that also begin with '.'
+// (wcmatch without DOTMATCH, deepagents/backends/utils.py:271-274 in the
+// Python reference).
 func matchSegments(pattern, name []string) bool {
 	if len(pattern) == 0 {
 		return len(name) == 0
@@ -38,10 +48,16 @@ func matchSegments(pattern, name []string) bool {
 			if matchSegments(pattern[1:], name[i:]) {
 				return true
 			}
+			if i < len(name) && strings.HasPrefix(name[i], ".") {
+				break // '**' never descends into a dot segment
+			}
 		}
 		return false
 	}
 	if len(name) == 0 {
+		return false
+	}
+	if strings.HasPrefix(name[0], ".") && !strings.HasPrefix(pattern[0], ".") {
 		return false
 	}
 	ok, err := path.Match(pattern[0], name[0])
