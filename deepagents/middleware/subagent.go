@@ -49,7 +49,7 @@ type SubAgentSpec struct {
 
 // CompiledSubAgent pairs a subagent's identity with an already-built agent,
 // the Go counterpart of UP's CompiledSubAgent TypedDict (name, description,
-// runnable — deepagents/middleware/subagents.py:1040-1050). Callers that
+// runnable — deepagents/middleware/subagents.py:269). Callers that
 // already hold an *agents.Agent wrap it here instead of declaring a
 // SubAgentSpec; SubAgentMiddleware (Task 8) dispatches both kinds.
 type CompiledSubAgent struct {
@@ -62,7 +62,7 @@ type CompiledSubAgent struct {
 // description, copied VERBATIM from DEFAULT_GENERAL_PURPOSE_DESCRIPTION in
 // the Python reference (deepagents/middleware/subagents.py:564). Do not edit;
 // parity is pinned by TestGeneralPurposeSubAgent.
-const DefaultGeneralPurposeDescription = `General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few try use this agent to perform the search for you. This agent has access to all tools as the main agent.`
+const DefaultGeneralPurposeDescription = `General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent.`
 
 // DefaultSubagentPrompt is the general-purpose subagent's system prompt,
 // copied VERBATIM — including the blank line between paragraphs and the
@@ -92,7 +92,7 @@ func GeneralPurposeSubAgent(model language.ChatModel) SubAgentSpec {
 // CompileSubAgent builds a runnable agent from a SubAgentSpec. The spec's
 // Model is REQUIRED here — a nil Model is an error, mirroring upstream's
 // "SubAgent '<name>' must specify 'model'" (create_sub_agent,
-// subagents.py:646-648). A spec meant to inherit the parent's model is
+// subagents.py:643-645). A spec meant to inherit the parent's model is
 // compiled instead through CompileSubAgentWithModel, which SubAgentMiddleware
 // (Task 8) uses to thread the parent's model in when spec.Model is nil.
 //
@@ -105,7 +105,11 @@ func GeneralPurposeSubAgent(model language.ChatModel) SubAgentSpec {
 // the defaults. Upstream's remaining stack pieces (summarization,
 // PatchToolCallsMiddleware, profile/skills middleware, custom-middleware
 // name-splicing rules) are out of scope for this tier and documented as a
-// divergence.
+// divergence. In particular, a FilesystemMiddleware the caller also lists in
+// spec.Middleware next to a non-nil Backend makes CreateAgent fail loudly on
+// the duplicate middleware, where upstream name-splices the custom entry over
+// the matching default slot instead (_apply_custom_middleware,
+// graph.py:792-796) — a deliberate divergence.
 func CompileSubAgent(spec SubAgentSpec) (*CompiledSubAgent, error) {
 	return compileSubAgent(spec, nil)
 }
@@ -193,7 +197,7 @@ func ValidateSubAgents(specs []any) error {
 
 // BuildTaskInput constructs the initial state handed to an isolated subagent
 // for a delegated task, mirroring the isolated branch of upstream's state
-// handoff (deepagents/middleware/subagents.py:933-935): every parent key
+// handoff (deepagents/middleware/subagents.py:929-930): every parent key
 // outside ExcludedStateKeys ∪ PrivateStateKeys is shallow-copied as-is —
 // notably "files", which is public state and passes through — and "messages"
 // is excluded from the copy and rebuilt as a single human message carrying

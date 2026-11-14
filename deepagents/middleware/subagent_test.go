@@ -256,15 +256,17 @@ func TestGeneralPurposeSubAgent(t *testing.T) {
 		t.Error("Model not passed through to spec")
 	}
 
-	desc := spec.Description
-	if !strings.HasPrefix(desc, "General-purpose agent for researching complex questions") {
-		t.Errorf("Description prefix = %q", desc[:min(50, len(desc))])
+	// Full-string equality pin (346 bytes): an earlier revision shipped a
+	// transcription error ("first few try" for "first few tries") that
+	// prefix/suffix pins missed, so the description is pinned against the
+	// complete upstream literal, byte for byte.
+	const wantGeneralPurposeDescription = `General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent.`
+	if len(wantGeneralPurposeDescription) != 346 {
+		t.Fatalf("test literal drifted: %d bytes, want upstream's 346", len(wantGeneralPurposeDescription))
 	}
-	if !strings.HasSuffix(desc, "This agent has access to all tools as the main agent.") {
-		t.Errorf("Description suffix = %q, want the upstream closing sentence", desc[max(0, len(desc)-60):])
-	}
-	if strings.Contains(desc, "\n") {
-		t.Error("Description must be a single line, as upstream")
+	if spec.Description != wantGeneralPurposeDescription {
+		t.Errorf("Description not upstream-verbatim:\n got (%d B): %q\nwant (%d B): %q",
+			len(spec.Description), spec.Description, len(wantGeneralPurposeDescription), wantGeneralPurposeDescription)
 	}
 
 	prompt := spec.Prompt
@@ -281,7 +283,7 @@ func TestGeneralPurposeSubAgent(t *testing.T) {
 }
 
 // TestBuildTaskInput covers the isolated-subagent state handoff (UP
-// subagents.py:933-935): every parent key outside ExcludedStateKeys ∪
+// subagents.py:929-930): every parent key outside ExcludedStateKeys ∪
 // PrivateStateKeys is shallow-copied, messages is rebuilt from the task
 // description, files passes through, and the parent map is not mutated.
 func TestBuildTaskInput(t *testing.T) {
