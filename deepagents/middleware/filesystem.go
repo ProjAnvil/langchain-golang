@@ -183,6 +183,22 @@ func (m *FilesystemMiddleware) Check(tool string, args map[string]any) (backends
 	if path == "" {
 		return backends.PermissionAllow, false
 	}
+	return m.checkPath(operation, path)
+}
+
+// checkPath evaluates the permission rules for one operation on one
+// (normalized) path — the core of _check_fs_permission,
+// deepagents/middleware/filesystem.py:417-427, shared by the tools' deny
+// gates and the search post-filters. Rules are consulted in order; the first
+// rule whose Operations contain op and one of whose Paths glob-matches the
+// path wins, returning (Mode, true); with no match the call is allowed by
+// default.
+//
+// Note the matcher's conservative direction: backends.MatchGlob treats a
+// "**" segment as matching zero or more segments, so a rule pattern like
+// "/dir/**" also matches "/dir" itself, denying the directory along with its
+// subtree.
+func (m *FilesystemMiddleware) checkPath(operation, path string) (backends.PermissionMode, bool) {
 	for _, rule := range m.Permissions {
 		if !slices.Contains(rule.Operations, operation) {
 			continue

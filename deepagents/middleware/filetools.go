@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -163,11 +164,15 @@ func (m *FilesystemMiddleware) filesystemTools() ([]coretools.Tool, error) {
 
 // normalizeToolPath normalizes a tool's path argument before the permission
 // gate, mirroring the reference's validate_path-then-check ordering. A path
-// that is absent or empty maps to "/" — the conservative gate/search root the
-// pathless glob and grep calls use (the reference passes path=None and lets
-// each backend pick its default root; both backends in this port treat "/" as
-// that root, so the tools gate and search at "/" — a documented conservative
-// simplification of the reference's post-filtering, filesystem.py:818-835).
+// that is absent or empty maps to "/" — the conservative gate/search root
+// the pathless glob and grep calls use (the reference passes path=None and
+// lets each backend pick its default root; both backends in this port treat
+// "/" as that root, so the tools gate and search at "/" — a documented
+// conservative simplification of the reference's post-filtering,
+// filesystem.py:818-835). Tools whose path argument is required (ls,
+// read_file, write_file, edit_file, delete) reject a missing or empty
+// argument with fsRequiredArg before reaching this function, so the "/"
+// fallback applies only to the optional glob/grep path.
 func normalizeToolPath(raw string) (string, error) {
 	if raw == "" {
 		return "/", nil
@@ -187,6 +192,151 @@ func (m *FilesystemMiddleware) denyGate(tool, norm string) (string, bool) {
 		return fmt.Sprintf("Error: permission denied for %s on %s", fsToolOperations[tool], norm), true
 	}
 	return "", false
+}
+
+// readDenied reports whether the read-class permission rules deny reads of
+// path — the post-search filter behind _filter_grep_matches_by_permission
+// and _apply_permissions_to_glob_results (filesystem.py:818-833, 942-964,
+// via _denied_lookup/_filter_paths_by_permission without backend/scope: no
+// symlink resolution and no interrupt-scope removal in this port). The
+// search tools drop denied paths from their results after the backend call,
+// so a read-denied subtree never leaks through a broader allowed search.
+func (m *FilesystemMiddleware) readDenied(path string) bool {
+	mode, _ := m.checkPath(fsOperationRead, path)
+	return mode == backends.PermissionDeny
+}
+
+// deleteDenyGate evaluates the write-class deny rules for a delete of norm,
+// mirroring _delete_permission_error + _find_delete_deny_patterns
+// (filesystem.py:474-495, 662-717): a recursive delete removes norm and its
+// whole subtree, so EVERY deny-write rule that could match norm or anything
+// in its subtree blocks the operation regardless of rule order — an earlier
+// allow rule cannot guarantee every descendant is safe. On denial it returns
+// the reference's error text naming the conflicting pattern(s).
+//
+// Divergences from the reference, intentional and conservative:
+//   - the reference first probes the backend to confirm a plain file and
+//     then resolves it first-match-wins (_find_delete_deny_patterns_for_
+//     leaf); this port always applies the subtree analysis, so an allow rule
+//     never overrides a path-overlapping deny even for confirmed files
+//   - interrupt-mode rules do not block yet (Task 6 wires HITL; until then
+//     interrupt behaves as allow everywhere)
+//   - no symlink resolution of the delete target (parked).
+func (m *FilesystemMiddleware) deleteDenyGate(norm string) (string, bool) {
+	denying := m.deleteDenyPatterns(norm)
+	if len(denying) == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("Error: permission denied for write on %s (matches deny rule(s): %s)",
+		norm, strings.Join(denying, ", ")), true
+}
+
+// deleteDenyPatterns returns the deny-write rule patterns whose matches
+// intersect norm's delete subtree, in rule order, mirroring
+// _find_delete_deny_patterns (filesystem.py:678-717).
+func (m *FilesystemMiddleware) deleteDenyPatterns(norm string) []string {
+	var denying []string
+	seen := make(map[string]bool)
+	for _, rule := range m.Permissions {
+		if rule.Mode != backends.PermissionDeny || !slices.Contains(rule.Operations, fsOperationWrite) {
+			continue
+		}
+		for _, pattern := range rule.Paths {
+			if seen[pattern] {
+				continue
+			}
+			anchor := globAnchor(pattern)
+			var overlaps bool
+			if strings.ContainsAny(pattern, "*?[") {
+				overlaps = wildcardDeleteOverlap(pattern, anchor, norm)
+			} else {
+				// Literal pattern: subtree containment either way — a deny
+				// on a directory blocks deleting anything inside it and
+				// blocks deleting an ancestor that contains it.
+				overlaps = pathsOverlap(norm, anchor)
+			}
+			if overlaps {
+				seen[pattern] = true
+				denying = append(denying, pattern)
+			}
+		}
+	}
+	return denying
+}
+
+// globAnchor returns the longest wildcard-free leading directory of a rule
+// pattern, mirroring _glob_anchor, deepagents/backends/utils.py:789-806:
+// "/work/secrets/**" → "/work/secrets", "/a/*/b" → "/a", and a wildcard at
+// or near the root ("/**/x") falls back to "/", which the overlap check
+// treats as overlapping any subtree (conservative over-gating).
+func globAnchor(pattern string) string {
+	var safe []string
+	for _, seg := range strings.Split(strings.ReplaceAll(pattern, "\\", "/"), "/") {
+		if seg == "" {
+			continue
+		}
+		if strings.ContainsAny(seg, "*?[") {
+			break
+		}
+		safe = append(safe, seg)
+	}
+	if len(safe) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(safe, "/")
+}
+
+// pathWithin reports whether p is dir itself or nested under it.
+func pathWithin(p, dir string) bool {
+	if dir == "/" {
+		return true
+	}
+	return p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+// pathsOverlap reports whether two literal paths share a subtree either way
+// (one equals or is nested under the other).
+func pathsOverlap(a, b string) bool {
+	return pathWithin(a, b) || pathWithin(b, a)
+}
+
+// wildcardDeleteOverlap reports whether a wildcard deny pattern's matches
+// intersect a recursive delete target, mirroring _wildcard_delete_overlap
+// (filesystem.py:553-601): a root anchor blocks everything; a direct glob
+// match blocks; an anchor inside the deleted subtree blocks (the delete
+// would remove matching descendants); a target below the anchor blocks
+// unless the pattern suffix is a single non-** component that cannot match
+// the target's ancestors — so deny /work/*.log does not block deleting
+// /work/notes.txt, but deny /work/* blocks deleting /work/app/child because
+// it mutates the denied /work/app.
+func wildcardDeleteOverlap(pattern, anchor, target string) bool {
+	if anchor == "/" {
+		return true
+	}
+	if backends.MatchGlob(pattern, target) {
+		return true
+	}
+	if pathWithin(anchor, target) {
+		return true
+	}
+	if !pathWithin(target, anchor) {
+		return false
+	}
+	anchorSegs := strings.Split(anchor, "/")
+	patternSegs := strings.Split(pattern, "/")
+	suffix := patternSegs[len(anchorSegs):]
+	if len(suffix) != 1 || strings.Contains(suffix[0], "**") {
+		return true
+	}
+	// Block when any ancestor of the target between anchor and target
+	// matches the glob (the delete mutates a denied directory's contents).
+	targetSegs := strings.Split(target, "/")
+	for depth := len(anchorSegs); depth < len(targetSegs); depth++ {
+		if backends.MatchGlob(pattern, "/"+strings.Join(targetSegs[1:depth], "/")) {
+			return true
+		}
+	}
+	return false
 }
 
 // fsErrorResult renders a tool error as a successful invocation carrying
@@ -346,6 +496,31 @@ func argBool(input map[string]any, key string, def bool) bool {
 	return def
 }
 
+// argIntPresent reads an integer argument and reports whether it was
+// present at all (distinguishing "omitted" from "zero").
+func argIntPresent(input map[string]any, key string) (int, bool) {
+	switch v := input[key].(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
+
+// fsRequiredArg renders the validation error for a missing or empty
+// required path argument. Upstream these arguments are enforced by pydantic
+// before the tool body runs (LsSchema.path, ReadFileSchema.file_path, ...);
+// the Go tool performs the equivalent check at the function boundary so an
+// empty path can never fall through to normalization (and from there to
+// "/"), which would have wiped the root on write-class tools.
+func fsRequiredArg(name string) (coretools.Result, error) {
+	return fsErrorResult("Error: " + name + " is required")
+}
+
 // --- Tool builders -------------------------------------------------------
 
 // newLsTool builds the ls tool, mirroring _create_ls_tool,
@@ -361,6 +536,9 @@ func (m *FilesystemMiddleware) newLsTool() (coretools.Func, error) {
 			"path": schema.String(lsPathArgDescription),
 		}, "path"),
 		func(ctx context.Context, input map[string]any) (coretools.Result, error) {
+			if argString(input, "path") == "" {
+				return fsRequiredArg("path")
+			}
 			norm, err := normalizeToolPath(argString(input, "path"))
 			if err != nil {
 				return fsErrorResult("Error: " + fsErrText(err))
@@ -397,6 +575,9 @@ func (m *FilesystemMiddleware) newReadFileTool() (coretools.Func, error) {
 			"limit":     schema.Integer(readLimitArgDescription),
 		}, "file_path"),
 		func(ctx context.Context, input map[string]any) (coretools.Result, error) {
+			if argString(input, "file_path") == "" {
+				return fsRequiredArg("file_path")
+			}
 			norm, err := normalizeToolPath(argString(input, "file_path"))
 			if err != nil {
 				return fsErrorResult("Error: " + fsErrText(err))
@@ -431,6 +612,9 @@ func (m *FilesystemMiddleware) newWriteFileTool() (coretools.Func, error) {
 			"content":   schema.String(writeContentArgDescription),
 		}, "file_path", "content"),
 		func(ctx context.Context, input map[string]any) (coretools.Result, error) {
+			if argString(input, "file_path") == "" {
+				return fsRequiredArg("file_path")
+			}
 			norm, err := normalizeToolPath(argString(input, "file_path"))
 			if err != nil {
 				return fsErrorResult("Error: " + fsErrText(err))
@@ -468,6 +652,9 @@ func (m *FilesystemMiddleware) newEditFileTool() (coretools.Func, error) {
 			"replace_all": schema.Boolean(editReplaceAllArgDescription),
 		}, "file_path", "old_string", "new_string"),
 		func(ctx context.Context, input map[string]any) (coretools.Result, error) {
+			if argString(input, "file_path") == "" {
+				return fsRequiredArg("file_path")
+			}
 			norm, err := normalizeToolPath(argString(input, "file_path"))
 			if err != nil {
 				return fsErrorResult("Error: " + fsErrText(err))
@@ -494,10 +681,9 @@ func (m *FilesystemMiddleware) newEditFileTool() (coretools.Func, error) {
 // reference's DeleteSchema (filesystem.py:1510-1513). The success message
 // names the deleted path; the reference reads it off DeleteResult.path,
 // which this port's DeleteResult does not carry, so the tool substitutes the
-// normalized path it passed to the backend. The reference's richer delete
-// permission analysis (_delete_permission_error's descendant checks) is an
-// MVP simplification: delete gates through the same write-class rule
-// evaluation as every other tool.
+// normalized path it passed to the backend. Permission gating goes through
+// deleteDenyGate's subtree-overlap analysis (see its doc comment) instead of
+// the plain per-path gate.
 func (m *FilesystemMiddleware) newDeleteTool() (coretools.Func, error) {
 	return coretools.NewFunc(
 		"delete",
@@ -506,11 +692,14 @@ func (m *FilesystemMiddleware) newDeleteTool() (coretools.Func, error) {
 			"file_path": schema.String(deleteFilePathArgDescription),
 		}, "file_path"),
 		func(ctx context.Context, input map[string]any) (coretools.Result, error) {
+			if argString(input, "file_path") == "" {
+				return fsRequiredArg("file_path")
+			}
 			norm, err := normalizeToolPath(argString(input, "file_path"))
 			if err != nil {
 				return fsErrorResult("Error: " + fsErrText(err))
 			}
-			if deny, denied := m.denyGate("delete", norm); denied {
+			if deny, denied := m.deleteDenyGate(norm); denied {
 				return fsErrorResult(deny)
 			}
 			if _, err := m.Backend.(backends.Deleter).Delete(ctx, norm); err != nil {
@@ -526,12 +715,15 @@ func (m *FilesystemMiddleware) newDeleteTool() (coretools.Func, error) {
 
 // newGlobTool builds the glob tool, mirroring _create_glob_tool,
 // filesystem.py:2703ff: normalize the path (absent → "/", the conservative
-// gate/search root for a pathless call), gate read permissions on it, then
-// run the backend glob under a GLOB_TIMEOUT context deadline. A pathless
+// gate/search root for a pathless call), gate read permissions on it, run
+// the backend glob under a GLOB_TIMEOUT context deadline, then drop
+// read-denied matches from the result (the reference's
+// _apply_permissions_to_glob_results, filesystem.py:954-964). A pathless
 // call denied by a root-wide rule is the documented conservative divergence:
 // the reference keeps pathless globs allowed unless the default root itself
 // is denied (and appends GLOB_PATHLESS_DENIED_HINT); the port gates at "/"
-// for every call.
+// for every call. Backend failures render as
+// "Error: glob failed: {e}" (filesystem.py:2788).
 func (m *FilesystemMiddleware) newGlobTool() (coretools.Func, error) {
 	return coretools.NewFunc(
 		"glob",
@@ -555,12 +747,18 @@ func (m *FilesystemMiddleware) newGlobTool() (coretools.Func, error) {
 				if errors.Is(err, context.DeadlineExceeded) {
 					return fsErrorResult(globTimeoutMessage(fsGlobTimeout))
 				}
-				return fsErrorResult("Error: " + fsErrText(err))
+				return fsErrorResult("Error: glob failed: " + fsErrText(err))
 			}
-			if len(res.Files) == 0 {
+			files := make([]string, 0, len(res.Files))
+			for _, f := range res.Files {
+				if !m.readDenied(f) {
+					files = append(files, f)
+				}
+			}
+			if len(files) == 0 {
 				return coretools.Result{Content: fsNoFilesFound}, nil
 			}
-			return coretools.Result{Content: formatPathList(res.Files)}, nil
+			return coretools.Result{Content: formatPathList(files)}, nil
 		},
 	)
 }
@@ -570,10 +768,14 @@ func (m *FilesystemMiddleware) newGlobTool() (coretools.Func, error) {
 // conservative gate/search root — the reference performs no pathless gate at
 // all and instead filters matches after the search, filesystem.py:818-835;
 // gating the whole call at "/" is the port's documented conservative
-// simplification), apply the upstream default max_count (1000) when the call
-// omits it, run the backend grep under a DEFAULT_GREP_TIMEOUT context
-// deadline, and format matches per output_mode. An unrecognized output_mode
-// falls back to the default files_with_matches.
+// simplification), validate max_count like the reference's GrepSchema
+// constraint (Field(gt=0): zero or negative is a validation error, never an
+// unlimited pass-through; only an omitted max_count yields the configured
+// default of 1000), run the backend grep under a DEFAULT_GREP_TIMEOUT
+// context deadline, drop read-denied files' matches from the result in every
+// output mode (_filter_grep_matches_by_permission, filesystem.py:818-833),
+// and format what remains per output_mode. An unrecognized output_mode falls
+// back to the default files_with_matches.
 func (m *FilesystemMiddleware) newGrepTool() (coretools.Func, error) {
 	return coretools.NewFunc(
 		"grep",
@@ -593,6 +795,13 @@ func (m *FilesystemMiddleware) newGrepTool() (coretools.Func, error) {
 			if deny, denied := m.denyGate("grep", norm); denied {
 				return fsErrorResult(deny)
 			}
+			maxCount := fsGrepDefaultMaxCount
+			if v, present := argIntPresent(input, "max_count"); present {
+				if v <= 0 {
+					return fsErrorResult("Error: max_count must be greater than 0")
+				}
+				maxCount = v
+			}
 			outputMode := argString(input, "output_mode")
 			if outputMode != "content" && outputMode != "count" && outputMode != "files_with_matches" {
 				outputMode = "files_with_matches"
@@ -602,13 +811,20 @@ func (m *FilesystemMiddleware) newGrepTool() (coretools.Func, error) {
 			res, err := m.Backend.Grep(searchCtx,
 				argString(input, "pattern"), norm,
 				argString(input, "glob"),
-				argInt(input, "max_count", fsGrepDefaultMaxCount))
+				maxCount)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					return fsErrorResult(grepTimeoutMessage(fsGrepTimeout))
 				}
 				return fsErrorResult(fsErrText(err))
 			}
+			matches := make([]backends.GrepFileMatches, 0, len(res.Matches))
+			for _, fm := range res.Matches {
+				if !m.readDenied(fm.Path) {
+					matches = append(matches, fm)
+				}
+			}
+			res.Matches = matches
 			return coretools.Result{Content: formatGrepResult(res, outputMode)}, nil
 		},
 	)

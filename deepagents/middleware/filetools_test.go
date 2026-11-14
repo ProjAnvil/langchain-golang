@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 	"time"
@@ -548,7 +549,7 @@ func TestDeleteTool(t *testing.T) {
 		rec := newRecordingBackend(backends.NewStateBackend())
 		m := mustNewFilesystemMiddleware(t, rec, denyLockedWrites)
 		res := invokeFileTool(t, stateCtx(files), m, "delete", map[string]any{"file_path": "/locked/a.txt"})
-		want := "Error: permission denied for write on /locked/a.txt"
+		want := "Error: permission denied for write on /locked/a.txt (matches deny rule(s): /locked/**)"
 		if res.Content != want {
 			t.Fatalf("Content = %q, want %q", res.Content, want)
 		}
@@ -861,4 +862,242 @@ func TestFilesystemMiddlewareRegistersTools(t *testing.T) {
 			}
 		}
 	})
+}
+
+// failingGlobBackend fails Glob immediately with a non-context error,
+// standing in for a hard backend failure under the glob tool.
+type failingGlobBackend struct {
+	blockingBackend
+	fail error
+}
+
+func (f *failingGlobBackend) Glob(ctx context.Context, path string, pattern string) (backends.GlobResult, error) {
+	return backends.GlobResult{}, f.fail
+}
+
+// --- Security follow-ups: delete subtree deny, search post-filter, path args ---
+
+func TestDeleteToolSubtreeDeny(t *testing.T) {
+	tests := []struct {
+		name     string
+		rules    []backends.PermissionRule
+		files    map[string]backends.FileMeta
+		args     map[string]any
+		want     string
+		wantCall bool
+	}{
+		{
+			name: "deleting a directory overlapping a deeper deny rule is denied",
+			rules: []backends.PermissionRule{{
+				Operations: []string{"write"},
+				Paths:      []string{"/work/secrets/**"},
+				Mode:       backends.PermissionDeny,
+			}},
+			files: map[string]backends.FileMeta{"/work/notes.txt": meta("x")},
+			args:  map[string]any{"file_path": "/work"},
+			want:  "Error: permission denied for write on /work (matches deny rule(s): /work/secrets/**)",
+		},
+		{
+			name: "deny on the exact file still denies",
+			rules: []backends.PermissionRule{{
+				Operations: []string{"write"},
+				Paths:      []string{"/work/secrets/**"},
+				Mode:       backends.PermissionDeny,
+			}},
+			files: map[string]backends.FileMeta{"/work/secrets/key.pem": meta("x")},
+			args:  map[string]any{"file_path": "/work/secrets/key.pem"},
+			want:  "Error: permission denied for write on /work/secrets/key.pem (matches deny rule(s): /work/secrets/**)",
+		},
+		{
+			name: "literal deny on an ancestor directory blocks inner deletes",
+			rules: []backends.PermissionRule{{
+				Operations: []string{"write"},
+				Paths:      []string{"/work"},
+				Mode:       backends.PermissionDeny,
+			}},
+			files: map[string]backends.FileMeta{"/work/notes.txt": meta("x")},
+			args:  map[string]any{"file_path": "/work/notes.txt"},
+			want:  "Error: permission denied for write on /work/notes.txt (matches deny rule(s): /work)",
+		},
+		{
+			name: "deleting under a wildcard-denied directory is blocked via the ancestor match",
+			rules: []backends.PermissionRule{{
+				Operations: []string{"write"},
+				Paths:      []string{"/work/*"},
+				Mode:       backends.PermissionDeny,
+			}},
+			files: map[string]backends.FileMeta{"/work/app/child": meta("x")},
+			args:  map[string]any{"file_path": "/work/app/child"},
+			want:  "Error: permission denied for write on /work/app/child (matches deny rule(s): /work/*)",
+		},
+		{
+			name: "sibling wildcard deny does not block unrelated deletes",
+			rules: []backends.PermissionRule{{
+				Operations: []string{"write"},
+				Paths:      []string{"/work/*.log"},
+				Mode:       backends.PermissionDeny,
+			}},
+			files:    map[string]backends.FileMeta{"/work/notes.txt": meta("x")},
+			args:     map[string]any{"file_path": "/work/notes.txt"},
+			want:     "Deleted /work/notes.txt",
+			wantCall: true,
+		},
+		{
+			name: "overlapping allow rule is a no-op",
+			rules: []backends.PermissionRule{
+				{Operations: []string{"write"}, Paths: []string{"/work/**"}, Mode: backends.PermissionAllow},
+				{Operations: []string{"write"}, Paths: []string{"/other/**"}, Mode: backends.PermissionDeny},
+			},
+			files:    map[string]backends.FileMeta{"/work/a.txt": meta("x")},
+			args:     map[string]any{"file_path": "/work/a.txt"},
+			want:     "Deleted /work/a.txt",
+			wantCall: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := newRecordingBackend(backends.NewStateBackend())
+			m := mustNewFilesystemMiddleware(t, rec, tt.rules...)
+			res := invokeFileTool(t, stateCtx(tt.files), m, "delete", tt.args)
+			if res.Content != tt.want {
+				t.Fatalf("Content = %q, want %q", res.Content, tt.want)
+			}
+			if !tt.wantCall && rec.calls["delete"] != 0 {
+				t.Fatalf("backend Delete called %d times under deny; want 0", rec.calls["delete"])
+			}
+			if tt.wantCall && rec.calls["delete"] != 1 {
+				t.Fatalf("backend Delete called %d times; want 1", rec.calls["delete"])
+			}
+		})
+	}
+}
+
+func TestSearchResultsPostFilter(t *testing.T) {
+	denySecrets := backends.PermissionRule{
+		Operations: []string{"read"},
+		Paths:      []string{"/secrets/**"},
+		Mode:       backends.PermissionDeny,
+	}
+	seed := map[string]backends.FileMeta{
+		"/a.go":            meta("needle"),
+		"/secrets/key.pem": meta("needle"),
+	}
+
+	grepModes := []struct {
+		mode string
+		want string
+	}{
+		{"files_with_matches", "/a.go"},
+		{"content", "/a.go:\n  1: needle"},
+		{"count", "/a.go: 1"},
+	}
+	for _, tt := range grepModes {
+		t.Run("grep "+tt.mode+" drops denied files", func(t *testing.T) {
+			m := mustNewFilesystemMiddleware(t, backends.NewStateBackend(), denySecrets)
+			res := invokeFileTool(t, stateCtx(seed), m, "grep",
+				map[string]any{"pattern": "needle", "path": "/", "output_mode": tt.mode})
+			if res.Content != tt.want {
+				t.Fatalf("Content = %q, want %q", res.Content, tt.want)
+			}
+		})
+	}
+
+	t.Run("glob drops denied files", func(t *testing.T) {
+		m := mustNewFilesystemMiddleware(t, backends.NewStateBackend(), denySecrets)
+		res := invokeFileTool(t, stateCtx(seed), m, "glob",
+			map[string]any{"pattern": "*", "path": "/"})
+		if want := "['/a.go']"; res.Content != want {
+			t.Fatalf("Content = %q, want %q", res.Content, want)
+		}
+	})
+}
+
+func TestRequiredPathArgs(t *testing.T) {
+	seed := map[string]backends.FileMeta{
+		"/a.txt": meta("x\n"),
+		"/c.md":  meta("z"),
+	}
+	tests := []struct {
+		name string
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"ls missing path", "ls", nil, "Error: path is required"},
+		{"ls empty path", "ls", map[string]any{"path": ""}, "Error: path is required"},
+		{"read_file missing file_path", "read_file", nil, "Error: file_path is required"},
+		{"read_file empty file_path", "read_file", map[string]any{"file_path": ""}, "Error: file_path is required"},
+		{"write_file missing file_path", "write_file", map[string]any{"content": "x"}, "Error: file_path is required"},
+		{"edit_file missing file_path", "edit_file", map[string]any{"old_string": "a", "new_string": "b"}, "Error: file_path is required"},
+		{"delete empty file_path", "delete", map[string]any{"file_path": ""}, "Error: file_path is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			view := backends.NewStateView(seed)
+			ctx := backends.WithStateView(context.Background(), view)
+			m := mustNewFilesystemMiddleware(t, backends.NewStateBackend())
+			res := invokeFileTool(t, ctx, m, tt.tool, tt.args)
+			if res.Content != tt.want {
+				t.Fatalf("Content = %q, want %q", res.Content, tt.want)
+			}
+			if res.Artifact != nil {
+				t.Fatalf("Artifact = %#v on a rejected call; want nil", res.Artifact)
+			}
+			if changed := view.Changed(); len(changed) != 0 {
+				t.Fatalf("state mutated on a rejected call: %v", changed)
+			}
+		})
+	}
+
+	t.Run("optional glob path still defaults to root", func(t *testing.T) {
+		m := mustNewFilesystemMiddleware(t, backends.NewStateBackend())
+		res := invokeFileTool(t, stateCtx(seed), m, "glob", map[string]any{"pattern": "*.md"})
+		if want := "['/c.md']"; res.Content != want {
+			t.Fatalf("Content = %q, want %q", res.Content, want)
+		}
+	})
+
+	t.Run("optional grep path still defaults to root", func(t *testing.T) {
+		m := mustNewFilesystemMiddleware(t, backends.NewStateBackend())
+		res := invokeFileTool(t, stateCtx(map[string]backends.FileMeta{"/a.go": meta("needle")}), m,
+			"grep", map[string]any{"pattern": "needle"})
+		if want := "/a.go"; res.Content != want {
+			t.Fatalf("Content = %q, want %q", res.Content, want)
+		}
+	})
+}
+
+func TestGlobToolBackendFailureText(t *testing.T) {
+	m := mustNewFilesystemMiddleware(t, &failingGlobBackend{fail: errors.New("disk on fire")})
+	res := invokeFileTool(t, context.Background(), m, "glob", map[string]any{"pattern": "*.py", "path": "/"})
+	want := "Error: glob failed: disk on fire"
+	if res.Content != want {
+		t.Fatalf("Content = %q, want %q", res.Content, want)
+	}
+}
+
+func TestGrepToolMaxCountValidation(t *testing.T) {
+	seed := map[string]backends.FileMeta{"/a.go": meta("needle")}
+	tests := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"zero max_count is rejected", map[string]any{"pattern": "needle", "max_count": 0}, "Error: max_count must be greater than 0"},
+		{"negative max_count is rejected", map[string]any{"pattern": "needle", "max_count": -3}, "Error: max_count must be greater than 0"},
+		{"float zero is rejected", map[string]any{"pattern": "needle", "max_count": 0.0}, "Error: max_count must be greater than 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := newRecordingBackend(backends.NewStateBackend())
+			m := mustNewFilesystemMiddleware(t, rec)
+			res := invokeFileTool(t, stateCtx(seed), m, "grep", tt.args)
+			if res.Content != tt.want {
+				t.Fatalf("Content = %q, want %q", res.Content, tt.want)
+			}
+			if rec.calls["grep"] != 0 {
+				t.Fatalf("backend Grep called %d times on invalid max_count; want 0", rec.calls["grep"])
+			}
+		})
+	}
 }
