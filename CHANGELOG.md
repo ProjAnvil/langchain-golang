@@ -4,6 +4,10 @@ All notable changes to this project. Format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+### Added
+
+- deepagents: MVP port of Python `deepagents` v0.7.38 (Tiers 1-4) — `deepagents/backends` (Backend interface, `FilesystemBackend`, state-backed `StateBackend` with the files `MapMergeReducer`), `deepagents/middleware` (FilesystemMiddleware with the seven file tools, permission evaluation, HITL interrupt derivation, the same-batch parallel-mutation guard, SubAgentSpec compilation, and the `task`-tool SubAgentMiddleware), and `deepagents.CreateDeepAgent` assembling the full stack over `agents.CreateAgent` (state filesystem default, general-purpose subagent auto-add carrying the parent's tools/middleware, model-backed default summarizer, recursion limit 9999, checkpointer/store passthrough). Divergence register in DIVERGENCES.md (D1-D15 + parked items); runnable example in `examples/deepagents` (groq via partners/openaicompat, skips without `GROQ_API_KEY`).
+
 ## [0.13.0] - 2026-11-08
 
 ### Added

@@ -26,6 +26,18 @@
 | [容错与追踪隐私](mkdocs/zh-CN/fault-tolerance.zh-CN.md) | 重试策略、节点错误处理器、TracePolicy 脱敏 |
 | [文档加载器](mkdocs/zh-CN/loaders.zh-CN.md) | HTML、Web、PDF 三件套加载器 |
 
+## Deep Agents（deepagents/）
+
+[`deepagents/`](../deepagents/) 包是 Python `deepagents` v0.7.38 的 Go 移植
+（MVP Tier 1-4）：带七个文件工具的状态虚拟文件系统、经 `task` 工具调度的
+声明式子 agent、按权限规则门控的人工审批，以及把它们组装到
+`agents.CreateAgent` 之上的
+[`CreateDeepAgent`](../deepagents/agent.go) 装配器。入口见包文档
+（[deepagents doc.go](../deepagents/doc.go)）；与上游的有意差异登记在
+[DIVERGENCES.md](../DIVERGENCES.md) 的 "deepagents" 一节。可运行的端到端示例
+位于 [`examples/deepagents`](../examples/deepagents/main.go)（经
+partners/openaicompat 使用 groq；未设置 `GROQ_API_KEY` 时打印跳过说明）。
+
 ## 文档站
 
 同一批指南（外加双语首页）由 [`mkdocs/`](mkdocs/) 构建成 mkdocs-material
