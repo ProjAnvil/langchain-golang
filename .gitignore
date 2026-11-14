@@ -40,3 +40,4 @@ Thumbs.db
 
 # Per-package coverage profiles (make coverage)
 .coverage/
+.worktrees/
