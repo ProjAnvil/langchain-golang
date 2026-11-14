@@ -552,6 +552,63 @@ func TestTaskToolRefusalBecomesNotice(t *testing.T) {
 	}
 }
 
+// TestTaskToolInterruptedSubagentReturnsPinnedText pins D10 (review F1):
+// when the subagent run pauses with pending interrupts, the task tool answers
+// with the pinned text as tool CONTENT and a nil error — the parent run
+// survives to completion. The stub subagent pauses via the HITL middleware
+// interrupting its one tool call (a *CompiledSubAgent passthrough, so no
+// parent checkpointer ever threads into it).
+func TestTaskToolInterruptedSubagentReturnsPinnedText(t *testing.T) {
+	parentModel := &scriptedChatModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			taskToolCall("call_1", "helper", "do the thing"),
+		}},
+		messages.AI("parent continues"),
+	}}
+	subModel := &scriptedChatModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			{ID: "sub_1", Name: "set_flag", Args: map[string]any{"value": "hello"}},
+		}},
+	}}
+	hitl := agentsmw.NewInterruptHumanInTheLoopMiddleware(map[string]agentsmw.InterruptConfig{
+		"set_flag": {AllowedDecisions: []agentsmw.DecisionType{
+			agentsmw.DecisionApprove, agentsmw.DecisionEdit,
+			agentsmw.DecisionReject, agentsmw.DecisionRespond,
+		}},
+	})
+	interrupted, err := agents.CreateAgent(subModel, []coretools.Tool{newCustomKeyTool(t)},
+		agents.WithAgentMiddleware(hitl))
+	if err != nil {
+		t.Fatalf("CreateAgent(subagent): %v", err)
+	}
+	mw, err := NewSubAgentMiddleware(parentModel, []any{&CompiledSubAgent{
+		Name: "helper", Description: "Helper subagent.", Agent: interrupted,
+	}})
+	if err != nil {
+		t.Fatalf("NewSubAgentMiddleware: %v", err)
+	}
+
+	agent, err := agents.CreateAgent(parentModel, nil, agents.WithAgentMiddleware(mw))
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	values, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("delegate")})
+	if err != nil {
+		t.Fatalf("InvokeWithState: %v", err)
+	}
+
+	const want = "subagent interrupted (not resumable in this port)"
+	if got := taskResultMessage(t, values, "call_1").Content; got != want {
+		t.Fatalf("task ToolMessage content = %q, want %q", got, want)
+	}
+	// The parent run survives: the model produced its final answer after the
+	// interrupted delegation.
+	msgs, _ := values["messages"].([]messages.Message)
+	if last := msgs[len(msgs)-1]; last.Role != messages.RoleAI || last.Content != "parent continues" {
+		t.Fatalf("parent must finish normally after an interrupted subagent, last message = %#v", last)
+	}
+}
+
 // --- final-text walk ----------------------------------------------------------
 
 // TestTaskResultContentLastNonEmptyAIText pins the content walk: trailing

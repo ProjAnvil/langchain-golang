@@ -274,9 +274,10 @@ func (m *SubAgentMiddleware) invokeTask(ctx context.Context, input map[string]an
 		return coretools.Result{}, err
 	}
 	if len(result.Interrupts) > 0 {
-		// D10: the port does not resume paused subagents — the parent model
-		// sees the failure and can re-delegate with different instructions.
-		return coretools.Result{}, errors.New("subagent interrupted (not resumable in this port)")
+		// D10: the port does not resume paused subagents. The pinned text is
+		// returned as tool CONTENT (nil error) so the parent run survives and
+		// the model sees the exact literal, like the unknown-subagent message.
+		return coretools.Result{Content: "subagent interrupted (not resumable in this port)"}, nil
 	}
 
 	msgs, _ := result.Values["messages"].([]messages.Message)
