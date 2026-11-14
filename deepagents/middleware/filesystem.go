@@ -239,12 +239,16 @@ func (m *FilesystemMiddleware) WrapToolCall(ctx context.Context, request agentsm
 
 // filesCommand builds the state-update Command a filesystem tool returns in
 // its result artifact: Update carries only the files key holding the view's
-// change delta (nil entries deleting keys), which the graph commits through
-// backends.MapMergeReducer on the FilesStateKey channel. It never emits a
-// messages key — the ToolNode derives the tool message from the result
-// content (the port's documented convention, langchain/tools/tool_node.go).
-// A nil view, or a view with no recorded changes, yields a nil Command:
-// there is nothing to commit, and sending an empty delta would be a no-op.
+// full post-mutation snapshot — Changed() returns the entire files map after
+// the tool's mutations, not a delta, so a view seeded from a raw state still
+// commits a complete map — which the graph commits through
+// backends.MapMergeReducer on the FilesStateKey channel; the reducer overlays
+// the snapshot key-by-key onto the stored map (same-key last-write-wins,
+// untouched keys survive). It never emits a messages key — the ToolNode
+// derives the tool message from the result content (the port's documented
+// convention, langchain/tools/tool_node.go). A nil view, or a view with no
+// recorded changes, yields a nil Command: there is nothing to commit, and
+// re-sending an unchanged snapshot would be a no-op.
 func filesCommand(v *backends.StateView) *types.Command {
 	if v == nil {
 		return nil

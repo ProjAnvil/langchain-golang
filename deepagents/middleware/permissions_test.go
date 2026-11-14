@@ -199,20 +199,13 @@ func writeFileToolCall(id, path, content string) messages.ToolCall {
 	}}
 }
 
-// fileContentFromState reads a file's content out of an agent-run values map,
-// accepting both forms the files channel can surface: the reducer's stored
-// map[string]backends.FileMeta and the pointer-valued partial update a
-// snapshot may carry. Empty when the file is absent.
+// fileContentFromState reads a file's content out of an agent-run values map.
+// The files channel stores exactly one form — map[string]backends.FileMeta,
+// since Changed() returns the full post-mutation snapshot in the stored form —
+// so no other shape is tolerated. Empty when the file is absent.
 func fileContentFromState(values map[string]any, path string) string {
-	switch files := values[backends.FilesStateKey].(type) {
-	case map[string]backends.FileMeta:
-		return files[path].Content
-	case map[string]*backends.FileMeta:
-		if fm := files[path]; fm != nil {
-			return fm.Content
-		}
-	}
-	return ""
+	files, _ := values[backends.FilesStateKey].(map[string]backends.FileMeta)
+	return files[path].Content
 }
 
 // TestPermissionHitlApprovedResumeWritesFile: the write_file call pauses the
@@ -257,8 +250,12 @@ func TestPermissionHitlApprovedResumeWritesFile(t *testing.T) {
 	if len(interrupts) != 0 {
 		t.Fatalf("expected completion after approval, got %+v", interrupts)
 	}
-	if got := fileContentFromState(values, "/private/x.md"); got != "approved" {
-		t.Fatalf("approved write must land in files state, got %q (files: %#v)", got, values[backends.FilesStateKey])
+	files, ok := values[backends.FilesStateKey].(map[string]backends.FileMeta)
+	if !ok {
+		t.Fatalf("files state must be strict map[string]backends.FileMeta, got %T", values[backends.FilesStateKey])
+	}
+	if got := files["/private/x.md"].Content; got != "approved" {
+		t.Fatalf("approved write must land in files state, got %q (files: %#v)", got, files)
 	}
 	out, _ := values["messages"].([]messages.Message)
 	found := false
