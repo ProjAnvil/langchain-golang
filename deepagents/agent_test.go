@@ -32,6 +32,7 @@ import (
 	agentsmw "github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
+	"github.com/projanvil/langchain-golang/langgraph/runtime"
 	"github.com/projanvil/langchain-golang/langgraph/store"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -986,7 +987,7 @@ func TestCreateDeepAgentContextSchemaAccepted(t *testing.T) {
 		"reports the caller",
 		schema.Object(map[string]schema.Schema{}),
 		func(ctx context.Context, _ map[string]any) (coretools.Result, error) {
-			seenUser, _ = agents.ContextValue(ctx, "user_id")
+			seenUser = runtime.ValuesFromContext(ctx)["user_id"]
 			return coretools.Result{Content: "ok"}, nil
 		},
 	)
