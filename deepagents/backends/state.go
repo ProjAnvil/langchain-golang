@@ -7,6 +7,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	channels "github.com/projanvil/langchain-golang/langgraph/channels"
@@ -127,22 +128,28 @@ func StateViewFromContext(ctx context.Context) (*StateView, bool) {
 	return v, true
 }
 
-// StateView is the working set of files a StateBackend reads and writes: a
-// live in-memory map plus the delta of the mutations performed through it. It
+// StateView is the working set of files a StateBackend reads and writes: an
+// in-memory map plus the delta of the mutations performed through it. It
 // stands in for the LangGraph state channel access the Python reference wires
 // through CONFIG_KEY_READ / CONFIG_KEY_SEND (deepagents/backends/state.py:81-
-// 119): reads see the live map, so writes are immediately visible to later
-// reads within the same step (the reference's fresh=True read-your-writes),
-// while the recorded delta plays the role of the queued channel writes and is
-// meant to be applied to the real state map via MapMergeReducer at the node
-// boundary (unchanged keys need not be re-sent — the reducer preserves them).
+// 119): reads see the mutations completed before them (the reference's
+// fresh=True read-your-writes), while the recorded delta plays the role of
+// the queued channel writes and is meant to be applied to the real state map
+// via MapMergeReducer at the node boundary (unchanged keys need not be
+// re-sent — the reducer preserves them).
 //
-// NewStateView copies the seed map, so mutations never alias the caller's
-// snapshot; Files hands out the live internal map (zero-copy, read-your-
-// writes), which callers must treat as read-only. A StateView is not safe for
-// concurrent use; like the reference's per-node state access, it is used from
-// one goroutine at a time.
+// Concurrency contract: a StateView is safe for concurrent use. The runtime
+// may execute the tools of one batch in parallel, so multiple goroutines may
+// call Set, Delete, Files, and Changed at the same time. A mutex guards the
+// file map and the delta; Files and Changed return snapshot copies, and per
+// key the last completed operation wins (the same last-write-wins the
+// reference's channel updates exhibit when a step's writes land in order). A
+// map returned by Files reflects exactly the mutations completed before the
+// call and never changes afterward, so no caller can observe a concurrent
+// mutation through a previously returned snapshot; NewStateView likewise
+// copies the seed map, so mutations never alias the caller's snapshot.
 type StateView struct {
+	mu      sync.Mutex
 	files   map[string]FileMeta
 	changed map[string]*FileMeta
 }
@@ -157,16 +164,26 @@ func NewStateView(files map[string]FileMeta) *StateView {
 	return &StateView{files: seeded}
 }
 
-// Files returns the live files map. It is the working copy owned by the view
-// (the seed passed to NewStateView is not aliased), reflects every Set and
-// Delete immediately, and must be treated as read-only by callers.
+// Files returns a snapshot copy of the files map. The copy reflects every
+// mutation completed before the call (read-your-writes for a sequential
+// caller) and never changes afterward; concurrent mutations that complete
+// later are visible only through subsequent calls.
 func (v *StateView) Files() map[string]FileMeta {
-	return v.files
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	snapshot := make(map[string]FileMeta, len(v.files))
+	for k, meta := range v.files {
+		snapshot[k] = meta
+	}
+	return snapshot
 }
 
-// Set records path as written with meta, updating the live map and the
-// change delta. The delta entry is a pointer to a copy of meta.
+// Set records path as written with meta, updating the file map and the
+// change delta under the view's lock. The delta entry is a pointer to a copy
+// of meta.
 func (v *StateView) Set(path string, meta FileMeta) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.files[path] = meta
 	if v.changed == nil {
 		v.changed = make(map[string]*FileMeta)
@@ -175,10 +192,12 @@ func (v *StateView) Set(path string, meta FileMeta) {
 	v.changed[path] = &stored
 }
 
-// Delete records path as deleted: it is removed from the live map, and the
+// Delete records path as deleted: it is removed from the file map, and the
 // delta carries a nil marker for it, which MapMergeReducer interprets as a
 // deletion (upstream _file_data_reducer's None handling).
 func (v *StateView) Delete(path string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	delete(v.files, path)
 	if v.changed == nil {
 		v.changed = make(map[string]*FileMeta)
@@ -186,16 +205,22 @@ func (v *StateView) Delete(path string) {
 	v.changed[path] = nil
 }
 
-// Changed returns the mutation delta since the view was created, keyed by
-// path with nil meaning delete. It returns nil when nothing has been mutated,
-// and otherwise the live delta map, which callers must treat as read-only.
-// Later operations on the same path overwrite earlier delta entries, so the
-// delta always reflects the net effect.
+// Changed returns a snapshot copy of the mutation delta since the view was
+// created, keyed by path with nil meaning delete. It returns nil when
+// nothing has been mutated. Later operations on the same path overwrite
+// earlier delta entries, so the delta always reflects the net effect of the
+// operations completed before the call.
 func (v *StateView) Changed() map[string]*FileMeta {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if len(v.changed) == 0 {
 		return nil
 	}
-	return v.changed
+	delta := make(map[string]*FileMeta, len(v.changed))
+	for k, entry := range v.changed {
+		delta[k] = entry
+	}
+	return delta
 }
 
 // errNoStateView is returned by every StateBackend method when the context
@@ -212,7 +237,10 @@ var errNoStateView = errors.New("no state view in context")
 // Reads and writes go through the StateView in the context (the reference's
 // CONFIG_KEY_READ/CONFIG_KEY_SEND plumbing), so the same backend instance is
 // safe to share across steps; every method fails with "no state view in
-// context" when the context carries no view.
+// context" when the context carries no view. Each method snapshots the view
+// at entry (see StateView's concurrency contract), so parallel tools sharing
+// one backend over one view are race-free, with the last write per key
+// winning.
 //
 // Divergences from the reference, intentional:
 //   - the reference keys files by the path exactly as passed and never
@@ -270,7 +298,14 @@ type stateScopedFile struct {
 // never leaks into results.
 func filterStateFiles(files map[string]FileMeta, root string) []stateScopedFile {
 	if _, ok := files[root]; ok {
-		return []stateScopedFile{{key: root, rel: path.Base(root)}}
+		// Upstream _relative_to_root returns file_path[1:] when the root is
+		// "/" — the empty string for a file stored at "/" itself — and the
+		// basename otherwise.
+		rel := path.Base(root)
+		if root == "/" {
+			rel = ""
+		}
+		return []stateScopedFile{{key: root, rel: rel}}
 	}
 	prefix := "/"
 	if root != "/" {
@@ -310,7 +345,7 @@ func (b *StateBackend) Ls(ctx context.Context, vpath string) (LsResult, error) {
 	}
 	entries := make([]LsEntry, 0)
 	seenDirs := make(map[string]bool)
-	for key, meta := range v.files {
+	for key, meta := range v.Files() {
 		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
@@ -344,7 +379,7 @@ func (b *StateBackend) Read(ctx context.Context, vpath string, offset, limit int
 	if err != nil {
 		return ReadResult{}, err
 	}
-	meta, ok := v.files[norm]
+	meta, ok := v.Files()[norm]
 	if !ok {
 		return ReadResult{}, &Error{
 			Code:    ErrFileNotFound,
@@ -371,7 +406,7 @@ func (b *StateBackend) Write(ctx context.Context, vpath string, content string) 
 	}
 	now := time.Now()
 	meta := FileMeta{Content: content, Encoding: "utf-8", CreatedAt: now, ModifiedAt: now}
-	if existing, ok := v.files[norm]; ok {
+	if existing, ok := v.Files()[norm]; ok {
 		meta.CreatedAt = existing.CreatedAt
 	}
 	v.Set(norm, meta)
@@ -397,7 +432,7 @@ func (b *StateBackend) Edit(ctx context.Context, vpath string, oldString, newStr
 	if err != nil {
 		return EditResult{}, err
 	}
-	meta, ok := v.files[norm]
+	meta, ok := v.Files()[norm]
 	if !ok {
 		return EditResult{}, &Error{
 			Code:    ErrFileNotFound,
@@ -437,12 +472,12 @@ func (b *StateBackend) Delete(ctx context.Context, vpath string) (DeleteResult, 
 	}
 	var toDelete []string
 	if norm == "/" {
-		for key := range v.files {
+		for key := range v.Files() {
 			toDelete = append(toDelete, key)
 		}
 	} else {
 		prefix := norm + "/"
-		for key := range v.files {
+		for key := range v.Files() {
 			if key == norm || strings.HasPrefix(key, prefix) {
 				toDelete = append(toDelete, key)
 			}
@@ -493,7 +528,7 @@ func (b *StateBackend) Glob(ctx context.Context, vpath string, pattern string) (
 		return GlobResult{Files: []string{}}, nil
 	}
 	var files []string
-	for _, scoped := range filterStateFiles(v.files, norm) {
+	for _, scoped := range filterStateFiles(v.Files(), norm) {
 		if !includeGlobMatches(pattern, scoped.rel) {
 			continue
 		}
@@ -537,11 +572,12 @@ func (b *StateBackend) Grep(ctx context.Context, pattern string, vpath string, g
 	}
 	matches := make([]GrepFileMatches, 0)
 	total := 0
-	for _, scoped := range filterStateFiles(v.files, norm) {
+	files := v.Files()
+	for _, scoped := range filterStateFiles(files, norm) {
 		if glob != "" && !includeGlobMatches(glob, scoped.rel) {
 			continue
 		}
-		meta := v.files[scoped.key]
+		meta := files[scoped.key]
 		if meta.Encoding == "base64" {
 			continue
 		}

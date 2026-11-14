@@ -3,9 +3,11 @@ package backends
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -189,7 +191,7 @@ func TestStateView(t *testing.T) {
 		m := meta("written")
 		v.Set("/new", m)
 		if got := v.Files()["/new"]; got != m {
-			t.Errorf("Files()[\"/new\"] = %v, want %v (live read-your-writes)", got, m)
+			t.Errorf("Files()[\"/new\"] = %v, want %v (read-your-writes)", got, m)
 		}
 		delta := v.Changed()
 		if len(delta) != 1 || delta["/new"] == nil || *delta["/new"] != m {
@@ -234,6 +236,197 @@ func TestStateViewContext(t *testing.T) {
 	}
 	if _, ok := StateViewFromContext(WithStateView(context.Background(), nil)); ok {
 		t.Error("StateViewFromContext with nil view: want ok=false")
+	}
+}
+
+// TestStateViewSnapshotSemantics pins the concurrency contract's snapshot
+// rule: maps returned by Files and Changed never observe later mutations.
+func TestStateViewSnapshotSemantics(t *testing.T) {
+	v := NewStateView(map[string]FileMeta{"/a": meta("one")})
+
+	filesSnap := v.Files()
+	deltaSnap := v.Changed() // nil: no mutations yet
+	if deltaSnap != nil {
+		t.Fatalf("Changed() before mutation = %v, want nil", deltaSnap)
+	}
+	v.Set("/b", meta("two"))
+	v.Delete("/a")
+
+	if len(filesSnap) != 1 || filesSnap["/a"].Content != "one" {
+		t.Errorf("Files snapshot changed after later mutations: %v", filesSnap)
+	}
+	if _, ok := filesSnap["/b"]; ok {
+		t.Error("Files snapshot gained /b after a later Set")
+	}
+
+	v.Delete("/b")
+	deltaSnap = v.Changed() // {/a: nil, /b: nil}
+	v.Set("/c", meta("three"))
+	if _, ok := deltaSnap["/c"]; ok {
+		t.Error("Changed snapshot gained /c after a later Set")
+	}
+	if len(deltaSnap) != 2 {
+		t.Errorf("Changed snapshot = %v, want the two earlier keys only", deltaSnap)
+	}
+
+	fresh := v.Files()
+	if len(fresh) != 1 || fresh["/c"].Content != "three" {
+		t.Errorf("fresh Files() = %v, want only /c", fresh)
+	}
+}
+
+// TestStateViewConcurrentUse exercises the parallel-tool-batches contract
+// under the race detector: N goroutines mutate disjoint and shared keys
+// concurrently while reader goroutines snapshot Files().
+func TestStateViewConcurrentUse(t *testing.T) {
+	const goroutines = 16
+	const iterations = 50
+
+	tests := []struct {
+		name string
+		run  func(t *testing.T, v *StateView)
+	}{
+		{
+			// Disjoint keys: each goroutine owns /g<i>/k<j>.txt, so the
+			// final delta per key is deterministic — a delete marker for
+			// k==3 (its last operation), the final write otherwise.
+			name: "disjoint keys interleaved set and delete",
+			run: func(t *testing.T, v *StateView) {
+				var wg sync.WaitGroup
+				for g := 0; g < goroutines; g++ {
+					wg.Add(1)
+					go func(g int) {
+						defer wg.Done()
+						for k := 0; k < 5; k++ {
+							key := fmt.Sprintf("/g%d/k%d.txt", g, k)
+							for i := 0; i < iterations; i++ {
+								v.Set(key, meta(fmt.Sprintf("g%d-k%d-v%d", g, k, i)))
+								if i%2 == 1 {
+									v.Delete(key)
+								}
+							}
+							if k == 3 {
+								v.Delete(key)
+							} else {
+								v.Set(key, meta(fmt.Sprintf("g%d-k%d-final", g, k)))
+							}
+						}
+					}(g)
+				}
+				wg.Wait()
+				delta := v.Changed()
+				for g := 0; g < goroutines; g++ {
+					for k := 0; k < 5; k++ {
+						key := fmt.Sprintf("/g%d/k%d.txt", g, k)
+						entry, ok := delta[key]
+						if !ok {
+							t.Errorf("delta[%s] missing", key)
+							continue
+						}
+						if k == 3 {
+							if entry != nil {
+								t.Errorf("delta[%s] = %v, want nil delete marker", key, entry)
+							}
+							continue
+						}
+						if entry == nil || entry.Content != fmt.Sprintf("g%d-k%d-final", g, k) {
+							t.Errorf("delta[%s] = %v, want final write", key, entry)
+						}
+					}
+				}
+			},
+		},
+		{
+			// Shared key: the final value is nondeterministic under
+			// contention, but the delta must carry the key and stay
+			// consistent with the final file map.
+			name: "same key hammered by all goroutines",
+			run: func(t *testing.T, v *StateView) {
+				var wg sync.WaitGroup
+				for g := 0; g < goroutines; g++ {
+					wg.Add(1)
+					go func(g int) {
+						defer wg.Done()
+						for i := 0; i < iterations; i++ {
+							if i%2 == 0 {
+								v.Set("/shared.txt", meta(fmt.Sprintf("g%d-i%d", g, i)))
+							} else {
+								v.Delete("/shared.txt")
+							}
+						}
+					}(g)
+				}
+				wg.Wait()
+				delta := v.Changed()
+				entry, ok := delta["/shared.txt"]
+				if !ok {
+					t.Fatal("delta[/shared.txt] missing")
+				}
+				file, present := v.Files()["/shared.txt"]
+				if entry == nil && present {
+					t.Error("delta records a delete but the file is present")
+				}
+				if entry != nil {
+					if !present {
+						t.Error("delta records a write but the file is absent")
+					} else if file.Content != entry.Content {
+						t.Errorf("file content %q != delta content %q", file.Content, entry.Content)
+					}
+				}
+			},
+		},
+		{
+			// Concurrent Files() readers must observe stable snapshots while
+			// writers mutate disjoint keys.
+			name: "concurrent Files snapshots during writes",
+			run: func(t *testing.T, v *StateView) {
+				var writers, readers sync.WaitGroup
+				stop := make(chan struct{})
+				for r := 0; r < 4; r++ {
+					readers.Add(1)
+					go func() {
+						defer readers.Done()
+						for {
+							select {
+							case <-stop:
+								return
+							default:
+							}
+							for key, m := range v.Files() {
+								if m.Content == "" {
+									t.Errorf("snapshot entry %s has empty content", key)
+								}
+							}
+						}
+					}()
+				}
+				for g := 0; g < goroutines; g++ {
+					writers.Add(1)
+					go func(g int) {
+						defer writers.Done()
+						key := fmt.Sprintf("/w%d.txt", g)
+						for i := 0; i < iterations; i++ {
+							v.Set(key, meta(fmt.Sprintf("w%d-i%d", g, i)))
+						}
+					}(g)
+				}
+				writers.Wait()
+				close(stop)
+				readers.Wait()
+				files := v.Files()
+				for g := 0; g < goroutines; g++ {
+					key := fmt.Sprintf("/w%d.txt", g)
+					if got, ok := files[key]; !ok || got.Content != fmt.Sprintf("w%d-i%d", g, iterations-1) {
+						t.Errorf("files[%s] = (%v, %v), want final write", key, got, ok)
+					}
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.run(t, NewStateView(nil))
+		})
 	}
 }
 
