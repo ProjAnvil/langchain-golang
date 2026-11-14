@@ -21,9 +21,10 @@ import (
 const FilesStateKey = "files"
 
 // MapMergeError reports that MapMergeReducer received a value whose type is
-// neither nil nor the accepted map type for that argument. It has no upstream
-// counterpart: the Python reducer is typed by annotation and cannot be called
-// with a non-mapping, while the Go reducer is invoked through `any`.
+// neither nil nor one of the accepted map forms for that argument. It has no
+// upstream counterpart: the Python reducer is typed by annotation and cannot
+// be called with a non-mapping, while the Go reducer is invoked through
+// `any`.
 type MapMergeError struct {
 	// Arg is the parameter that carried the offending value: "existing" or
 	// "update".
@@ -34,34 +35,37 @@ type MapMergeError struct {
 
 func (e *MapMergeError) Error() string {
 	return fmt.Sprintf(
-		"backends.MapMergeReducer: %s must be nil or %s; got %s",
-		e.Arg, e.accepted(), e.Got,
+		"backends.MapMergeReducer: %s must be nil, map[string]backends.FileMeta, or map[string]*backends.FileMeta; got %s",
+		e.Arg, e.Got,
 	)
-}
-
-func (e *MapMergeError) accepted() string {
-	if e.Arg == "existing" {
-		return "map[string]backends.FileMeta"
-	}
-	return "map[string]*backends.FileMeta"
 }
 
 // MapMergeReducer is typed as a channels.Reducer so it can be registered on
 // the `files` state field directly.
 var _ channels.Reducer = MapMergeReducer
 
-// MapMergeReducer merges partial updates into the `files` state map, with nil
-// pointers as deletion markers. It mirrors _file_data_reducer in the Python
-// reference, deepagents/middleware/filesystem.py:1324-1377: the existing value
-// may be nil (channel initialization), the update merges key-by-key with
-// update values overwriting existing ones, and a nil value in the update
-// removes the key. The result is always a fresh map[string]FileMeta copy, so
-// callers may mutate it without aliasing channel state.
+// MapMergeReducer merges `files` state updates, mirroring the dict-merge
+// reducer on FilesystemState.files in the Python reference
+// (deepagents/middleware/filesystem.py:1324-1377). Both sides are the
+// channel's stored form, map[string]FileMeta: the update overlays the
+// existing map key-by-key (same-key last-write-wins), keys carried only by
+// the existing map survive, and the result is always a fresh
+// map[string]FileMeta copy, so callers may mutate it without aliasing
+// channel state.
 //
-// Accepted types: existing is nil or map[string]FileMeta (the channel's
-// stored form); update is nil or map[string]*FileMeta (a partial update whose
-// nil entries delete, the Go form of the reference's
-// dict[str, FileData | None]). A nil update yields a copy of existing.
+// Update form == stored form is load-bearing: langgraph's binaryOperator
+// seeds a channel's first write raw, without applying the reducer
+// (langgraph/channels/binop.go — the set-flag path; Python's
+// BinaryOperatorAggregate instead seeds typ()'s zero value and runs the
+// operator on every update, including the first). A first write in any other
+// shape would be stored as-is and crash every later merge's type assertion,
+// so the canonical update here — backends.StateView.Changed's full
+// post-mutation snapshot — is exactly the stored form.
+//
+// Tolerated as defense in depth: nil on either side (unset channel / no
+// changes), typed-nil maps, and the delta form map[string]*FileMeta, in
+// which a nil entry deletes the key (the Go spelling of the reference's
+// None deletion markers, for callers that queue partial updates explicitly).
 // Anything else returns a *MapMergeError.
 //
 // The signature matches langgraph/channels.Reducer so the filesystem
@@ -69,25 +73,35 @@ var _ channels.Reducer = MapMergeReducer
 // middleware package constructs that field itself, because backends must not
 // import langchain/agents/middleware.
 func MapMergeReducer(existing, update any) (any, error) {
-	var base map[string]FileMeta
+	result := make(map[string]FileMeta)
+
 	switch e := existing.(type) {
 	case nil:
-		base = nil
+		// Unset channel / first write.
 	case map[string]FileMeta:
-		base = e
+		for k, v := range e {
+			result[k] = v
+		}
+	case map[string]*FileMeta:
+		// Tolerated delta form: nil entries carry nothing to merge.
+		for k, v := range e {
+			if v != nil {
+				result[k] = *v
+			}
+		}
 	default:
 		return nil, &MapMergeError{Arg: "existing", Got: fmt.Sprintf("%T", existing)}
 	}
 
-	result := make(map[string]FileMeta, len(base))
-	for k, v := range base {
-		result[k] = v
-	}
-
 	switch u := update.(type) {
 	case nil:
-		// No writes: the result is just the copy of existing.
+		// No changes in this update.
+	case map[string]FileMeta:
+		for k, v := range u {
+			result[k] = v
+		}
 	case map[string]*FileMeta:
+		// Tolerated delta form: nil entries delete (UP None markers).
 		for k, v := range u {
 			if v == nil {
 				delete(result, k)
@@ -129,29 +143,40 @@ func StateViewFromContext(ctx context.Context) (*StateView, bool) {
 }
 
 // StateView is the working set of files a StateBackend reads and writes: an
-// in-memory map plus the delta of the mutations performed through it. It
-// stands in for the LangGraph state channel access the Python reference wires
-// through CONFIG_KEY_READ / CONFIG_KEY_SEND (deepagents/backends/state.py:81-
-// 119): reads see the mutations completed before them (the reference's
-// fresh=True read-your-writes), while the recorded delta plays the role of
-// the queued channel writes and is meant to be applied to the real state map
-// via MapMergeReducer at the node boundary (unchanged keys need not be
-// re-sent — the reducer preserves them).
+// in-memory map plus a changed flag. It stands in for the LangGraph state
+// channel access the Python reference wires through CONFIG_KEY_READ /
+// CONFIG_KEY_SEND (deepagents/backends/state.py:81-119): reads see the
+// mutations completed before them (the reference's fresh=True
+// read-your-writes), and Changed produces the artifact the middleware sends
+// to the `files` channel at the node boundary.
+//
+// Channel artifact contract: Changed returns the FULL post-mutation snapshot
+// as map[string]FileMeta — the update form equals the channel's stored form.
+// langgraph's binaryOperator seeds a channel's first write raw, without
+// applying the reducer (langgraph/channels/binop.go — the set-flag path;
+// Python instead seeds typ()'s zero value and runs the operator on every
+// update, including the first), so a delta-shaped first write (such as a
+// map[string]*FileMeta with nil delete markers) would be stored as-is and
+// crash every subsequent merge's type assertion. Deletions therefore live
+// INSIDE the view — a deleted key is simply absent from the snapshot — and
+// MapMergeReducer merges snapshots key-by-key, with the same key's last
+// write winning (each Changed snapshot is taken under the view's lock, so it
+// is self-consistent even when parallel tools in one batch mutate
+// concurrently).
 //
 // Concurrency contract: a StateView is safe for concurrent use. The runtime
 // may execute the tools of one batch in parallel, so multiple goroutines may
 // call Set, Delete, Files, and Changed at the same time. A mutex guards the
-// file map and the delta; Files and Changed return snapshot copies, and per
-// key the last completed operation wins (the same last-write-wins the
-// reference's channel updates exhibit when a step's writes land in order). A
-// map returned by Files reflects exactly the mutations completed before the
-// call and never changes afterward, so no caller can observe a concurrent
-// mutation through a previously returned snapshot; NewStateView likewise
-// copies the seed map, so mutations never alias the caller's snapshot.
+// file map and the changed flag; Files and Changed return snapshot copies,
+// and per key the last completed operation wins. A map returned by Files or
+// Changed reflects exactly the mutations completed before the call and never
+// changes afterward, so no caller can observe a concurrent mutation through
+// a previously returned snapshot; NewStateView likewise copies the seed map,
+// so mutations never alias the caller's snapshot.
 type StateView struct {
-	mu      sync.Mutex
-	files   map[string]FileMeta
-	changed map[string]*FileMeta
+	mu    sync.Mutex
+	files map[string]FileMeta
+	dirty bool
 }
 
 // NewStateView returns a StateView seeded with a copy of files (nil seeds an
@@ -164,13 +189,9 @@ func NewStateView(files map[string]FileMeta) *StateView {
 	return &StateView{files: seeded}
 }
 
-// Files returns a snapshot copy of the files map. The copy reflects every
-// mutation completed before the call (read-your-writes for a sequential
-// caller) and never changes afterward; concurrent mutations that complete
-// later are visible only through subsequent calls.
-func (v *StateView) Files() map[string]FileMeta {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+// snapshotLocked returns a copy of the file map; the view's lock must be
+// held.
+func (v *StateView) snapshotLocked() map[string]FileMeta {
 	snapshot := make(map[string]FileMeta, len(v.files))
 	for k, meta := range v.files {
 		snapshot[k] = meta
@@ -178,49 +199,49 @@ func (v *StateView) Files() map[string]FileMeta {
 	return snapshot
 }
 
-// Set records path as written with meta, updating the file map and the
-// change delta under the view's lock. The delta entry is a pointer to a copy
-// of meta.
+// Files returns a snapshot copy of the files map. The copy reflects every
+// mutation completed before the call (read-your-writes for a sequential
+// caller) and never changes afterward; concurrent mutations that complete
+// later are visible only through subsequent calls.
+func (v *StateView) Files() map[string]FileMeta {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.snapshotLocked()
+}
+
+// Set records path as written with meta, updating the file map under the
+// view's lock and marking the view changed.
 func (v *StateView) Set(path string, meta FileMeta) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.files[path] = meta
-	if v.changed == nil {
-		v.changed = make(map[string]*FileMeta)
-	}
-	stored := meta
-	v.changed[path] = &stored
+	v.dirty = true
 }
 
-// Delete records path as deleted: it is removed from the file map, and the
-// delta carries a nil marker for it, which MapMergeReducer interprets as a
-// deletion (upstream _file_data_reducer's None handling).
+// Delete removes path from the file map and marks the view changed. Unlike
+// the pointer-form delta (see MapMergeReducer's tolerated forms), deletion is
+// expressed by the key's absence from the Changed snapshot, not by a marker.
 func (v *StateView) Delete(path string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	delete(v.files, path)
-	if v.changed == nil {
-		v.changed = make(map[string]*FileMeta)
-	}
-	v.changed[path] = nil
+	v.dirty = true
 }
 
-// Changed returns a snapshot copy of the mutation delta since the view was
-// created, keyed by path with nil meaning delete. It returns nil when
-// nothing has been mutated. Later operations on the same path overwrite
-// earlier delta entries, so the delta always reflects the net effect of the
-// operations completed before the call.
-func (v *StateView) Changed() map[string]*FileMeta {
+// Changed returns the channel-update artifact: the full post-mutation
+// snapshot of the files map, in the channel's stored form
+// (map[string]FileMeta — see the StateView contract for why the update form
+// must equal the stored form). It returns nil when no Set or Delete has
+// occurred since the view was created. Like Files, the returned snapshot
+// reflects every mutation completed before the call and never changes
+// afterward.
+func (v *StateView) Changed() map[string]FileMeta {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if len(v.changed) == 0 {
+	if !v.dirty {
 		return nil
 	}
-	delta := make(map[string]*FileMeta, len(v.changed))
-	for k, entry := range v.changed {
-		delta[k] = entry
-	}
-	return delta
+	return v.snapshotLocked()
 }
 
 // errNoStateView is returned by every StateBackend method when the context

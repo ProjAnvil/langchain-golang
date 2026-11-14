@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	channels "github.com/projanvil/langchain-golang/langgraph/channels"
 )
 
 // Compile-time checks: StateBackend implements Backend and Deleter (upstream
@@ -28,7 +30,7 @@ func meta(content string) FileMeta {
 
 func TestMapMergeReducer(t *testing.T) {
 	a1, a2 := meta("one"), meta("two")
-	b1, b2 := meta("ONE"), meta("TWO")
+	b1 := meta("ONE")
 
 	tests := []struct {
 		name     string
@@ -41,31 +43,19 @@ func TestMapMergeReducer(t *testing.T) {
 		{
 			name:     "merge disjoint keys",
 			existing: map[string]FileMeta{"/a": a1},
-			update:   map[string]*FileMeta{"/b": &b1},
+			update:   map[string]FileMeta{"/b": b1},
 			want:     map[string]FileMeta{"/a": a1, "/b": b1},
 		},
 		{
 			name:     "update overwrites existing value",
 			existing: map[string]FileMeta{"/a": a1},
-			update:   map[string]*FileMeta{"/a": &b1},
+			update:   map[string]FileMeta{"/a": b1},
 			want:     map[string]FileMeta{"/a": b1},
 		},
 		{
-			name:     "nil pointer deletes key",
-			existing: map[string]FileMeta{"/a": a1, "/b": b2},
-			update:   map[string]*FileMeta{"/a": nil},
-			want:     map[string]FileMeta{"/b": b2},
-		},
-		{
-			name:     "delete absent key is a no-op",
-			existing: map[string]FileMeta{"/a": a1},
-			update:   map[string]*FileMeta{"/gone": nil},
-			want:     map[string]FileMeta{"/a": a1},
-		},
-		{
-			name:     "nil existing returns filtered update",
+			name:     "nil existing returns copy of update",
 			existing: nil,
-			update:   map[string]*FileMeta{"/a": &a1, "/b": nil},
+			update:   map[string]FileMeta{"/a": a1},
 			want:     map[string]FileMeta{"/a": a1},
 		},
 		{
@@ -81,16 +71,37 @@ func TestMapMergeReducer(t *testing.T) {
 			want:     map[string]FileMeta{},
 		},
 		{
-			name:     "delete and write disjoint keys both applied",
-			existing: map[string]FileMeta{"/keep": a1, "/drop": a2},
-			update:   map[string]*FileMeta{"/drop": nil, "/new": &b1},
-			want:     map[string]FileMeta{"/keep": a1, "/new": b1},
-		},
-		{
 			name:     "typed nil maps behave as empty",
 			existing: map[string]FileMeta(nil),
-			update:   map[string]*FileMeta(nil),
+			update:   map[string]FileMeta(nil),
 			want:     map[string]FileMeta{},
+		},
+		{
+			// Snapshot semantics: keys absent from the update snapshot are
+			// untouched by the merge (deletions live in the view, which
+			// simply omits the key).
+			name:     "keys absent from the snapshot survive the merge",
+			existing: map[string]FileMeta{"/dropped": a1, "/keep": a2},
+			update:   map[string]FileMeta{"/keep": a2, "/new": b1},
+			want:     map[string]FileMeta{"/dropped": a1, "/keep": a2, "/new": b1},
+		},
+		{
+			name:     "tolerated pointer-form update writes",
+			existing: map[string]FileMeta{"/a": a1},
+			update:   map[string]*FileMeta{"/b": &b1},
+			want:     map[string]FileMeta{"/a": a1, "/b": b1},
+		},
+		{
+			name:     "tolerated pointer-form update nil deletes",
+			existing: map[string]FileMeta{"/a": a1, "/b": a2},
+			update:   map[string]*FileMeta{"/a": nil},
+			want:     map[string]FileMeta{"/b": a2},
+		},
+		{
+			name:     "tolerated pointer-form existing is normalized",
+			existing: map[string]*FileMeta{"/a": &a1, "/z": nil},
+			update:   nil,
+			want:     map[string]FileMeta{"/a": a1},
 		},
 		{
 			name:     "non-map existing is rejected",
@@ -186,29 +197,26 @@ func TestStateView(t *testing.T) {
 		}
 	})
 
-	t.Run("set and delete record the delta and the live map", func(t *testing.T) {
-		v := NewStateView(map[string]FileMeta{"/keep": meta("kept")})
+	t.Run("set and delete apply inside the view", func(t *testing.T) {
+		keep := meta("kept")
+		v := NewStateView(map[string]FileMeta{"/keep": keep})
 		m := meta("written")
 		v.Set("/new", m)
 		if got := v.Files()["/new"]; got != m {
 			t.Errorf("Files()[\"/new\"] = %v, want %v (read-your-writes)", got, m)
 		}
-		delta := v.Changed()
-		if len(delta) != 1 || delta["/new"] == nil || *delta["/new"] != m {
-			t.Errorf("Changed() = %v, want {\"/new\": %v}", delta, m)
+		// Changed carries the FULL post-mutation snapshot, stored form.
+		if changed := v.Changed(); !reflect.DeepEqual(changed, map[string]FileMeta{"/keep": keep, "/new": m}) {
+			t.Errorf("Changed() = %v, want full snapshot {\"/keep\": %v, \"/new\": %v}", changed, keep, m)
 		}
 
 		v.Delete("/new")
 		if _, ok := v.Files()["/new"]; ok {
 			t.Error("Delete did not remove /new from Files()")
 		}
-		delta = v.Changed()
-		if delta["/new"] != nil {
-			t.Errorf("Changed()[\"/new\"] = %v, want nil delete marker", delta["/new"])
-		}
-		// /keep was never touched, so the delta stays one key.
-		if len(delta) != 1 {
-			t.Errorf("Changed() = %v, want exactly the /new key", delta)
+		// A deleted key is simply absent from the snapshot.
+		if changed := v.Changed(); !reflect.DeepEqual(changed, map[string]FileMeta{"/keep": keep}) {
+			t.Errorf("Changed() = %v, want {\"/keep\": %v} without /new", changed, keep)
 		}
 	})
 
@@ -217,9 +225,9 @@ func TestStateView(t *testing.T) {
 		v.Delete("/a")
 		m := meta("resurrected")
 		v.Set("/a", m)
-		delta := v.Changed()
-		if delta["/a"] == nil || *delta["/a"] != m {
-			t.Errorf("Changed()[\"/a\"] = %v, want write after delete", delta["/a"])
+		changed := v.Changed()
+		if got, ok := changed["/a"]; !ok || got != m {
+			t.Errorf("Changed()[\"/a\"] = (%v, %v), want write after delete", got, ok)
 		}
 	})
 }
@@ -245,9 +253,8 @@ func TestStateViewSnapshotSemantics(t *testing.T) {
 	v := NewStateView(map[string]FileMeta{"/a": meta("one")})
 
 	filesSnap := v.Files()
-	deltaSnap := v.Changed() // nil: no mutations yet
-	if deltaSnap != nil {
-		t.Fatalf("Changed() before mutation = %v, want nil", deltaSnap)
+	if ch := v.Changed(); ch != nil {
+		t.Fatalf("Changed() before mutation = %v, want nil", ch)
 	}
 	v.Set("/b", meta("two"))
 	v.Delete("/a")
@@ -259,19 +266,18 @@ func TestStateViewSnapshotSemantics(t *testing.T) {
 		t.Error("Files snapshot gained /b after a later Set")
 	}
 
-	v.Delete("/b")
-	deltaSnap = v.Changed() // {/a: nil, /b: nil}
+	changedSnap := v.Changed() // full post-mutation snapshot: {/b: two}
 	v.Set("/c", meta("three"))
-	if _, ok := deltaSnap["/c"]; ok {
+	if _, ok := changedSnap["/c"]; ok {
 		t.Error("Changed snapshot gained /c after a later Set")
 	}
-	if len(deltaSnap) != 2 {
-		t.Errorf("Changed snapshot = %v, want the two earlier keys only", deltaSnap)
+	if len(changedSnap) != 1 || changedSnap["/b"].Content != "two" {
+		t.Errorf("Changed snapshot = %v, want the earlier {/b: two} only", changedSnap)
 	}
 
 	fresh := v.Files()
-	if len(fresh) != 1 || fresh["/c"].Content != "three" {
-		t.Errorf("fresh Files() = %v, want only /c", fresh)
+	if len(fresh) != 2 || fresh["/b"].Content != "two" || fresh["/c"].Content != "three" {
+		t.Errorf("fresh Files() = %v, want /b and /c", fresh)
 	}
 }
 
@@ -288,8 +294,8 @@ func TestStateViewConcurrentUse(t *testing.T) {
 	}{
 		{
 			// Disjoint keys: each goroutine owns /g<i>/k<j>.txt, so the
-			// final delta per key is deterministic — a delete marker for
-			// k==3 (its last operation), the final write otherwise.
+			// final snapshot per key is deterministic — absent for k==3
+			// (its last operation is a delete), the final write otherwise.
 			name: "disjoint keys interleaved set and delete",
 			run: func(t *testing.T, v *StateView) {
 				var wg sync.WaitGroup
@@ -314,23 +320,25 @@ func TestStateViewConcurrentUse(t *testing.T) {
 					}(g)
 				}
 				wg.Wait()
-				delta := v.Changed()
+				snapshot := v.Changed()
+				if snapshot == nil {
+					t.Fatal("Changed() = nil after mutations, want snapshot")
+				}
+				if len(snapshot) != goroutines*4 {
+					t.Errorf("snapshot has %d keys, want %d (k==3 keys deleted)", len(snapshot), goroutines*4)
+				}
 				for g := 0; g < goroutines; g++ {
 					for k := 0; k < 5; k++ {
 						key := fmt.Sprintf("/g%d/k%d.txt", g, k)
-						entry, ok := delta[key]
-						if !ok {
-							t.Errorf("delta[%s] missing", key)
-							continue
-						}
+						entry, ok := snapshot[key]
 						if k == 3 {
-							if entry != nil {
-								t.Errorf("delta[%s] = %v, want nil delete marker", key, entry)
+							if ok {
+								t.Errorf("snapshot[%s] = %v, want absent (deleted)", key, entry)
 							}
 							continue
 						}
-						if entry == nil || entry.Content != fmt.Sprintf("g%d-k%d-final", g, k) {
-							t.Errorf("delta[%s] = %v, want final write", key, entry)
+						if !ok || entry.Content != fmt.Sprintf("g%d-k%d-final", g, k) {
+							t.Errorf("snapshot[%s] = (%v, %v), want final write", key, entry, ok)
 						}
 					}
 				}
@@ -338,8 +346,8 @@ func TestStateViewConcurrentUse(t *testing.T) {
 		},
 		{
 			// Shared key: the final value is nondeterministic under
-			// contention, but the delta must carry the key and stay
-			// consistent with the final file map.
+			// contention, but the Changed snapshot must agree exactly with
+			// the final file map (both taken post-Wait, quiescent).
 			name: "same key hammered by all goroutines",
 			run: func(t *testing.T, v *StateView) {
 				var wg sync.WaitGroup
@@ -357,21 +365,13 @@ func TestStateViewConcurrentUse(t *testing.T) {
 					}(g)
 				}
 				wg.Wait()
-				delta := v.Changed()
-				entry, ok := delta["/shared.txt"]
-				if !ok {
-					t.Fatal("delta[/shared.txt] missing")
+				changed := v.Changed()
+				files := v.Files()
+				if !reflect.DeepEqual(changed, files) {
+					t.Errorf("Changed() = %v, want exactly Files() = %v", changed, files)
 				}
-				file, present := v.Files()["/shared.txt"]
-				if entry == nil && present {
-					t.Error("delta records a delete but the file is present")
-				}
-				if entry != nil {
-					if !present {
-						t.Error("delta records a write but the file is absent")
-					} else if file.Content != entry.Content {
-						t.Errorf("file content %q != delta content %q", file.Content, entry.Content)
-					}
+				if _, ok := files["/shared.txt"]; ok && len(files) != 1 {
+					t.Errorf("final files = %v, want only /shared.txt", files)
 				}
 			},
 		},
@@ -613,8 +613,9 @@ func TestStateBackendRoundtrip(t *testing.T) {
 		if _, ok := view.Files()["/sub/b.py"]; ok {
 			t.Error("nested key /sub/b.py survived directory delete")
 		}
-		if delta := view.Changed(); delta["/sub/b.py"] != nil {
-			t.Errorf("Changed delta for /sub/b.py = %v, want nil delete marker", delta["/sub/b.py"])
+		changed := view.Changed()
+		if _, ok := changed["/sub/b.py"]; ok {
+			t.Errorf("Changed() still lists /sub/b.py after delete: %v", changed)
 		}
 
 		if _, err := b.Delete(ctx, "/nope"); err == nil {
@@ -787,16 +788,23 @@ func TestStateBackendDeleteRootWipesAll(t *testing.T) {
 	if len(view.Files()) != 0 {
 		t.Errorf("files after root delete = %v, want empty", view.Files())
 	}
-	delta := view.Changed()
-	if delta["/a.txt"] != nil || delta["/sub/b.txt"] != nil {
-		t.Errorf("Changed() = %v, want nil markers for both files", delta)
+	// The post-mutation snapshot is empty but non-nil: deletions are
+	// expressed by absence.
+	changed := view.Changed()
+	if changed == nil {
+		t.Fatal("Changed() = nil after mutations, want empty snapshot")
+	}
+	if len(changed) != 0 {
+		t.Errorf("Changed() = %v, want empty snapshot after root delete", changed)
 	}
 }
 
-// TestStateViewDeltaFeedsReducer ties the two halves together: the middleware
-// applies the view's Changed() delta to the seeded state via MapMergeReducer,
-// exactly as upstream queues partial files updates through CONFIG_KEY_SEND.
-func TestStateViewDeltaFeedsReducer(t *testing.T) {
+// TestStateViewChangedFeedsReducer ties the two halves together under the
+// snapshot contract: the middleware sends the view's Changed() — the full
+// post-mutation snapshot in the channel's stored form — through
+// MapMergeReducer at the node boundary (the role of upstream's
+// CONFIG_KEY_SEND queued updates).
+func TestStateViewChangedFeedsReducer(t *testing.T) {
 	seed := map[string]FileMeta{"/drop": meta("old"), "/keep": meta("kept")}
 	ctx, view, b := newStateCtx(seed)
 
@@ -807,12 +815,96 @@ func TestStateViewDeltaFeedsReducer(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	merged, err := MapMergeReducer(seed, view.Changed())
-	if err != nil {
-		t.Fatalf("MapMergeReducer(seed, delta): %v", err)
+	changed := view.Changed()
+	wantSnapshot := map[string]FileMeta{"/keep": seed["/keep"], "/new": view.Files()["/new"]}
+	if !reflect.DeepEqual(changed, wantSnapshot) {
+		t.Fatalf("Changed() = %v, want full post-mutation snapshot %v", changed, wantSnapshot)
 	}
-	want := map[string]FileMeta{"/keep": seed["/keep"], "/new": view.Files()["/new"]}
-	if !reflect.DeepEqual(merged, want) {
-		t.Errorf("merged = %v, want %v", merged, want)
+
+	// The snapshot merge overlays the seed key-by-key; a key the view
+	// deleted is simply absent from the snapshot, so the seed's copy is
+	// untouched by this merge.
+	merged, err := MapMergeReducer(seed, changed)
+	if err != nil {
+		t.Fatalf("MapMergeReducer(seed, Changed()): %v", err)
+	}
+	wantMerged := map[string]FileMeta{
+		"/drop": seed["/drop"],
+		"/keep": seed["/keep"],
+		"/new":  view.Files()["/new"],
+	}
+	if !reflect.DeepEqual(merged, wantMerged) {
+		t.Errorf("merged = %v, want %v", merged, wantMerged)
+	}
+
+	// The pointer-form delta (nil = delete) stays supported as defense for
+	// callers that queue explicit deletion markers.
+	dropped := view.Files()["/new"]
+	merged, err = MapMergeReducer(seed, map[string]*FileMeta{"/drop": nil, "/new": &dropped})
+	if err != nil {
+		t.Fatalf("MapMergeReducer(seed, pointer delta): %v", err)
+	}
+	wantPointer := map[string]FileMeta{"/keep": seed["/keep"], "/new": dropped}
+	if !reflect.DeepEqual(merged, wantPointer) {
+		t.Errorf("pointer-form merged = %v, want %v", merged, wantPointer)
+	}
+}
+
+// TestFilesChannelRawSeedRegression pins the exact two-superstep crash the
+// snapshot contract fixes: langgraph's binaryOperator stores a channel's
+// first write RAW, without applying the reducer (langgraph/channels/binop.go,
+// the set-flag path), so the update form must equal the stored form. Two
+// sequential Write supersteps through a real binaryOperator channel must
+// merge cleanly.
+func TestFilesChannelRawSeedRegression(t *testing.T) {
+	ch := channels.NewBinaryOperator(MapMergeReducer)
+
+	// Superstep 1: write via the backend, send the view's artifact. This
+	// first write seeds the channel raw — the reducer is NOT applied.
+	ctx1, view1, b := newStateCtx(nil)
+	if _, err := b.Write(ctx1, "/a.txt", "v1"); err != nil {
+		t.Fatalf("first Write: %v", err)
+	}
+	if _, err := ch.Update([]any{view1.Changed()}); err != nil {
+		t.Fatalf("first channel Update: %v", err)
+	}
+
+	// Superstep 2: seed a fresh view from the channel's stored value, then
+	// write again. This Update runs the reducer for the first time against
+	// the raw-seeded value — the exact call that crashed when the artifact
+	// was a delta-shaped map[string]*FileMeta.
+	stored, err := ch.Get()
+	if err != nil {
+		t.Fatalf("channel Get after seed: %v", err)
+	}
+	seed, ok := stored.(map[string]FileMeta)
+	if !ok {
+		t.Fatalf("stored channel value type %T, want map[string]FileMeta", stored)
+	}
+	ctx2, view2, _ := newStateCtx(seed)
+	if _, err := b.Write(ctx2, "/a.txt", "v2"); err != nil {
+		t.Fatalf("second Write /a.txt: %v", err)
+	}
+	if _, err := b.Write(ctx2, "/b.txt", "new"); err != nil {
+		t.Fatalf("second Write /b.txt: %v", err)
+	}
+	if _, err := ch.Update([]any{view2.Changed()}); err != nil {
+		t.Fatalf("second channel Update: %v", err)
+	}
+
+	got, err := ch.Get()
+	if err != nil {
+		t.Fatalf("final Get: %v", err)
+	}
+	files, ok := got.(map[string]FileMeta)
+	if !ok {
+		t.Fatalf("final channel value type %T, want map[string]FileMeta", got)
+	}
+	want := map[string]FileMeta{
+		"/a.txt": view2.Files()["/a.txt"],
+		"/b.txt": view2.Files()["/b.txt"],
+	}
+	if !reflect.DeepEqual(files, want) {
+		t.Errorf("final channel value = %v, want %v", files, want)
 	}
 }

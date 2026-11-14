@@ -168,17 +168,18 @@ func overrideFileToolTimeouts(t *testing.T, glob, grep time.Duration) {
 	t.Cleanup(func() { fsGlobTimeout, fsGrepTimeout = oldGlob, oldGrep })
 }
 
-// filesArtifact extracts the Command artifact's files delta, failing when the
-// artifact is missing or malformed.
-func filesArtifact(t *testing.T, res coretools.Result) map[string]*backends.FileMeta {
+// filesArtifact extracts the Command artifact's files update — the view's
+// full post-mutation snapshot in the channel's stored form — failing when
+// the artifact is missing or malformed.
+func filesArtifact(t *testing.T, res coretools.Result) map[string]backends.FileMeta {
 	t.Helper()
 	cmd, ok := res.Artifact.(*types.Command)
 	if !ok {
 		t.Fatalf("Artifact = %#v; want *types.Command", res.Artifact)
 	}
-	files, ok := cmd.Update["files"].(map[string]*backends.FileMeta)
+	files, ok := cmd.Update["files"].(map[string]backends.FileMeta)
 	if !ok {
-		t.Fatalf("Command.Update[files] = %#v; want map[string]*backends.FileMeta", cmd.Update["files"])
+		t.Fatalf("Command.Update[files] = %#v; want map[string]backends.FileMeta", cmd.Update["files"])
 	}
 	return files
 }
@@ -374,8 +375,8 @@ func TestWriteFileTool(t *testing.T) {
 			t.Fatalf("Content = %q, want %q", res.Content, want)
 		}
 		files := filesArtifact(t, res)
-		if len(files) != 1 || files["/a.txt"] == nil || files["/a.txt"].Content != "hi" {
-			t.Fatalf("files delta = %#v, want one entry /a.txt with content \"hi\"", files)
+		if len(files) != 1 || files["/a.txt"].Content != "hi" {
+			t.Fatalf("files artifact = %#v, want snapshot with one entry /a.txt with content \"hi\"", files)
 		}
 	})
 
@@ -534,13 +535,14 @@ func TestDeleteTool(t *testing.T) {
 		if want := "Deleted /a.txt"; res.Content != want {
 			t.Fatalf("Content = %q, want %q", res.Content, want)
 		}
-		delta := filesArtifact(t, res)
-		entry, ok := delta["/a.txt"]
-		if !ok || entry != nil {
-			t.Fatalf("files delta = %#v; want /a.txt mapped to a nil *FileMeta deletion sentinel", delta)
+		snapshot := filesArtifact(t, res)
+		if _, ok := snapshot["/a.txt"]; ok {
+			t.Fatalf("files artifact = %#v; want /a.txt absent from the post-delete snapshot", snapshot)
 		}
-		if len(delta) != 1 {
-			t.Fatalf("files delta = %#v; want exactly the deleted key", delta)
+		// The artifact is the FULL post-mutation snapshot, so the surviving
+		// seeded file is still present.
+		if len(snapshot) != 1 || snapshot["/b/c.txt"].Content != "y" {
+			t.Fatalf("files artifact = %#v; want exactly the surviving /b/c.txt entry", snapshot)
 		}
 	})
 

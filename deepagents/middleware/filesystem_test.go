@@ -361,14 +361,15 @@ func TestFilesCommand(t *testing.T) {
 		if _, hasMessages := cmd.Update["messages"]; hasMessages {
 			t.Fatal("filesCommand must never emit a messages key")
 		}
-		want := map[string]*backends.FileMeta{
-			"/a.txt":    {Content: "alpha"},
-			"/b.txt":    {Content: "beta"},
-			"/gone.txt": nil,
+		// The artifact is the full post-mutation snapshot in the channel's
+		// stored form: /gone.txt is simply absent after its delete.
+		want := map[string]backends.FileMeta{
+			"/a.txt": {Content: "alpha"},
+			"/b.txt": {Content: "beta"},
 		}
-		got, ok := cmd.Update[backends.FilesStateKey].(map[string]*backends.FileMeta)
+		got, ok := cmd.Update[backends.FilesStateKey].(map[string]backends.FileMeta)
 		if !ok {
-			t.Fatalf("update[files] has type %T, want map[string]*backends.FileMeta", cmd.Update[backends.FilesStateKey])
+			t.Fatalf("update[files] has type %T, want map[string]backends.FileMeta", cmd.Update[backends.FilesStateKey])
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("update[files] = %v, want %v", got, want)
