@@ -299,9 +299,9 @@ func splitLinesKeepEnds(s string) []string {
 // Write writes content to the file at path, creating parent directories and
 // creating or overwriting the file, mirroring write() in the Python
 // reference, deepagents/backends/filesystem.py (mode 0644, UTF-8). Content
-// is normalized to LF (CRLF and CR input stored as LF), keeping on-disk
-// bytes consistent with what Read returns; the reference writes with
-// newline="" so it never introduces CRLF either.
+// is stored verbatim — the reference opens with newline="", which converts
+// in neither direction, so CRLF input is preserved on disk and Read
+// normalizes on the way in.
 func (b *FilesystemBackend) Write(ctx context.Context, vpath string, content string) (WriteResult, error) {
 	full, err := b.resolvePath(vpath)
 	if err != nil {
@@ -310,7 +310,7 @@ func (b *FilesystemBackend) Write(ctx context.Context, vpath string, content str
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return WriteResult{}, osError(fmt.Sprintf("Error writing file '%s'", vpath), err)
 	}
-	if err := os.WriteFile(full, []byte(normalizeLineEndings(content)), 0o644); err != nil {
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		return WriteResult{}, osError(fmt.Sprintf("Error writing file '%s'", vpath), err)
 	}
 	return WriteResult{Path: vpath}, nil
@@ -455,11 +455,14 @@ func (b *FilesystemBackend) Delete(ctx context.Context, vpath string) (DeleteRes
 // Glob finds files under path matching pattern, mirroring glob() in the
 // Python reference, deepagents/backends/filesystem.py, which routes through
 // the shared include-glob contract (compile_grep_include_glob,
-// deepagents/backends/utils.py): a pattern without '/' matches basenames at
-// any depth under the search path ('*.py' matches 'a/b.py'), a pattern
-// containing '/' matches the full path relative to the search path
-// ('src/*.py' is top of src only; a leading '/' anchors to the search
-// root), and dotfiles need an explicit leading '.' in the pattern segment.
+// deepagents/backends/utils.py): a pattern without '/' — including a bare
+// '**' — matches basenames at any depth under the search path ('*.py'
+// matches 'a/b.py' and '.github/x.py'), a pattern containing '/' matches
+// the full path relative to the search path ('src/*.py' is top of src
+// only; a leading '/' anchors to the search root). Dot handling: a
+// basename starting with '.' needs a leading '.' in the pattern segment,
+// while slash-less patterns traverse dot directories freely; in '/'
+// patterns the dot rule also keeps '**' out of dot directories.
 // Only regular files match; results are virtual paths sorted
 // lexicographically. A pattern or path containing a `..` segment is refused
 // with the upstream "Path traversal not allowed in glob pattern '<p>'"
@@ -641,19 +644,13 @@ func (b *FilesystemBackend) Grep(ctx context.Context, pattern string, vpath stri
 // compile_grep_include_glob in the Python reference,
 // deepagents/backends/utils.py — the single source of truth for both
 // grep(..., glob=...) and backend glob() (filesystem.py:1357): a pattern
-// without '/' matches the basename at any depth; a pattern containing '/'
-// (a leading '/' anchors) matches the full path relative to the search
-// root.
-//
-// A bare '**' is matched against the full relative path: it spans
-// directories by definition, so the dot rule keeps it out of dot
-// directories ('**' must not return '.git/...', review round 1) — the
-// basename route would otherwise collapse '.git/config' to 'config' and
-// lose that context.
+// without '/' (including a bare '**') matches the basename at any depth,
+// so dot directories are traversed and only dot basenames are excluded
+// ('**' returns '.git/config' and '*.py' matches '.github/x.py', while
+// neither matches '.hidden.py'); a pattern containing '/' (a leading '/'
+// anchors) matches the full path relative to the search root, where the
+// dot rule also keeps '**' out of dot directories.
 func includeGlobMatches(glob, relSlash string) bool {
-	if glob == "**" {
-		return MatchGlob("**", relSlash)
-	}
 	pattern := strings.TrimPrefix(glob, "/")
 	if !strings.Contains(glob, "/") {
 		return MatchGlob(pattern, path.Base(relSlash))

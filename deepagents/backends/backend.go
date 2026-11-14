@@ -188,22 +188,23 @@ type Backend interface {
 	Edit(ctx context.Context, path string, oldString, newString string, replaceAll bool) (EditResult, error)
 
 	// Glob finds files under path matching pattern, mirroring glob() in
-	// deepagents/backends/filesystem.py: a pattern without '/' matches
-	// basenames at any depth under the search path; a pattern containing
-	// '/' (a leading '/' anchors) matches the full path relative to the
-	// search path; dotfiles require an explicit leading '.' in the pattern
-	// segment, and a bare '**' is matched against the full relative path
-	// so it never descends into dot directories
-	// (compile_grep_include_glob, deepagents/backends/utils.py). Missing
-	// or non-directory search paths return an empty result.
+	// deepagents/backends/filesystem.py: a pattern without '/' (including
+	// a bare '**') matches basenames at any depth under the search path,
+	// traversing dot directories and excluding only dot basenames; a
+	// pattern containing '/' (a leading '/' anchors) matches the full
+	// path relative to the search path, where the dot rule also keeps
+	// '**' out of dot directories (compile_grep_include_glob,
+	// deepagents/backends/utils.py). Missing or non-directory search
+	// paths return an empty result.
 	Glob(ctx context.Context, path string, pattern string) (GlobResult, error)
 
 	// Grep searches for pattern as a literal substring (not a regex) in
 	// files under path, optionally filtered by the include glob (a glob
-	// without '/' matches basenames at any depth; one with '/' matches
-	// the path relative to the search root; a bare '**' matches the full
-	// relative path so it skips dot directories), mirroring grep() in
-	// deepagents/backends/filesystem.py. maxCount caps the total number
+	// without '/' — including a bare '**' — matches basenames at any
+	// depth, traversing dot directories and excluding only dot basenames;
+	// one with '/' matches the path relative to the search root),
+	// mirroring grep() in deepagents/backends/filesystem.py. maxCount
+	// caps the total number
 	// of matches across all files; a non-positive value means unlimited.
 	// The middleware applies the upstream default cap (1000); this
 	// backend method itself treats 0 as "no cap", matching the reference.
