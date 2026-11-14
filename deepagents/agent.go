@@ -69,6 +69,31 @@ type DeepAgentOptions struct {
 	// by the SummarizationMiddleware. Nil selects the default (see
 	// defaultSummarizer).
 	Summarizer agentsmw.SummarizerFunc
+	// ResponseFormat configures the main agent's structured output, passed
+	// through to agents.WithAgentResponseFormat (UP graph.py:308
+	// response_format). Accepted values are the platform's ToolStrategy/
+	// ProviderStrategy/AutoStrategy (or pointers) and a raw JSON-schema
+	// map[string]any / schema.Schema (see agents.WithAgentResponseFormat);
+	// nil disables structured output. Note upstream also allows per-subagent
+	// response formats — that half is recorded as skipped in the port spec
+	// (§6) and is NOT covered by this option.
+	ResponseFormat any
+	// StateFields declares custom graph-state fields with their reducers,
+	// passed through to agents.WithAgentStateFields (UP graph.py:309
+	// state_schema). Without a declaration a custom key still flows through
+	// Go's dynamic map state (LastValue semantics); registering a field is
+	// how a custom key gets a merge reducer for conflict-safe parallel
+	// writes. Upstream additionally forwards the schema to its subagent
+	// middleware (graph.py:939); this port wires it to the main agent only
+	// (see the "Subagent stack trims" entry in DIVERGENCES.md).
+	StateFields []agents.StateField
+	// ContextSchema declares the agent's runtime-context schema, passed
+	// through to agents.WithAgentContextSchema (UP graph.py:310
+	// context_schema; the spec §7 "Context passthrough" promise). Purely
+	// declarative platform-side: it documents the expected fields but does
+	// not gate agents.WithContextValues/ContextValue, which work without a
+	// declared schema.
+	ContextSchema []agents.ContextField
 }
 
 // DeepAgentOption applies one functional option to DeepAgentOptions.
@@ -132,6 +157,28 @@ func WithSummarizer(summarizer agentsmw.SummarizerFunc) DeepAgentOption {
 	return func(o *DeepAgentOptions) { o.Summarizer = summarizer }
 }
 
+// WithResponseFormat sets the main agent's structured output, passed through
+// to agents.WithAgentResponseFormat (UP graph.py:308 response_format). See
+// DeepAgentOptions.ResponseFormat for the accepted values and the
+// per-subagent skip.
+func WithResponseFormat(format any) DeepAgentOption {
+	return func(o *DeepAgentOptions) { o.ResponseFormat = format }
+}
+
+// WithStateFields appends custom graph-state fields (with their reducers) to
+// the main agent, passed through to agents.WithAgentStateFields (UP
+// graph.py:309 state_schema). See DeepAgentOptions.StateFields.
+func WithStateFields(fields ...agents.StateField) DeepAgentOption {
+	return func(o *DeepAgentOptions) { o.StateFields = append(o.StateFields, fields...) }
+}
+
+// WithContextSchema declares the agent's runtime-context schema, passed
+// through to agents.WithAgentContextSchema (UP graph.py:310 context_schema;
+// spec §7's promised Context passthrough). See DeepAgentOptions.ContextSchema.
+func WithContextSchema(fields ...agents.ContextField) DeepAgentOption {
+	return func(o *DeepAgentOptions) { o.ContextSchema = fields }
+}
+
 // CreateDeepAgent assembles a Deep Agent over langchain/agents.CreateAgent,
 // the Go counterpart of the Python deepagents() assembler (UP graph.py,
 // Tier-4 reduced per spec §7). Every capability is middleware on the
@@ -158,7 +205,8 @@ func WithSummarizer(summarizer agentsmw.SummarizerFunc) DeepAgentOption {
 // CreateAgent then receives opts.Tools as the caller tools (the filesystem
 // and task tools arrive via their middleware's ProvidedTools), the system
 // prompt only when non-empty (no default prompt — audit I5), recursion limit
-// 9999 (E13), and the checkpointer/store passthrough. No execute tool is
+// 9999 (E13), and the checkpointer/store, response_format, state_schema,
+// and context_schema passthroughs (UP graph.py:308-310). No execute tool is
 // registered (divergence D5).
 func CreateDeepAgent(model language.ChatModel, opts ...DeepAgentOption) (*agents.Agent, error) {
 	options := DeepAgentOptions{}
@@ -208,6 +256,15 @@ func CreateDeepAgent(model language.ChatModel, opts ...DeepAgentOption) (*agents
 	}
 	if options.Store != nil {
 		agentOpts = append(agentOpts, agents.WithAgentStore(options.Store))
+	}
+	if options.ResponseFormat != nil {
+		agentOpts = append(agentOpts, agents.WithAgentResponseFormat(options.ResponseFormat))
+	}
+	if len(options.StateFields) > 0 {
+		agentOpts = append(agentOpts, agents.WithAgentStateFields(options.StateFields...))
+	}
+	if len(options.ContextSchema) > 0 {
+		agentOpts = append(agentOpts, agents.WithAgentContextSchema(options.ContextSchema...))
 	}
 
 	return agents.CreateAgent(model, options.Tools, agentOpts...)

@@ -15,6 +15,7 @@ package deepagents
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -27,10 +28,12 @@ import (
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/deepagents/backends"
 	deepmw "github.com/projanvil/langchain-golang/deepagents/middleware"
+	agents "github.com/projanvil/langchain-golang/langchain/agents"
 	agentsmw "github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	"github.com/projanvil/langchain-golang/langgraph/checkpoint"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
 	"github.com/projanvil/langchain-golang/langgraph/store"
+	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
 // --- fixtures -------------------------------------------------------------
@@ -667,6 +670,9 @@ func TestDeepAgentOptionSetters(t *testing.T) {
 		"read_file": {AllowedDecisions: []agentsmw.DecisionType{agentsmw.DecisionApprove}},
 	}
 	spec := deepmw.SubAgentSpec{Name: "helper", Description: "Helper."}
+	responseFormat := agents.NewToolStrategy(answerSchema())
+	stateField := agents.StateField{Name: "visits", Reducer: sumVisitsReducer}
+	contextField := agents.ContextField{Name: "user_id", Type: "string"}
 
 	var opts DeepAgentOptions
 	for _, opt := range []DeepAgentOption{
@@ -680,6 +686,9 @@ func TestDeepAgentOptionSetters(t *testing.T) {
 		WithCheckpointer(saver),
 		WithStore(store.NewInMemoryStore()),
 		WithSummarizer(summarizer),
+		WithResponseFormat(responseFormat),
+		WithStateFields(stateField),
+		WithContextSchema(contextField),
 	} {
 		opt(&opts)
 	}
@@ -713,6 +722,15 @@ func TestDeepAgentOptionSetters(t *testing.T) {
 	}
 	if opts.Summarizer == nil {
 		t.Error("Summarizer not set")
+	}
+	if !reflect.DeepEqual(opts.ResponseFormat, any(responseFormat)) {
+		t.Errorf("ResponseFormat = %#v", opts.ResponseFormat)
+	}
+	if len(opts.StateFields) != 1 || opts.StateFields[0].Name != stateField.Name || opts.StateFields[0].Reducer == nil {
+		t.Errorf("StateFields = %#v", opts.StateFields)
+	}
+	if len(opts.ContextSchema) != 1 || opts.ContextSchema[0] != contextField {
+		t.Errorf("ContextSchema = %#v", opts.ContextSchema)
 	}
 }
 
@@ -833,5 +851,164 @@ func TestCreateDeepAgentCustomSummarizerAccepted(t *testing.T) {
 	}
 	if _, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("hello")}); err != nil {
 		t.Fatalf("InvokeWithState: %v", err)
+	}
+}
+
+// --- assembler parameter passthrough (response_format / state_schema /
+// context_schema; port-completeness audit C1-C3, UP graph.py:308-310) ------
+
+// answerSchema is the structured-output fixture (title "Answer" so the
+// strategy's structured tool is named "Answer", as in langchain/agents'
+// own structured-output tests).
+func answerSchema() schema.Schema {
+	s := schema.Object(map[string]schema.Schema{
+		"text": schema.String("the answer text"),
+	}, "text")
+	s["title"] = "Answer"
+	return s
+}
+
+// TestCreateDeepAgentResponseFormatPassthrough: WithResponseFormat reaches
+// agents.WithAgentResponseFormat — a ToolStrategy's structured tool is bound
+// to the model, the model's matching structured call ends the run, and the
+// parsed value surfaces in the final state's "structured_response" key (UP
+// graph.py:308).
+func TestCreateDeepAgentResponseFormatPassthrough(t *testing.T) {
+	strategy := agents.NewToolStrategy(answerSchema())
+	toolName := strategy.SchemaSpecs[0].Name
+	model := &scriptedChatModel{responses: []messages.Message{{
+		Role: messages.RoleAI,
+		ToolCalls: []messages.ToolCall{
+			{ID: "call_1", Name: toolName, Args: map[string]any{"text": "42"}},
+		},
+	}}}
+	agent, err := CreateDeepAgent(model, WithResponseFormat(strategy))
+	if err != nil {
+		t.Fatalf("CreateDeepAgent(response format): %v", err)
+	}
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("answer me")})
+	if err != nil {
+		t.Fatalf("InvokeWithState: %v", err)
+	}
+	structured, ok := state["structured_response"].(map[string]any)
+	if !ok || structured["text"] != "42" {
+		t.Fatalf("structured_response = %#v, want parsed text=42 (option must reach agents.WithAgentResponseFormat)", state["structured_response"])
+	}
+}
+
+// TestCreateDeepAgentResponseFormatRejectsUnknown: an unsupported
+// response_format value fails at CreateAgent's resolveResponseFormat,
+// proving the passthrough (the deepagents layer adds no validation of its
+// own — the platform's error surfaces verbatim).
+func TestCreateDeepAgentResponseFormatRejectsUnknown(t *testing.T) {
+	model := &scriptedChatModel{}
+	if _, err := CreateDeepAgent(model, WithResponseFormat("not-a-strategy")); err == nil {
+		t.Fatal("expected CreateDeepAgent to reject an unsupported response format")
+	}
+}
+
+// newBumpTool builds a tool whose artifact Command writes 1 to the "visits"
+// state key, so a run exercising it twice proves the custom field's reducer
+// merges across supersteps (UP graph.py:309 state_schema).
+func newBumpTool(t *testing.T) coretools.Tool {
+	t.Helper()
+	tool, err := coretools.NewFunc(
+		"bump",
+		"adds one visit",
+		schema.Object(map[string]schema.Schema{}),
+		func(context.Context, map[string]any) (coretools.Result, error) {
+			return coretools.Result{
+				Content:  "bumped",
+				Artifact: &types.Command{Update: map[string]any{"visits": 1}},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewFunc(bump): %v", err)
+	}
+	return tool
+}
+
+// sumVisitsReducer is a merge reducer: successive writes to "visits" add up
+// (LastValue semantics would keep only the latest write).
+func sumVisitsReducer(existing, update any) (any, error) {
+	if existing == nil {
+		return update, nil
+	}
+	base, _ := existing.(int)
+	delta, _ := update.(int)
+	return base + delta, nil
+}
+
+// TestCreateDeepAgentStateFieldsMergeReducerFlowsThroughRun: WithStateFields
+// registers the custom "visits" field with a merge reducer on the main graph;
+// two supersteps of bump tool calls each committing visits=1 must fold to 2
+// under the reducer (UP graph.py:309; without the registration the key would
+// be LastValue and the final value would stay 1).
+func TestCreateDeepAgentStateFieldsMergeReducerFlowsThroughRun(t *testing.T) {
+	bumpCall := func(id string) messages.Message {
+		return messages.Message{
+			Role:      messages.RoleAI,
+			ToolCalls: []messages.ToolCall{{ID: id, Name: "bump", Args: map[string]any{}}},
+		}
+	}
+	model := &scriptedChatModel{responses: []messages.Message{
+		bumpCall("call_1"),
+		bumpCall("call_2"),
+		messages.AI("done"),
+	}}
+	agent, err := CreateDeepAgent(model,
+		WithTools(newBumpTool(t)),
+		WithStateFields(agents.StateField{Name: "visits", Reducer: sumVisitsReducer}),
+	)
+	if err != nil {
+		t.Fatalf("CreateDeepAgent(state fields): %v", err)
+	}
+	state, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("bump twice")})
+	if err != nil {
+		t.Fatalf("InvokeWithState: %v", err)
+	}
+	if got := state["visits"]; got != 2 {
+		t.Fatalf("state[visits] = %#v, want 2 (merge reducer must fold both supersteps' writes)", got)
+	}
+}
+
+// TestCreateDeepAgentContextSchemaAccepted: WithContextSchema threads
+// through to agents.WithAgentContextSchema (UP graph.py:310; spec §7's
+// promised Context passthrough). The platform layer is purely declarative —
+// the schema declares fields but does not gate the context values — so this
+// is the introspection-level check: the agent assembles with the declared
+// schema and the corresponding context values still flow to tools.
+func TestCreateDeepAgentContextSchemaAccepted(t *testing.T) {
+	var seenUser any
+	tool, err := coretools.NewFunc(
+		"whoami",
+		"reports the caller",
+		schema.Object(map[string]schema.Schema{}),
+		func(ctx context.Context, _ map[string]any) (coretools.Result, error) {
+			seenUser, _ = agents.ContextValue(ctx, "user_id")
+			return coretools.Result{Content: "ok"}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewFunc(whoami): %v", err)
+	}
+	model := &scriptedChatModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{{ID: "c1", Name: "whoami", Args: map[string]any{}}}},
+		messages.AI("done"),
+	}}
+	agent, err := CreateDeepAgent(model,
+		WithTools(tool),
+		WithContextSchema(agents.ContextField{Name: "user_id", Type: "string"}),
+	)
+	if err != nil {
+		t.Fatalf("CreateDeepAgent(context schema): %v", err)
+	}
+	ctx := agents.WithContextValues(t.Context(), map[string]any{"user_id": "u-7"})
+	if _, err := agent.InvokeWithState(ctx, []messages.Message{messages.Human("who am I")}); err != nil {
+		t.Fatalf("InvokeWithState: %v", err)
+	}
+	if seenUser != "u-7" {
+		t.Fatalf("context user_id seen by tool = %#v, want u-7", seenUser)
 	}
 }
