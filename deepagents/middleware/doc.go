@@ -10,6 +10,14 @@
 // subagent state-key contracts: ExcludedStateKeys and PrivateStateKeys,
 // filtered when building subagent state and when applying subagent updates.
 //
+// The delegation half is SubAgentMiddleware (subagents.go): it provides the
+// `task` tool, which dispatches a description to a compiled subagent —
+// declared as a SubAgentSpec (subagent.go) or passed pre-built as a
+// *CompiledSubAgent, with GeneralPurposeSubAgent as the auto-added default —
+// runs it as an isolated graph on a per-call thread, and writes the
+// subagent's changed public state back to the parent through the tool
+// result's Command artifact.
+//
 // The package depends on langchain's agent middleware, imported under the
 // agentsmw alias because both packages are named middleware:
 //

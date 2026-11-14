@@ -152,17 +152,19 @@ func StateViewFromContext(ctx context.Context) (*StateView, bool) {
 //
 // Channel artifact contract: Changed returns the FULL post-mutation snapshot
 // as map[string]FileMeta — the update form equals the channel's stored form.
-// langgraph's binaryOperator seeds a channel's first write raw, without
-// applying the reducer (langgraph/channels/binop.go — the set-flag path;
-// Python instead seeds typ()'s zero value and runs the operator on every
-// update, including the first), so a delta-shaped first write (such as a
+// langgraph's binaryOperator (like Python's) seeds a channel's first write
+// raw, without applying the reducer (langgraph/channels/binop.go — the
+// set-flag path), so a delta-shaped first write (such as a
 // map[string]*FileMeta with nil delete markers) would be stored as-is and
 // crash every subsequent merge's type assertion. Deletions therefore live
 // INSIDE the view — a deleted key is simply absent from the snapshot — and
-// MapMergeReducer merges snapshots key-by-key, with the same key's last
-// write winning (each Changed snapshot is taken under the view's lock, so it
-// is self-consistent even when parallel tools in one batch mutate
-// concurrently).
+// the middleware commits the snapshot as a REPLACEMENT: filesCommand wraps
+// it in channels.Overwrite and the channel replaces its stored map wholesale
+// (DIVERGENCES D15), so an absent key stays deleted. MapMergeReducer, the
+// channel's reducer, is defense for UNMARKED writes only: it overlays
+// snapshots key-by-key with the same key's last write winning (each Changed
+// snapshot is taken under the view's lock, so it is self-consistent even
+// when parallel tools in one batch mutate concurrently).
 //
 // Concurrency contract: a StateView is safe for concurrent use. The runtime
 // may execute the tools of one batch in parallel, so multiple goroutines may

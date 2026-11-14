@@ -58,6 +58,13 @@ type CompiledSubAgent struct {
 	Agent       *agents.Agent
 }
 
+// GeneralPurposeName is the default subagent's name (UP GENERAL_PURPOSE_
+// SUBAGENT["name"], subagents.py:566-570). It is the single source of the
+// literal: GeneralPurposeSubAgent builds from it, SubAgentMiddleware's
+// auto-add checks it, and the CreateDeepAgent assembler consults it — tests
+// still pin the raw value for parity.
+const GeneralPurposeName = "general-purpose"
+
 // DefaultGeneralPurposeDescription is the general-purpose subagent's
 // description, copied VERBATIM from DEFAULT_GENERAL_PURPOSE_DESCRIPTION in
 // the Python reference (deepagents/middleware/subagents.py:564). Do not edit;
@@ -82,7 +89,7 @@ response contains the complete answer.`
 // middleware" — here the model is the explicit parameter).
 func GeneralPurposeSubAgent(model language.ChatModel) SubAgentSpec {
 	return SubAgentSpec{
-		Name:        "general-purpose",
+		Name:        GeneralPurposeName,
 		Description: DefaultGeneralPurposeDescription,
 		Prompt:      DefaultSubagentPrompt,
 		Model:       model,

@@ -22,11 +22,6 @@ import (
 // defaults to 9999, so the assembler pins the value it was audited against.
 const deepAgentRecursionLimit = 9999
 
-// generalPurposeName is the default subagent's name (UP GENERAL_PURPOSE_
-// SUBAGENT["name"], subagents.py:566-570; same literal GeneralPurposeSubAgent
-// builds).
-const generalPurposeName = "general-purpose"
-
 // DeepAgentOptions configures CreateDeepAgent, the Go counterpart of the
 // Python deepagents() assembler's parameters (UP graph.py, Tier-4 reduced
 // set — spec §7). Zero values select the defaults documented per field; the
@@ -235,11 +230,11 @@ func assembleSubAgents(model language.ChatModel, opts *DeepAgentOptions) []any {
 	for _, spec := range opts.SubAgents {
 		switch s := spec.(type) {
 		case deepmw.SubAgentSpec:
-			if s.Name == generalPurposeName {
+			if s.Name == deepmw.GeneralPurposeName {
 				return opts.SubAgents
 			}
 		case *deepmw.CompiledSubAgent:
-			if s != nil && s.Name == generalPurposeName {
+			if s != nil && s.Name == deepmw.GeneralPurposeName {
 				return opts.SubAgents
 			}
 		}

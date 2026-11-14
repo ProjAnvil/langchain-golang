@@ -365,10 +365,11 @@ func fsErrText(err error) string {
 }
 
 // filesCommandFromContext pulls the StateView the middleware injected around
-// the call (FilesystemMiddleware.WrapToolCall) and renders its change delta
-// as the files Command artifact; nil when the context carries no view (a
-// non-state backend) or the view recorded no changes. Mutating tools call it
-// after a successful backend call; read-only tools never do.
+// the call (FilesystemMiddleware.WrapToolCall) and renders its snapshot as
+// the Overwrite-wrapped files Command artifact (a channel replacement; see
+// filesCommand); nil when the context carries no view (a non-state backend)
+// or the view recorded no changes. Mutating tools call it after a successful
+// backend call; read-only tools never do.
 func filesCommandFromContext(ctx context.Context) any {
 	view, ok := backends.StateViewFromContext(ctx)
 	if !ok {
@@ -620,10 +621,11 @@ func (m *FilesystemMiddleware) newReadFileTool() (coretools.Func, error) {
 // newWriteFileTool builds the write_file tool, mirroring
 // _create_write_file_tool, filesystem.py:2421ff. On a state backend the
 // write lands in the injected StateView and the tool returns the view's
-// change delta as a files Command artifact (the ToolNode commits it through
-// MapMergeReducer), the port's stand-in for the reference sending through
-// its ToolRuntime. Backend errors render as-is, like the reference passing
-// WriteResult.error through.
+// snapshot as an Overwrite-wrapped files Command artifact (the ToolNode
+// commits it as a channel replacement; see filesCommand), the port's
+// stand-in for the reference sending through its ToolRuntime. Backend
+// errors render as-is, like the reference passing WriteResult.error
+// through.
 func (m *FilesystemMiddleware) newWriteFileTool() (coretools.Func, error) {
 	return coretools.NewFunc(
 		"write_file",

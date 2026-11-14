@@ -23,8 +23,10 @@ import (
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/schema"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
+	"github.com/projanvil/langchain-golang/deepagents/backends"
 	"github.com/projanvil/langchain-golang/langchain/agents"
 	agentsmw "github.com/projanvil/langchain-golang/langchain/agents/middleware"
+	"github.com/projanvil/langchain-golang/langgraph/channels"
 	graphpkg "github.com/projanvil/langchain-golang/langgraph/graph"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
@@ -40,10 +42,6 @@ var (
 
 // TaskToolName is the delegation tool's name.
 const TaskToolName = "task"
-
-// generalPurposeSubAgentName mirrors GENERAL_PURPOSE_SUBAGENT["name"]
-// (subagents.py:566-570; the same literal GeneralPurposeSubAgent builds).
-const generalPurposeSubAgentName = "general-purpose"
 
 // TaskToolDescriptionTemplate is the task tool's description, copied VERBATIM
 // from TASK_TOOL_DESCRIPTION (subagents.py:559-572) with its
@@ -105,13 +103,13 @@ func NewSubAgentMiddleware(model language.ChatModel, subagents []any) (*SubAgent
 			if err != nil {
 				return nil, err
 			}
-			if s.Name == generalPurposeSubAgentName {
+			if s.Name == GeneralPurposeName {
 				hasGeneralPurpose = true
 			}
 			compiled = append(compiled, c)
 		case *CompiledSubAgent:
 			// ValidateSubAgents already rejected nil entries.
-			if s.Name == generalPurposeSubAgentName {
+			if s.Name == GeneralPurposeName {
 				hasGeneralPurpose = true
 			}
 			compiled = append(compiled, s)
@@ -284,6 +282,16 @@ func (m *SubAgentMiddleware) invokeTask(ctx context.Context, input map[string]an
 	update := filteredStateUpdate(result.Values, taskInput)
 	if len(update) == 0 {
 		return coretools.Result{Content: taskResultContent(msgs)}, nil
+	}
+	// The files key commits as a snapshot REPLACEMENT: wrap it in a
+	// channels.Overwrite so the parent's files channel replaces its stored
+	// map with the subagent's final files state instead of overlaying it —
+	// a file the subagent DELETED must stay deleted in the parent (Spec §4).
+	// The tool-side twin of this wrap is filesCommand (filesystem.go); the
+	// key is present only when both graphs carry state files, so a
+	// non-state-backend run is untouched.
+	if v, ok := update[backends.FilesStateKey]; ok {
+		update[backends.FilesStateKey] = channels.NewOverwrite(v)
 	}
 	return coretools.Result{
 		Content:  taskResultContent(msgs),

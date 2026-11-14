@@ -276,7 +276,9 @@ func keysOf(m map[string]any) []string {
 // TestTaskToolWritesSubagentFilesBackToParent proves the files pass-through
 // (E2): a subagent with its own StateBackend writes a file through its
 // filesystem view; the writeback filter passes the files key (public state),
-// and the parent's files channel commits it via MapMergeReducer.
+// and the parent's files channel commits it as an Overwrite-wrapped snapshot
+// replacement (invokeTask wraps the key; see filesCommand for the tool-side
+// twin).
 func TestTaskToolWritesSubagentFilesBackToParent(t *testing.T) {
 	parentModel := &scriptedChatModel{responses: []messages.Message{
 		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
@@ -381,14 +383,16 @@ func TestTaskThreadID(t *testing.T) {
 
 // --- (g) fold semantics + parallel-mutation guard ----------------------------
 
-// TestFilesChannelFoldsSameBatchUpdates pins Review Focus #1's fold semantics:
-// a files channel built as channels.NewBinaryOperator(MapMergeReducer) folding
-// one superstep's writes from BOTH a task tool and a write_file tool (each
-// carrying a full files snapshot) merges last-write-wins per key with no
-// error — untouched keys survive.
+// TestFilesChannelFoldsSameBatchUpdates pins the files channel's replacement
+// commit semantics (Review Focus #1's fold, post-snapshot-redesign): a files
+// channel built as channels.NewBinaryOperator(MapMergeReducer) receives ONE
+// Overwrite-wrapped snapshot per superstep — same-batch task + write_file
+// Commands pre-fold at applyToolNodeCommands (D13), which is also required
+// because the channel rejects two Overwrite values in one superstep — and
+// the Overwrite REPLACES the stored map wholesale (deletions persist;
+// task-only keys vanish under a later whole-snapshot). Unmarked writes still
+// overlay through MapMergeReducer (the defense path for hand-built Updates).
 func TestFilesChannelFoldsSameBatchUpdates(t *testing.T) {
-	ch := channels.NewBinaryOperator(backends.MapMergeReducer)
-
 	taskFiles := map[string]backends.FileMeta{
 		"a.md": {Content: "from task"},
 		"b.md": {Content: "task b"},
@@ -396,27 +400,65 @@ func TestFilesChannelFoldsSameBatchUpdates(t *testing.T) {
 	writeFileFiles := map[string]backends.FileMeta{
 		"a.md": {Content: "from write_file"},
 	}
-	changed, err := ch.Update([]any{taskFiles, writeFileFiles})
-	if err != nil {
-		t.Fatalf("same-batch task + write_file files updates must fold without error: %v", err)
-	}
-	if !changed {
-		t.Fatal("fold must report a change")
-	}
-	got, err := ch.Get()
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	files, ok := got.(map[string]backends.FileMeta)
-	if !ok {
-		t.Fatalf("channel value type = %T, want map[string]backends.FileMeta", got)
-	}
-	if files["a.md"].Content != "from write_file" {
-		t.Errorf("a.md = %q, want last write (write_file) to win", files["a.md"].Content)
-	}
-	if files["b.md"].Content != "task b" {
-		t.Errorf("b.md = %q, want the task-only key to survive the fold", files["b.md"].Content)
-	}
+
+	t.Run("one Overwrite per superstep replaces the whole map", func(t *testing.T) {
+		ch := channels.NewBinaryOperator(backends.MapMergeReducer)
+		if _, err := ch.Update([]any{taskFiles}); err != nil {
+			t.Fatalf("seed Update: %v", err)
+		}
+		changed, err := ch.Update([]any{channels.NewOverwrite(writeFileFiles)})
+		if err != nil {
+			t.Fatalf("Overwrite commit must fold without error: %v", err)
+		}
+		if !changed {
+			t.Fatal("fold must report a change")
+		}
+		got, err := ch.Get()
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		files, ok := got.(map[string]backends.FileMeta)
+		if !ok {
+			t.Fatalf("channel value type = %T, want map[string]backends.FileMeta", got)
+		}
+		if files["a.md"].Content != "from write_file" {
+			t.Errorf("a.md = %q, want last write (write_file) to win", files["a.md"].Content)
+		}
+		if _, alive := files["b.md"]; alive {
+			t.Errorf("b.md = %q survived an Overwrite commit, want the whole map replaced", files["b.md"].Content)
+		}
+	})
+
+	t.Run("two Overwrites in one superstep are rejected (why the tools node pre-folds)", func(t *testing.T) {
+		ch := channels.NewBinaryOperator(backends.MapMergeReducer)
+		if _, err := ch.Update([]any{taskFiles}); err != nil {
+			t.Fatalf("seed Update: %v", err)
+		}
+		if _, err := ch.Update([]any{channels.NewOverwrite(taskFiles), channels.NewOverwrite(writeFileFiles)}); err == nil {
+			t.Fatal("two Overwrite values in one superstep must error (only one may reach the channel per superstep)")
+		}
+	})
+
+	t.Run("unmarked writes still overlay (defense path)", func(t *testing.T) {
+		ch := channels.NewBinaryOperator(backends.MapMergeReducer)
+		if _, err := ch.Update([]any{taskFiles}); err != nil {
+			t.Fatalf("seed Update: %v", err)
+		}
+		if _, err := ch.Update([]any{writeFileFiles}); err != nil {
+			t.Fatalf("unmarked Update: %v", err)
+		}
+		got, err := ch.Get()
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		files, ok := got.(map[string]backends.FileMeta)
+		if !ok {
+			t.Fatalf("channel value type = %T, want map[string]backends.FileMeta", got)
+		}
+		if files["b.md"].Content != "task b" {
+			t.Errorf("b.md = %q, want the unmarked-write overlay to keep untouched keys", files["b.md"].Content)
+		}
+	})
 }
 
 // TestParallelFileMutationError pins the ported _parallel_file_mutation_error

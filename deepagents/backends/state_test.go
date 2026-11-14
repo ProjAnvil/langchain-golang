@@ -801,9 +801,13 @@ func TestStateBackendDeleteRootWipesAll(t *testing.T) {
 
 // TestStateViewChangedFeedsReducer ties the two halves together under the
 // snapshot contract: the middleware sends the view's Changed() — the full
-// post-mutation snapshot in the channel's stored form — through
-// MapMergeReducer at the node boundary (the role of upstream's
-// CONFIG_KEY_SEND queued updates).
+// post-mutation snapshot in the channel's stored form — through the files
+// channel at the node boundary (the role of upstream's CONFIG_KEY_SEND
+// queued updates). The commit is REPLACEMENT, not overlay: filesCommand
+// wraps the snapshot in a channels.Overwrite, so the binaryOperator
+// replaces its stored value wholesale and a deleted key STAYS deleted
+// (Spec §4). MapMergeReducer's key-by-key overlay survives only as defense
+// for unmarked writes.
 func TestStateViewChangedFeedsReducer(t *testing.T) {
 	seed := map[string]FileMeta{"/drop": meta("old"), "/keep": meta("kept")}
 	ctx, view, b := newStateCtx(seed)
@@ -821,9 +825,29 @@ func TestStateViewChangedFeedsReducer(t *testing.T) {
 		t.Fatalf("Changed() = %v, want full post-mutation snapshot %v", changed, wantSnapshot)
 	}
 
-	// The snapshot merge overlays the seed key-by-key; a key the view
-	// deleted is simply absent from the snapshot, so the seed's copy is
-	// untouched by this merge.
+	// The commit path: the Overwrite-wrapped snapshot REPLACES the stored
+	// map, so the deleted /drop key persists as deleted. (The resurrection
+	// bug this pins: an overlay merge kept the seed's /drop because the key
+	// is merely absent from the snapshot.)
+	ch := channels.NewBinaryOperator(MapMergeReducer)
+	if _, err := ch.Update([]any{seed}); err != nil {
+		t.Fatalf("channel seed Update: %v", err)
+	}
+	if _, err := ch.Update([]any{channels.NewOverwrite(changed)}); err != nil {
+		t.Fatalf("channel commit Update(Overwrite): %v", err)
+	}
+	committed, err := ch.Get()
+	if err != nil {
+		t.Fatalf("channel Get: %v", err)
+	}
+	if !reflect.DeepEqual(committed, wantSnapshot) {
+		t.Errorf("committed files = %v, want %v (deletion must persist)", committed, wantSnapshot)
+	}
+
+	// Defense for unmarked writes: a bare (non-Overwrite) snapshot still
+	// overlays key-by-key through MapMergeReducer — a deleted key
+	// resurrects under the defense path, which is why the port's own tools
+	// always send the Overwrite marker (filesCommand).
 	merged, err := MapMergeReducer(seed, changed)
 	if err != nil {
 		t.Fatalf("MapMergeReducer(seed, Changed()): %v", err)
@@ -834,7 +858,7 @@ func TestStateViewChangedFeedsReducer(t *testing.T) {
 		"/new":  view.Files()["/new"],
 	}
 	if !reflect.DeepEqual(merged, wantMerged) {
-		t.Errorf("merged = %v, want %v", merged, wantMerged)
+		t.Errorf("unmarked merged = %v, want %v", merged, wantMerged)
 	}
 
 	// The pointer-form delta (nil = delete) stays supported as defense for
@@ -853,42 +877,46 @@ func TestStateViewChangedFeedsReducer(t *testing.T) {
 // TestFilesChannelRawSeedRegression pins the exact two-superstep crash the
 // snapshot contract fixes: langgraph's binaryOperator stores a channel's
 // first write RAW, without applying the reducer (langgraph/channels/binop.go,
-// the set-flag path), so the update form must equal the stored form. Two
-// sequential Write supersteps through a real binaryOperator channel must
-// merge cleanly.
+// the set-flag path), so the update form must equal the stored form. The
+// tools' artifacts are Overwrite-wrapped snapshots (filesCommand); the seed
+// path unwraps the marker, so the first write seeds the snapshot map itself
+// and every later superstep's Overwrite REPLACES the whole value — including
+// deletions, which must survive the commit.
 func TestFilesChannelRawSeedRegression(t *testing.T) {
 	ch := channels.NewBinaryOperator(MapMergeReducer)
 
 	// Superstep 1: write via the backend, send the view's artifact. This
-	// first write seeds the channel raw — the reducer is NOT applied.
+	// first write seeds the channel raw — the reducer is NOT applied, and
+	// the Overwrite marker is unwrapped so the stored form is the snapshot
+	// map, never the marker struct.
 	ctx1, view1, b := newStateCtx(nil)
 	if _, err := b.Write(ctx1, "/a.txt", "v1"); err != nil {
 		t.Fatalf("first Write: %v", err)
 	}
-	if _, err := ch.Update([]any{view1.Changed()}); err != nil {
+	if _, err := ch.Update([]any{channels.NewOverwrite(view1.Changed())}); err != nil {
 		t.Fatalf("first channel Update: %v", err)
 	}
 
 	// Superstep 2: seed a fresh view from the channel's stored value, then
-	// write again. This Update runs the reducer for the first time against
-	// the raw-seeded value — the exact call that crashed when the artifact
-	// was a delta-shaped map[string]*FileMeta.
+	// write a new key and delete the seeded one. The Overwrite commit
+	// replaces the stored map wholesale, so /a.txt stays deleted — the
+	// deletion-resurrection bug this second half pins.
 	stored, err := ch.Get()
 	if err != nil {
 		t.Fatalf("channel Get after seed: %v", err)
 	}
 	seed, ok := stored.(map[string]FileMeta)
 	if !ok {
-		t.Fatalf("stored channel value type %T, want map[string]FileMeta", stored)
+		t.Fatalf("stored channel value type %T, want map[string]FileMeta (Overwrite marker must not leak into the seed)", stored)
 	}
 	ctx2, view2, _ := newStateCtx(seed)
-	if _, err := b.Write(ctx2, "/a.txt", "v2"); err != nil {
-		t.Fatalf("second Write /a.txt: %v", err)
-	}
 	if _, err := b.Write(ctx2, "/b.txt", "new"); err != nil {
 		t.Fatalf("second Write /b.txt: %v", err)
 	}
-	if _, err := ch.Update([]any{view2.Changed()}); err != nil {
+	if _, err := b.Delete(ctx2, "/a.txt"); err != nil {
+		t.Fatalf("second Delete /a.txt: %v", err)
+	}
+	if _, err := ch.Update([]any{channels.NewOverwrite(view2.Changed())}); err != nil {
 		t.Fatalf("second channel Update: %v", err)
 	}
 
@@ -901,10 +929,9 @@ func TestFilesChannelRawSeedRegression(t *testing.T) {
 		t.Fatalf("final channel value type %T, want map[string]FileMeta", got)
 	}
 	want := map[string]FileMeta{
-		"/a.txt": view2.Files()["/a.txt"],
 		"/b.txt": view2.Files()["/b.txt"],
 	}
 	if !reflect.DeepEqual(files, want) {
-		t.Errorf("final channel value = %v, want %v", files, want)
+		t.Errorf("final channel value = %v, want %v (/a.txt deletion must persist)", files, want)
 	}
 }

@@ -136,6 +136,10 @@ func editFileToolCall(id, path, oldStr, newStr string) messages.ToolCall {
 	}}
 }
 
+func deleteFileToolCall(id, path string) messages.ToolCall {
+	return messages.ToolCall{ID: id, Name: "delete", Args: map[string]any{"file_path": path}}
+}
+
 func taskToolCall(id, subagentType, description string) messages.ToolCall {
 	return messages.ToolCall{ID: id, Name: deepmw.TaskToolName, Args: map[string]any{
 		"subagent_type": subagentType,
@@ -387,10 +391,11 @@ func TestCreateDeepAgentDelegationWritesFilesBackToParent(t *testing.T) {
 // AGENT level (Review handoff R1): one AI message carries BOTH a task call
 // (whose subagent writes /notes/a.md) and a write_file call on the same path.
 // Both tools run, both return files Commands, and the agent-level fold
-// (applyToolNodeCommands overlays Command Updates in tool order, then the
-// files channel's MapMergeReducer merges into stored state) reflects the
-// LATER Command — write_file, second in the batch — with no error and the
-// run surviving to the parent's final message.
+// (applyToolNodeCommands overwrites the files value with each later Command
+// in tool order, then the channel commits the folded Overwrite-wrapped
+// snapshot as a replacement — D15) reflects the LATER Command — write_file,
+// second in the batch — with no error and the run surviving to the parent's
+// final message.
 func TestCreateDeepAgentSameBatchTaskAndWriteFoldLastWriteWins(t *testing.T) {
 	backend := backends.NewStateBackend()
 	subModel := &scriptedChatModel{responses: []messages.Message{
@@ -475,6 +480,93 @@ func TestCreateDeepAgentParallelMutationGuardErrorsSecondCall(t *testing.T) {
 	}
 	if got := fileContentFromState(t, values, "/notes/a.md"); got != "one" {
 		t.Errorf("files[/notes/a.md] = %q, want the first write (edit blocked)", got)
+	}
+}
+
+// --- C-1 regression: deletion persists across supersteps --------------------
+
+// TestCreateDeepAgentDeletePersistsAcrossSupersteps pins the final-review C-1
+// fix end-to-end on the default CreateDeepAgent backend: the files channel
+// commits each mutating tool's snapshot as a REPLACEMENT (channels.Overwrite
+// around filesCommand's artifact), so a key deleted in one superstep cannot
+// resurrect from the stored map in the next. The read_file AFTER the delete
+// must return the upstream not-found text, not the deleted content.
+func TestCreateDeepAgentDeletePersistsAcrossSupersteps(t *testing.T) {
+	model := &scriptedChatModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			writeFileToolCall("call_w", "/notes/a.md", "hello"),
+		}},
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			deleteFileToolCall("call_d", "/notes/a.md"),
+		}},
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			readFileToolCall("call_r", "/notes/a.md"),
+		}},
+		messages.AI("done"),
+	}}
+	agent, err := CreateDeepAgent(model)
+	if err != nil {
+		t.Fatalf("CreateDeepAgent: %v", err)
+	}
+	values, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("write, delete, then read")})
+	if err != nil {
+		t.Fatalf("InvokeWithState: %v", err)
+	}
+
+	if got := toolMessageFor(t, values, "call_r").Content; got != "Error: File '/notes/a.md' not found" {
+		t.Fatalf("read-after-delete = %q, want the UP not-found text (deletion must not resurrect)", got)
+	}
+	files, _ := values[backends.FilesStateKey].(map[string]backends.FileMeta)
+	if _, alive := files["/notes/a.md"]; alive {
+		t.Fatalf("final files still carry the deleted /notes/a.md: %#v", files)
+	}
+}
+
+// TestCreateDeepAgentSubagentDeletePersistsInParentState is the subagent-scope
+// half of C-1: a task-invoked subagent deleting a file over the SHARED
+// StateBackend must leave the PARENT's files state without the key. The task
+// writeback wraps its files value in channels.Overwrite (invokeTask), so the
+// parent's channel replaces its stored map instead of overlaying it.
+func TestCreateDeepAgentSubagentDeletePersistsInParentState(t *testing.T) {
+	backend := backends.NewStateBackend()
+	subModel := &scriptedChatModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			deleteFileToolCall("sub_1", "/notes/a.md"),
+		}},
+		messages.AI("deleted"),
+	}}
+	parentModel := &scriptedChatModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			writeFileToolCall("call_w", "/notes/a.md", "hello"),
+		}},
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			taskToolCall("call_t", "deleter", "delete /notes/a.md"),
+		}},
+		messages.AI("parent done"),
+	}}
+	agent, err := CreateDeepAgent(parentModel,
+		WithBackend(backend),
+		WithSubAgents([]any{deepmw.SubAgentSpec{
+			Name:        "deleter",
+			Description: "Deletes files.",
+			Model:       subModel,
+			Backend:     backend,
+		}}),
+	)
+	if err != nil {
+		t.Fatalf("CreateDeepAgent: %v", err)
+	}
+	values, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("write then delegate the delete")})
+	if err != nil {
+		t.Fatalf("InvokeWithState: %v", err)
+	}
+
+	if got := toolMessageFor(t, values, "call_t").Content; got != "deleted" {
+		t.Fatalf("task ToolMessage = %q, want the subagent final text", got)
+	}
+	files, _ := values[backends.FilesStateKey].(map[string]backends.FileMeta)
+	if _, alive := files["/notes/a.md"]; alive {
+		t.Fatalf("parent files still carry the subagent-deleted /notes/a.md: %#v", files)
 	}
 }
 

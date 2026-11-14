@@ -7,7 +7,8 @@
 //
 //   - deepagents/backends: the Backend interface, the on-disk
 //     FilesystemBackend, and the state-backed StateBackend with the files
-//     MapMergeReducer;
+//     snapshot state (committed as Overwrite-wrapped replacements, with
+//     MapMergeReducer as the unmarked-write defense);
 //   - deepagents/middleware: FilesystemMiddleware (seven file tools,
 //     permission evaluation, state-view injection, parallel-mutation guard),
 //     permission-derived HITL interrupts, SubAgentSpec compilation, and the
@@ -23,5 +24,5 @@
 // docs/superpowers/plans/2026-11-14-deepagents-port.md, the per-task briefs
 // and reports under .superpowers/sdd/2026-11-14-deepagents-port/, and the
 // spec's divergence register mirrored in DIVERGENCES.md (section
-// "deepagents", D1-D14 plus the port's parked items).
+// "deepagents", D1-D15 plus the port's parked items).
 package deepagents

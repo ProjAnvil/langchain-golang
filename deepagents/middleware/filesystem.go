@@ -11,6 +11,7 @@ import (
 	"github.com/projanvil/langchain-golang/deepagents/backends"
 	"github.com/projanvil/langchain-golang/langchain/agents"
 	agentsmw "github.com/projanvil/langchain-golang/langchain/agents/middleware"
+	"github.com/projanvil/langchain-golang/langgraph/channels"
 	"github.com/projanvil/langchain-golang/langgraph/types"
 )
 
@@ -145,8 +146,12 @@ func (m *FilesystemMiddleware) ProvidedTools() []coretools.Tool {
 // *backends.StateBackend keeps its file map in agent state, so the `files`
 // key is declared with the MapMergeReducer merge strategy (the Go form of
 // the reference's FilesystemState.files annotated with _file_data_reducer,
-// deepagents/middleware/filesystem.py:1324-1377). Any other backend touches
-// no agent state and contributes no fields.
+// deepagents/middleware/filesystem.py:1324-1377). The reducer is defense for
+// UNMARKED writes only — it overlays the update key-by-key onto the stored
+// map; the port's own tools commit Overwrite-wrapped snapshots through
+// filesCommand, and the channel replaces its whole value for those (see
+// filesCommand). Any other backend touches no agent state and contributes no
+// fields.
 func (m *FilesystemMiddleware) StateSchema() []agentsmw.StateField {
 	if _, ok := m.Backend.(*backends.StateBackend); !ok {
 		return nil
@@ -257,14 +262,22 @@ func (m *FilesystemMiddleware) WrapToolCall(ctx context.Context, request agentsm
 // its result artifact: Update carries only the files key holding the view's
 // full post-mutation snapshot — Changed() returns the entire files map after
 // the tool's mutations, not a delta, so a view seeded from a raw state still
-// commits a complete map — which the graph commits through
-// backends.MapMergeReducer on the FilesStateKey channel; the reducer overlays
-// the snapshot key-by-key onto the stored map (same-key last-write-wins,
-// untouched keys survive). It never emits a messages key — the ToolNode
-// derives the tool message from the result content (the port's documented
-// convention, langchain/tools/tool_node.go). A nil view, or a view with no
-// recorded changes, yields a nil Command: there is nothing to commit, and
-// re-sending an unchanged snapshot would be a no-op.
+// commits a complete map — wrapped in a channels.Overwrite marker, so the
+// FilesStateKey channel REPLACES its stored map with the snapshot instead of
+// overlaying it: a deleted key is absent from the snapshot and therefore
+// stays deleted (Spec §4; without the marker, backends.MapMergeReducer would
+// overlay key-by-key and the deleted key would resurrect from the stored
+// map). MapMergeReducer remains the channel's reducer purely as defense for
+// UNMARKED writes (a hand-built Command Update without the marker still
+// overlays); the port's own tools always send Overwrite-wrapped snapshots.
+// On the channel's first-ever write the binaryOperator seed path unwraps the
+// marker, so the stored form is the snapshot map either way
+// (langgraph/channels/binop.go, TestBinaryOperatorSeedsOverwriteInnerValue).
+// It never emits a messages key — the ToolNode derives the tool message from
+// the result content (the port's documented convention,
+// langchain/tools/tool_node.go). A nil view, or a view with no recorded
+// changes, yields a nil Command: there is nothing to commit, and re-sending
+// an unchanged snapshot would be a no-op.
 func filesCommand(v *backends.StateView) *types.Command {
 	if v == nil {
 		return nil
@@ -274,6 +287,6 @@ func filesCommand(v *backends.StateView) *types.Command {
 		return nil
 	}
 	return &types.Command{
-		Update: map[string]any{backends.FilesStateKey: changed},
+		Update: map[string]any{backends.FilesStateKey: channels.NewOverwrite(changed)},
 	}
 }

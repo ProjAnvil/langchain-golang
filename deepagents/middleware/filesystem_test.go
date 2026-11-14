@@ -10,6 +10,7 @@ import (
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/deepagents/backends"
 	agentsmw "github.com/projanvil/langchain-golang/langchain/agents/middleware"
+	"github.com/projanvil/langchain-golang/langgraph/channels"
 )
 
 // fakeTool is a minimal coretools.Tool for asserting ProvidedTools passes the
@@ -402,18 +403,24 @@ func TestFilesCommand(t *testing.T) {
 		if _, hasMessages := cmd.Update["messages"]; hasMessages {
 			t.Fatal("filesCommand must never emit a messages key")
 		}
-		// The artifact is the full post-mutation snapshot in the channel's
-		// stored form: /gone.txt is simply absent after its delete.
+		// The artifact is the full post-mutation snapshot wrapped in a
+		// channels.Overwrite marker: the files channel REPLACES its stored
+		// map with the snapshot (deletion persists), never overlays it.
+		// /gone.txt is simply absent after its delete.
 		want := map[string]backends.FileMeta{
 			"/a.txt": {Content: "alpha"},
 			"/b.txt": {Content: "beta"},
 		}
-		got, ok := cmd.Update[backends.FilesStateKey].(map[string]backends.FileMeta)
+		inner, isOverwrite := channels.AsOverwrite(cmd.Update[backends.FilesStateKey])
+		if !isOverwrite {
+			t.Fatalf("update[files] has type %T, want a channels.Overwrite-wrapped snapshot (replacement semantics)", cmd.Update[backends.FilesStateKey])
+		}
+		got, ok := inner.(map[string]backends.FileMeta)
 		if !ok {
-			t.Fatalf("update[files] has type %T, want map[string]backends.FileMeta", cmd.Update[backends.FilesStateKey])
+			t.Fatalf("Overwrite inner value has type %T, want map[string]backends.FileMeta", inner)
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("update[files] = %v, want %v", got, want)
+			t.Fatalf("update[files] inner snapshot = %v, want %v", got, want)
 		}
 	})
 }
