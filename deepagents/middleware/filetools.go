@@ -184,8 +184,13 @@ func normalizeToolPath(raw string) (string, error) {
 // call on the normalized path, mirroring _check_fs_permission +
 // _permission_error, filesystem.py:417-452. It returns the deny error text
 // when the call is denied; the backend is never consulted in that case.
-// PermissionInterrupt is a placeholder: until Task 6 wires HITL, interrupt
-// rules behave as allow (E7/M6 in the port plan), so they fall through here.
+// PermissionInterrupt deliberately falls through as allow: interrupt rules
+// gate through the HITL middleware (InterruptConfigsFromPermissions →
+// NewInterruptHumanInTheLoopMiddleware), which reviews and pauses the call
+// BEFORE the tools node runs it. A wired agent's tools therefore never see an
+// interrupt disposition; when the HITL middleware is absent, interrupt rules
+// simply do not gate (full contract on InterruptConfigsFromPermissions,
+// permissions.go).
 func (m *FilesystemMiddleware) denyGate(tool, norm string) (string, bool) {
 	mode, _ := m.Check(tool, map[string]any{fsToolPathArgs[tool]: norm})
 	if mode == backends.PermissionDeny {
@@ -219,8 +224,9 @@ func (m *FilesystemMiddleware) readDenied(path string) bool {
 //     then resolves it first-match-wins (_find_delete_deny_patterns_for_
 //     leaf); this port always applies the subtree analysis, so an allow rule
 //     never overrides a path-overlapping deny even for confirmed files
-//   - interrupt-mode rules do not block yet (Task 6 wires HITL; until then
-//     interrupt behaves as allow everywhere)
+//   - interrupt-mode rules do not block: they gate through the HITL
+//     middleware before the tool runs (permissions.go), so the subtree
+//     analysis accounts for deny rules only
 //   - no symlink resolution of the delete target (parked).
 func (m *FilesystemMiddleware) deleteDenyGate(norm string) (string, bool) {
 	denying := m.deleteDenyPatterns(norm)
@@ -527,7 +533,10 @@ func fsRequiredArg(name string) (coretools.Result, error) {
 // filesystem.py:2148ff. Entries are rendered as full virtual paths in a
 // Python list literal (the reference's _format_file_paths over the entries'
 // path field; this port's LsEntry carries only the name, so the tool joins it
-// onto the normalized directory).
+// onto the normalized directory). After the backend call, entries under
+// read-denied rules are dropped (_apply_permissions_to_ls_results,
+// filesystem.py:2183-2185) — the readDenied post-filter family glob/grep
+// already use.
 func (m *FilesystemMiddleware) newLsTool() (coretools.Func, error) {
 	return coretools.NewFunc(
 		"ls",
@@ -555,7 +564,19 @@ func (m *FilesystemMiddleware) newLsTool() (coretools.Func, error) {
 			}
 			paths := make([]string, 0, len(lsRes.Entries))
 			for _, entry := range lsRes.Entries {
-				paths = append(paths, joinVirtualPath(norm, entry.Name))
+				// Drop entries under read-denied rules after the backend
+				// call, mirroring _apply_permissions_to_ls_results (UP
+				// filesystem.py:2183-2185, 942-951) — the same readDenied
+				// post-filter family glob/grep use, so a read-denied subtree
+				// never leaks through a listing of an allowed parent.
+				p := joinVirtualPath(norm, entry.Name)
+				if m.readDenied(p) {
+					continue
+				}
+				paths = append(paths, p)
+			}
+			if len(paths) == 0 {
+				return coretools.Result{Content: fsNoFilesFound}, nil
 			}
 			return coretools.Result{Content: formatPathList(paths)}, nil
 		},

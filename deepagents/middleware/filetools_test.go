@@ -218,6 +218,16 @@ func TestLsTool(t *testing.T) {
 			want:     "['/a.txt', '/sub']",
 		},
 		{
+			// Task 5 review handoff: ls drops entries under read-denied rules
+			// after the backend call (UP filesystem.py:2183-2185), the same
+			// readDenied post-filter family glob/grep use.
+			name:     "read-denied entries are dropped from the listing",
+			backend:  backends.NewStateBackend(),
+			ctxFiles: map[string]backends.FileMeta{"/a.txt": meta("x"), "/secret/k.txt": meta("y")},
+			args:     map[string]any{"path": "/"},
+			want:     "['/a.txt']",
+		},
+		{
 			name:     "empty directory reports no files found",
 			backend:  backends.NewStateBackend(),
 			ctxFiles: seed,
@@ -423,7 +433,7 @@ func TestWriteFileTool(t *testing.T) {
 		}
 	})
 
-	t.Run("interrupt mode behaves as allow for now", func(t *testing.T) {
+	t.Run("interrupt mode falls through as allow at the tool gate", func(t *testing.T) {
 		interrupt := backends.PermissionRule{
 			Operations: []string{"write"},
 			Paths:      []string{"/**"},
@@ -433,7 +443,7 @@ func TestWriteFileTool(t *testing.T) {
 		res := invokeFileTool(t, stateCtx(nil), m, "write_file",
 			map[string]any{"file_path": "/a.txt", "content": "hi"})
 		if want := "Updated file /a.txt"; res.Content != want {
-			t.Fatalf("Content = %q, want %q (interrupt placeholder must behave as allow until Task 6)", res.Content, want)
+			t.Fatalf("Content = %q, want %q (interrupt gating is owned by the HITL middleware; the tool gate treats interrupt as allow)", res.Content, want)
 		}
 	})
 }
