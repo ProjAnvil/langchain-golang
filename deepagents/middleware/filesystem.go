@@ -2,7 +2,9 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/projanvil/langchain-golang/core/messages"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
@@ -46,21 +48,16 @@ var fsToolOperations = map[string]string{
 
 // fsToolPathArgs maps each filesystem tool to the name of the argument
 // carrying its target path — every filesystem tool carries exactly one path
-// argument. The names are pinned by the port plan's tool schemas (E3, from
-// the Python reference's tool input models, deepagents/middleware/
-// filesystem.py:1447-1546): ls/glob/grep take `path`, read_file/write_file/
-// edit_file take `file_path`, and delete takes `path`.
-//
-// Divergence from the reference, intentional: the reference's DeleteSchema
-// names the argument `file_path`, but the port plan pins the Go delete tool's
-// argument to `path`, so the evaluator reads `path` to stay in lockstep with
-// the Task 5 tools.
+// argument. The names come from the Python reference's tool input models and
+// its _FS_TOOL_PATH_ARGS table (deepagents/middleware/filesystem.py:1447-1546
+// and deepagents/middleware/_fs_interrupt.py:39-48): ls/glob/grep take
+// `path`, read_file/write_file/edit_file/delete take `file_path`.
 var fsToolPathArgs = map[string]string{
 	"ls":         "path",
 	"read_file":  "file_path",
 	"write_file": "file_path",
 	"edit_file":  "file_path",
-	"delete":     "path",
+	"delete":     "file_path",
 	"glob":       "path",
 	"grep":       "path",
 }
@@ -79,29 +76,67 @@ type FilesystemMiddleware struct {
 	// the first matching rule wins.
 	Permissions []backends.PermissionRule
 	// Tools holds the filesystem tools bound to this middleware instance.
-	// NewFilesystemMiddleware leaves it nil; Task 5's constructor update
-	// fills it, and ProvidedTools returns it as-is.
+	// NewFilesystemMiddleware fills it (six tools, plus delete when the
+	// backend implements backends.Deleter), and ProvidedTools returns it
+	// as-is.
 	Tools []coretools.Tool
 }
 
 // NewFilesystemMiddleware returns a FilesystemMiddleware over backend with
 // the given permission rules (which the caller may also set or replace on the
-// struct directly). Tools is left nil in this task; Task 5 fills it by
-// binding the seven filesystem tools, which is why the constructor already
-// returns an error.
+// struct directly, at their own risk — the constructor-time validation below
+// then does not re-run). Each rule's paths are validated like the reference's
+// FilesystemPermission.__post_init__, deepagents/middleware/filesystem.py:
+// 402-414: a violation fails construction. On success the seven filesystem
+// tools (filetools.go) are bound into Tools; delete is included only when
+// the backend implements backends.Deleter.
 func NewFilesystemMiddleware(backend backends.Backend, permissions ...backends.PermissionRule) (*FilesystemMiddleware, error) {
-	return &FilesystemMiddleware{
+	for _, rule := range permissions {
+		if err := validatePermissionRule(rule); err != nil {
+			return nil, err
+		}
+	}
+	m := &FilesystemMiddleware{
 		Backend:     backend,
 		Permissions: permissions,
-	}, nil
+	}
+	tools, err := m.filesystemTools()
+	if err != nil {
+		return nil, err
+	}
+	m.Tools = tools
+	return m, nil
+}
+
+// validatePermissionRule checks one rule's path patterns, mirroring
+// FilesystemPermission.__post_init__ in the Python reference,
+// deepagents/middleware/filesystem.py:402-414: every path must start with
+// "/", contain no ".." component (after rewriting backslashes to slashes),
+// and contain no "~" component, checked in that order. The error wordings
+// are the reference's ValueError literals, with {path!r} rendered as a
+// single-quoted string.
+func validatePermissionRule(rule backends.PermissionRule) error {
+	for _, p := range rule.Paths {
+		if !strings.HasPrefix(p, "/") {
+			return fmt.Errorf("Permission path must start with '/': '%s'", p)
+		}
+		parts := strings.Split(strings.ReplaceAll(p, "\\", "/"), "/")
+		if slices.Contains(parts, "..") {
+			return fmt.Errorf("Permission path must not contain '..': '%s'", p)
+		}
+		if slices.Contains(parts, "~") {
+			return fmt.Errorf("Permission path must not contain '~': '%s'", p)
+		}
+	}
+	return nil
 }
 
 // ProvidedTools implements agentsmw.ToolProvider: the filesystem tools are
 // registered with the agent's ToolNode automatically (factory.py:1005
 // collects AgentMiddleware.tools; the Go method name differs because the
 // public Tools field must stay and Go forbids a field/method name
-// collision). The slice is returned as-is and may be empty until Task 5
-// fills the Tools field.
+// collision). The slice is returned as-is; NewFilesystemMiddleware fills it
+// with the bound filesystem tools.
 func (m *FilesystemMiddleware) ProvidedTools() []coretools.Tool {
 	return m.Tools
 }

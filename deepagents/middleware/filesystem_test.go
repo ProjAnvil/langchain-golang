@@ -40,11 +40,11 @@ func TestNewFilesystemMiddleware(t *testing.T) {
 	if !reflect.DeepEqual(m.Permissions, rules) {
 		t.Fatalf("Permissions = %v, want %v", m.Permissions, rules)
 	}
-	if m.Tools != nil {
-		t.Fatalf("Tools = %v, want nil until Task 5 fills it", m.Tools)
+	if len(m.Tools) != 7 {
+		t.Fatalf("len(Tools) = %d, want 7 (StateBackend implements Deleter)", len(m.Tools))
 	}
-	if got := m.ProvidedTools(); got != nil {
-		t.Fatalf("ProvidedTools() = %v, want nil while Tools is nil", got)
+	if got := m.ProvidedTools(); !sameSlice(got, m.Tools) {
+		t.Fatalf("ProvidedTools() = %v, want the Tools field unchanged", got)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestFilesystemMiddlewareCheck(t *testing.T) {
 		{"edit_file denied under locked", []backends.PermissionRule{denyWritesToLocked}, "edit_file",
 			map[string]any{"file_path": "/locked/a.txt", "old_string": "a", "new_string": "b"}, backends.PermissionDeny, true},
 		{"delete denied under locked", []backends.PermissionRule{denyWritesToLocked}, "delete",
-			map[string]any{"path": "/locked/a.txt"}, backends.PermissionDeny, true},
+			map[string]any{"file_path": "/locked/a.txt"}, backends.PermissionDeny, true},
 		{"write rule does not deny reads", []backends.PermissionRule{denyWritesToLocked}, "read_file",
 			map[string]any{"file_path": "/locked/a.txt"}, backends.PermissionAllow, false},
 
