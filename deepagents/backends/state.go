@@ -54,13 +54,20 @@ var _ channels.Reducer = MapMergeReducer
 // channel state.
 //
 // Update form == stored form is load-bearing: langgraph's binaryOperator
-// seeds a channel's first write raw, without applying the reducer
-// (langgraph/channels/binop.go — the set-flag path; Python's
-// BinaryOperatorAggregate instead seeds typ()'s zero value and runs the
-// operator on every update, including the first). A first write in any other
-// shape would be stored as-is and crash every later merge's type assertion,
-// so the canonical update here — backends.StateView.Changed's full
-// post-mutation snapshot — is exactly the stored form.
+// seeds an unset channel's first write raw, without applying the reducer
+// (langgraph/channels/binop.go — the set-flag path; Go's Reducer is an
+// untyped func, so there is no Python-style typ() zero factory, and the
+// set-flag path corresponds to Python's MISSING path, which is reachable
+// there only when typ() is not instantiable — Python's instantiable types
+// seed typ() at construction and run the operator on every update). A first
+// write in any other shape would be stored as-is and crash every later
+// merge's type assertion, so the canonical update here —
+// backends.StateView.Changed's full post-mutation snapshot — is exactly the
+// stored form. Deletion is NOT expressed through this reducer: the port's
+// own tools send the snapshot wrapped in channels.NewOverwrite (D15), which
+// replaces the whole value — deletions are simply absent from the snapshot.
+// Unmarked writes reaching this reducer overlay (and would resurrect deleted
+// keys); no port code sends that shape, it is the documented defense path.
 //
 // Tolerated as defense in depth: nil on either side (unset channel / no
 // changes), typed-nil maps, and the delta form map[string]*FileMeta, in

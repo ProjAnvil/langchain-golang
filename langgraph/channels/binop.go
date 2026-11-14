@@ -23,9 +23,12 @@ func (c *binaryOperator) Update(values []any) (bool, error) {
 	for _, v := range values {
 		if !c.set {
 			// The first value seeds the channel; op is not applied
-			// (mirrors Python: values[0] is consumed before the
-			// Overwrite-detection loop). Unlike Python, an Overwrite first
-			// write seeds with the INNER value: Overwrite means "write
+			// (mirrors Python's MISSING path: binop.update consumes
+			// values[0] before its Overwrite-detection loop, reachable
+			// only when typ() is not instantiable — Python's
+			// instantiable types instead seed typ() at construction and
+			// reduce on every update, storing an Overwrite's inner
+			// value, which this unwrap matches). Overwrite means "write
 			// Value directly" (overwrite.go), and storing the marker itself
 			// would leak the wrapper into Get/Checkpoint and every later
 			// merge's type assertions (pinned by
