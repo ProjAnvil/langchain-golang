@@ -6,31 +6,6 @@ import (
 	"strings"
 )
 
-// Standardized error codes for file operations. They mirror the
-// FileOperationError literals and named constants in the Python reference,
-// deepagents/backends/protocol.py (FILE_NOT_FOUND, PERMISSION_DENIED,
-// IS_DIRECTORY, INVALID_PATH), so error values stay byte-identical across
-// the Python and Go implementations.
-const (
-	ErrFileNotFound     = "file_not_found"
-	ErrPermissionDenied = "permission_denied"
-	ErrIsDirectory      = "is_directory"
-	ErrInvalidPath      = "invalid_path"
-)
-
-// Error is a file-operation error carrying one of the standardized error
-// codes above, mirroring FileOperationError in the Python reference,
-// deepagents/backends/protocol.py.
-type Error struct {
-	// Code is one of the Err* code constants in this package.
-	Code string
-	// Message is the human-readable detail, typically phrased exactly like
-	// the matching ValueError message in the Python reference.
-	Message string
-}
-
-func (e *Error) Error() string { return e.Code + ": " + e.Message }
-
 // NormalizePath validates and normalizes a virtual filesystem path and
 // returns a canonical path starting with '/' and using forward slashes. It
 // mirrors validate_path in the Python reference, deepagents/backends/utils.py:

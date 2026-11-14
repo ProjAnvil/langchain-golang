@@ -1,8 +1,3 @@
-// Package backends ports the deepagents backends subsystem to Go. It mirrors
-// the Python reference implementation under deepagents/backends/ in the
-// upstream deepagents repository (libs/deepagents/deepagents/backends/),
-// starting with glob matching, line grep helpers, and virtual filesystem
-// path normalization.
 package backends
 
 import (
