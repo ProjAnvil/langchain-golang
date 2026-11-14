@@ -244,7 +244,7 @@ func sliceReadResponse(content string, offset, limit int) (ReadResult, error) {
 	lines := splitLinesKeepEnds(content)
 	total := len(lines)
 	if offset >= total {
-		return ReadResult{}, fmt.Errorf(
+		return ReadResult{}, fmt.Errorf( //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 			"Line offset %d exceeds file length (%d lines)", offset, total,
 		)
 	}
@@ -376,7 +376,7 @@ func normalizeLineEndings(s string) string {
 // the new content and the number of occurrences replaced.
 func performStringReplacement(content, oldString, newString string, replaceAll bool) (string, int, error) {
 	if oldString == "" {
-		return "", 0, errors.New(
+		return "", 0, errors.New( //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 			"Error: old_string cannot be empty. Provide the exact text to replace.",
 		)
 	}
@@ -390,14 +390,14 @@ func performStringReplacement(content, oldString, newString string, replaceAll b
 			stripped := strings.TrimSuffix(oldString, "\n")
 			strippedCount := strings.Count(content, stripped)
 			if strippedCount == 1 {
-				return "", 0, errors.New(
+				return "", 0, errors.New( //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 					"Error: old_string ends with a newline, but the file does " +
 						"not end with a newline. Retry with the trailing newline " +
 						"removed from old_string (and from new_string if it also " +
 						"ends with a newline).",
 				)
 			}
-			return "", 0, fmt.Errorf(
+			return "", 0, fmt.Errorf( //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 				"Error: old_string ends with a newline, but the file does "+
 					"not end with a newline. With the trailing newline removed, "+
 					"old_string would appear %d times in the file. "+
@@ -409,7 +409,7 @@ func performStringReplacement(content, oldString, newString string, replaceAll b
 	}
 
 	if occurrences > 1 && !replaceAll {
-		return "", 0, fmt.Errorf(
+		return "", 0, fmt.Errorf( //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 			"Error: String '%s' appears %d times in file. "+
 				"Use replace_all=True to replace all instances, or provide a more specific string with surrounding context.",
 			oldString, occurrences,

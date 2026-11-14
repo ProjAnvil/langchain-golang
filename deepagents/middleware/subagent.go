@@ -188,7 +188,7 @@ func ValidateSubAgents(specs []any) error {
 			return fmt.Errorf("subagent name must not be empty")
 		}
 		if _, dup := seen[name]; dup {
-			return fmt.Errorf("Duplicate subagent name '%s'; each subagent must have a unique name.", name)
+			return fmt.Errorf("Duplicate subagent name '%s'; each subagent must have a unique name.", name) //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 		}
 		seen[name] = struct{}{}
 	}

@@ -461,7 +461,7 @@ func (b *StateBackend) Edit(ctx context.Context, vpath string, oldString, newStr
 		}
 	}
 	if meta.Encoding == "base64" {
-		return EditResult{}, errors.New("Error: Cannot edit binary files with text replacements.")
+		return EditResult{}, errors.New("Error: Cannot edit binary files with text replacements.") //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 	}
 	newContent, occurrences, err := performStringReplacement(meta.Content, oldString, newString, replaceAll)
 	if err != nil {

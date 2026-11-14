@@ -256,7 +256,7 @@ func (m *SubAgentMiddleware) invokeTask(ctx context.Context, input map[string]an
 
 	toolCallID := taskToolCallIDFromContext(ctx)
 	if toolCallID == "" {
-		return coretools.Result{}, errors.New("Tool call ID is required for subagent invocation")
+		return coretools.Result{}, errors.New("Tool call ID is required for subagent invocation") //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 	}
 
 	// Isolated handoff (UP _validate_and_prepare_state's else branch,
@@ -427,9 +427,8 @@ var fileMutationTools = map[string]struct{}{
 // validate_path), so "/a.md" and "/./a.md" collide as upstream intends.
 //
 // Wiring: upstream calls this from FilesystemMiddleware.wrap_tool_call
-// (filesystem.py:3960, 3990); wiring it into this port's
-// FilesystemMiddleware.WrapToolCall is Task 9's assembly decision — the
-// helper ships tested here either way.
+// (filesystem.py:3960, 3990); this port's FilesystemMiddleware.WrapToolCall
+// calls it first on every wrapped call (Task 9's assembly).
 func ParallelFileMutationError(request agentsmw.ToolCallRequest) (messages.Message, bool) {
 	toolCall := request.ToolCall
 	if _, mutates := fileMutationTools[toolCall.Name]; !mutates {

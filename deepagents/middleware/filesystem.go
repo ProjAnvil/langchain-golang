@@ -118,14 +118,14 @@ func NewFilesystemMiddleware(backend backends.Backend, permissions ...backends.P
 func validatePermissionRule(rule backends.PermissionRule) error {
 	for _, p := range rule.Paths {
 		if !strings.HasPrefix(p, "/") {
-			return fmt.Errorf("Permission path must start with '/': '%s'", p)
+			return fmt.Errorf("Permission path must start with '/': '%s'", p) //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 		}
 		parts := strings.Split(strings.ReplaceAll(p, "\\", "/"), "/")
 		if slices.Contains(parts, "..") {
-			return fmt.Errorf("Permission path must not contain '..': '%s'", p)
+			return fmt.Errorf("Permission path must not contain '..': '%s'", p) //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 		}
 		if slices.Contains(parts, "~") {
-			return fmt.Errorf("Permission path must not contain '~': '%s'", p)
+			return fmt.Errorf("Permission path must not contain '~': '%s'", p) //nolint:staticcheck // ST1005: upstream-verbatim error literal (parity pinned by tests)
 		}
 	}
 	return nil
@@ -212,23 +212,39 @@ func (m *FilesystemMiddleware) checkPath(operation, path string) (backends.Permi
 	return backends.PermissionAllow, false
 }
 
-// WrapToolCall implements agents.WrapToolCallHook. For a
-// *backends.StateBackend it snapshots the files map out of the request state
-// (request.State[backends.FilesStateKey]; a missing, nil, or wrongly typed
-// entry seeds an empty view) into a fresh StateView and injects the view
-// into the context via backends.WithStateView before invoking the handler,
-// so backend calls made under the wrapped context read and write through the
-// view. This stands in for the ToolRuntime state injection the Python
-// reference's filesystem tools receive. Each call gets its own view: the
-// reference's tools read the state passed to that one call, so mutations
-// never leak across calls. Any other backend passes the request through
-// unchanged.
+// WrapToolCall implements agents.WrapToolCallHook. First, the same-batch
+// parallel-mutation guard runs (Task 9's wiring of the tested helper, the
+// port of the reference's wrap_tool_call guard at filesystem.py:3960, 3990):
+// ParallelFileMutationError inspects the batch's AI message in the request
+// state and short-circuits a mutating call whose EARLIER batch sibling
+// mutates the same normalized path, answering with the upstream error
+// ToolMessage instead of invoking the handler. The middleware sees its own
+// calls sequentially, but the batch sibling list is already in the state the
+// tools node hands each wrapped call (the AI message carrying the whole
+// batch), so this is faithful same-batch detection, not a per-superstep
+// approximation; what it cannot see is ordering inside a concurrently
+// executing batch beyond the AI message's declared call order, which is also
+// the order the reference compares against.
+//
+// Then, for a *backends.StateBackend it snapshots the files map out of the
+// request state (request.State[backends.FilesStateKey]; a missing, nil, or
+// wrongly typed entry seeds an empty view) into a fresh StateView and
+// injects the view into the context via backends.WithStateView before
+// invoking the handler, so backend calls made under the wrapped context read
+// and write through the view. This stands in for the ToolRuntime state
+// injection the Python reference's filesystem tools receive. Each call gets
+// its own view: the reference's tools read the state passed to that one
+// call, so mutations never leak across calls. Any other backend passes the
+// request through unchanged (the guard above still applies).
 //
 // The middleware only injects. Committing the view's delta back to state is
 // the tools' job: each filesystem tool returns a filesCommand in its result
 // artifact (Task 5), mirroring the reference's tools sending through their
 // ToolRuntime.
 func (m *FilesystemMiddleware) WrapToolCall(ctx context.Context, request agentsmw.ToolCallRequest, handler agentsmw.ToolHandler) (messages.Message, error) {
+	if msg, blocked := ParallelFileMutationError(request); blocked {
+		return msg, nil
+	}
 	if _, ok := m.Backend.(*backends.StateBackend); !ok {
 		return handler(ctx, request)
 	}

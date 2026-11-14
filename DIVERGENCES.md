@@ -33,9 +33,53 @@ Deliberate design decisions where this port does not mirror Python. Each entry s
 - **Strict resume RemoteGraph drop-list** — Go has no RemoteGraph (existing backlog), so Python's `CONFIG_KEY_STRICT_RESUME` forwarding drop does not apply.
 - **ModelRefusalMiddleware's omit marker** — Python's `omit_payload` returns an empty dict; Go's TracePolicy for refusal/router middleware replaces inputs with `{"omitted": true}` so the scrub stays visibly intentional.
 
+## deepagents (Python deepagents v0.7.38 → `deepagents/`)
+
+Divergence register for the deepagents MVP port (Tiers 1-4: backends,
+FilesystemMiddleware, SubAgentMiddleware, CreateDeepAgent). D1-D14 are the
+planned scope decisions; the parked items below them accumulated through the
+per-task reviews. Implementation plan:
+`docs/superpowers/plans/2026-11-14-deepagents-port.md`; per-task reports
+under `.superpowers/sdd/2026-11-14-deepagents-port/`.
+
+- **D1 summarization** — the existing Go `SummarizationMiddleware` is reused with a single-call model-backed default summarizer; upstream's `create_summarization_middleware(model, backend)` backend-offload superset is not ported.
+- **D2 profiles** — the harness-profile system (`_profile`, profile middleware/materialization) is skipped.
+- **D3 async subagents** — `async_subagents` skipped; `ParentNotifier` consequently not ported (dead code without them).
+- **D4 optional middleware families** — skills, memory, rubric, `_video`, `_blob_offload`, `_message_eviction`, `_overflow_clip`, `_prompt_caching`, and unsupported-content handling are skipped.
+- **D5 sandbox/execute** — `SandboxBackendProtocol` and the `execute` tool are skipped (CreateDeepAgent registers no execute tool); sandbox/langsmith/context_hub/store/composite backends skipped; protocol `upload`/`download` not ported.
+- **D6 model required** — the model is a required argument; upstream's deprecated default-model path (anthropic/google-genai) is not ported — `CreateDeepAgent(nil)` fails at the general-purpose compile.
+- **D7 glob matcher** — `wcmatch` (GLOBSTAR + BRACE) replaced by a hand-rolled matcher: `*`, `?`, `[...]` per segment, `**` spanning separators, no brace expansion (`a.{x,y}` matches literally).
+- **D8 subagent namespace metadata** — the ToolMessage artifact's `checkpoint_ns` is omitted (no namespace plumbing in the Go tools node).
+- **D9 forked subagents** — not ported (fork-mode notes and `_FORKED_SUBAGENT_TOOL_NOTE` absent from the task tool description).
+- **D10 subagent runs are non-pausable** — no checkpointer threaded into subagent invocations and interrupts do not bubble to the parent run: an interrupted subagent answers the task call with the pinned tool text `subagent interrupted (not resumable in this port)`. ThreadID derivation is `task:<toolCallID>` without a parent prefix (the parent ThreadID is unreachable from the tool surface).
+- **D11 micro-defaults** — tool-result eviction (20k char) not ported; grep `max_count` default 1000 ported; fs-interrupt `when`-predicate scoping not ported (a derived interrupt entry covers EVERY call of the tool — strictly more conservative than upstream); tool-allowlist checks on middleware-provided tools not ported.
+- **D12 PatchToolCallsMiddleware skipped** — valid-but-dangling tool-call repair gap: the Go agent loop repairs invalid calls only, as before.
+- **D13 same-batch `files` collisions** — write-tool + write-tool in one model batch errors with the ported `_parallel_file_mutation_error` literal (wired at `FilesystemMiddleware.WrapToolCall`, batch-sibling detection through the batch AI message in the request state); only the `task` + write-tool pair folds, last-write-wins per key at the tools node's Command application (`applyToolNodeCommands`), where upstream merges through the channel reducer. Pinned at the agent level by the Task 9 fold test.
+- **D14 messages reducer** — the Go agents' existing messages reducer is reused; upstream deepagents compiles `messages` with a DeltaChannel. Semantics are equivalent for this port's invoke surface.
+
+Parked items (per-task review findings, disclosed rather than fixed):
+
+- **FIFO/device acceptance** — `FilesystemBackend` Read/Edit accept non-regular, non-directory files; upstream `is_file()` reports them as not-found (Go checks only `IsDir`; reading a FIFO with no writer blocks).
+- **Symlink-walk inconsistency** — Glob/Grep directory walks filter on `DirEntry.Type().IsRegular()`, excluding symlinks-to-files that upstream's `is_file()` follows; Ls follows symlinks (`os.Stat`), so the port is internally inconsistent on this edge.
+- **Partial-match-on-abort** — Grep walk-abort and Glob context-deadline failures return an error and discard matches gathered so far; upstream returns the partial results flagged truncated.
+- **Ls sort key** — entries sort by bare name; upstream's filesystem backend sorts by path-with-trailing-`/` key (order differs only for a dir/file pair sharing a name prefix at the `.`/`/` boundary). Upstream itself is divergent between its backends here (see the state-glob note).
+- **Typed traversal error in glob** — upstream glob's `_resolve_path` ValueError escapes uncaught and surfaces via the middleware's generic handler; Go returns a typed `*backends.Error` — a benign improvement.
+- **State-glob sort** — upstream's State backend sorts glob results by `modified_at` descending (tie-unstable); the Go port sorts lexicographically on BOTH backends — mutually consistent and matching upstream's filesystem backend, divergent only from upstream's state backend.
+- **maxCount==0 semantics** — the Go backend treats `maxCount <= 0` as unlimited; upstream Python `max_count=0` (int, not None) returns immediately truncated-empty. The middleware always passes the 1000 default, so only direct backend callers see the difference.
+- **Truncation flags dropped** — `GrepResult.truncated` and glob `truncated`/`truncation_reason` are absent from the pinned result shapes; caps are enforced but truncation is unreportable.
+- **LsEntry size dropped** — upstream's byte-size computation per entry is not carried.
+- **Unknown output_mode fallback / max_count validation** — upstream's Literal rejects unknown `output_mode` values at validation and enforces `gt=0` on `max_count`; the Go tool silently falls back to `files_with_matches` and passes any int through.
+- **Double-prefix glob-fail text** — a non-timeout glob backend failure renders `Error: glob failed: {e}` wrapping the backend's own error text, so an already-prefixed backend error reads with both prefixes.
+- **Brace-rule inertness** — with no brace expansion (D7), a brace pattern in a rule path or glob matches literally rather than being rejected; it is inert, never destructive.
+- **ASCII rstrip set** — `taskResultContent` rstrips with the ASCII set `" \t\n\r\v\f"`; Python `str.rstrip()` also strips Unicode whitespace (NBSP etc.). Parity footnote.
+- **Subagent tracing metadata dropped** — upstream stamps `ls_agent_type="subagent"` and `lc_subagent_tool_call_id` on subagent runs; the port's direct graph invoke also skips the agent-name run tag (cosmetic, tracing only).
+- **Silent empty-content on a missing messages key** — upstream raises when a compiled subagent's result lacks a `messages` key; the port's type assertion degrades to empty content (practically unreachable: `CompiledSubAgent.Agent` is an `*agents.Agent`).
+- **Subagent stack trims** — the Tier-3 compiled subagent stack is FilesystemMiddleware (only when `Backend` is set, with no permission rules) + ModelRefusalMiddleware + the spec's own middleware: no summarization, no PatchToolCalls, no profile extras/skills, no `default_tools` inheritance (spec.Tools is the complete list), no UnsupportedContentMiddleware, no per-subagent HITL. The assembler's auto-added general-purpose subagent carries the parent's caller tools and middleware (upstream graph.py:918) but NOT its own FilesystemMiddleware over the shared backend with the parent's permissions. Supplying your own FilesystemMiddleware in `spec.Middleware` alongside a non-nil `Backend` fails loudly on the duplicate instead of upstream's name-splicing.
+- **langgraph binop zero-seed parity (outside deepagents scope)** — Go's `BinaryOperator` channel seeds the FIRST value without applying the reducer; Python seeds the declared type's zero value and reduces every update. Neutralized inside deepagents by full-snapshot files updates (the stored form from the first write), but the underlying langgraph behavior remains Go-side and affects any dual-form reducer.
+
 ## Deferred (upstream-triggered)
 
-- **deepagents** — upstream is pre-1.0 (0.7.x) with an unstable API; re-evaluate when it reaches 1.0.
+- **deepagents** — upstream is pre-1.0 (0.7.x) with an unstable API; the MVP Tier 1-4 subset (backends, FilesystemMiddleware, SubAgentMiddleware, CreateDeepAgent) is ported — see the deepagents section above for its divergence register; everything beyond that tier is re-evaluated when upstream reaches 1.0.
 - **AWS Bedrock provider, RemoteGraph client** — demand-triggered; both are on the backlog.
 
 ## Notable per-adapter behaviors

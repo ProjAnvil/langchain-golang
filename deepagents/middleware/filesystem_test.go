@@ -324,6 +324,47 @@ func TestFilesystemMiddlewareWrapToolCallPassthroughForNonStateBackend(t *testin
 	}
 }
 
+// TestFilesystemMiddlewareWrapToolCallBlocksParallelMutations pins the R2
+// wiring: ParallelFileMutationError runs at the TOP of WrapToolCall, so a
+// mutating call whose same batch carries an earlier mutating call on the same
+// normalized path is answered with the ported upstream error ToolMessage and
+// the handler never runs — mirroring upstream's wrap_tool_call guard
+// (filesystem.py:3960, 3990).
+func TestFilesystemMiddlewareWrapToolCallBlocksParallelMutations(t *testing.T) {
+	m, err := NewFilesystemMiddleware(backends.NewStateBackend())
+	if err != nil {
+		t.Fatalf("NewFilesystemMiddleware: %v", err)
+	}
+	request := agentsmw.ToolCallRequest{
+		ToolCall: agentsmw.ToolCall{ID: "call_2", Name: "edit_file", Args: map[string]any{"file_path": "/a.md"}},
+		State: map[string]any{"messages": []messages.Message{
+			messages.Human("edit the file"),
+			{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+				{ID: "call_1", Name: "write_file", Args: map[string]any{"file_path": "/a.md", "content": "one"}},
+				{ID: "call_2", Name: "edit_file", Args: map[string]any{"file_path": "/a.md"}},
+			}},
+		}},
+	}
+
+	called := false
+	msg, err := m.WrapToolCall(t.Context(), request, func(context.Context, agentsmw.ToolCallRequest) (messages.Message, error) {
+		called = true
+		return messages.Message{}, nil
+	})
+	if err != nil {
+		t.Fatalf("blocked call must be tool content, not an error: %v", err)
+	}
+	if called {
+		t.Fatal("handler must not run for a blocked parallel mutation")
+	}
+	if msg.Role != messages.RoleTool || msg.ToolCallID != "call_2" || msg.Name != "edit_file" {
+		t.Fatalf("guard message = %#v, want a ToolMessage addressing call_2/edit_file", msg)
+	}
+	if msg.Content != "Error: parallel file mutations to the same path are not allowed." {
+		t.Fatalf("guard content = %q, want the ported upstream literal", msg.Content)
+	}
+}
+
 func TestFilesCommand(t *testing.T) {
 	t.Run("nil view yields nil command", func(t *testing.T) {
 		if cmd := filesCommand(nil); cmd != nil {

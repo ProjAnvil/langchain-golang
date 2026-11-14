@@ -26,6 +26,20 @@ supported features, scope, and known gaps, see the top-level
 | [Fault tolerance & trace privacy](mkdocs/fault-tolerance.md) | Retry policies, node error handlers, TracePolicy scrubbing |
 | [Document loaders](mkdocs/loaders.md) | HTML, web, and PDF loaders |
 
+## Deep Agents (deepagents/)
+
+The [`deepagents/`](../deepagents/) package is the Go port of Python
+`deepagents` v0.7.38 (MVP Tier 1-4): a state-backed virtual filesystem with
+the seven file tools, declarative subagents dispatched through a `task`
+tool, permission-gated human approval, and the
+[`CreateDeepAgent`](../deepagents/agent.go) assembler that stacks it all on
+`agents.CreateAgent`. Start at the package doc
+([deepagents doc.go](../deepagents/doc.go)); the deliberate divergences from
+upstream are registered in [DIVERGENCES.md](../DIVERGENCES.md) (section
+"deepagents"). A runnable end-to-end example lives at
+[`examples/deepagents`](../examples/deepagents/main.go) (groq via
+partners/openaicompat; prints a skip note when `GROQ_API_KEY` is unset).
+
 ## Documentation site
 
 The same guides (plus bilingual home pages) are built into an mkdocs-material

@@ -15,7 +15,10 @@ COVERAGE_PKGS := \
 	partners/mcp \
 	partners/gemini \
 	langchain/toolkits/sqltoolkit \
-	langgraph/graph
+	langgraph/graph \
+	deepagents \
+	deepagents/backends \
+	deepagents/middleware
 COVERAGE_DIR := .coverage
 COVERAGE_OUT := coverage.out
 COVERAGE_HTML := coverage.html
