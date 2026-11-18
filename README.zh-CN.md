@@ -14,46 +14,10 @@
 
 ## 最新动态
 
-**v0.11.1** — 检查点可靠性修复与 Go 1.26 惯用法清理：
+**v0.14.0** — deepagents MVP 移植与通道语义补齐：
 
-- **可靠的 exit 持久化**：delta anchor 不再因跨毫秒边界而遮蔽最终检查点，保证最新状态查询和后续轮次的数据完整性。
-- **显式报告 saver 清理错误**：SQLite 与 PostgreSQL 同时保留操作错误和异常关闭/回滚错误；对应独立模块同步发布 **v0.3.8**。
-- **保持行为兼容**：使用现代标准库集合、迭代器、指针及 worker pool 写法，补充确定性并发回归测试，公开 API 与 JSON 格式保持不变。
-
-**v0.11.0** — 追齐上游 2026-10-08 发布线（core 1.6.9 · langchain 1.4.4 · openai 1.7.0），并接入 TypeSafe/Jev 与 provider 扫尾：
-
-- **TypeSafe（Jev）决策模型**：`partners/typesafe` classifier（Noul/Choice/Score 类型化问答，带概率/置信度答案、递归 state 序列化、`/v1/systemone` 客户端、内嵌 `lcerrors.ProviderError` 的安全类型化错误）与实验性 `AutoModeMiddleware` / `ModelRouterMiddleware`。
-- **OpenAI Decisions API**：`partners/openai/decisions` 客户端（Predicate/Choice/Score、答案归一化、lcerrors 映射）与 `AutoMode` / `ModelRouter` 中间件——两个 provider 1:1 移植，端到端接入 `CreateAgent`。
-- **SSRF 加固**（core #41151）：IPv4-compatible（`::/96`）地址解包进 IPv4 检查路径——`::127.0.0.1`、`::10.0.0.5`、`::169.254.169.254` 不再绕过回环/内网/元数据规则；NAT64 discovery 前缀 `64:ff9b:1::/48` 封禁。
-- **Summarization 溢出恢复**（#41159）：摘要步骤在上下文溢出时截掉历史中段重试一次（预算为实测 token 一半、`max_input_tokens` 40% 封顶）。
-- **Provider 扫尾**：**exa** 搜索/找相似工具 + 检索器与 **nomic** embeddings（REST 直连）。huggingface/qdrant 延后（大包，按需求立项）。
-
-**v0.10.0** — 与上游 2026 年 10 月发布线（langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13）的核心语义对齐：
-
-- **标准模型错误**：提供方失败的类型化分类（`lcerrors.ModelErrorKind`——认证、权限、非法请求、未找到、限流、服务端、连接、超时、上下文溢出含 400 响应体嗅探），支持 `errors.Is` 的哨兵错误、Python 的 `is_retryable` 默认值；retry 中间件默认不再重试不可重试的分类错误（`DefaultRetryOn`）。Gemini 的 SDK 错误映射到同一层级。
-- **HITL 保真**：审阅者编辑保留 AIMessage 上模型的原始调用，在执行时替换为编辑后的动作（附 Python 版编辑通知，注明实际执行内容）；拒绝理由成帧；return_direct 路由按实际执行的工具名判定。编辑状态为 JSON 原生形态，可经 sqlite/postgres 检查点持久化。
-- **Agent 健壮性**：无效工具调用以纠错性 error ToolMessage 应答（覆盖全历史范围）；中间件内部模型调用（工具选择、工具模拟）通过 `callbacks.WithInternalCall` 从 messages 流模式与 StreamEvents 中过滤。
-- **langgraph 正确性**：`interrupt(response_schema=...)` 上送期望恢复值的 schema（含持久化 serde 往返）；delta 通道在 run/resume/update 各路径均从祖先历史水合（累积值跨重启存活）；从未写入的通道跳过历史遍历；exit 持久化模式下 delta 计数器不再重复推进。
-
-**v0.9.1** — 全量补齐发布：
-**v0.9.1** —— full parity catch-up release：
-
-- **RAG 生产栈**：声明式元数据过滤 DSL（`SearchOptions` / `OptionSearcher`，对齐 langchain-postgres `SearchArgs`）、**pgvector** 与 **Redis**（RediSearch）向量存储、**Cohere** / **Jina** 重排器，以及 ensemble / multi-query / parent-document / contextual-compression 检索器。
-- **模型与工具接入层**：原生 **Gemini** 聊天模型（官方 genai SDK）、对齐 `langchain.mcp` 1.4.0 快照的 **MCP 适配器**（多服务器 fleet、elicitation 桥接 interrupt、破坏性工具 HITL 门控），以及 **HTML / Web / PDF 文档加载器**。
-- **SQL 工具箱**：基于 `database/sql` 的只读四工具（`sql_db_query` / `sql_db_schema` / `sql_db_list_tables` / `sql_db_query_checker`），SQLite + Postgres introspection、planner 校验，按现代 `create_agent` 方式组合。
-- **examples/**：12 个可运行示例——agents、HITL、流式、subgraph 恢复、容错、TracePolicy、RAG 全链路、MCP、Gemini、SQL agent、高级检索器、middleware——默认离线，环境变量切换真实 provider。
-- **文档站**：双语（EN + zh-CN）mkdocs-material 站点，含六篇新指南，由 `docs.yml` 部署到 GitHub Pages。
-
-**v0.8.1** —— 容错与追踪隐私 parity：
-
-- **节点级错误处理器**：`NodePolicies.ErrorHandler`（langgraph 1.2.0 `error_handler=`）——重试耗尽后恢复函数可读状态、收到类型化 `NodeError`，返回 update 或 `Command`；ERROR write 先行落盘，崩溃后 resume 重跑 handler 而非节点。
-- **TracePolicy**：节点级与 middleware 级追踪载荷脱敏（langgraph 1.2.11 / langchain 1.3.15），在任何 tracer 观察到事件之前变换；processor panic 时 fail-closed。
-
-**v0.8.0** —— 工程化加固版本：
-
-- **CI**：GitHub Actions 覆盖主模块与全部 checkpoint 嵌套模块（go 1.26/1.27 矩阵）+ golangci-lint 门禁，存量 86 条 lint 告警清零。
-- **`parallel_tool_calls`**：openai（Responses + Chat Completions 双路径）与 anthropic（`tool_choice.disable_parallel_tool_use`）现支持 `BindToolsOptions.ParallelToolCalls`。
-- **社区文件**：[CHANGELOG](CHANGELOG.md)、[CONTRIBUTING](CONTRIBUTING.md)、[DIVERGENCES](DIVERGENCES.md)、[SECURITY](SECURITY.md)。
+- **deepagents**：Python `deepagents` v0.7.38 的 MVP 移植（Tier 1-4）——`deepagents/backends`（Backend 接口、`FilesystemBackend`、带文件 `MapMergeReducer` 的状态型 `StateBackend`）、`deepagents/middleware`（FilesystemMiddleware 的七个文件工具、权限校验、HITL interrupt 派生、同批并行修改保护、SubAgentSpec 编译、`task` 工具的 SubAgentMiddleware），以及 `deepagents.CreateDeepAgent` 在 `agents.CreateAgent` 上组装完整栈（默认状态文件系统、自动添加继承父级工具/middleware 的通用子智能体、模型驱动的默认摘要器、递归上限 9999、checkpointer/store/response-format/state-fields/context-schema 透传）。差异登记见 DIVERGENCES.md（D1-D15 + 待办项）；可运行示例见 `examples/deepagent`（经 partners/openaicompat 使用 Groq，无 `GROQ_API_KEY` 时跳过）。
+- **langgraph/channels**：`BinaryOperator` 通道在首次写入时解包 `Overwrite` 标记，并用内部值作为种子——满足替换语义状态通道（deepagents `files`）的需求；差异说明见 binop 零种子 parity 条目。
 
 完整历史见 [CHANGELOG](CHANGELOG.md)。
 

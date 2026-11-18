@@ -14,46 +14,10 @@ A community **Go port** of [LangChain](https://github.com/langchain-ai/langchain
 
 ## What's New
 
-**v0.11.1** — checkpoint reliability fixes and Go 1.26 modernization:
+**v0.14.0** — deepagents MVP port and channel parity:
 
-- **Reliable exit durability**: delta anchors can no longer shadow the final checkpoint across a millisecond boundary, preserving latest-state queries and subsequent turns.
-- **Explicit saver cleanup errors**: SQLite and PostgreSQL preserve both operation and unexpected close/rollback failures; updated saver modules are available as **v0.3.8**.
-- **Behavior-preserving cleanup**: modern standard-library collection, iterator, pointer, and worker-pool idioms, with deterministic concurrency regressions and unchanged public APIs and JSON formats.
-
-**v0.11.0** — upstream releases of 2026-10-08 (core 1.6.9 · langchain 1.4.4 · openai 1.7.0) plus the TypeSafe/Jev partner and provider catch-up:
-
-- **TypeSafe (Jev) decision model**: `partners/typesafe` classifier (Noul/Choice/Score typed questions with probability/confidence answers, recursive state serialization, `/v1/systemone` client, safe typed errors embedding `lcerrors.ProviderError`) and experimental `AutoModeMiddleware` / `ModelRouterMiddleware`.
-- **OpenAI Decisions API**: `partners/openai/decisions` client (Predicate/Choice/Score, answer normalization, lcerrors mapping) with `AutoMode` / `ModelRouter` middleware — the two providers port 1:1, wired end-to-end through `CreateAgent`.
-- **SSRF hardening** (core #41151): IPv4-compatible (`::/96`) addresses unwrap onto the IPv4 check path — `::127.0.0.1`, `::10.0.0.5`, `::169.254.169.254` no longer bypass loopback/private/metadata rules; NAT64 discovery prefix `64:ff9b:1::/48` blocked.
-- **Summarization overflow recovery** (#41159): the summary step retries once on context overflow with the middle of the history cut out (half the measured tokens, capped at 40% of `max_input_tokens`).
-- **Provider catch-up**: **exa** search/find-similar tools + retriever and **nomic** embeddings (REST-direct). huggingface/qdrant deferred (large, demand-triggered).
-
-**v0.10.0** — core-semantics parity with the October 2026 upstream releases (langchain-core 1.6.6 · langchain 1.4.3 · langgraph 1.2.13):
-
-- **Standard model errors**: a typed classification of provider failures (`lcerrors.ModelErrorKind` — auth, permission, invalid request, not found, rate limit, server, connection, timeout, context-overflow with 400-body sniffing) with `errors.Is`-able sentinels, Python's `is_retryable` defaults, and retry middleware that stops retrying non-retryable classified errors (`DefaultRetryOn`). Gemini maps its SDK errors onto the same hierarchy.
-- **HITL fidelity**: reviewer edits keep the model's original call on the AIMessage and substitute the edited action at execution time (with the Python edit notice naming what actually ran); rejection reasons are framed; return-direct routing follows executed tool names. Edit state is JSON-native and survives sqlite/postgres checkpointing.
-- **Agent robustness**: invalid tool calls are answered with corrective error ToolMessages (full-history scope); middleware-internal model calls (tool selection, emulation) are filtered out of messages-mode streams and StreamEvents via `callbacks.WithInternalCall`.
-- **langgraph correctness**: `interrupt(response_schema=...)` surfaces the expected resume-value schema (durable serde round-trip included); delta channels hydrate from ancestor history on every run/resume/update path (accumulated values survive restarts), never-written channels skip the history walk, and delta counters stay accurate under exit durability.
-
-**v0.9.1** — full parity catch-up release:
-**v0.9.1** — full parity catch-up release:
-
-- **RAG production stack**: declarative metadata-filter DSL (`SearchOptions` / `OptionSearcher`, langchain-postgres `SearchArgs` parity), **pgvector** and **Redis** (RediSearch) vector stores, **Cohere** / **Jina** rerankers, and ensemble / multi-query / parent-document / contextual-compression retrievers.
-- **Model & tool access layer**: native **Gemini** chat model (official genai SDK), an **MCP adapter** mirroring the `langchain.mcp` 1.4.0 snapshot (multi-server fleets, elicitation bridged to interrupts, HITL gating for destructive tools), and **HTML / web / PDF document loaders**.
-- **SQL toolkit**: read-only four-tool kit (`sql_db_query` / `sql_db_schema` / `sql_db_list_tables` / `sql_db_query_checker`) over `database/sql`, with SQLite + Postgres introspection and planner-based query checking, composed the modern `create_agent` way.
-- **examples/**: 12 runnable examples — agents, HITL, streaming, subgraph resume, fault tolerance, TracePolicy, full RAG chain, MCP, Gemini, SQL agent, advanced retrievers, middleware — offline-first with env-switchable real providers.
-- **Documentation site**: bilingual (EN + zh-CN) mkdocs-material site with six new guides, deployed to GitHub Pages by `docs.yml`.
-
-**v0.8.1** — fault-tolerance & trace-privacy parity:
-
-- **Node error handlers**: `NodePolicies.ErrorHandler` (langgraph 1.2.0 `error_handler=`) — recovery handlers receive state + a typed `NodeError` after retries are exhausted, return an update or a `Command`, and survive crashes (persisted ERROR write resumes into the handler).
-- **TracePolicy**: per-node and per-middleware traced-payload scrubbing (langgraph 1.2.11 / langchain 1.3.15), applied before any tracer observes events; fail-closed on processor panics.
-
-**v0.8.0** — engineering hardening release:
-
-- **CI**: GitHub Actions across the root module and all checkpoint modules (go 1.26/1.27 matrix) with a golangci-lint gate — 86 pre-existing lint findings cleared.
-- **`parallel_tool_calls`**: openai (Responses + Chat Completions) and anthropic (`tool_choice.disable_parallel_tool_use`) now honor `BindToolsOptions.ParallelToolCalls`.
-- **Community files**: [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md), [DIVERGENCES](DIVERGENCES.md), [SECURITY](SECURITY.md).
+- **deepagents**: MVP port of Python `deepagents` v0.7.38 (Tiers 1-4) — `deepagents/backends` (Backend interface, `FilesystemBackend`, state-backed `StateBackend` with the files `MapMergeReducer`), `deepagents/middleware` (FilesystemMiddleware with seven file tools, permission evaluation, HITL interrupt derivation, same-batch parallel-mutation guard, SubAgentSpec compilation, and `task`-tool SubAgentMiddleware), and `deepagents.CreateDeepAgent` assembling the full stack over `agents.CreateAgent` (state filesystem default, general-purpose subagent auto-add carrying the parent's tools/middleware, model-backed default summarizer, recursion limit 9999, checkpointer/store/response-format/state-fields/context-schema passthrough). Divergence register in DIVERGENCES.md (D1-D15 + parked items); runnable example in `examples/deepagent` (Groq via partners/openaicompat, skips without `GROQ_API_KEY`).
+- **langgraph/channels**: `BinaryOperator` channels unwrap an `Overwrite` marker on a channel's first write, seeding with the inner value — required by replacement-semantics state channels (deepagents `files`); documented under the binop zero-seed parity divergence entry.
 
 See the [CHANGELOG](CHANGELOG.md) for the full history.
 
