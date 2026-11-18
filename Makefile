@@ -1,4 +1,4 @@
-.PHONY: test test-sqlite test-postgres test-redis test-integration vet-integration check-dep-alignment fmt-check coverage coverage-html
+.PHONY: test test-sqlite test-postgres test-redis test-integration vet-integration check-dep-alignment fmt-check coverage coverage-html examples-validate examples-clean examples/validate examples/clean
 
 ## Statement-coverage gate for the 2026-09 parity catch-up packages.
 ## COVERAGE_THRESHOLD is the per-package red line in percent (>= passes).
@@ -133,3 +133,18 @@ check-dep-alignment:
 		fi; \
 		echo "OK: $$dep $$root_ver (root == $$nested)"; \
 	done
+
+## Format, tidy, vet, build, and run every standalone example module.
+examples-validate:
+	@./examples/validate.sh
+
+## Remove binaries produced by older example validation runs.
+examples-clean:
+	@find examples -mindepth 1 -maxdepth 3 -type f -perm -u+x \
+		! -name '*.go' ! -name '*.md' ! -name '*.sh' \
+		! -name 'go.mod' ! -name 'go.sum' \
+		-exec rm -f {} +
+
+examples/validate: examples-validate
+
+examples/clean: examples-clean

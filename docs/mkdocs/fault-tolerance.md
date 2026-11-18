@@ -7,9 +7,9 @@ LangGraph's per-node resilience and privacy policies, installed through
 (transient failures), `ErrorHandlerPolicy` (recovery after retries are
 exhausted), and `TracePolicy` (payload scrubbing before any tracer sees
 events). Runnable examples:
-[`examples/fault-tolerance`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/fault-tolerance)
+[`examples/langgraph/fault-tolerance`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langgraph/fault-tolerance)
 and
-[`examples/trace-policy`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/trace-policy).
+[`examples/langgraph/trace-policy`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langgraph/trace-policy).
 
 ## Installation
 

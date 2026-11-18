@@ -35,7 +35,7 @@
 [`CreateDeepAgent`](../deepagents/agent.go) 装配器。入口见包文档
 （[deepagents doc.go](../deepagents/doc.go)）；与上游的有意差异登记在
 [DIVERGENCES.md](../DIVERGENCES.md) 的 "deepagents" 一节。可运行的端到端示例
-位于 [`examples/deepagents`](../examples/deepagents/main.go)（经
+位于 [`examples/deepagent`](../examples/deepagent/main.go)（经
 partners/openaicompat 使用 groq；未设置 `GROQ_API_KEY` 时打印跳过说明）。
 
 ## 文档站

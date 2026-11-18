@@ -18,7 +18,7 @@
 //
 // Upstream file:line citations across these packages refer to that pinned
 // version. Start with CreateDeepAgent and DeepAgentOptions in agent.go, and
-// examples/deepagents/main.go for a runnable end-to-end example.
+// examples/deepagent/main.go for a runnable end-to-end example.
 //
 // Behavior authority and audit trail: the implementation plan at
 // docs/superpowers/plans/2026-11-14-deepagents-port.md, the per-task briefs

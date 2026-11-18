@@ -6,7 +6,7 @@
 `core/tools` tools, mirroring the langchain 1.4.0 `langchain.mcp` snapshot.
 An agent does not know or care that a tool is remote: it calls it like any
 other tool. For a runnable walkthrough see
-[`examples/mcp-tools`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/mcp-tools).
+[`examples/langchain/mcp-tools`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/mcp-tools).
 
 ## Installation
 

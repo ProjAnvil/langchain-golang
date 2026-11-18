@@ -37,7 +37,7 @@ tool, permission-gated human approval, and the
 ([deepagents doc.go](../deepagents/doc.go)); the deliberate divergences from
 upstream are registered in [DIVERGENCES.md](../DIVERGENCES.md) (section
 "deepagents"). A runnable end-to-end example lives at
-[`examples/deepagents`](../examples/deepagents/main.go) (groq via
+[`examples/deepagent`](../examples/deepagent/main.go) (groq via
 partners/openaicompat; prints a skip note when `GROQ_API_KEY` is unset).
 
 ## Documentation site

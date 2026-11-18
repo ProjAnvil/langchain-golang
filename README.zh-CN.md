@@ -283,8 +283,16 @@ state, _ := agent.Graph.GetState(ctx, graph.Options{ThreadID: "t1"})
 | [容错与追踪隐私](docs/mkdocs/zh-CN/fault-tolerance.zh-CN.md) | 重试策略、节点错误处理器、TracePolicy 脱敏 |
 | [文档加载器](docs/mkdocs/zh-CN/loaders.zh-CN.md) | HTML、Web、PDF 三件套加载器 |
 
-可运行示例位于 [`examples/`](examples)——每个主题一个目录，均带自己的
-README。
+可运行示例位于 [`examples/`](examples)——86 个独立 Go module，每个都有自己的
+`go.mod`、`README.md`，可直接 `go run .`：
+
+- [`examples/langchain/`](examples/langchain)：8 个 LangChain 主题示例
+- [`examples/deepagent/`](examples/deepagent)：1 个 deepagent 示例
+- [`examples/langgraph/`](examples/langgraph)：77 个 LangGraph 示例（4 个原生
+  Go SDK 示例 + 73 个 Python notebook 移植）
+
+运行 [`examples/validate.sh`](examples/validate.sh) 可依次 format、tidy、
+build、run 全部示例。结果见 [`examples/VALIDATION.md`](examples/VALIDATION.md)。
 
 API 参考：[pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang)
 
@@ -322,7 +330,10 @@ langchain-golang/
 ├── standardtests/             # 一致性测试套件
 ├── modelprofiles/             # 模型配置注册表 + CLI
 ├── cmd/langchain-profiles     # profiles 刷新 CLI
-├── examples/                  # 12 个可运行示例（agents、RAG、MCP、SQL 等）
+├── examples/                  # 86 个独立 Go module，按三类组织
+│   ├── langchain/             # 8 个 LangChain 主题示例
+│   ├── deepagent/            # 1 个 deepagent 示例
+│   └── langgraph/             # 4 个原生示例 + 73 个 Python notebook 移植
 ├── docs/                      # 双语使用指南（EN + zh-CN）+ mkdocs 站点源
 └── integration/               # 集成测试
 ```

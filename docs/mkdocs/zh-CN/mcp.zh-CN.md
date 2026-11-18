@@ -5,7 +5,7 @@
 `partners/mcp` 把 Model Context Protocol（MCP）服务器适配成标准的
 `core/tools` 工具，对齐 langchain 1.4.0 的 `langchain.mcp` 快照。智能体并
 不知道工具在远端：它像调用任何其他工具一样调用它。可运行的完整示例见
-[`examples/mcp-tools`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/mcp-tools)。
+[`examples/langchain/mcp-tools`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/mcp-tools)。
 
 ## 安装
 

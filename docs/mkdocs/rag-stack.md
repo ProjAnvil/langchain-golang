@@ -6,8 +6,8 @@ The production RAG layer on top of `core/vectorstores`: a declarative
 metadata-filter DSL shared by every store, two server-backed vector stores
 (pgvector, Redis), hosted rerankers (Cohere, Jina), and four advanced
 retriever combinators. For the full end-to-end pipeline, see
-[`examples/rag-fullchain`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/rag-fullchain)
-and [`examples/advanced-retrievers`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/advanced-retrievers).
+[`examples/langchain/rag-fullchain`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/rag-fullchain)
+and [`examples/langchain/advanced-retrievers`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/advanced-retrievers).
 
 ## Installation
 

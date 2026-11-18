@@ -8,7 +8,7 @@ shim — built on the official
 It implements the full `language.ChatModel` surface: invoke, batch, stream,
 tool calling, tool choice, and provider-native structured output. Runnable
 example:
-[`examples/gemini-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/gemini-agent).
+[`examples/langchain/gemini-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/gemini-agent).
 
 ## Installation
 

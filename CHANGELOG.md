@@ -2,11 +2,24 @@
 
 All notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.14.1] - 2026-11-18
+
+### Added
+
+- examples: add 73 Go ports of every Python `langgraph/examples` notebook, each in its own standalone Go module with `go.mod`, `go.sum`, `main.go`, and `README.md`.
+- examples: add 4 native LangGraph Go SDK examples and reorganize all examples into `langchain/`, `langgraph/`, and top-level `deepagent/`.
+- Makefile: add `examples-validate` / `examples/validate` and `examples-clean` / `examples/clean` targets.
+
+### Changed
+
+- examples: convert all 86 examples to independent Go modules; every example runs with `go run .` and is validated by `examples/validate.sh`.
+- docs: update example paths across README files, guides, and source comments.
+
 ## [0.14.0] - 2026-11-15
 
 ### Added
 
-- deepagents: MVP port of Python `deepagents` v0.7.38 (Tiers 1-4) — `deepagents/backends` (Backend interface, `FilesystemBackend`, state-backed `StateBackend` with the files `MapMergeReducer`), `deepagents/middleware` (FilesystemMiddleware with the seven file tools, permission evaluation, HITL interrupt derivation, the same-batch parallel-mutation guard, SubAgentSpec compilation, and the `task`-tool SubAgentMiddleware), and `deepagents.CreateDeepAgent` assembling the full stack over `agents.CreateAgent` (state filesystem default, general-purpose subagent auto-add carrying the parent's tools/middleware, model-backed default summarizer, recursion limit 9999, checkpointer/store/response-format/state-fields/context-schema passthrough). Divergence register in DIVERGENCES.md (D1-D15 + parked items); runnable example in `examples/deepagents` (groq via partners/openaicompat, skips without `GROQ_API_KEY`).
+- deepagents: MVP port of Python `deepagents` v0.7.38 (Tiers 1-4) — `deepagents/backends` (Backend interface, `FilesystemBackend`, state-backed `StateBackend` with the files `MapMergeReducer`), `deepagents/middleware` (FilesystemMiddleware with the seven file tools, permission evaluation, HITL interrupt derivation, the same-batch parallel-mutation guard, SubAgentSpec compilation, and the `task`-tool SubAgentMiddleware), and `deepagents.CreateDeepAgent` assembling the full stack over `agents.CreateAgent` (state filesystem default, general-purpose subagent auto-add carrying the parent's tools/middleware, model-backed default summarizer, recursion limit 9999, checkpointer/store/response-format/state-fields/context-schema passthrough). Divergence register in DIVERGENCES.md (D1-D15 + parked items); runnable example in `examples/deepagent` (groq via partners/openaicompat, skips without `GROQ_API_KEY`).
 - langgraph/channels: `BinaryOperator` channels unwrap an `Overwrite` marker on a channel's first write, seeding with the inner value — required by replacement-semantics state channels (deepagents `files`); documented under the binop zero-seed parity divergence entry.
 
 ## [0.13.0] - 2026-11-08

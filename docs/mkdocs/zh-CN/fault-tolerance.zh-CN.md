@@ -6,9 +6,9 @@ LangGraph 的节点级韧性与隐私策略，经 `AddNodeWithPolicies` 安装�
 开关可自由组合：`RetryPolicy`（瞬态故障）、`ErrorHandlerPolicy`（重试耗尽
 后的恢复）、`TracePolicy`（任何 tracer 观察到事件之前的载荷脱敏）。可运行
 示例：
-[`examples/fault-tolerance`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/fault-tolerance)
+[`examples/langgraph/fault-tolerance`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langgraph/fault-tolerance)
 与
-[`examples/trace-policy`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/trace-policy)。
+[`examples/langgraph/trace-policy`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langgraph/trace-policy)。
 
 ## 安装
 

@@ -282,8 +282,16 @@ from [`docs/mkdocs/`](docs/mkdocs) by [`docs.yml`](.github/workflows/docs.yml)).
 | [Fault Tolerance & Trace Privacy](docs/mkdocs/fault-tolerance.md) | Retry policies, node error handlers, TracePolicy scrubbing |
 | [Document Loaders](docs/mkdocs/loaders.md) | HTML, web, and PDF loaders |
 
-Runnable examples live under [`examples/`](examples) — one directory per
-topic, each with its own README.
+Runnable examples live under [`examples/`](examples) — 86 standalone Go
+modules, each with its own `go.mod`, `README.md`, and `go run .` entry point:
+
+- [`examples/langchain/`](examples/langchain) — 8 LangChain-focused modules
+- [`examples/deepagent/`](examples/deepagent) — 1 deepagent module
+- [`examples/langgraph/`](examples/langgraph) — 77 LangGraph modules (4 native
+  Go SDK examples + 73 Python notebook ports)
+
+Run [`examples/validate.sh`](examples/validate.sh) to format, tidy, build, and
+run all of them. Results are in [`examples/VALIDATION.md`](examples/VALIDATION.md).
 
 API reference: [pkg.go.dev](https://pkg.go.dev/github.com/projanvil/langchain-golang)
 
@@ -321,7 +329,10 @@ langchain-golang/
 ├── standardtests/             # conformance suites
 ├── modelprofiles/             # model-profiles registry + CLI
 ├── cmd/langchain-profiles     # profiles refresh CLI
-├── examples/                  # 12 runnable examples (agents, RAG, MCP, SQL, ...)
+├── examples/                  # 86 standalone Go modules in three categories
+│   ├── langchain/             # 8 LangChain-focused modules
+│   ├── deepagent/            # 1 deepagent module
+│   └── langgraph/             # 4 native + 73 Python notebook ports
 ├── docs/                      # bilingual usage guides (EN + zh-CN) + mkdocs site source
 └── integration/               # integration tests
 ```

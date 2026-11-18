@@ -6,7 +6,7 @@
 工具——langchain-community `SQLDatabaseToolkit` 的 Go 对应物，并采用现代组合
 方式（`get_tools()` + `CreateAgent`，而非已弃用的 `create_sql_agent`）。可运行
 示例：
-[`examples/sql-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/sql-agent)。
+[`examples/langchain/sql-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/sql-agent)。
 
 ## 安装
 

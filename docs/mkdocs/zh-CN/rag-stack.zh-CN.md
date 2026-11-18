@@ -5,9 +5,9 @@
 构建在 `core/vectorstores` 之上的生产级 RAG 层：全库共享的声明式元数据
 过滤 DSL、两个服务端向量存储（pgvector、Redis）、托管重排器（Cohere、
 Jina），以及四个高级检索器组合件。完整端到端流水线见
-[`examples/rag-fullchain`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/rag-fullchain)
+[`examples/langchain/rag-fullchain`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/rag-fullchain)
 与
-[`examples/advanced-retrievers`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/advanced-retrievers)。
+[`examples/langchain/advanced-retrievers`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/advanced-retrievers)。
 
 ## 安装
 

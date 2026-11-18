@@ -14,7 +14,7 @@
 
 - Import direction (hard, plan-audit E1/C1): `deepagents` root → `deepagents/middleware` → `deepagents/backends` → (core, langgraph). No back-edge. No root `deepagents/state.go`.
 - Upstream pin: deepagents v0.7.38. Where behavior is unspecified here, match upstream semantics; divergences D1-D14 (spec §8) recorded in Task 9.
-- No new go.mod dependencies. No changes outside `deepagents/`, `examples/deepagents/`, Makefile COVERAGE_PKGS, DIVERGENCES.md, CHANGELOG.md, docs.
+- No new go.mod dependencies. No changes outside `deepagents/`, `examples/deepagent/`, Makefile COVERAGE_PKGS, DIVERGENCES.md, CHANGELOG.md, docs.
 - Tool errors render as tool result text, never panic/error the run (spec R3).
 - Files state: `files` is a PUBLIC key (plan-audit E2/C2). Value `map[string]FileMeta`; update payloads `map[string]*FileMeta`, nil value = delete key; `MapMergeReducer` (backends pkg).
 - Private state keys (hardcoded, middleware/state.go): `[]string{middleware.EditedToolCallsStateKey}` ONLY (plan-audit E2/I5). `files` and `todos` are public.
@@ -171,7 +171,7 @@
 ### Task 9: CreateDeepAgent assembler + example + release prep
 
 **Files:**
-- Create: `deepagents/agent.go`, `deepagents/doc.go`, `examples/deepagents/main.go`
+- Create: `deepagents/agent.go`, `deepagents/doc.go`, `examples/deepagent/main.go`
 - Modify: `Makefile` (COVERAGE_PKGS += `deepagents/...`), `DIVERGENCES.md` (D1-D14 per spec §8), `CHANGELOG.md`, `docs/README.md`
 - Test: `deepagents/agent_test.go`
 

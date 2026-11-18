@@ -6,7 +6,7 @@
 官方 [`google.golang.org/genai`](https://pkg.go.dev/google.golang.org/genai)
 SDK 之上。它实现完整的 `language.ChatModel` 接口面：invoke、batch、流式、
 工具调用、工具选择，以及 provider 原生结构化输出。可运行示例：
-[`examples/gemini-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/gemini-agent)。
+[`examples/langchain/gemini-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/gemini-agent)。
 
 ## 安装
 

@@ -6,7 +6,7 @@
 four agent tools — the Go counterpart of langchain-community's
 `SQLDatabaseToolkit`, composed the modern way (`get_tools()` +
 `CreateAgent`, not the deprecated `create_sql_agent`). Runnable example:
-[`examples/sql-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/sql-agent).
+[`examples/langchain/sql-agent`](https://github.com/ProjAnvil/langchain-golang/tree/main/examples/langchain/sql-agent).
 
 ## Installation
 
