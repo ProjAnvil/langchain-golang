@@ -98,7 +98,29 @@ type chatCompletionsStream struct {
 	// RefusalBlock only on the terminal [DONE] chunk (matching the upstream
 	// "visible only at the terminal" shape — no per-delta block emission).
 	refusal string
-	guard   chunkTimeoutGuard
+	// finishReason remembers the last choice-bearing chunk's finish_reason
+	// for the terminal [DONE] chunk's shared finish fields (#41926).
+	finishReason string
+	guard        chunkTimeoutGuard
+}
+
+// applyFinishFields stamps the tracked finish_reason onto a terminal chunk's
+// response_metadata as the shared finish fields (#41926): the raw value is
+// kept, and normalized_finish_reason applies the Chat Completions mapping
+// with the stream-observed corrections — a refusal delta wins over a normal
+// stop, and a forced tool_choice's stop with streamed tool calls becomes
+// tool_call.
+func (s *chatCompletionsStream) applyFinishFields(chunk *messages.Message) {
+	if s.finishReason == "" {
+		return
+	}
+	if chunk.ResponseMetadata == nil {
+		chunk.ResponseMetadata = map[string]any{}
+	}
+	chunk.ResponseMetadata["finish_reason"] = s.finishReason
+	for key, value := range chatFinishReasonFields(s.finishReason, len(s.toolCalls) > 0, s.refusal != "") {
+		chunk.ResponseMetadata[key] = value
+	}
 }
 
 // Next arms the per-chunk timeout (stream_chunk_timeout, spec 4.6) around the
@@ -154,7 +176,14 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 				chunk.ContentBlocks = append(chunk.ContentBlocks, messages.RefusalBlock{Refusal: s.refusal})
 				ok = true
 			}
+			// A finish-only tail (plain text streams emit no terminal
+			// chunk) still surfaces the terminal signal as an empty chunk,
+			// mirroring the Anthropic adapter's stop chunk (#41926).
+			if s.finishReason != "" {
+				ok = true
+			}
 			if ok {
+				s.applyFinishFields(&chunk)
 				if err := emitStream(ctx, s.cfg, chunk); err != nil {
 					return messages.Message{}, false, err
 				}
@@ -170,6 +199,14 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 			return messages.Message{}, false, fmt.Errorf("decode openai chat completions stream event: %w", err)
 		}
 		if len(event.Choices) == 0 {
+			// An in-band error event is a terminal failure, classified
+			// per #41952 (base.py:777-783): a transient server-error
+			// code/type is retryable.
+			if event.Error != nil {
+				err := chatCompletionsStreamError(*event.Error)
+				_ = emit(ctx, s.cfg, callbacks.EventChatModelError, nil, nil, err)
+				return messages.Message{}, false, err
+			}
 			// The final usage-only chunk (sent because we request
 			// stream_options.include_usage) yields an empty-content chunk
 			// carrying UsageMetadata, mirroring Python's _stream.
@@ -182,6 +219,11 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 				return chunk, true, nil
 			}
 			continue
+		}
+		// The finish_reason rides on (one of) the last choice-bearing
+		// chunks; remember it for the terminal [DONE] chunk (#41926).
+		if finishReason := event.Choices[0].FinishReason; finishReason != "" {
+			s.finishReason = finishReason
 		}
 		delta := event.Choices[0].Delta
 		s.refusal += delta.Refusal
@@ -281,10 +323,14 @@ type chatCompletionsStreamEvent struct {
 	// Usage is set on the final choices-less chunk when the request opted in
 	// via stream_options.include_usage.
 	Usage *chatUsage `json:"usage"`
+	// Error carries an in-band error event (the Chat Completions nested
+	// shape), classified per #41952 instead of being dropped.
+	Error *streamError `json:"error,omitempty"`
 }
 
 type chatCompletionsStreamChoice struct {
-	Delta chatCompletionsStreamDelta `json:"delta"`
+	Delta        chatCompletionsStreamDelta `json:"delta"`
+	FinishReason string                     `json:"finish_reason,omitempty"`
 }
 
 type chatCompletionsStreamDelta struct {

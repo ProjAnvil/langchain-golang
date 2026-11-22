@@ -158,7 +158,8 @@ func TestProcessHumanDecision(t *testing.T) {
 		t.Fatalf("expected edited action error, got %v", err)
 	}
 
-	// Respond builds a success tool message carrying the human's message.
+	// Respond builds a success tool message carrying the human's message,
+	// tagged with the decision that produced it (Python #41928).
 	respondConfig := InterruptConfig{AllowedDecisions: []DecisionType{DecisionRespond}}
 	next, msg, err = processHumanDecision(Decision{Type: DecisionRespond, Message: "human answer"}, call, respondConfig)
 	if err != nil || next == nil || msg == nil {
@@ -166,6 +167,27 @@ func TestProcessHumanDecision(t *testing.T) {
 	}
 	if msg.Content != "human answer" || msg.ResponseMetadata["status"] != "success" || msg.Name != "search" {
 		t.Fatalf("respond message mismatch: %#v", msg)
+	}
+	if notification := messages.GetNotificationMetadata(*msg); notification == nil ||
+		notification.Source != "hitl_interrupt_decision" ||
+		notification.Data["decision"] != string(DecisionRespond) {
+		t.Fatalf("respond notification metadata mismatch: %#v", notification)
+	}
+
+	// Reject builds an error tool message carrying the rejection notice,
+	// likewise tagged with its decision (Python #41928).
+	rejectConfig := InterruptConfig{AllowedDecisions: []DecisionType{DecisionReject}}
+	next, msg, err = processHumanDecision(Decision{Type: DecisionReject}, call, rejectConfig)
+	if err != nil || next == nil || msg == nil {
+		t.Fatalf("reject mismatch: %#v %#v %v", next, msg, err)
+	}
+	if msg.ResponseMetadata["status"] != "error" || msg.Name != "search" {
+		t.Fatalf("reject message mismatch: %#v", msg)
+	}
+	if notification := messages.GetNotificationMetadata(*msg); notification == nil ||
+		notification.Source != "hitl_interrupt_decision" ||
+		notification.Data["decision"] != string(DecisionReject) {
+		t.Fatalf("reject notification metadata mismatch: %#v", notification)
 	}
 
 	// Unknown decision type.
@@ -187,5 +209,18 @@ func TestHumanInTheLoopMiddlewareDecisionErrorPropagates(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "is not allowed") {
 		t.Fatalf("expected decision processing error, got %v", err)
+	}
+}
+
+// TestDecodeHITLResponseBareDecisionMap pins the per-call resume shape
+// (upstream per-call resume passes the bare decision dict): a map with a
+// "type" key decodes as a single decision.
+func TestDecodeHITLResponseBareDecisionMap(t *testing.T) {
+	decisions, err := DecodeHITLResponse(map[string]any{"type": "approve"})
+	if err != nil || len(decisions) != 1 || decisions[0].Type != DecisionApprove {
+		t.Fatalf("bare decision map: %#v %v", decisions, err)
+	}
+	if _, err := DecodeHITLResponse(map[string]any{"unrelated": 1}); err == nil {
+		t.Fatal("map without decisions or type must fail")
 	}
 }

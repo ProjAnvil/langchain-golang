@@ -651,6 +651,17 @@ type responsePayload struct {
 	Model  string       `json:"model"`
 	Output []outputItem `json:"output"`
 	Usage  usagePayload `json:"usage"`
+	// Status and IncompleteDetails come from Responses API payloads
+	// ("completed", "incomplete", "failed"; incomplete_details.reason).
+	Status            string         `json:"status,omitempty"`
+	IncompleteDetails map[string]any `json:"incomplete_details,omitempty"`
+	// FinishReason carries a Chat Completions finish_reason through the
+	// normalization in toResponsesPayload; Responses payloads never set it.
+	FinishReason string `json:"-"`
+	// Error carries a response.failed event's error object
+	// ({"code", "message"}), classified like an in-band error event
+	// (#41952).
+	Error *streamError `json:"error,omitempty"`
 }
 
 type outputItem struct {
@@ -698,12 +709,14 @@ type usagePayload struct {
 }
 
 type inputTokensDetails struct {
-	CachedTokens        int `json:"cached_tokens"`
-	CacheCreationTokens int `json:"cache_creation_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	AudioTokens      int `json:"audio_tokens"`
 }
 
 type outputTokensDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
+	AudioTokens     int `json:"audio_tokens"`
 }
 
 func (r responsePayload) toMessage() messages.Message {
@@ -712,6 +725,7 @@ func (r responsePayload) toMessage() messages.Message {
 	var invalidToolCalls []messages.ToolCall
 	var contentBlocks []messages.ContentBlock
 	var refusalText string
+	var refusalSeen bool
 	for _, output := range r.Output {
 		switch output.Type {
 		case "message":
@@ -723,6 +737,9 @@ func (r responsePayload) toMessage() messages.Message {
 					parts = append(parts, content.Text)
 				}
 				if content.Type == "refusal" {
+					// Presence of a refusal block drives the finish
+					// flag regardless of its text (base.py:5450-5453).
+					refusalSeen = true
 					// The id hangs on the message item (base.py:5269-5277 reads output.id),
 					// as does phase (base.py:5250); the content part itself carries no id.
 					rb := messages.RefusalBlock{Refusal: content.Refusal, ID: output.ID}
@@ -776,6 +793,23 @@ func (r responsePayload) toMessage() messages.Message {
 		"model":          r.Model,
 		"model_provider": "openai",
 	}
+	// Shared finish fields (#41926): Responses payloads map their status,
+	// normalized Chat Completions payloads their finish_reason.
+	hasToolCalls := len(toolCalls) > 0 || len(invalidToolCalls) > 0
+	if r.Status != "" {
+		message.ResponseMetadata["status"] = r.Status
+		if r.IncompleteDetails != nil {
+			message.ResponseMetadata["incomplete_details"] = r.IncompleteDetails
+		}
+		for key, value := range responsesFinishReasonFields(r.Status, r.IncompleteDetails, hasToolCalls, refusalSeen) {
+			message.ResponseMetadata[key] = value
+		}
+	} else if r.FinishReason != "" {
+		message.ResponseMetadata["finish_reason"] = r.FinishReason
+		for key, value := range chatFinishReasonFields(r.FinishReason, hasToolCalls, refusalSeen) {
+			message.ResponseMetadata[key] = value
+		}
+	}
 	message.UsageMetadata = r.Usage.toUsageMetadata()
 	return message
 }
@@ -784,20 +818,28 @@ func (r responsePayload) toMessage() messages.Message {
 // normalizing Chat Completions usage) into the core UsageMetadata, including
 // cached-input and reasoning-output details when the payload carries them.
 func (u usagePayload) toUsageMetadata() messages.UsageMetadata {
+	total := u.TotalTokens
+	if total == 0 {
+		// Gateways omit the total; core's convention (and base.py:4611)
+		// completes it from input + output.
+		total = u.InputTokens + u.OutputTokens
+	}
 	md := messages.UsageMetadata{
 		InputTokens:  u.InputTokens,
 		OutputTokens: u.OutputTokens,
-		TotalTokens:  u.TotalTokens,
+		TotalTokens:  total,
 	}
 	if details := u.InputTokensDetails; details != nil {
 		md.InputTokenDetails = &messages.InputTokenDetails{
-			CacheReadInputTokens:     details.CachedTokens,
-			CacheCreationInputTokens: details.CacheCreationTokens,
+			CacheRead:     details.CachedTokens,
+			CacheCreation: details.CacheWriteTokens,
+			Audio:         details.AudioTokens,
 		}
 	}
-	if details := u.OutputTokensDetails; details != nil && details.ReasoningTokens > 0 {
+	if details := u.OutputTokensDetails; details != nil && (details.ReasoningTokens > 0 || details.AudioTokens > 0) {
 		md.OutputTokenDetails = &messages.OutputTokenDetails{
-			ReasoningOutputTokens: details.ReasoningTokens,
+			Reasoning: details.ReasoningTokens,
+			Audio:     details.AudioTokens,
 		}
 	}
 	return md

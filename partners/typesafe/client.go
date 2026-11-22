@@ -381,6 +381,31 @@ func parseAnswer(name string, raw any) (Answer, error) {
 		return nil, &ResponseValidationError{FieldPath: "answers." + name}
 	}
 	switch entry["type"] {
+	case "box":
+		rawBox, ok := entry["box"].(map[string]any)
+		if !ok {
+			return nil, field("box")
+		}
+		edge := func(key string) (float64, bool) {
+			value, ok := asFloat(rawBox[key])
+			return value, ok
+		}
+		top, okT := edge("top")
+		bottom, okB := edge("bottom")
+		left, okL := edge("left")
+		right, okR := edge("right")
+		if !okT || !okB || !okL || !okR {
+			return nil, field("box")
+		}
+		answer := BoxAnswer{Box: BoxCoordinates{Top: top, Bottom: bottom, Left: left, Right: right}}
+		if rawConfidence, present := entry["confidence"]; present && rawConfidence != nil {
+			if confidence, ok := asFloat(rawConfidence); ok && confidence >= 0 && confidence <= 1 {
+				answer.Confidence = &confidence
+			} else {
+				return nil, field("confidence")
+			}
+		}
+		return answer, nil
 	case "noul":
 		value, ok := asFloat(entry["noul"])
 		if !ok || value < 0 || value > 1 {

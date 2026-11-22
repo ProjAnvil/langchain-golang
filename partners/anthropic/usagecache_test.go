@@ -69,16 +69,9 @@ func TestInvokeUsageCacheDetailsEphemeral(t *testing.T) {
 	if details == nil {
 		t.Fatalf("usage details missing: %+v", usage)
 	}
-	if details.CacheReadInputTokens != 100 {
-		t.Fatalf("cache read tokens: %+v", details)
-	}
-	// Go core's InputTokenDetails has no ephemeral_5m/1h fields, so the
-	// specific ephemeral total (30+10=40 — deliberately distinct from the
-	// generic 50 so the specific-supersedes-generic branch is pinned) folds
-	// into the flat cache-creation count instead of Python's zeroed generic
-	// count.
-	if details.CacheCreationInputTokens != 40 {
-		t.Fatalf("cache creation tokens: %+v", details)
+	if details.CacheRead != 100 || details.CacheCreation != 0 ||
+		details.Ephemeral5mInputTokens != 30 || details.Ephemeral1hInputTokens != 10 {
+		t.Fatalf("TTL details: %+v", details)
 	}
 }
 
@@ -106,7 +99,8 @@ func TestInvokeUsageCacheDetailsGenericOnly(t *testing.T) {
 	if details == nil {
 		t.Fatalf("usage details missing: %+v", usage)
 	}
-	if details.CacheReadInputTokens != 100 || details.CacheCreationInputTokens != 40 {
+	if details.CacheRead != 100 || details.CacheCreation != 40 ||
+		details.Ephemeral5mInputTokens != 0 || details.Ephemeral1hInputTokens != 0 {
 		t.Fatalf("usage details: %+v", details)
 	}
 }
@@ -127,8 +121,10 @@ func TestInvokeUsageNoCacheFieldsUnchanged(t *testing.T) {
 	if usage.InputTokens != 2 || usage.OutputTokens != 3 || usage.TotalTokens != 5 {
 		t.Fatalf("usage: %+v", usage)
 	}
-	if usage.InputTokenDetails != nil {
-		t.Fatalf("usage details should stay nil without cache fields: %+v", usage.InputTokenDetails)
+	// input_token_details is always present on the metadata (upstream
+	// passes it unconditionally); with no cache fields it serializes as {}.
+	if usage.InputTokenDetails == nil {
+		t.Fatalf("usage details must always be present: %+v", usage)
 	}
 }
 
@@ -158,7 +154,8 @@ func TestStreamUsageCacheDetailsFromMessageStart(t *testing.T) {
 	if details == nil {
 		t.Fatalf("output usage details missing: %+v", usage)
 	}
-	if details.CacheReadInputTokens != 100 || details.CacheCreationInputTokens != 50 {
+	if details.CacheRead != 100 || details.CacheCreation != 0 ||
+		details.Ephemeral5mInputTokens != 30 || details.Ephemeral1hInputTokens != 20 {
 		t.Fatalf("output usage details: %+v", details)
 	}
 }
@@ -189,7 +186,8 @@ func TestStreamUsageCacheDetailsFromMessageDelta(t *testing.T) {
 	if details == nil {
 		t.Fatalf("output usage details missing: %+v", usage)
 	}
-	if details.CacheReadInputTokens != 100 || details.CacheCreationInputTokens != 50 {
+	if details.CacheRead != 100 || details.CacheCreation != 0 ||
+		details.Ephemeral5mInputTokens != 30 || details.Ephemeral1hInputTokens != 20 {
 		t.Fatalf("output usage details: %+v", details)
 	}
 }

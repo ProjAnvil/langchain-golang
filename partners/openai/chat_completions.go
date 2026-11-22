@@ -143,7 +143,10 @@ func (u chatUsage) toUsagePayload() usagePayload {
 	switch d := inputDetails.(type) {
 	case *chatPromptDetails:
 		if d != nil {
-			out.InputTokensDetails = &inputTokensDetails{CachedTokens: d.CachedTokens}
+			out.InputTokensDetails = &inputTokensDetails{
+				CachedTokens: d.CachedTokens,
+				AudioTokens:  d.AudioTokens,
+			}
 		}
 	case *inputTokensDetails:
 		if d != nil {
@@ -153,7 +156,10 @@ func (u chatUsage) toUsagePayload() usagePayload {
 	switch d := outputDetails.(type) {
 	case *chatCompletionDetails:
 		if d != nil {
-			out.OutputTokensDetails = &outputTokensDetails{ReasoningTokens: d.ReasoningTokens}
+			out.OutputTokensDetails = &outputTokensDetails{
+				ReasoningTokens: d.ReasoningTokens,
+				AudioTokens:     d.AudioTokens,
+			}
 		}
 	case *outputTokensDetails:
 		if d != nil {
@@ -170,7 +176,8 @@ func (u chatUsage) isZero() bool {
 }
 
 type chatCompletionsChoice struct {
-	Message chatCompletionsMessage `json:"message"`
+	Message      chatCompletionsMessage `json:"message"`
+	FinishReason string                 `json:"finish_reason,omitempty"`
 }
 
 type chatCompletionsMessage struct {
@@ -328,6 +335,9 @@ func (r chatCompletionsResponse) toResponsesPayload() responsePayload {
 	if len(r.Choices) == 0 {
 		return out
 	}
+	// The raw finish_reason rides through normalization for toMessage's
+	// shared finish fields (#41926).
+	out.FinishReason = r.Choices[0].FinishReason
 	msg := r.Choices[0].Message
 	if msg.Content != "" {
 		out.Output = append(out.Output, outputItem{

@@ -191,6 +191,16 @@ func DecodeHITLResponse(v any) ([]Decision, error) {
 			raw, ok = resp["Decisions"]
 		}
 		if !ok {
+			// A bare decision map ({"type": ...}) is the per-call resume
+			// answer shape: one interrupt, one answer (Python per-call
+			// resume passes the decision dict directly).
+			if _, hasType := resp["type"]; hasType {
+				decision, err := decodeDecision(resp)
+				if err != nil {
+					return nil, err
+				}
+				return []Decision{decision}, nil
+			}
 			return nil, fmt.Errorf("cannot decode HITL response from map without a \"decisions\" key")
 		}
 		return decodeDecisionList(raw)
@@ -633,6 +643,14 @@ func clearStaleEditedToolCalls(state map[string]any) map[string]any {
 	return nil
 }
 
+// tagHITLSource marks a synthetic HITL tool message with the decision that
+// produced it (Python #41928: lc_source="hitl_interrupt_decision",
+// lc_data={"decision": ...}). The keys mark harness-written content for
+// downstream consumers; chat-model integrations do not send them to the model.
+func tagHITLSource(msg messages.Message, decision DecisionType) messages.Message {
+	return messages.AddNotificationMetadata(msg, "hitl_interrupt_decision", map[string]any{"decision": string(decision)})
+}
+
 func processHumanDecision(decision Decision, call messages.ToolCall, config InterruptConfig) (*messages.ToolCall, *messages.Message, error) {
 	if !slices.Contains(config.AllowedDecisions, decision.Type) {
 		return nil, nil, fmt.Errorf("unexpected human decision: %s is not allowed for tool %q", decision.Type, call.Name)
@@ -654,11 +672,13 @@ func processHumanDecision(decision Decision, call messages.ToolCall, config Inte
 			content = fmt.Sprintf("User rejected the tool call for `%s` with id %s. The tool was not executed. Do not retry this tool call unless the user explicitly requests it.", call.Name, call.ID)
 		}
 		msg := errorToolMessage(call.ID, call.Name, content)
+		msg = tagHITLSource(msg, decision.Type)
 		return &call, &msg, nil
 	case DecisionRespond:
 		msg := messages.Tool(call.ID, decision.Message)
 		msg.Name = call.Name
 		msg.ResponseMetadata = map[string]any{"status": "success"}
+		msg = tagHITLSource(msg, decision.Type)
 		return &call, &msg, nil
 	default:
 		return nil, nil, fmt.Errorf("unexpected human decision: %s", decision.Type)

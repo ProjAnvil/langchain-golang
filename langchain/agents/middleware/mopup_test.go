@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func TestDetectURLSkipsBareDomainWithoutPath(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareDefaultKeepBelowRetention(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		t.Fatal("summarizer should not be called")
 		return "", nil
 	})

@@ -10,7 +10,7 @@ import (
 )
 
 func TestLLMToolEmulatorEmulatesSelectedTool(t *testing.T) {
-	emulator := NewLLMToolEmulator([]string{"search"}, WithToolEmulatorFunc(func(request ToolCallRequest, prompt string) (string, error) {
+	emulator := NewLLMToolEmulator([]string{"search"}, WithToolEmulatorFunc(func(_ context.Context, request ToolCallRequest, prompt string) (string, error) {
 		if !strings.Contains(prompt, "Tool: search") || !strings.Contains(prompt, "Arguments: map[q:test]") {
 			t.Fatalf("prompt mismatch: %q", prompt)
 		}
@@ -90,7 +90,7 @@ func TestLLMToolEmulatorStructuredBeatsCallback(t *testing.T) {
 	emulator := NewLLMToolEmulator(
 		[]string{"search"},
 		WithToolEmulatorModel(fake),
-		WithToolEmulatorFunc(func(ToolCallRequest, string) (string, error) {
+		WithToolEmulatorFunc(func(context.Context, ToolCallRequest, string) (string, error) {
 			t.Fatalf("ToolEmulationFunc callback must not be invoked when structured path is available")
 			return "", nil
 		}),

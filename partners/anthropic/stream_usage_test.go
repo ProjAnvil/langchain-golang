@@ -59,8 +59,8 @@ func TestStreamYieldsUsageChunk(t *testing.T) {
 		t.Fatalf("usage: input=%d output=%d", u.InputTokens, u.OutputTokens)
 	}
 	if u.InputTokenDetails == nil ||
-		u.InputTokenDetails.CacheReadInputTokens != 100 ||
-		u.InputTokenDetails.CacheCreationInputTokens != 50 {
+		u.InputTokenDetails.CacheRead != 100 ||
+		u.InputTokenDetails.CacheCreation != 50 {
 		t.Fatalf("input token details: %+v", u.InputTokenDetails)
 	}
 	if usageChunks[0].Content != "" {

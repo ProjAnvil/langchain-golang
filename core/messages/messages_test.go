@@ -86,8 +86,8 @@ func TestUsageMetadataTokenDetailsJSON(t *testing.T) {
 		InputTokens:        350,
 		OutputTokens:       240,
 		TotalTokens:        590,
-		InputTokenDetails:  &InputTokenDetails{CacheReadInputTokens: 100, CacheCreationInputTokens: 200},
-		OutputTokenDetails: &OutputTokenDetails{ReasoningOutputTokens: 30},
+		InputTokenDetails:  &InputTokenDetails{CacheRead: 100, CacheCreation: 200},
+		OutputTokenDetails: &OutputTokenDetails{Reasoning: 30},
 	}
 
 	data, err := json.Marshal(usage)
@@ -104,19 +104,19 @@ func TestUsageMetadataTokenDetailsJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing input_token_details: %#v", raw)
 	}
-	if inputDetails["cache_read_input_tokens"] != float64(100) {
-		t.Fatalf("cache_read_input_tokens mismatch: %#v", inputDetails)
+	if inputDetails["cache_read"] != float64(100) {
+		t.Fatalf("cache_read mismatch: %#v", inputDetails)
 	}
-	if inputDetails["cache_creation_input_tokens"] != float64(200) {
-		t.Fatalf("cache_creation_input_tokens mismatch: %#v", inputDetails)
+	if inputDetails["cache_creation"] != float64(200) {
+		t.Fatalf("cache_creation mismatch: %#v", inputDetails)
 	}
 
 	outputDetails, ok := raw["output_token_details"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing output_token_details: %#v", raw)
 	}
-	if outputDetails["reasoning_output_tokens"] != float64(30) {
-		t.Fatalf("reasoning_output_tokens mismatch: %#v", outputDetails)
+	if outputDetails["reasoning"] != float64(30) {
+		t.Fatalf("reasoning mismatch: %#v", outputDetails)
 	}
 }
 

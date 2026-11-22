@@ -1265,3 +1265,116 @@ type staticErrorLimiter struct {
 func (l staticErrorLimiter) Acquire(context.Context, bool) (bool, error) {
 	return false, l.err
 }
+
+// TestStreamEventsBridgeCarriesFinishFields pins the #41926 chunk-bridge
+// contract: a chunk-only stream's terminal chunk carries the provider's
+// finish fields on response_metadata, and the message-finish output surfaces
+// them with core's corrections applied (here: a stop with a streamed tool
+// call becomes tool_call).
+func TestStreamEventsBridgeCarriesFinishFields(t *testing.T) {
+	terminal := messages.AI("")
+	terminal.ToolCalls = []messages.ToolCall{{ID: "call_1", Name: "search"}}
+	terminal.ResponseMetadata = map[string]any{
+		"finish_reason":            "stop",
+		"normalized_finish_reason": "stop",
+	}
+	model := NewFakeChatModel(WithStreamChunks(
+		messages.AI("working"),
+		terminal,
+	))
+
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	output, err := stream.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if output.ResponseMetadata["finish_reason"] != "stop" ||
+		output.ResponseMetadata["normalized_finish_reason"] != "tool_call" {
+		t.Fatalf("finish fields on output: %#v", output.ResponseMetadata)
+	}
+	// The chunks set no finish_state, so none may appear (upstream
+	// test_chunks_to_events_tool_call_override).
+	if _, has := output.ResponseMetadata["finish_state"]; has {
+		t.Fatalf("finish_state must stay absent: %#v", output.ResponseMetadata)
+	}
+	if len(output.ToolCalls) != 1 || output.ToolCalls[0].Name != "search" {
+		t.Fatalf("tool calls: %#v", output.ToolCalls)
+	}
+}
+
+// TestStreamEventsBridgeFinishFieldVariants ports the upstream
+// chunks_to_events finish-reason tests (#41926): provider fields pass
+// through untouched when no correction applies, absent fields stay absent,
+// and a refusal block overrides a normalized stop.
+func TestStreamEventsBridgeFinishFieldVariants(t *testing.T) {
+	suspended := messages.AI("")
+	suspended.ResponseMetadata = map[string]any{
+		"stop_reason":              "pause_turn",
+		"finish_reason":            "pause_turn",
+		"normalized_finish_reason": "other",
+		"finish_state":             "suspended",
+	}
+	stream, err := StreamEvents(t.Context(), NewFakeChatModel(
+		WithStreamChunks(messages.AI("hi"), suspended),
+	), []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	output, err := stream.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if output.ResponseMetadata["finish_reason"] != "pause_turn" ||
+		output.ResponseMetadata["normalized_finish_reason"] != "other" ||
+		output.ResponseMetadata["finish_state"] != "suspended" {
+		t.Fatalf("passthrough finish fields: %#v", output.ResponseMetadata)
+	}
+	// stop_reason stays alongside the shared fields.
+	if output.ResponseMetadata["stop_reason"] != "pause_turn" {
+		t.Fatalf("stop_reason must be kept: %#v", output.ResponseMetadata)
+	}
+
+	// Without provider fields the output carries none of the three keys.
+	plain := messages.AI("hi")
+	plain.ResponseMetadata = map[string]any{"stop_reason": "end_turn"}
+	stream2, err := StreamEvents(t.Context(), NewFakeChatModel(
+		WithStreamChunks(plain),
+	), []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	output2, err := stream2.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	for _, key := range []string{"finish_reason", "normalized_finish_reason", "finish_state"} {
+		if _, has := output2.ResponseMetadata[key]; has {
+			t.Errorf("absent provider field %q must stay absent: %#v", key, output2.ResponseMetadata)
+		}
+	}
+
+	// A refusal block in the chunks overrides a normalized stop, and a
+	// tool-call override adds no finish_state.
+	refusalStop := messages.AI("")
+	refusalStop.ContentBlocks = []messages.ContentBlock{messages.RefusalBlock{Refusal: "I can't help."}}
+	refusalStop.ResponseMetadata = map[string]any{
+		"finish_reason":            "stop",
+		"normalized_finish_reason": "stop",
+	}
+	stream3, err := StreamEvents(t.Context(), NewFakeChatModel(
+		WithStreamChunks(refusalStop),
+	), []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	output3, err := stream3.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if output3.ResponseMetadata["normalized_finish_reason"] != "refusal" {
+		t.Fatalf("refusal override: %#v", output3.ResponseMetadata)
+	}
+}

@@ -25,7 +25,12 @@ type ToolSelectionRequest struct {
 	ValidToolNames  []string
 }
 
-type ToolSelectionFunc func(ToolSelectionRequest) ([]string, error)
+// ToolSelectionFunc picks the tools for the next turn. The context arrives
+// marked as a middleware-internal call whose lc_source is "tool_selection",
+// so a selection that forwards it to its model keeps those tokens out of the
+// messages projection (#41579); the lc_source metadata marks the run
+// ("tool_selection", matching upstream).
+type ToolSelectionFunc func(context.Context, ToolSelectionRequest) ([]string, error)
 
 // LLMToolSelectorMiddleware asks an LLM to narrow the tool list before each
 // model call. Selection resolution precedence:
@@ -107,7 +112,7 @@ func (m *LLMToolSelectorMiddleware) WrapModelCall(ctx context.Context, request M
 			return ModelResponse{}, err
 		}
 	} else if m.Select != nil {
-		selectedNames, err = m.Select(*selectionRequest)
+		selectedNames, err = m.Select(callbacks.WithInternalCallSource(ctx, "tool_selection"), *selectionRequest)
 		if err != nil {
 			return ModelResponse{}, err
 		}

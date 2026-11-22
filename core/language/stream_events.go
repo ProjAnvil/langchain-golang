@@ -2,6 +2,7 @@ package language
 
 import (
 	"context"
+	"maps"
 	"strconv"
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
@@ -87,6 +88,11 @@ type chunkProtocolBridge struct {
 	wireIndices map[string]int
 	takenWires  map[int]bool
 	nextWire    int
+	// finishMetadata accumulates chunk response_metadata for the
+	// message-finish output (#41926): chunk-only streams surface the
+	// provider's finish fields through the bridge, with core's corrections
+	// applied when ChatModelStream.finish assembles the message.
+	finishMetadata map[string]any
 }
 
 func newChunkProtocolBridge(
@@ -105,6 +111,12 @@ func newChunkProtocolBridge(
 func (b *chunkProtocolBridge) Push(chunk messages.Message) {
 	if b.collector.seen {
 		return
+	}
+	if len(chunk.ResponseMetadata) > 0 {
+		if b.finishMetadata == nil {
+			b.finishMetadata = make(map[string]any, len(chunk.ResponseMetadata))
+		}
+		maps.Copy(b.finishMetadata, chunk.ResponseMetadata)
 	}
 	b.ensureStarted()
 	if chunk.Content != "" {
@@ -165,9 +177,11 @@ func (b *chunkProtocolBridge) Finish() {
 			},
 		})
 	}
+	output := messages.AI(b.text)
+	output.ResponseMetadata = b.finishMetadata
 	b.stream.Dispatch(streamevents.Event{
 		Event:  streamevents.EventMessageFinish,
-		Output: messages.AI(b.text),
+		Output: output,
 	})
 }
 

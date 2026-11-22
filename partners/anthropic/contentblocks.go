@@ -75,6 +75,24 @@ func formatContentBlock(block messages.ContentBlock) (contentBlock, error) {
 	case "refusal":
 		// The Messages API has no refusal input block (#41582, _compat.py:125-127).
 		return contentBlock{}, errSkipBlock
+	case "reasoning":
+		// A reasoning block round-trips as a thinking block
+		// (chat_models.py:882-890 keeps type/thinking/signature/
+		// cache_control, defaulting the text to "" when only a
+		// signature came back).
+		thinking, _ := m["reasoning"].(string)
+		signature, _ := m["signature"].(string)
+		// An explicit empty thinking travels as "" when a signature came
+		// back alone (chat_models.py:882-890's setdefault("thinking", "")).
+		out := contentBlock{
+			Type:         "thinking",
+			Signature:    signature,
+			CacheControl: cacheControl,
+		}
+		if thinking != "" || signature != "" {
+			out.Thinking = &thinking
+		}
+		return out, nil
 	default:
 		return passthroughBlock(m), nil
 	}
@@ -293,7 +311,7 @@ func setContentBlockField(out *contentBlock, key string, value any) {
 		}
 	case "thinking":
 		if isString {
-			out.Thinking = s
+			out.Thinking = &s
 		}
 	case "signature":
 		if isString {

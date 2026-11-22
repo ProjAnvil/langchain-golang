@@ -21,3 +21,18 @@ func TestInternalCallMarker(t *testing.T) {
 		t.Fatal("child context must inherit the marker")
 	}
 }
+
+// TestInternalCallSourceRoundTrip pins the lc_source context channel
+// (upstream tags internal runs' metadata with lc_source, #41579).
+func TestInternalCallSourceRoundTrip(t *testing.T) {
+	if source := InternalCallSource(t.Context()); source != "" {
+		t.Fatalf("plain context source: %q", source)
+	}
+	ctx := WithInternalCallSource(t.Context(), "summarization")
+	if !IsInternalCall(ctx) {
+		t.Fatal("WithInternalCallSource must also mark the call internal")
+	}
+	if source := InternalCallSource(ctx); source != "summarization" {
+		t.Fatalf("source: %q", source)
+	}
+}

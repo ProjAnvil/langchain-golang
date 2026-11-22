@@ -20,6 +20,24 @@ func WithInternalCall(ctx context.Context) context.Context {
 	return context.WithValue(ctx, internalCallKey{}, true)
 }
 
+// internalCallSourceKey carries the lc_source value of an internal call
+// (Python tags the internal run's metadata with lc_source, e.g.
+// "summarization"; #41579).
+type internalCallSourceKey struct{}
+
+// WithInternalCallSource marks ctx with the feature name behind an internal
+// model call (the lc_source metadata upstream attaches to the tagged run).
+func WithInternalCallSource(ctx context.Context, source string) context.Context {
+	return context.WithValue(WithInternalCall(ctx), internalCallSourceKey{}, source)
+}
+
+// InternalCallSource returns the lc_source of the internal call ctx carries,
+// or "" when unset.
+func InternalCallSource(ctx context.Context) string {
+	source, _ := ctx.Value(internalCallSourceKey{}).(string)
+	return source
+}
+
 // IsInternalCall reports whether ctx carries the middleware-internal model
 // call marker (see WithInternalCall).
 func IsInternalCall(ctx context.Context) bool {

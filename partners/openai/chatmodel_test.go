@@ -936,8 +936,13 @@ func TestChatModelStreamErrorEvent(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected stream error")
 	}
-	if err.Error() != "openai stream error: boom" {
-		t.Fatalf("error: got %q", err.Error())
+	// A server_error code is the retryable in-band classification (#41952).
+	streamServerErr, ok := err.(*StreamServerError)
+	if !ok || !streamServerErr.IsModelRetryable() {
+		t.Fatalf("error: got %#v", err)
+	}
+	if streamServerErr.Message != "boom" {
+		t.Fatalf("message: got %q", streamServerErr.Message)
 	}
 	events := recorder.Events()
 	if len(events) != 2 {

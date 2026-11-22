@@ -294,6 +294,19 @@ func (s *ChatModelStream) finish(output messages.Message) {
 	message.ContentBlocks = s.orderedBlocks()
 	message.ToolCalls = cloneToolCalls(s.toolCalls)
 	message.InvalidToolCalls = cloneToolCalls(s.invalidToolCalls)
+	// The message-finish output carries the finish fields the provider set,
+	// with the provider-agnostic corrections applied (#41926): a refusal
+	// wins over any normalized reason, and a normalized stop with tool
+	// calls becomes tool_call.
+	hasToolCalls := len(message.ToolCalls) > 0 || len(message.InvalidToolCalls) > 0
+	if corrected := FinishReasonFields(message.ResponseMetadata, hasToolCalls, hasRefusalBlock(message)); len(corrected) > 0 {
+		if message.ResponseMetadata == nil {
+			message.ResponseMetadata = map[string]any{}
+		}
+		for key, value := range corrected {
+			message.ResponseMetadata[key] = value
+		}
+	}
 	s.output = message
 	s.done = true
 }

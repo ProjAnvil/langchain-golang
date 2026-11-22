@@ -148,10 +148,15 @@ type RefusalAnswer struct {
 func (RefusalAnswer) answerMarker() {}
 
 // Usage reports token usage for a Decisions request; nil fields mean the
-// API did not report that count (Python Usage, types.py:271).
+// API did not report that count (Python Usage, types.py:271). The details
+// objects carry the cached/cache-write/reasoning breakdowns the classifier
+// maps onto the core metadata (classifier.py:355-371).
 type Usage struct {
-	InputTokens  *int
-	OutputTokens *int
+	InputTokens         *int
+	OutputTokens        *int
+	TotalTokens         *int
+	InputTokensDetails  *rawInputTokenDetails
+	OutputTokensDetails *rawOutputTokenDetails
 }
 
 // Response is the typed answer set returned from one Decisions request

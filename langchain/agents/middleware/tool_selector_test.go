@@ -39,7 +39,7 @@ func selectorRequest(t *testing.T, model any, tools ...any) ModelRequest {
 func TestToolSelectorSystemPromptOption(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware(
 		WithToolSelectorSystemPrompt("custom prompt"),
-		WithToolSelectorFunc(func(request ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(_ context.Context, request ToolSelectionRequest) ([]string, error) {
 			if request.SystemMessage != "custom prompt" {
 				t.Fatalf("system prompt mismatch: %q", request.SystemMessage)
 			}
@@ -57,7 +57,7 @@ func TestToolSelectorSystemPromptOption(t *testing.T) {
 
 func TestToolSelectorCallbackErrorPropagates(t *testing.T) {
 	wantErr := errors.New("selection failed")
-	selector := NewLLMToolSelectorMiddleware(WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+	selector := NewLLMToolSelectorMiddleware(WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 		return nil, wantErr
 	}))
 	request := selectorRequest(t, "model", mustTool(t, "search"))
@@ -123,7 +123,7 @@ func TestToolSelectorAllToolsAlwaysIncludedPassesThrough(t *testing.T) {
 	// request passes through without invoking any selection mechanism.
 	selector := NewLLMToolSelectorMiddleware(
 		WithToolSelectorAlwaysInclude("search"),
-		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 			t.Fatal("selection should not run when nothing is selectable")
 			return nil, nil
 		}),
@@ -143,7 +143,7 @@ func TestToolSelectorAllToolsAlwaysIncludedPassesThrough(t *testing.T) {
 }
 
 func TestToolSelectorDeduplicatesSelection(t *testing.T) {
-	selector := NewLLMToolSelectorMiddleware(WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+	selector := NewLLMToolSelectorMiddleware(WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 		return []string{"search", "search"}, nil
 	}))
 	request := selectorRequest(t, "model", mustTool(t, "search"), mustTool(t, "calc"))
@@ -161,7 +161,7 @@ func TestToolSelectorDeduplicatesSelection(t *testing.T) {
 func TestToolSelectorMaxToolsTruncates(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware(
 		WithToolSelectorMaxTools(1),
-		WithToolSelectorFunc(func(request ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(_ context.Context, request ToolSelectionRequest) ([]string, error) {
 			if !strings.Contains(request.SystemMessage, "only the first 1 will be used") {
 				t.Fatalf("max tools hint missing from system prompt: %q", request.SystemMessage)
 			}
@@ -183,7 +183,7 @@ func TestToolSelectorMaxToolsTruncates(t *testing.T) {
 func TestToolSelectorAlwaysIncludeMissingTool(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware(
 		WithToolSelectorAlwaysInclude("ghost"),
-		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) { return nil, nil }),
+		WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) { return nil, nil }),
 	)
 	request := selectorRequest(t, "model", mustTool(t, "search"))
 	_, err := selector.WrapModelCall(t.Context(), request, func(context.Context, ModelRequest) (ModelResponse, error) {
@@ -195,7 +195,7 @@ func TestToolSelectorAlwaysIncludeMissingTool(t *testing.T) {
 }
 
 func TestToolSelectorNoUserMessage(t *testing.T) {
-	selector := NewLLMToolSelectorMiddleware(WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+	selector := NewLLMToolSelectorMiddleware(WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 		return []string{"search"}, nil
 	}))
 	request, err := NewModelRequest(ModelRequest{
