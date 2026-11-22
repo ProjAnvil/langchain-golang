@@ -78,3 +78,22 @@ func TestToolNodeWrapInterruptPausesAndResumes(t *testing.T) {
 		t.Fatalf("resumed run must complete, interrupts=%d", len(final.Interrupts))
 	}
 }
+
+// TestInterruptEscapeErrorMessage covers the escape error's text.
+func TestInterruptEscapeErrorMessage(t *testing.T) {
+	escape := &interruptEscape{}
+	if escape.Error() == "" {
+		t.Fatal("escape error message must not be empty")
+	}
+}
+
+// TestUnhandledToolErrorMessages covers both Error() spellings.
+func TestUnhandledToolErrorMessages(t *testing.T) {
+	if (&UnhandledToolError{}).Error() != "tools: unhandled tool error" {
+		t.Fatal("bare message mismatch")
+	}
+	wrapped := &UnhandledToolError{Err: context.Canceled}
+	if wrapped.Error() != "tools: unhandled tool error: context canceled" {
+		t.Fatalf("wrapped message: %q", wrapped.Error())
+	}
+}

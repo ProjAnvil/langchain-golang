@@ -266,3 +266,60 @@ func (w *sliceWriter) Write(p []byte) (int, error) {
 	*w.lines = append(*w.lines, string(p))
 	return len(p), nil
 }
+
+// TestGenericModelRouterWrapCallErrorBranches covers the remaining
+// WrapModelCall failure paths: a non-map routing answer, a route label with
+// no bound model, and a state without the routing key's message list shape.
+func TestGenericModelRouterWrapCallErrorBranches(t *testing.T) {
+	router, err := NewModelRouterMiddleware(&fakeDecisionModel{}, map[string]ModelChoice{
+		"fast": {Model: fakeModel{label: "fast"}},
+	}, "route")
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	handler := func(_ context.Context, _ ModelRequest) (ModelResponse, error) {
+		t.Fatal("handler must not run on a broken routing answer")
+		return ModelResponse{}, nil
+	}
+	// Missing routing key.
+	if _, err := router.WrapModelCall(t.Context(), ModelRequest{State: map[string]any{}}, handler); err == nil {
+		t.Fatal("missing routing answer must fail")
+	}
+	// Routing answer without a choice label.
+	if _, err := router.WrapModelCall(t.Context(), ModelRequest{State: map[string]any{
+		routeStateKey: map[string]any{"probabilities": map[string]float64{"fast": 1}},
+	}}, handler); err == nil {
+		t.Fatal("answer without choice must fail")
+	}
+	// A choice label the router has no model for.
+	if _, err := router.WrapModelCall(t.Context(), ModelRequest{State: map[string]any{
+		routeStateKey: map[string]any{"choice": "powerful"},
+	}}, handler); err == nil {
+		t.Fatal("unknown route label must fail")
+	}
+}
+
+// TestGenericModelRouterBeforeAgentNoMessagesKey covers the state-shape
+// branch of latestHumanMessage: a state without a messages entry rejects
+// before any classification.
+func TestGenericModelRouterBeforeAgentNoMessagesKey(t *testing.T) {
+	router, err := NewModelRouterMiddleware(&fakeDecisionModel{}, map[string]ModelChoice{
+		"fast": {Model: fakeModel{label: "fast"}},
+	}, "route")
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if _, err := router.BeforeAgent(t.Context(), map[string]any{}); err == nil {
+		t.Fatal("state without messages must fail")
+	}
+}
+
+// TestGenericModelRouterUnresolvableModelSpec covers the construction
+// failure when a string model spec cannot resolve.
+func TestGenericModelRouterUnresolvableModelSpec(t *testing.T) {
+	if _, err := NewModelRouterMiddleware(&fakeDecisionModel{}, map[string]ModelChoice{
+		"fast": {Model: "no-such-provider:model-x"},
+	}, "route"); err == nil {
+		t.Fatal("unresolvable model spec must fail at construction")
+	}
+}

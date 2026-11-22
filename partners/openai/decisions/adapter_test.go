@@ -119,3 +119,105 @@ func TestOpenAIAdapterEmitsDecisionRunEvents(t *testing.T) {
 		t.Fatalf("run events: start=%v end=%v", start, end)
 	}
 }
+
+// TestOpenAIAdapterErrorPaths covers the adapter's failure branches: an
+// invalid request fails before any event, an unsupported question (Box)
+// fails per-question, and a client failure surfaces an error event before
+// the error return.
+func TestOpenAIAdapterErrorPaths(t *testing.T) {
+	adapter := (&Client{Model: "gpt-6-luna", APIKey: "k", BaseURL: "http://unused"}).AsDecisionModel()
+
+	// Invalid request: no questions.
+	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{State: "s"}); err == nil {
+		t.Fatal("invalid request must fail")
+	}
+
+	// Unsupported question type: Box has no Decisions counterpart.
+	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{
+		State:     "s",
+		Questions: map[string]coredecisions.Question{"q": coredecisions.Box{Instructions: "find"}},
+	}); err == nil {
+		t.Fatal("box question must fail")
+	}
+
+	// Client failure: an error event is emitted, then the error returns.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error": {"message": "boom", "code": "server_error"}}`))
+	}))
+	defer server.Close()
+	failing := (&Client{Model: "gpt-6-luna", APIKey: "k", BaseURL: server.URL}).AsDecisionModel()
+	recorder := callbacks.NewRecorder()
+	_, err := failing.Invoke(t.Context(), coredecisions.Request{
+		State:     "s",
+		Questions: map[string]coredecisions.Question{"q": coredecisions.Noul{Instructions: "r?"}},
+	}, runnables.WithCallbacks(callbacks.NewManager(recorder)))
+	if err == nil {
+		t.Fatal("client failure must propagate")
+	}
+	sawStart, sawError := false, false
+	for _, event := range recorder.Events() {
+		switch event.Kind {
+		case callbacks.EventChatModelStart:
+			sawStart = true
+		case callbacks.EventChatModelError:
+			sawError = true
+		}
+	}
+	if !sawStart || !sawError {
+		t.Fatalf("run events on failure: start=%v error=%v", sawStart, sawError)
+	}
+}
+
+// TestOpenAIAdapterScoreMapError covers the non-string score level failure
+// through the adapter.
+func TestOpenAIAdapterScoreMapError(t *testing.T) {
+	adapter := (&Client{Model: "m", APIKey: "k", BaseURL: "http://unused"}).AsDecisionModel()
+	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{
+		State: "s",
+		Questions: map[string]coredecisions.Question{"q": coredecisions.Score{
+			Instructions: "r", Criteria: []coredecisions.Content{123, "high"},
+		}},
+	}); err == nil {
+		t.Fatal("non-string score level must fail")
+	}
+}
+
+// TestOpenAIAdapterScoreAnswerMapping covers the ScoreAnswer branch of
+// responseToCore (level-keyed legend and distribution) through a full
+// client round trip.
+func TestOpenAIAdapterScoreAnswerMapping(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"model": "gpt-6-luna",
+			"answers": [{
+				"name": "q",
+				"type": "score",
+				"score": 1.2,
+				"levels": ["low", "high"],
+				"probabilities": [
+					{"value": 0, "label": "low", "probability": 0.3},
+					{"value": 1, "label": "high", "probability": 0.7}
+				],
+				"confidence": 0.6
+			}]
+		}`))
+	}))
+	defer server.Close()
+	adapter := (&Client{Model: "gpt-6-luna", APIKey: "k", BaseURL: server.URL}).AsDecisionModel()
+	response, err := adapter.Invoke(t.Context(), coredecisions.Request{
+		State:     "s",
+		Questions: map[string]coredecisions.Question{"q": coredecisions.Score{Instructions: "r", Criteria: []coredecisions.Content{"low", "high"}}},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	score, ok := response.Answers["q"].(coredecisions.ScoreAnswer)
+	if !ok {
+		t.Fatalf("answer type: %#v", response.Answers["q"])
+	}
+	if score.Score != 1.2 || score.Legend[0] != "low" || score.Legend[1] != "high" ||
+		score.Probabilities[1] != 0.7 || score.Confidence != 0.6 {
+		t.Fatalf("score mapping: %#v", score)
+	}
+}

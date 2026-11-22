@@ -159,12 +159,10 @@ func (a NoulAnswer) MarshalJSON() ([]byte, error) {
 	return json.Marshal(answerWire{Type: "noul", Noul: &a.Noul})
 }
 
-// MarshalJSON writes one answer in its wire envelope.
+// MarshalJSON writes one answer in its wire envelope. The basic-type
+// probability map cannot fail to marshal.
 func (a ChoiceAnswer) MarshalJSON() ([]byte, error) {
-	probabilities, err := json.Marshal(a.Probabilities)
-	if err != nil {
-		return nil, fmt.Errorf("decisions: marshal choice probabilities: %w", err)
-	}
+	probabilities, _ := json.Marshal(a.Probabilities)
 	return json.Marshal(answerWire{
 		Type:          "choice",
 		Choice:        &a.Choice,
@@ -174,16 +172,14 @@ func (a ChoiceAnswer) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalJSON writes one answer in its wire envelope; integer map keys
-// serialize as JSON string keys.
+// serialize as JSON string keys. Only the legend can fail (arbitrary
+// content values); the probability map cannot.
 func (a ScoreAnswer) MarshalJSON() ([]byte, error) {
 	legend, err := marshalIntKeyMap(a.Legend)
 	if err != nil {
 		return nil, fmt.Errorf("decisions: marshal score legend: %w", err)
 	}
-	probabilities, err := marshalIntKeyMap(a.Probabilities)
-	if err != nil {
-		return nil, fmt.Errorf("decisions: marshal score probabilities: %w", err)
-	}
+	probabilities, _ := marshalIntKeyMap(a.Probabilities)
 	return json.Marshal(answerWire{
 		Type:          "score",
 		Score:         &a.Score,
@@ -201,7 +197,7 @@ func (a BoxAnswer) MarshalJSON() ([]byte, error) {
 
 // decodeStringFloatMap decodes {"label": p} wire objects.
 func decodeStringFloatMap(data []byte) (map[string]float64, error) {
-	if len(data) == 0 {
+	if len(data) == 0 || string(data) == "null" {
 		return nil, nil
 	}
 	var decoded map[string]float64
@@ -214,7 +210,7 @@ func decodeStringFloatMap(data []byte) (map[string]float64, error) {
 // decodeIntFloatMap decodes {"0": p} wire objects whose keys are integer
 // level numbers spelled as strings (JSON object keys are always strings).
 func decodeIntFloatMap(data []byte) (map[int]float64, error) {
-	if len(data) == 0 {
+	if len(data) == 0 || string(data) == "null" {
 		return nil, nil
 	}
 	var decoded map[string]float64
@@ -235,7 +231,7 @@ func decodeIntFloatMap(data []byte) (map[int]float64, error) {
 // decodeIntContentMap decodes {"0": <any json>} wire objects into
 // integer-keyed rubric legends.
 func decodeIntContentMap(data []byte) (map[int]Content, error) {
-	if len(data) == 0 {
+	if len(data) == 0 || string(data) == "null" {
 		return nil, nil
 	}
 	var decoded map[string]Content

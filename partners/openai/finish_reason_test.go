@@ -281,3 +281,12 @@ func TestChatCompletionsStreamRefusalFinishReason(t *testing.T) {
 		t.Fatalf("terminal chunk refusal block: %#v", terminal.ContentBlocks)
 	}
 }
+
+// TestResponsesUnknownStatusCoversDefault covers the unknown-status branch:
+// anything but completed/incomplete/failed normalizes to "other".
+func TestResponsesUnknownStatusCoversDefault(t *testing.T) {
+	fields := responsesFinishReasonFields("queued", nil, false, false)
+	if fields["normalized_finish_reason"] != "other" || fields["finish_reason"] != "queued" {
+		t.Fatalf("unknown status: %#v", fields)
+	}
+}

@@ -332,3 +332,35 @@ func TestCriteriaAcceptAnyJsonValue(t *testing.T) {
 		t.Fatalf("wire form: %s", encoded)
 	}
 }
+
+// TestDecodeMalformedMaps covers the map-decode failure branches: a
+// probabilities or legend that is not a JSON object must error.
+func TestDecodeMalformedMaps(t *testing.T) {
+	if _, err := UnmarshalAnswer([]byte(`{"type":"choice","choice":"x","probabilities":"nope"}`)); err == nil {
+		t.Fatal("malformed choice probabilities must fail")
+	}
+	if _, err := UnmarshalAnswer([]byte(`{"type":"score","score":1,"legend":"nope"}`)); err == nil {
+		t.Fatal("malformed score legend must fail")
+	}
+	if _, err := UnmarshalAnswer([]byte(`{"type":"score","score":1,"probabilities":"nope"}`)); err == nil {
+		t.Fatal("malformed score probabilities must fail")
+	}
+}
+
+// TestScoreAnswerNilMapsMarshal covers the nil-map marshal paths: a score
+// answer without legend or probabilities marshals with both keys omitted.
+func TestScoreAnswerNilMapsMarshal(t *testing.T) {
+	encoded, err := json.Marshal(ScoreAnswer{Score: 1.5})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Nil maps marshal as explicit nulls on the envelope (no omitempty);
+	// a round trip must decode them back to nil maps.
+	decoded, err := UnmarshalAnswer(encoded)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if typed := decoded.(ScoreAnswer); typed.Legend != nil || typed.Probabilities != nil {
+		t.Fatalf("nil maps must round trip to nil: %#v", typed)
+	}
+}

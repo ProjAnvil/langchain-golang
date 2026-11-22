@@ -204,3 +204,14 @@ func TestGenericAutoModeConfiguredQuestion(t *testing.T) {
 		t.Fatalf("criteria: %#v", question.Criteria)
 	}
 }
+
+// TestGenericAutoModeTracePolicy covers the trace policy accessor.
+func TestGenericAutoModeTracePolicy(t *testing.T) {
+	m, err := NewAutoModeMiddleware(noulClassifier(0.1), []any{"t"})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if m.TracePolicy().ProcessInputs == nil {
+		t.Fatal("process-inputs policy must be set")
+	}
+}
