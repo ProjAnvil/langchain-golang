@@ -429,10 +429,9 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		}
 		return messages.Message{}, false, nil
 	case "error", "response.failed":
-		err := fmt.Errorf("openai stream error: %s", event.Error.Message)
-		if event.Error.Message == "" {
-			err = fmt.Errorf("openai stream error")
-		}
+		// A transient server-error code is retryable like an HTTP 5xx
+		// (#41952); other in-band errors stay plain errors.
+		err := streamServerError(eventType, event.Error)
 		_ = s.emitError(ctx, err)
 		return messages.Message{}, false, err
 	default:
@@ -468,6 +467,7 @@ type streamEvent struct {
 type streamError struct {
 	Message string `json:"message"`
 	Code    string `json:"code"`
+	Type    string `json:"type"`
 }
 
 type streamToolCall struct {

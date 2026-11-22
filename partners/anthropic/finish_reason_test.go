@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/core/modelconfig"
 	"github.com/projanvil/langchain-golang/core/runnables"
-	"github.com/projanvil/langchain-golang/core/callbacks"
 )
 
 // TestFinishReasonFields pins the stop_reason → shared-finish-fields mapping
@@ -134,4 +134,41 @@ func streamEndMessage(t *testing.T, recorder *callbacks.Recorder) messages.Messa
 	}
 	t.Fatal("no EventChatModelEnd with message output recorded")
 	return messages.Message{}
+}
+
+// TestEmptyThinkingBlockStartEmitsChunk pins #41907: an empty thinking
+// content_block_start still yields a ReasoningBlock chunk — under display
+// "omitted" no thinking text streams, so this start is the first sign of
+// reasoning.
+func TestEmptyThinkingBlockStartEmitsChunk(t *testing.T) {
+	server := streamServer(
+		sse("message_start", streamUsageMessageStart),
+		sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
+		sse("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`),
+		sse("message_stop", `{"type":"message_stop"}`),
+	)
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var sawEmptyThinkingStart bool
+	for {
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		for _, block := range chunk.ContentBlocks {
+			if reasoning, isReasoning := block.(messages.ReasoningBlock); isReasoning && reasoning.Reasoning == "" {
+				sawEmptyThinkingStart = true
+			}
+		}
+	}
+	if !sawEmptyThinkingStart {
+		t.Fatal("empty thinking start must emit a ReasoningBlock chunk")
+	}
 }

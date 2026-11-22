@@ -119,6 +119,7 @@ func (q Choice) MarshalJSON() ([]byte, error) {
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
 }
+
 // Score evaluates state against an ordered rubric. Criteria are numbered
 // from zero in their supplied order; the returned score is an expected
 // value and may fall between integer levels. The full probability

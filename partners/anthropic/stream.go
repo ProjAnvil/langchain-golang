@@ -393,6 +393,21 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
+		// Emitted even when empty: under display "omitted" no thinking text
+		// streams, so this start is the first sign of reasoning (#41907).
+		startBlock := messages.ReasoningBlock{
+			Reasoning: event.ContentBlock.Thinking,
+			Index:     event.Index,
+		}
+		if event.ContentBlock.Signature != "" {
+			startBlock.Extras = map[string]any{"signature": event.ContentBlock.Signature}
+		}
+		chunk := messages.AI("")
+		chunk.ContentBlocks = []messages.ContentBlock{startBlock}
+		if err := emitStream(ctx, s.cfg, chunk); err != nil {
+			return messages.Message{}, false, err
+		}
+		return chunk, true, nil
 	case "redacted_thinking":
 		block := s.upsertThinkingBlock(event.Index)
 		block.redacted = true

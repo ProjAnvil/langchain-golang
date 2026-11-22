@@ -8,11 +8,11 @@ package anthropic
 // finishReasonValues maps Messages API stop_reason values onto the shared
 // normalized_finish_reason vocabulary (chat_models.py _FINISH_REASONS).
 var finishReasonValues = map[string]string{
-	"end_turn":                     "stop",
-	"stop_sequence":                "stop",
-	"max_tokens":                   "length",
-	"tool_use":                     "tool_call",
-	"refusal":                      "refusal",
+	"end_turn":                      "stop",
+	"stop_sequence":                 "stop",
+	"max_tokens":                    "length",
+	"tool_use":                      "tool_call",
+	"refusal":                       "refusal",
 	"model_context_window_exceeded": "context_exceeded",
 }
 
@@ -34,8 +34,8 @@ func finishReasonFields(stopReason string) map[string]any {
 		state = "suspended"
 	}
 	return map[string]any{
-		"finish_reason":           stopReason,
+		"finish_reason":            stopReason,
 		"normalized_finish_reason": normalized,
-		"finish_state":            state,
+		"finish_state":             state,
 	}
 }

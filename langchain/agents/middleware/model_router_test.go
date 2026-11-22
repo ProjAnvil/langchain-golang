@@ -26,7 +26,6 @@ func (f *fakeDecisionModel) Invoke(_ context.Context, request decisions.Request)
 	return f.response, f.err
 }
 
-
 func routerChoices() (fast, powerful any) {
 	return fakeModel{label: "fast"}, fakeModel{label: "powerful"}
 }

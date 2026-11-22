@@ -64,8 +64,8 @@ func TestFinishAppliesFinishReasonCorrections(t *testing.T) {
 	stream := NewChatModelStream()
 	stream.Dispatch(Event{Event: EventMessageStart})
 	stream.Dispatch(Event{
-		Event:  EventContentBlockFinish,
-		Index:  0,
+		Event: EventContentBlockFinish,
+		Index: 0,
 		Content: messages.ToolCallBlock{
 			ID:   "call_1",
 			Name: "search",

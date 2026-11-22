@@ -28,9 +28,9 @@ func TestQuestionsRequireInstructions(t *testing.T) {
 // label and Score at least two rubric levels.
 func TestQuestionsValidateCriteria(t *testing.T) {
 	invalid := map[string]Question{
-		"choice empty":     Choice{Instructions: "c", Criteria: map[string]Content{}},
-		"score empty":      Score{Instructions: "c", Criteria: []Content{}},
-		"score one level":  Score{Instructions: "c", Criteria: []Content{"only"}},
+		"choice empty":       Choice{Instructions: "c", Criteria: map[string]Content{}},
+		"score empty":        Score{Instructions: "c", Criteria: []Content{}},
+		"score one level":    Score{Instructions: "c", Criteria: []Content{"only"}},
 		"choice no criteria": Choice{Instructions: "c"},
 	}
 	for name, question := range invalid {
@@ -214,5 +214,99 @@ func TestAnswerRoundTrip(t *testing.T) {
 		if !reflect.DeepEqual(decoded, answer) {
 			t.Errorf("%s round trip: got %#v, want %#v", id, decoded, answer)
 		}
+	}
+}
+
+// TestQuestionWireForms pins each question type's wire form: the type
+// discriminator, field order, and nil-criteria omission.
+func TestQuestionWireForms(t *testing.T) {
+	noul, err := json.Marshal(Noul{Instructions: "yes?", Criteria: &NoulCriteria{True: "good"}})
+	if err != nil || string(noul) != `{"type":"noul","instructions":"yes?","criteria":{"true":"good"}}` {
+		t.Fatalf("noul wire: %s %v", noul, err)
+	}
+	bareNoul, err := json.Marshal(Noul{Instructions: "yes?"})
+	if err != nil || string(bareNoul) != `{"type":"noul","instructions":"yes?"}` {
+		t.Fatalf("bare noul wire: %s %v", bareNoul, err)
+	}
+	score, err := json.Marshal(Score{Instructions: "rate", Criteria: []Content{"low", "high"}})
+	if err != nil || string(score) != `{"type":"score","criteria":["low","high"],"instructions":"rate"}` {
+		t.Fatalf("score wire: %s %v", score, err)
+	}
+	box, err := json.Marshal(Box{Instructions: "find the dog"})
+	if err != nil || string(box) != `{"type":"box","instructions":"find the dog"}` {
+		t.Fatalf("box wire: %s %v", box, err)
+	}
+}
+
+// TestUnmarshalAnswerErrorPaths covers the decode error branches: a broken
+// envelope, missing per-type payload fields, and malformed maps.
+func TestUnmarshalAnswerErrorPaths(t *testing.T) {
+	broken := []string{
+		`{"type":"noul"}`,   // missing noul
+		`{"type":"choice"}`, // missing choice
+		`{"type":"score"}`,  // missing score
+		`{"type":"box"}`,    // missing box
+		`not json`,          // broken envelope
+		`{"type":"choice","choice":"x","probabilities":{"a":"high"}}`, // bad probabilities
+		`{"type":"score","score":1,"legend":{"x":"low"}}`,             // bad legend
+		`{"type":"score","score":1,"probabilities":{"x":1}}`,          // bad levels
+	}
+	for _, payload := range broken {
+		if _, err := UnmarshalAnswer([]byte(payload)); err == nil {
+			t.Errorf("expected decode error for %s", payload)
+		}
+	}
+}
+
+// TestMarshalAnswerErrorPaths covers marshal failure branches: unmarshalable
+// map values cannot occur for float maps, but a ScoreAnswer legend holding a
+// channel value must fail.
+func TestMarshalAnswerErrorPaths(t *testing.T) {
+	bad := ScoreAnswer{Legend: map[int]Content{0: make(chan int)}}
+	if _, err := json.Marshal(bad); err == nil {
+		t.Fatal("expected score marshal error")
+	}
+	badChoice := ChoiceAnswer{Probabilities: map[string]float64{"billing": 1}, Choice: "billing"}
+	encoded, err := json.Marshal(badChoice)
+	if err != nil || encoded == nil {
+		t.Fatalf("choice marshal: %v", err)
+	}
+}
+
+// TestResponseUnmarshalErrors covers the response decode error branches.
+func TestResponseUnmarshalErrors(t *testing.T) {
+	if _, err := UnmarshalResponse([]byte(`nope`)); err == nil {
+		t.Fatal("broken envelope must fail")
+	}
+	if _, err := UnmarshalResponse([]byte(`{"model":"m","answers":{"q":"not-an-object"}}`)); err == nil {
+		t.Fatal("broken answer must fail")
+	}
+	// Usage with explicit total keeps it.
+	response, err := UnmarshalResponse([]byte(
+		`{"model":"m","answers":{},"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":10}}`))
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if response.Usage.TotalTokens != 10 {
+		t.Fatalf("explicit total must be kept: %#v", response.Usage)
+	}
+}
+
+// TestDecodeMapEmptyInputs covers the empty-payload decode branches: an
+// absent probabilities or legend decodes to a nil map, not an error.
+func TestDecodeMapEmptyInputs(t *testing.T) {
+	choice, err := UnmarshalAnswer([]byte(`{"type":"choice","choice":"x"}`))
+	if err != nil {
+		t.Fatalf("choice without probabilities: %v", err)
+	}
+	if typed := choice.(ChoiceAnswer); typed.Probabilities != nil {
+		t.Fatalf("absent probabilities: %#v", typed.Probabilities)
+	}
+	score, err := UnmarshalAnswer([]byte(`{"type":"score","score":1}`))
+	if err != nil {
+		t.Fatalf("score without maps: %v", err)
+	}
+	if typed := score.(ScoreAnswer); typed.Legend != nil || typed.Probabilities != nil {
+		t.Fatalf("absent maps: %#v", typed)
 	}
 }
