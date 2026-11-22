@@ -9,6 +9,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/decisions"
+	"github.com/projanvil/langchain-golang/core/runnables"
 )
 
 // TestQuestionToTypesafeMapping pins the core → TypeSafe question mapping:
@@ -79,13 +80,12 @@ func TestAdapterEmitsDecisionRunEvents(t *testing.T) {
 	adapter := classifier.AsDecisionModel()
 
 	recorder := callbacks.NewRecorder()
-	ctx := callbacks.ContextWithManager(t.Context(), callbacks.NewManager(recorder))
-	response, err := adapter.Invoke(ctx, decisions.Request{
+	response, err := adapter.Invoke(t.Context(), decisions.Request{
 		State: "hello",
 		Questions: map[string]decisions.Question{
 			"q": decisions.Noul{Instructions: "urgent?"},
 		},
-	})
+	}, runnables.WithCallbacks(callbacks.NewManager(recorder)))
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
@@ -117,10 +117,10 @@ func TestAdapterEmitsDecisionRunEvents(t *testing.T) {
 	// A handler that rejects every event must not fail the classification
 	// (upstream: tracing failures never fail a successful request).
 	failing := callbacks.NewManager(&rejectingHandler{})
-	response, err = adapter.Invoke(callbacks.ContextWithManager(t.Context(), failing), decisions.Request{
+	response, err = adapter.Invoke(t.Context(), decisions.Request{
 		State:     "hello",
 		Questions: map[string]decisions.Question{"q": decisions.Noul{Instructions: "urgent?"}},
-	})
+	}, runnables.WithCallbacks(failing))
 	if err != nil || response.Usage == nil {
 		t.Fatalf("tracing failure must not fail classification: %v %#v", err, response.Usage)
 	}

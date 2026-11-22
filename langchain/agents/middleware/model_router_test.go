@@ -10,6 +10,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/decisions"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/runnables"
 	// Register the openai provider so "openai:..." model strings resolve
 	// through the chatmodels InitChatModel+Resolve chain.
 	_ "github.com/projanvil/langchain-golang/partners/openai"
@@ -23,7 +24,7 @@ type fakeDecisionModel struct {
 	requests []decisions.Request
 }
 
-func (f *fakeDecisionModel) Invoke(_ context.Context, request decisions.Request) (decisions.Response, error) {
+func (f *fakeDecisionModel) Invoke(_ context.Context, request decisions.Request, _ ...runnables.Option) (decisions.Response, error) {
 	f.requests = append(f.requests, request)
 	return f.response, f.err
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/decisions"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
@@ -33,7 +34,7 @@ type classifierAdapter struct {
 // The classification surfaces as a chat-model run carrying the TypeSafe
 // provider identity and the request's token usage (#41765 base-run
 // semantics; tracing failures never fail the classification).
-func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.Request) (decisions.Response, error) {
+func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.Request, opts ...runnables.Option) (decisions.Response, error) {
 	if err := request.Validate(); err != nil {
 		return decisions.Response{}, err
 	}
@@ -45,14 +46,15 @@ func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.Reques
 		}
 		questions[id] = converted
 	}
-	providerutil.EmitDecisionStart(ctx, provider, a.classifier.Model, request)
+	cfg := runnables.NewConfig(opts...)
+	providerutil.DecisionStart(ctx, cfg, provider, a.classifier.Model, request)
 	response, err := a.classifier.Invoke(ctx, Request{State: request.State, Questions: questions})
 	if err != nil {
-		providerutil.EmitDecisionEnd(ctx, provider, a.classifier.Model, nil, nil, err)
+		providerutil.DecisionEnd(ctx, cfg, provider, a.classifier.Model, nil, nil, err)
 		return decisions.Response{}, err
 	}
 	core := responseToCore(response)
-	providerutil.EmitDecisionEnd(ctx, provider, a.classifier.Model, core, core.Usage, nil)
+	providerutil.DecisionEnd(ctx, cfg, provider, a.classifier.Model, core, core.Usage, nil)
 	return core, nil
 }
 

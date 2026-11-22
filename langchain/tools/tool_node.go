@@ -304,9 +304,31 @@ func (n *ToolNode) InvokeToolCallsFull(ctx context.Context, calls []messages.Too
 		return n.runOne(ctx, call, state)
 	})
 	if err != nil {
+		// A graph interrupt raised inside a worker goroutine (a
+		// wrap_tool_call middleware pausing per call, an MCP elicitation
+		// inside a tool) cannot unwind through ParallelMap into the graph
+		// executor's recover, which lives on the node's goroutine.
+		// runOne forwards it as an interruptEscape error; re-panic the
+		// original GraphInterrupt here, inside the recovered stack, so the
+		// run pauses exactly as a node-body interrupt does.
+		var escape *interruptEscape
+		if errors.As(err, &escape) {
+			panic(escape.interrupt)
+		}
 		return nil, err
 	}
 	return outcomes, nil
+}
+
+// interruptEscape carries a GraphInterrupt out of a ParallelMap worker as
+// an error, so InvokeToolCallsFull can re-panic it on the node's own
+// goroutine where the graph executor recovers it.
+type interruptEscape struct {
+	interrupt *types.GraphInterrupt
+}
+
+func (e *interruptEscape) Error() string {
+	return "graph interrupt escaped a tool-call goroutine"
 }
 
 func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map[string]any) (ToolCallOutcome, error) {
@@ -339,8 +361,31 @@ func (n *ToolNode) runOne(ctx context.Context, call messages.ToolCall, state map
 			}
 			return outcome.Message, err
 		}
-		msg, err := n.wrap(ctx, request, next)
+		msg, err := func() (msg messages.Message, err error) {
+			// A graph interrupt raised inside the wrap chain (per-call HITL
+			// pausing, an MCP elicitation) cannot unwind through the
+			// ParallelMap worker goroutine into the graph executor's
+			// recover; forward it as an interruptEscape error so
+			// InvokeToolCallsFull re-panics it on the node's goroutine.
+			defer func() {
+				if r := recover(); r != nil {
+					if gi, ok := r.(*types.GraphInterrupt); ok {
+						err = &interruptEscape{interrupt: gi}
+						return
+					}
+					panic(r)
+				}
+			}()
+			return n.wrap(ctx, request, next)
+		}()
 		if err != nil {
+			// A forwarded interrupt is control flow, not a tool failure:
+			// it must pass through untouched so InvokeToolCallsFull can
+			// re-panic it on the node's goroutine.
+			var escape *interruptEscape
+			if errors.As(err, &escape) {
+				return ToolCallOutcome{}, err
+			}
 			// Error handling mirrors the except block of Python's _run_one
 			// (langgraph/prebuilt/tool_node.py:1031+): the wrap chain saw the
 			// raw error, and conversion happens here — outside it.

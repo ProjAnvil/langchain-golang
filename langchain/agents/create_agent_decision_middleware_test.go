@@ -15,6 +15,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/decisions"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/runnables"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	agentsmw "github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	openaidecisions "github.com/projanvil/langchain-golang/partners/openai/decisions"
@@ -247,7 +248,7 @@ type stubDecisionModel struct {
 	err     error
 }
 
-func (s *stubDecisionModel) Invoke(_ context.Context, _ decisions.Request) (decisions.Response, error) {
+func (s *stubDecisionModel) Invoke(_ context.Context, _ decisions.Request, _ ...runnables.Option) (decisions.Response, error) {
 	return decisions.Response{Model: "stub", Answers: s.answers}, s.err
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/callbacks"
 	coredecisions "github.com/projanvil/langchain-golang/core/decisions"
+	"github.com/projanvil/langchain-golang/core/runnables"
 )
 
 // TestQuestionToOpenAIMapping pins the core → Decisions API question
@@ -92,11 +93,10 @@ func TestOpenAIAdapterEmitsDecisionRunEvents(t *testing.T) {
 	adapter := client.AsDecisionModel()
 
 	recorder := callbacks.NewRecorder()
-	ctx := callbacks.ContextWithManager(t.Context(), callbacks.NewManager(recorder))
-	if _, err := adapter.Invoke(ctx, coredecisions.Request{
+	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{
 		State:     "hello",
 		Questions: map[string]coredecisions.Question{"q": coredecisions.Noul{Instructions: "risky?"}},
-	}); err != nil {
+	}, runnables.WithCallbacks(callbacks.NewManager(recorder))); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	var start, end bool

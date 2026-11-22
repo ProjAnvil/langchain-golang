@@ -15,6 +15,8 @@ package decisions
 
 import (
 	"context"
+
+	"github.com/projanvil/langchain-golang/core/runnables"
 )
 
 // DecisionModel answers typed questions about state. It is the Go
@@ -25,6 +27,9 @@ type DecisionModel interface {
 	// Invoke evaluates state against the request's questions and returns
 	// the typed answers keyed by the same question IDs, with request
 	// metadata. A provider failure is returned as an error and propagates
-	// to the caller — nothing silently falls back.
-	Invoke(ctx context.Context, request Request) (Response, error)
+	// to the caller — nothing silently falls back. The options mirror the
+	// chat-model signature (runnables.Option): callbacks, run IDs, tags,
+	// and metadata flow through the provider's event emission, so a
+	// classification run composes with tracing exactly like a model call.
+	Invoke(ctx context.Context, request Request, opts ...runnables.Option) (Response, error)
 }

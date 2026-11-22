@@ -15,6 +15,7 @@ import (
 
 	coredecisions "github.com/projanvil/langchain-golang/core/decisions"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/core/runnables"
 	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
@@ -36,7 +37,7 @@ type clientAdapter struct {
 // The classification surfaces as a chat-model run carrying the OpenAI
 // provider identity and the request's token usage (#41765 base-run
 // semantics; tracing failures never fail the classification).
-func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.Request) (coredecisions.Response, error) {
+func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.Request, opts ...runnables.Option) (coredecisions.Response, error) {
 	if err := request.Validate(); err != nil {
 		return coredecisions.Response{}, err
 	}
@@ -48,14 +49,15 @@ func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.Reques
 		}
 		questions[id] = converted
 	}
-	providerutil.EmitDecisionStart(ctx, "openai", a.client.Model, request)
+	cfg := runnables.NewConfig(opts...)
+	providerutil.DecisionStart(ctx, cfg, "openai", a.client.Model, request)
 	response, err := a.client.Invoke(ctx, Request{Input: request.State, Questions: questions})
 	if err != nil {
-		providerutil.EmitDecisionEnd(ctx, "openai", a.client.Model, nil, nil, err)
+		providerutil.DecisionEnd(ctx, cfg, "openai", a.client.Model, nil, nil, err)
 		return coredecisions.Response{}, err
 	}
 	core := responseToCore(response)
-	providerutil.EmitDecisionEnd(ctx, "openai", a.client.Model, core, core.Usage, nil)
+	providerutil.DecisionEnd(ctx, cfg, "openai", a.client.Model, core, core.Usage, nil)
 	return core, nil
 }
 
