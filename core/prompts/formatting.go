@@ -1039,7 +1039,7 @@ func sfTruthy(value any) bool {
 		return rv.Float() != 0
 	case reflect.Slice, reflect.Array, reflect.Map:
 		return rv.Len() != 0
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		return !rv.IsNil()
 	default:
 		return true

@@ -92,7 +92,7 @@ func TestLargeUtilGetPydanticFieldNames(t *testing.T) {
 		Skip   bool   `json:"-"`
 		hidden string
 	}
-	got, err := GetPydanticFieldNames(person{})
+	got, err := GetPydanticFieldNames(person{hidden: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}

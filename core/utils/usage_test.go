@@ -14,7 +14,7 @@ func TestSmallAUsage(t *testing.T) {
 
 	// smallABuildNested wraps {"x": 1} under "n" the given number of times.
 	smallABuildNested := func(levels int) map[string]any {
-		var m map[string]any = map[string]any{"x": 1}
+		var m = map[string]any{"x": 1}
 		for i := 0; i < levels; i++ {
 			m = map[string]any{"n": m}
 		}

@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	smallBErrInvalidJSON  = errors.New("invalid JSON")
-	smallBErrNonObject    = errors.New("expected JSON object")
-	smallBErrMissingFence = errors.New("missing fences")
+	errSmallBInvalidJSON  = errors.New("invalid JSON")
+	errSmallBNonObject    = errors.New("expected JSON object")
+	errSmallBMissingFence = errors.New("missing fences")
 )
 
 // smallBStripChars is the set of characters stripped from the start and end of
@@ -47,11 +47,11 @@ func ParseAndCheckJSONMarkdown(text string) (map[string]any, error) {
 	repaired := smallBCustomParser(stripped)
 	var parsed any
 	if err := json.Unmarshal([]byte(repaired), &parsed); err != nil {
-		return nil, fmt.Errorf("%w: %v", smallBErrInvalidJSON, err)
+		return nil, fmt.Errorf("%w: %v", errSmallBInvalidJSON, err)
 	}
 	object, ok := parsed.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("%w: got %s", smallBErrNonObject, smallBJSONTypeName(parsed))
+		return nil, fmt.Errorf("%w: got %s", errSmallBNonObject, smallBJSONTypeName(parsed))
 	}
 	return object, nil
 }
@@ -75,7 +75,7 @@ func smallBExtractJSON(text string) (string, error) {
 	}
 	end := strings.Index(body, "```")
 	if end < 0 {
-		return "", fmt.Errorf("%w: no closing fence found for the json block", smallBErrMissingFence)
+		return "", fmt.Errorf("%w: no closing fence found for the json block", errSmallBMissingFence)
 	}
 	return body[:end], nil
 }

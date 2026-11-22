@@ -2,6 +2,17 @@
 
 All notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.14.3] - 2026-11-22
+
+### Fixed
+
+- lint: replace deprecated `reflect.Ptr` with `reflect.Pointer` in `core/mustache`, `core/prompts`, and `core/utils`; normalize error strings and error variable names; drop a redundant type declaration and exercise an unused test field.
+- core/retrievers: add 25 table-driven tests for option functions, time-weighted metadata parsing, and error branches. Statement coverage rises from 91.4% to 99.0%, clearing the CI gate (>= 95%).
+
+### Changed
+
+- `golangci-lint run ./...` reports 0 issues. `go vet ./...` is clean. `go test ./...` passes 83 packages. `make coverage` reports 97.7% merged total.
+
 ## [0.14.2] - 2026-11-22
 
 ### Added

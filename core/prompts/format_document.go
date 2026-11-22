@@ -51,7 +51,7 @@ func GetDocumentInfo(doc documents.Document, prompt DocumentPrompt) (map[string]
 		}
 		sort.Strings(required)
 		return nil, fmt.Errorf(
-			"Document prompt requires documents to have metadata variables: %v. Received document with missing metadata: %v.",
+			"document prompt requires documents to have metadata variables: %v. Received document with missing metadata: %v",
 			required, missing,
 		)
 	}

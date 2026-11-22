@@ -171,7 +171,7 @@ func largeUtilStructType(model any) reflect.Type {
 		return nil
 	}
 	t := reflect.TypeOf(model)
-	for t != nil && t.Kind() == reflect.Ptr {
+	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == nil || t.Kind() != reflect.Struct {
@@ -229,7 +229,7 @@ func largeUtilJSONFieldName(field reflect.StructField) (name string, omitempty b
 
 // largeUtilFieldSchema maps a Go type to a small JSON schema.
 func largeUtilFieldSchema(t reflect.Type) schema.Schema {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	switch t.Kind() {
@@ -405,7 +405,7 @@ func GuardImport(moduleName string, checkers ...DependencyChecker) (string, erro
 	check := largeUtilSelectChecker(checkers)
 	version, ok := check(moduleName)
 	if !ok {
-		return "", fmt.Errorf("could not import %s go package. Please add it with `go get %s`.", moduleName, moduleName)
+		return "", fmt.Errorf("could not import %s go package. Please add it with `go get %s`", moduleName, moduleName)
 	}
 	return version, nil
 }
@@ -437,7 +437,7 @@ func CheckPackageVersion(packageName string, constraints VersionConstraints, che
 			return fmt.Errorf("check package version: %w", err)
 		}
 		if cmp >= 0 {
-			return fmt.Errorf("expected %s version to be < %s. Received %s.", packageName, constraints.LT, version)
+			return fmt.Errorf("expected %s version to be < %s. Received %s", packageName, constraints.LT, version)
 		}
 	}
 	if constraints.LTE != "" {
@@ -446,7 +446,7 @@ func CheckPackageVersion(packageName string, constraints VersionConstraints, che
 			return fmt.Errorf("check package version: %w", err)
 		}
 		if cmp > 0 {
-			return fmt.Errorf("expected %s version to be <= %s. Received %s.", packageName, constraints.LTE, version)
+			return fmt.Errorf("expected %s version to be <= %s. Received %s", packageName, constraints.LTE, version)
 		}
 	}
 	if constraints.GT != "" {
@@ -455,7 +455,7 @@ func CheckPackageVersion(packageName string, constraints VersionConstraints, che
 			return fmt.Errorf("check package version: %w", err)
 		}
 		if cmp <= 0 {
-			return fmt.Errorf("expected %s version to be > %s. Received %s.", packageName, constraints.GT, version)
+			return fmt.Errorf("expected %s version to be > %s. Received %s", packageName, constraints.GT, version)
 		}
 	}
 	if constraints.GTE != "" {
@@ -464,7 +464,7 @@ func CheckPackageVersion(packageName string, constraints VersionConstraints, che
 			return fmt.Errorf("check package version: %w", err)
 		}
 		if cmp < 0 {
-			return fmt.Errorf("expected %s version to be >= %s. Received %s.", packageName, constraints.GTE, version)
+			return fmt.Errorf("expected %s version to be >= %s. Received %s", packageName, constraints.GTE, version)
 		}
 	}
 	return nil
