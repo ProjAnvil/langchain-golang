@@ -2,6 +2,41 @@
 
 All notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.14.4] - 2026-11-22
+
+Upstream parity wave: Python langchain 1.4.10-1.5.2 / langchain-core 1.7.7-1.8.4. Every line of the port was re-audited against the upstream sources by six independent audit passes; findings (invented keys, masked wire shapes, silent drops) are fixed and covered by tests on the real wire shapes.
+
+### Added
+
+- core/streamevents: finish-reason fields on `response_metadata` (`finish_reason`, `normalized_finish_reason`, `finish_state`) with the provider-agnostic refusal/tool-call corrections applied at message-finish (#41926). Chunk streams carry chunk metadata through the bridge to the finish event.
+- partners/anthropic: stop_reason mapping onto the shared fields (non-stream, message_delta, terminal chunk — the chunk also carries `model_provider`), `pause_turn` → `other`/`suspended`.
+- partners/openai: Chat Completions mapping (refusal wins over stop; a forced tool_choice stop with tool calls becomes `tool_call`) and Responses mapping (`finish_reason` = raw status; incomplete reasons); streamed in-band errors classify as retryable `StreamServerError` on transient codes (#41952); `response.failed` reads `response.error`; Chat Completions in-band errors classify instead of being dropped.
+- core/decisions: decision models (#41765) — `DecisionModel` interface (chat-model-shaped `opts ...runnables.Option`), Noul/Choice/Score/Box questions and typed answers with upstream wire forms (explicit nulls, required-field and [0,1] validation, per-type marshal order), `ClassifierRequest`/`ClassifierResponse`, usage completion, filtered views.
+- langchain/agents/middleware: generic `ModelRouterMiddleware` and `AutoModeMiddleware` driven by any `DecisionModel` (#41766) — classify once per run, route model calls; Noul risk gate at 0.5 with a 30-message window, fail-closed, verbatim upstream defaults.
+- partners/typesafe, partners/openai/decisions: `AsDecisionModel` adapters with provider-identity run events (`ls_provider`/`ls_model_name`/`usage_metadata` through the `cfg.Callbacks` path); TypeSafe gains Box support (#41767); openai folds Noul criteria into instructions, converts non-string content to text, rebuilds score legends from the questions, fails refusals with `lcerrors.ModelRefusalError`, and enforces one answer per question.
+- langchain/agents/middleware: beta warning for the router (upstream decorates only `ModelRouterMiddleware`); `lc_source` internal-call channel (`summarization`/`tool_emulation`/`tool_selection`).
+- langchain/tools: graph interrupts raised inside the tool-call wrap chain pause the run correctly instead of crashing (ParallelMap worker panics now reach the graph executor's recover); locked by `TestToolNodeWrapInterruptPausesAndResumes`.
+- messages: usage details gain `audio` on both sides, anthropic ephemeral TTL keys (`ephemeral_5m_input_tokens`/`ephemeral_1h_input_tokens`) with the generic cache-creation count zeroed per upstream, and openai `cache_write_tokens`/`audio_tokens`/`thinking_tokens` flow through.
+
+### Fixed
+
+- HITL: synthetic reject/respond tool messages carry `lc_source="hitl_interrupt_decision"` plus the decision type (#41928); approve/edit stay untagged.
+- Summarizer/model-call bookkeeping tokens never leak into the `messages` stream projection (#41579); StreamEvents keeps internal calls visible like upstream 1.4.10.
+- partners/openai: the Responses error event decodes the real top-level `code`/`message` wire shape (the previous nested decoding never matched the real API); `response.incomplete` is a terminal event like `completed`.
+- partners/anthropic: an empty thinking start emits its chunk (#41907); a text start carrying opening text seeds the block, streams it, and folds it into the assembled message; a redacted-thinking start emits its chunk; reasoning blocks round-trip as thinking blocks on the request side (signature kept, explicit empty thinking when only a signature came back).
+- messages: usage-detail JSON keys are the upstream LangChain keys (`cache_read`, `cache_creation`, `reasoning`), not provider wire names; `UsageMetadata` counts are always emitted; `Message.UsageMetadata` serializes zero values correctly.
+
+### Changed (breaking)
+
+- `SummarizerFunc`, `ToolEmulationFunc`, and `ToolSelectionFunc` take a `context.Context` first param; the context arrives marked as a middleware-internal call so summary/emulation/selection tokens stay off the messages stream.
+- `core/decisions.DecisionModel.Invoke` takes `...runnables.Option`; the request/response types are named `ClassifierRequest`/`ClassifierResponse` (Python names).
+- `messages.InputTokenDetails`/`OutputTokenDetails` field names follow the upstream keys (`CacheRead`, `CacheCreation`, `Reasoning`, `Audio`, ephemeral TTL fields).
+- HITL `interrupt_mode="per_call"` remains unported (upstream surfaces every pending call in one pause; Go interrupts unwind the whole tools node, so a per-call pause would re-execute approved side-effecting tools) — recorded in DIVERGENCES.md along with the service_tier usage prefixes, stream usage merge semantics, and decisions media-part instructions.
+
+### Changed
+
+- 11 commits on `feat/py-1.5.2-parity`. Full suite green, `golangci-lint` 0 issues, `make coverage` 97.7% merged; `core/decisions` at 99.5% statement coverage.
+
 ## [0.14.3] - 2026-11-22
 
 ### Fixed
