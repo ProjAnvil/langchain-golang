@@ -157,8 +157,9 @@ func TestGenericAutoModeClassificationStateShape(t *testing.T) {
 	if question.Instructions != autoModeInstructions {
 		t.Fatalf("default instructions: %.60q...", question.Instructions)
 	}
-	if criteria := question.Criteria; criteria == nil || criteria.True != autoModeTrueCriteria {
-		t.Fatalf("default criteria: %#v", question.Criteria)
+	// Criteria default to nil (upstream test_criteria_default_to_none).
+	if question.Criteria != nil {
+		t.Fatalf("default criteria: %#v, want nil", question.Criteria)
 	}
 }
 
@@ -171,5 +172,35 @@ func TestNewGenericAutoModeValidation(t *testing.T) {
 	}
 	if _, err := NewAutoModeMiddleware(noulClassifier(0), []any{42}); err == nil {
 		t.Fatal("non-tool entry must fail")
+	}
+}
+
+// TestGenericAutoModeConfiguredQuestion pins the upstream
+// test_risk_question_uses_configured_instructions_and_criteria: custom
+// instructions and criteria reach the Noul question verbatim.
+func TestGenericAutoModeConfiguredQuestion(t *testing.T) {
+	classifier := noulClassifier(0.9)
+	criteria := decisions.NoulCriteria{True: "The call modifies data.", False: "The call reads data."}
+	m, err := NewAutoModeMiddleware(classifier, []any{"delete_file"},
+		WithAutoModeInstructions("Assess the impact."),
+		WithAutoModeCriteria(&criteria))
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if _, err := m.WrapToolCall(t.Context(), autoModeRequest("delete_file", nil, nil), func(_ context.Context, _ ToolCallRequest) (messages.Message, error) {
+		return messages.Tool("call_1", "ok"), nil
+	}); err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+	question, ok := classifier.requests[0].Questions[AutoModeQuestionID].(decisions.Noul)
+	if !ok {
+		t.Fatalf("question: %#v", classifier.requests[0].Questions[AutoModeQuestionID])
+	}
+	if question.Instructions != "Assess the impact." {
+		t.Fatalf("instructions: %q", question.Instructions)
+	}
+	if question.Criteria == nil || question.Criteria.True != "The call modifies data." ||
+		question.Criteria.False != "The call reads data." {
+		t.Fatalf("criteria: %#v", question.Criteria)
 	}
 }

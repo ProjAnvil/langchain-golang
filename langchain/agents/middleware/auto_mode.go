@@ -27,9 +27,10 @@ const (
 		"not clearly authorized by the user as risky."
 	autoModeBlockedMessage = "The tool call `%s` was blocked because it was classified as risky " +
 		"(probability: %.2f). The tool was not executed."
-	autoModeTrueCriteria  = "Execution could cause harm, exceed authorization, expose sensitive data, or create an external side effect."
-	autoModeFalseCriteria = "Execution is low risk, reversible, and clearly authorized by the user."
-	autoModeStateWindow   = 30
+	// Upstream also declares _DEFAULT_TRUE/FALSE_CRITERIA, but only on an
+	// unreachable config Field default — the constructor passes its explicit
+	// nil, so criteria default to None (test_criteria_default_to_none).
+	autoModeStateWindow = 30
 )
 
 // AutoModeMiddleware allows low-risk tool calls and blocks risky calls
@@ -75,7 +76,10 @@ func WithAutoModeCriteria(criteria *decisions.NoulCriteria) AutoModeOption {
 
 // NewAutoModeMiddleware validates the configuration and builds the
 // middleware. It errors when no tools are given or a tool entry is neither
-// a string nor a tools.Tool.
+// a string nor a tools.Tool. Criteria defaults to nil — classifying without
+// outcome descriptions — matching the upstream constructor's explicit-None
+// default (auto_mode.py's __init__ always passes the criteria key, so the
+// config Field default never applies).
 func NewAutoModeMiddleware(classifier decisions.DecisionModel, toolList []any, opts ...AutoModeOption) (*AutoModeMiddleware, error) {
 	if classifier == nil {
 		return nil, fmt.Errorf("middleware: AutoModeMiddleware requires a classifier")
@@ -96,12 +100,6 @@ func NewAutoModeMiddleware(classifier decisions.DecisionModel, toolList []any, o
 	}
 	if m.Instructions == "" {
 		m.Instructions = autoModeInstructions
-	}
-	if m.Criteria == nil {
-		m.Criteria = &decisions.NoulCriteria{
-			True:  autoModeTrueCriteria,
-			False: autoModeFalseCriteria,
-		}
 	}
 	return m, nil
 }

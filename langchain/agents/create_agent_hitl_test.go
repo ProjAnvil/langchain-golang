@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/messages"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
 	"github.com/projanvil/langchain-golang/langchain/agents/middleware"
@@ -861,5 +862,160 @@ func TestCreateAgentHITLEditCrossToolReturnDirect(t *testing.T) {
 	}
 	if len(model.invocations) != 1 {
 		t.Fatalf("return-direct edited tool must end the run without another model call, got %d", len(model.invocations))
+	}
+}
+
+// TestCreateAgentHITLDecisionSourceMetadata ports the upstream
+// test_resume_with_each_decision additional_kwargs assertion (#41928):
+// reject and respond tag their synthetic tool message with
+// lc_source="hitl_interrupt_decision" plus the decision type; approve and
+// edit leave the tool message untagged.
+func TestCreateAgentHITLDecisionSourceMetadata(t *testing.T) {
+	cases := []struct {
+		name      string
+		decision  middleware.Decision
+		allowed   []middleware.DecisionType
+		wantTag   bool
+		wantValue string
+	}{
+		{
+			name:     "approve leaves the tool message untagged",
+			decision: middleware.Decision{Type: middleware.DecisionApprove},
+			allowed:  []middleware.DecisionType{middleware.DecisionApprove},
+		},
+		{
+			name: "edit leaves the tool message untagged",
+			decision: middleware.Decision{Type: middleware.DecisionEdit,
+				EditedAction: &middleware.ToolCall{Name: "echo", Args: map[string]any{"tool_input": "edited"}}},
+			allowed: []middleware.DecisionType{middleware.DecisionEdit},
+		},
+		{
+			name:      "reject tags with hitl_interrupt_decision",
+			decision:  middleware.Decision{Type: middleware.DecisionReject},
+			allowed:   []middleware.DecisionType{middleware.DecisionReject},
+			wantTag:   true,
+			wantValue: "reject",
+		},
+		{
+			name:      "respond tags with hitl_interrupt_decision",
+			decision:  middleware.Decision{Type: middleware.DecisionRespond, Message: "already sent"},
+			allowed:   []middleware.DecisionType{middleware.DecisionRespond},
+			wantTag:   true,
+			wantValue: "respond",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var toolRuns int
+			model := &sequenceModel{responses: []messages.Message{
+				{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{hitlEchoToolCall("call_1", "hi")}},
+				messages.AI("done"),
+			}}
+			saver := checkpoint.NewMemorySaver()
+			agent, err := CreateAgent(model, []coretools.Tool{newHitlTestTool(t, &toolRuns)},
+				WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(map[string]middleware.InterruptConfig{
+					"echo": {AllowedDecisions: tc.allowed},
+				})),
+				WithAgentCheckpointer(saver),
+			)
+			if err != nil {
+				t.Fatalf("create agent: %v", err)
+			}
+			_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
+				[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
+			if err != nil || len(interrupts) != 1 {
+				t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
+			}
+			values, _, err := agent.Resume(t.Context(), graphpkg.Options{
+				ThreadID: "t1",
+				Resume:   middleware.HITLResponse{Decisions: []middleware.Decision{tc.decision}},
+			})
+			if err != nil {
+				t.Fatalf("resume: %v", err)
+			}
+			out, _ := values["messages"].([]messages.Message)
+			var toolMsg *messages.Message
+			for i := range out {
+				if out[i].Role == messages.RoleTool {
+					toolMsg = &out[i]
+				}
+			}
+			if toolMsg == nil {
+				t.Fatal("no tool message in final state")
+			}
+			notification := messages.GetNotificationMetadata(*toolMsg)
+			if tc.wantTag {
+				if notification == nil || notification.Source != "hitl_interrupt_decision" ||
+					notification.Data["decision"] != tc.wantValue {
+					t.Fatalf("notification metadata: %#v", notification)
+				}
+			} else if notification != nil {
+				t.Fatalf("tool message must stay untagged: %#v (%s)", notification, toolMsg.Content)
+			}
+		})
+	}
+}
+
+// TestCreateAgentSummaryStaysOffMessagesStream ports the upstream
+// test_summary_call_stays_off_the_messages_stream (#41579): the
+// summarizer's internal model-call tokens never surface in the messages
+// stream projection — the agent's own answer tokens still do.
+func TestCreateAgentSummaryStaysOffMessagesStream(t *testing.T) {
+	model := &sequenceModel{responses: []messages.Message{
+		messages.AI("first answer"),
+		messages.AI("final answer"),
+	}}
+	var sawInternalMarker bool
+	summarizer := middleware.NewSummarizationMiddleware(func(ctx context.Context, _ string, _ []messages.Message) (string, error) {
+		// Simulate the internal model call: stream a summary token under
+		// the middleware-provided context, which must carry the
+		// internal-call marker.
+		sawInternalMarker = callbacks.IsInternalCall(ctx)
+		if manager, ok := callbacks.ManagerFromContext(ctx); ok {
+			chunk := messages.AI("SUMMARY-TEXT")
+			_ = manager.Emit(ctx, callbacks.Event{Kind: callbacks.EventChatModelStream, Chunk: chunk})
+		}
+		return "Summary of prior turns.", nil
+	})
+	summarizer.Trigger = []middleware.TriggerClause{{Messages: 3}}
+	summarizer.Keep = middleware.KeepPolicy{Messages: 1}
+
+	saver := checkpoint.NewMemorySaver()
+	agent, err := CreateAgent(model, nil, WithAgentMiddleware(summarizer), WithAgentCheckpointer(saver))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	// First turn leaves two messages on the thread; the second turn's input
+	// raises the count to three, triggering summarization before the model
+	// call.
+	if _, _, err := agent.InvokeWithStateOptions(t.Context(), []messages.Message{messages.Human("one")},
+		graphpkg.Options{ThreadID: "t1"}); err != nil {
+		t.Fatalf("first invoke: %v", err)
+	}
+
+	var sawSummary, sawAnswer bool
+	for chunk := range agent.Graph.Stream(t.Context(),
+		map[string]any{"messages": []messages.Message{messages.Human("two")}},
+		graphpkg.StreamOptions{Modes: []graphpkg.StreamMode{graphpkg.StreamMessages}, Options: graphpkg.Options{ThreadID: "t1"}},
+	) {
+		mc, ok := chunk.Payload.(graphpkg.MessageChunk)
+		if !ok {
+			continue
+		}
+		if strings.Contains(mc.Message.Content, "SUMMARY-TEXT") {
+			sawSummary = true
+		}
+		if mc.Message.Content == "final answer" {
+			sawAnswer = true
+		}
+	}
+	if !sawInternalMarker {
+		t.Fatal("summarizer context must carry the internal-call marker")
+	}
+	if sawSummary {
+		t.Fatal("summary tokens must stay off the messages stream")
+	}
+	if !sawAnswer {
+		t.Fatal("the agent's own answer tokens must reach the messages stream")
 	}
 }

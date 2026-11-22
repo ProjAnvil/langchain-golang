@@ -3,6 +3,7 @@ package decisions
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -308,5 +309,26 @@ func TestDecodeMapEmptyInputs(t *testing.T) {
 	}
 	if typed := score.(ScoreAnswer); typed.Legend != nil || typed.Probabilities != nil {
 		t.Fatalf("absent maps: %#v", typed)
+	}
+}
+
+// TestCriteriaAcceptAnyJsonValue ports the upstream
+// test_criteria_accept_any_json_value: criteria hold any JSON-compatible
+// content — numbers as Noul outcome descriptions, mixed-type rubrics.
+func TestCriteriaAcceptAnyJsonValue(t *testing.T) {
+	noul := Noul{Instructions: "Is this urgent?", Criteria: &NoulCriteria{True: 1, False: 0}}
+	if noul.Criteria.True != 1 || noul.Criteria.False != 0 {
+		t.Fatalf("noul criteria: %#v", noul.Criteria)
+	}
+	score := Score{Instructions: "Rate it.", Criteria: []Content{0.0, map[string]any{"label": "high"}}}
+	if err := score.Validate(); err != nil {
+		t.Fatalf("mixed-type rubric: %v", err)
+	}
+	encoded, err := json.Marshal(score)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"criteria":[0,{"label":"high"}]`) {
+		t.Fatalf("wire form: %s", encoded)
 	}
 }

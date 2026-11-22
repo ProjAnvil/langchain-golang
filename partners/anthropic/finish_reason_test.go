@@ -172,3 +172,32 @@ func TestEmptyThinkingBlockStartEmitsChunk(t *testing.T) {
 		t.Fatal("empty thinking start must emit a ReasoningBlock chunk")
 	}
 }
+
+// TestStreamPauseTurnSuspended ports the upstream
+// test_message_delta_finish_reason: a streamed pause_turn stop_reason maps
+// onto normalized "other" with finish_state "suspended" on both the
+// terminal chunk and the end-event message.
+func TestStreamPauseTurnSuspended(t *testing.T) {
+	server := streamUsageServer(t, `{"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":{"output_tokens":1}}`)
+	defer server.Close()
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("m"))
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("hi")},
+		runnables.WithCallbacks(callbacks.NewManager(recorder)))
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	chunks := drainStream(t, stream)
+	md := streamEndMessage(t, recorder).ResponseMetadata
+	if md["normalized_finish_reason"] != "other" || md["finish_state"] != "suspended" {
+		t.Fatalf("end message finish fields: %#v", md)
+	}
+	for _, chunk := range chunks {
+		if chunk.ResponseMetadata["stop_reason"] == "pause_turn" {
+			if chunk.ResponseMetadata["normalized_finish_reason"] != "other" ||
+				chunk.ResponseMetadata["finish_state"] != "suspended" {
+				t.Fatalf("terminal chunk finish fields: %#v", chunk.ResponseMetadata)
+			}
+		}
+	}
+}

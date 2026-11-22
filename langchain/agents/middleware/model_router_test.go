@@ -189,3 +189,39 @@ func modelRequestForRoute(t *testing.T, update map[string]any) ModelRequest {
 	}
 	return ModelRequest{State: map[string]any{routeStateKey: route}}
 }
+
+// TestGenericModelRouterClassifierFailurePropagates pins the upstream
+// test_classifier_failure_terminates_agent_run at the unit level: the
+// classifier error surfaces unchanged.
+func TestGenericModelRouterClassifierFailurePropagates(t *testing.T) {
+	boom := errors.New("unavailable")
+	router, err := NewModelRouterMiddleware(&fakeDecisionModel{err: boom}, map[string]ModelChoice{
+		"fast": {Model: fakeModel{label: "fast"}},
+	}, "route")
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	state := map[string]any{"messages": []messages.Message{messages.Human("go")}}
+	if _, err := router.BeforeAgent(t.Context(), state); !errors.Is(err, boom) {
+		t.Fatalf("expected classifier error, got %v", err)
+	}
+}
+
+// TestGenericModelRouterNoHumanDoesNotClassify pins the upstream
+// test_missing_human_message_is_rejected: rejecting the run happens before
+// any classification call.
+func TestGenericModelRouterNoHumanDoesNotClassify(t *testing.T) {
+	classifier := &fakeDecisionModel{}
+	router, err := NewModelRouterMiddleware(classifier, map[string]ModelChoice{
+		"fast": {Model: fakeModel{label: "fast"}},
+	}, "route")
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if _, err := router.BeforeAgent(t.Context(), map[string]any{"messages": []messages.Message{messages.AI("ready")}}); err == nil {
+		t.Fatal("expected no-human error")
+	}
+	if len(classifier.requests) != 0 {
+		t.Fatalf("classifier must not be called: %#v", classifier.requests)
+	}
+}

@@ -5,14 +5,18 @@ package agents
 // complementing the unit-level middleware tests in the partner packages.
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/decisions"
 	"github.com/projanvil/langchain-golang/core/messages"
 	coretools "github.com/projanvil/langchain-golang/core/tools"
+	agentsmw "github.com/projanvil/langchain-golang/langchain/agents/middleware"
 	openaidecisions "github.com/projanvil/langchain-golang/partners/openai/decisions"
 	openaimiddleware "github.com/projanvil/langchain-golang/partners/openai/middleware"
 	"github.com/projanvil/langchain-golang/partners/typesafe"
@@ -233,5 +237,120 @@ func TestCreateAgentTypeSafeModelRouterSwapsModelEndToEnd(t *testing.T) {
 	}
 	if len(base.invocations) != 0 {
 		t.Errorf("base model must not be invoked when a route is set, got %d calls", len(base.invocations))
+	}
+}
+
+// stubDecisionModel answers every Invoke with canned answers (core
+// decisions.DecisionModel), for the generic middleware end-to-end tests.
+type stubDecisionModel struct {
+	answers map[string]decisions.Answer
+	err     error
+}
+
+func (s *stubDecisionModel) Invoke(_ context.Context, _ decisions.Request) (decisions.Response, error) {
+	return decisions.Response{Model: "stub", Answers: s.answers}, s.err
+}
+
+// TestCreateAgentGenericModelRouterRoutesEndToEnd ports the upstream
+// test_agent_routes_using_latest_human_message: the router classifies the
+// latest human message, the selected model answers, and the full routing
+// answer lands in final state (#41766).
+func TestCreateAgentGenericModelRouterRoutesEndToEnd(t *testing.T) {
+	defaultModel := &sequenceModel{responses: []messages.Message{messages.AI("default")}}
+	fast := &sequenceModel{responses: []messages.Message{messages.AI("fast response")}}
+	classifier := &stubDecisionModel{answers: map[string]decisions.Answer{
+		"model_route": decisions.ChoiceAnswer{
+			Choice:        "fast",
+			Probabilities: map[string]float64{"fast": 0.9, "powerful": 0.1},
+			Confidence:    0.9,
+		},
+	}}
+	router, err := agentsmw.NewModelRouterMiddleware(classifier, map[string]agentsmw.ModelChoice{
+		"fast":     {Model: fast, Criteria: "Simple tasks."},
+		"powerful": {Model: &sequenceModel{responses: []messages.Message{messages.AI("powerful response")}}, Criteria: "Complex tasks."},
+	}, "Choose the least costly model suited to the task.")
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	agent, err := CreateAgent(defaultModel, nil, WithAgentMiddleware(router))
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	values, err := agent.InvokeWithState(t.Context(), []messages.Message{
+		messages.Human("earlier task"),
+		messages.AI("ready"),
+		messages.Human("update the readme"),
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	msgs, _ := values["messages"].([]messages.Message)
+	if len(msgs) == 0 || msgs[len(msgs)-1].Content != "fast response" {
+		t.Fatalf("final message: %#v", msgs)
+	}
+	if len(fast.invocations) != 1 || len(defaultModel.invocations) != 0 {
+		t.Fatalf("routing: fast=%d default=%d", len(fast.invocations), len(defaultModel.invocations))
+	}
+	route, ok := values["model_route"].(map[string]any)
+	if !ok || route["choice"] != "fast" || route["confidence"] != 0.9 {
+		t.Fatalf("model_route state: %#v", values["model_route"])
+	}
+}
+
+// TestCreateAgentGenericAutoModeEndToEnd ports the upstream
+// test_agent_executes_or_blocks_calls_by_probability: probability 0.2
+// executes the tool, probability 0.5 blocks with an error tool message
+// (#41766).
+func TestCreateAgentGenericAutoModeEndToEnd(t *testing.T) {
+	cases := []struct {
+		probability float64
+		wantBlocked bool
+	}{
+		{probability: 0.2, wantBlocked: false},
+		{probability: 0.5, wantBlocked: true},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("probability_%.1f", tc.probability), func(t *testing.T) {
+			var toolRuns int
+			model := &sequenceModel{responses: []messages.Message{
+				{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{hitlEchoToolCall("call_1", "hi")}},
+				messages.AI("done"),
+			}}
+			classifier := &stubDecisionModel{answers: map[string]decisions.Answer{
+				agentsmw.AutoModeQuestionID: decisions.NoulAnswer{Noul: tc.probability},
+			}}
+			auto, err := agentsmw.NewAutoModeMiddleware(classifier, []any{"echo"})
+			if err != nil {
+				t.Fatalf("auto mode: %v", err)
+			}
+			agent, err := CreateAgent(model, []coretools.Tool{newHitlTestTool(t, &toolRuns)}, WithAgentMiddleware(auto))
+			if err != nil {
+				t.Fatalf("create agent: %v", err)
+			}
+			values, err := agent.InvokeWithState(t.Context(), []messages.Message{messages.Human("go")})
+			if err != nil {
+				t.Fatalf("invoke: %v", err)
+			}
+			msgs, _ := values["messages"].([]messages.Message)
+			var toolMsg *messages.Message
+			for i := range msgs {
+				if msgs[i].Role == messages.RoleTool {
+					toolMsg = &msgs[i]
+				}
+			}
+			if toolMsg == nil {
+				t.Fatal("no tool message")
+			}
+			if tc.wantBlocked {
+				if toolRuns != 0 || toolMsg.AdditionalKwargs["status"] != "error" {
+					t.Fatalf("blocked: runs=%d msg=%#v", toolRuns, toolMsg)
+				}
+				if !strings.Contains(toolMsg.Content, "was blocked because it was classified as risky") {
+					t.Fatalf("blocked content: %q", toolMsg.Content)
+				}
+			} else if toolRuns != 1 || toolMsg.AdditionalKwargs["status"] == "error" {
+				t.Fatalf("allowed: runs=%d msg=%#v", toolRuns, toolMsg)
+			}
+		})
 	}
 }

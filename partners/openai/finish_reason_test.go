@@ -201,3 +201,83 @@ func TestChatCompletionsStreamFinishReasonFields(t *testing.T) {
 		}
 	}
 }
+
+// TestChatCompletionsRefusalFinishReason ports the upstream
+// test_create_chat_result_finish_reason refusal row: a normal stop with a
+// refusal message normalizes to "refusal" (#41926).
+func TestChatCompletionsRefusalFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"model":"gpt-test",
+			"choices":[{
+				"finish_reason":"stop",
+				"message":{"role":"assistant","content":null,"refusal":"I can't help."}
+			}],
+			"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	).WithChatCompletions()
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	md := resp.ResponseMetadata
+	if md["finish_reason"] != "stop" || md["normalized_finish_reason"] != "refusal" {
+		t.Fatalf("finish fields mismatch: %#v", md)
+	}
+}
+
+// TestChatCompletionsStreamRefusalFinishReason ports the upstream
+// test_stream_refusal_finish_reason: a refusal delta followed by a stop
+// finish_reason normalizes to "refusal" on the terminal chunk (#41926).
+func TestChatCompletionsStreamRefusalFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"refusal\":\"I can't help.\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	model := NewChatModel(
+		modelconfig.WithBaseURL(server.URL),
+		modelconfig.WithModel("gpt-test"),
+	).WithChatCompletions()
+	stream, err := model.Stream(t.Context(), []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var terminal messages.Message
+	for {
+		chunk, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		if chunk.ResponseMetadata["finish_reason"] != nil {
+			terminal = chunk
+		}
+	}
+	md := terminal.ResponseMetadata
+	if md["finish_reason"] != "stop" || md["normalized_finish_reason"] != "refusal" {
+		t.Fatalf("terminal chunk finish fields mismatch: %#v", md)
+	}
+	// The refusal itself rides the terminal chunk as a RefusalBlock.
+	foundRefusal := false
+	for _, block := range terminal.ContentBlocks {
+		if refusal, ok := block.(messages.RefusalBlock); ok && refusal.Refusal == "I can't help." {
+			foundRefusal = true
+		}
+	}
+	if !foundRefusal {
+		t.Fatalf("terminal chunk refusal block: %#v", terminal.ContentBlocks)
+	}
+}

@@ -107,3 +107,22 @@ func TestHasRefusalBlock(t *testing.T) {
 		t.Fatal("additional_kwargs refusal not detected")
 	}
 }
+
+// TestFinishReasonFieldsNilMetadataAndRawOnly port the upstream
+// test_finish_fields_empty_without_provider_fields and
+// test_finish_fields_raw_only: a nil map yields nothing, and a raw-only
+// field set is passed through uncorrected even with a refusal — there is
+// no normalized value to correct.
+func TestFinishReasonFieldsNilMetadataAndRawOnly(t *testing.T) {
+	if got := FinishReasonFields(nil, false, false); len(got) != 0 {
+		t.Errorf("nil metadata: %#v", got)
+	}
+	got := FinishReasonFields(map[string]any{"stop_reason": "end_turn"}, false, false)
+	if len(got) != 0 {
+		t.Errorf("non-shared keys only: %#v", got)
+	}
+	rawOnly := FinishReasonFields(map[string]any{"finish_reason": "stop"}, false, true)
+	if !reflect.DeepEqual(rawOnly, map[string]any{"finish_reason": "stop"}) {
+		t.Errorf("raw-only with refusal: %#v", rawOnly)
+	}
+}
