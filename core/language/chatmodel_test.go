@@ -1265,3 +1265,37 @@ type staticErrorLimiter struct {
 func (l staticErrorLimiter) Acquire(context.Context, bool) (bool, error) {
 	return false, l.err
 }
+
+// TestStreamEventsBridgeCarriesFinishFields pins the #41926 chunk-bridge
+// contract: a chunk-only stream's terminal chunk carries the provider's
+// finish fields on response_metadata, and the message-finish output surfaces
+// them with core's corrections applied (here: a stop with a streamed tool
+// call becomes tool_call).
+func TestStreamEventsBridgeCarriesFinishFields(t *testing.T) {
+	terminal := messages.AI("")
+	terminal.ToolCalls = []messages.ToolCall{{ID: "call_1", Name: "search"}}
+	terminal.ResponseMetadata = map[string]any{
+		"finish_reason":            "stop",
+		"normalized_finish_reason": "stop",
+	}
+	model := NewFakeChatModel(WithStreamChunks(
+		messages.AI("working"),
+		terminal,
+	))
+
+	stream, err := StreamEvents(t.Context(), model, []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("stream events: %v", err)
+	}
+	output, err := stream.Output()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if output.ResponseMetadata["finish_reason"] != "stop" ||
+		output.ResponseMetadata["normalized_finish_reason"] != "tool_call" {
+		t.Fatalf("finish fields on output: %#v", output.ResponseMetadata)
+	}
+	if len(output.ToolCalls) != 1 || output.ToolCalls[0].Name != "search" {
+		t.Fatalf("tool calls: %#v", output.ToolCalls)
+	}
+}

@@ -920,3 +920,38 @@ func TestStreamEventsCallerCallbacksSeeEventsToo(t *testing.T) {
 		t.Fatalf("caller recorder saw %d events, want 2", len(recorder.Events()))
 	}
 }
+
+// TestStreamEventsKeepsInternalModelCalls pins Python langchain 1.4.10
+// (#41579): a middleware-internal model call (marked with
+// callbacks.WithInternalCall) is dropped from the messages projection only —
+// stream_events keeps its chat-model events. The internal node emits its
+// chat-model stream chunk under the marked context; every event must survive.
+func TestStreamEventsKeepsInternalModelCalls(t *testing.T) {
+	emitInternal := runnables.NewFunc(
+		func(ctx context.Context, _ string, _ ...runnables.Option) (string, error) {
+			manager, ok := callbacks.ManagerFromContext(ctx)
+			if !ok {
+				t.Fatal("no callback manager in context")
+			}
+			chunk := messages.AI("internal-token")
+			_ = manager.Emit(callbacks.WithInternalCall(ctx), callbacks.Event{
+				Kind:  callbacks.EventChatModelStream,
+				Chunk: chunk,
+			})
+			return "done", nil
+		},
+		schema.String(""), schema.String(""),
+	)
+	events := esCollect(t, runnables.StreamEvents(
+		t.Context(), emitInternal, "go", runnables.StreamEventOptions{},
+	), "")
+	var sawModelStream bool
+	for _, event := range events {
+		if event.Event == "on_chat_model_stream" {
+			sawModelStream = true
+		}
+	}
+	if !sawModelStream {
+		t.Fatalf("internal chat-model stream event missing from stream_events: %v", esNames(events))
+	}
+}

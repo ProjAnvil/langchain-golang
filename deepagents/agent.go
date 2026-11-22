@@ -328,14 +328,16 @@ func mergedInterruptConfigs(perms []backends.PermissionRule, user map[string]age
 // backend) single-call default (without the backend offload superset,
 // divergence D1). A model error propagates.
 func defaultSummarizer(model language.ChatModel) agentsmw.SummarizerFunc {
-	return func(prompt string, msgs []messages.Message) (string, error) {
+	return func(ctx context.Context, prompt string, msgs []messages.Message) (string, error) {
 		var transcript strings.Builder
 		for _, msg := range msgs {
 			if text := messages.Text(msg); text != "" {
 				fmt.Fprintf(&transcript, "\n%s: %s", msg.Role, text)
 			}
 		}
-		out, err := model.Invoke(context.Background(), []messages.Message{
+		// ctx arrives marked as a middleware-internal call, keeping the
+		// summary tokens out of the messages projection (#41579).
+		out, err := model.Invoke(ctx, []messages.Message{
 			messages.Human(prompt + transcript.String()),
 		})
 		if err != nil {

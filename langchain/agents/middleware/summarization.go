@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/lcerrors"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/modelprofiles"
@@ -69,7 +70,12 @@ type ModelProfileProvider interface {
 	ModelProfile() modelprofiles.Profile
 }
 
-type SummarizerFunc func(prompt string, messagesToSummarize []messages.Message) (string, error)
+// SummarizerFunc summarizes the buffered messages. The context arrives
+// marked as a middleware-internal call (callbacks.WithInternalCall), so a
+// summarizer that forwards it to its model keeps the summary tokens out of
+// the messages stream projection (Python langchain #41579; the Go port marks
+// the call with a context token instead of a nostream tag).
+type SummarizerFunc func(ctx context.Context, prompt string, messagesToSummarize []messages.Message) (string, error)
 
 type SummarizationMiddleware struct {
 	Trigger       []TriggerClause
@@ -124,7 +130,7 @@ func (m *SummarizationMiddleware) BeforeModel(ctx context.Context, state map[str
 		summary = "Previous conversation was too long to summarize."
 	} else {
 		prompt := strings.ReplaceAll(m.summaryPrompt(), "{messages}", bufferString(trimmed))
-		s, err := m.Summarize(prompt, trimmed)
+		s, err := m.Summarize(callbacks.WithInternalCall(ctx), prompt, trimmed)
 		if err != nil {
 			if !errors.Is(err, lcerrors.ErrModelContextOverflow) {
 				return nil, err
@@ -136,7 +142,7 @@ func (m *SummarizationMiddleware) BeforeModel(ctx context.Context, state map[str
 			if !ok {
 				return nil, err
 			}
-			s, err = m.Summarize(retryPrompt, trimmed)
+			s, err = m.Summarize(callbacks.WithInternalCall(ctx), retryPrompt, trimmed)
 			if err != nil {
 				return nil, err
 			}

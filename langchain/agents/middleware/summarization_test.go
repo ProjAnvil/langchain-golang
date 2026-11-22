@@ -1,11 +1,13 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	"github.com/projanvil/langchain-golang/core/lcerrors"
 	"github.com/projanvil/langchain-golang/core/messages"
 	"github.com/projanvil/langchain-golang/modelprofiles"
@@ -22,7 +24,7 @@ func (f fakeProfileModel) ModelProfile() modelprofiles.Profile {
 }
 
 func TestSummarizationMiddlewareSummarizesWhenTriggered(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(prompt string, msgs []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(ctx context.Context, prompt string, msgs []messages.Message) (string, error) {
 		if len(msgs) != 2 {
 			t.Fatalf("summarized message count mismatch: %#v", msgs)
 		}
@@ -52,7 +54,7 @@ func TestSummarizationMiddlewareSummarizesWhenTriggered(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareDoesNotTriggerBelowThreshold(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		t.Fatal("summarizer should not be called")
 		return "", nil
 	})
@@ -68,7 +70,7 @@ func TestSummarizationMiddlewareDoesNotTriggerBelowThreshold(t *testing.T) {
 
 func TestSummarizationMiddlewareFractionTrigger(t *testing.T) {
 	called := false
-	middleware := NewSummarizationMiddleware(func(prompt string, msgs []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(ctx context.Context, prompt string, msgs []messages.Message) (string, error) {
 		called = true
 		return "summary", nil
 	})
@@ -93,7 +95,7 @@ func TestSummarizationMiddlewareFractionTrigger(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareFractionTriggerBelowThreshold(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		t.Fatal("summarizer should not be called")
 		return "", nil
 	})
@@ -113,7 +115,7 @@ func TestSummarizationMiddlewareFractionTriggerBelowThreshold(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareFractionTriggerWithoutProfileNeverFires(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		t.Fatal("summarizer should not be called")
 		return "", nil
 	})
@@ -132,7 +134,7 @@ func TestSummarizationMiddlewareFractionTriggerWithoutProfileNeverFires(t *testi
 }
 
 func TestSummarizationMiddlewareFractionKeep(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(prompt string, msgs []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(ctx context.Context, prompt string, msgs []messages.Message) (string, error) {
 		return "summary", nil
 	})
 	middleware.Model = fakeProfileModel{profile: modelprofiles.Profile{"max_input_tokens": 20}}
@@ -157,7 +159,7 @@ func TestSummarizationMiddlewareFractionKeep(t *testing.T) {
 
 func TestSummarizationMiddlewareTrimTokensToSummarize(t *testing.T) {
 	var received []messages.Message
-	middleware := NewSummarizationMiddleware(func(prompt string, msgs []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(ctx context.Context, prompt string, msgs []messages.Message) (string, error) {
 		received = msgs
 		return "summary", nil
 	})
@@ -183,7 +185,7 @@ func TestSummarizationMiddlewareTrimTokensToSummarize(t *testing.T) {
 
 func TestSummarizationMiddlewareTrimDisabled(t *testing.T) {
 	var received []messages.Message
-	middleware := NewSummarizationMiddleware(func(prompt string, msgs []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(ctx context.Context, prompt string, msgs []messages.Message) (string, error) {
 		received = msgs
 		return "summary", nil
 	})
@@ -220,7 +222,7 @@ func overflowTestMessages() []messages.Message {
 
 func TestSummarizationMiddlewareRetriesOnceOnContextOverflow(t *testing.T) {
 	var prompts []string
-	middleware := NewSummarizationMiddleware(func(prompt string, msgs []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(ctx context.Context, prompt string, msgs []messages.Message) (string, error) {
 		prompts = append(prompts, prompt)
 		if len(prompts) == 1 {
 			return "", fmt.Errorf("wrap: %w", lcerrors.ErrModelContextOverflow)
@@ -261,7 +263,7 @@ func TestSummarizationMiddlewareRetriesOnceOnContextOverflow(t *testing.T) {
 
 func TestSummarizationMiddlewareSecondOverflowPropagates(t *testing.T) {
 	var calls int
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		calls++
 		if calls == 1 {
 			return "", lcerrors.NewProviderError("openai", "/responses", 400, "maximum context length is 4097 tokens", 0)
@@ -290,7 +292,7 @@ func TestSummarizationMiddlewareSecondOverflowPropagates(t *testing.T) {
 
 func TestSummarizationMiddlewareOverflowWithoutRetryBudgetPropagates(t *testing.T) {
 	var calls int
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		calls++
 		return "", fmt.Errorf("wrap: %w", lcerrors.ErrModelContextOverflow)
 	})
@@ -314,7 +316,7 @@ func TestSummarizationMiddlewareOverflowWithoutRetryBudgetPropagates(t *testing.
 
 func TestSummarizationMiddlewareDoesNotRetryNonOverflowErrors(t *testing.T) {
 	var calls int
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		calls++
 		return "", errors.New("boom")
 	})
@@ -336,7 +338,7 @@ func TestSummarizationMiddlewareOverflowRetryPromptBudgetPaths(t *testing.T) {
 	// token counter reports a constant 23 tokens for the formatted history.
 	trimmed := []messages.Message{messages.Human("abcdef"), messages.AI("ghij")}
 	newMiddleware := func() *SummarizationMiddleware {
-		m := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+		m := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 			return "unused", nil
 		})
 		m.TokenCounter = func([]messages.Message) int { return 23 }
@@ -391,4 +393,26 @@ func TestSummarizationMiddlewareOverflowRetryPromptBudgetPaths(t *testing.T) {
 			t.Fatalf("expected no retry prompt, got %q", prompt)
 		}
 	})
+}
+
+// TestSummarizationMarksInternalCall pins the Go port of #41579: the
+// summarizer receives a context marked as a middleware-internal call, so a
+// summarizer that forwards it to its model keeps summary tokens out of the
+// messages stream projection.
+func TestSummarizationMarksInternalCall(t *testing.T) {
+	var marked bool
+	middleware := NewSummarizationMiddleware(func(ctx context.Context, _ string, _ []messages.Message) (string, error) {
+		marked = callbacks.IsInternalCall(ctx)
+		return "summary", nil
+	})
+	middleware.Trigger = []TriggerClause{{Messages: 3}}
+	middleware.Keep = KeepPolicy{Messages: 1}
+	if _, err := middleware.BeforeModel(t.Context(), map[string]any{"messages": []messages.Message{
+		messages.Human("one"), messages.AI("two"), messages.Human("three"),
+	}}); err != nil {
+		t.Fatalf("before model: %v", err)
+	}
+	if !marked {
+		t.Fatal("summarizer context missing the internal-call marker")
+	}
 }

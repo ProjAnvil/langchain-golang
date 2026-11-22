@@ -226,6 +226,10 @@ func (s *messageStream) consumeEvent(ctx context.Context) (messages.Message, boo
 				s.output.ResponseMetadata = map[string]any{}
 			}
 			s.output.ResponseMetadata["stop_reason"] = event.Delta.StopReason
+			// Shared finish fields alongside the raw stop_reason (#41926).
+			for key, value := range finishReasonFields(event.Delta.StopReason) {
+				s.output.ResponseMetadata[key] = value
+			}
 		}
 		if event.Delta.StopReason == "refusal" {
 			explanation, category := "", ""
@@ -261,6 +265,11 @@ func (s *messageStream) consumeEvent(ctx context.Context) (messages.Message, boo
 			chunk.ResponseMetadata = map[string]any{}
 			if event.Delta.StopReason != "" {
 				chunk.ResponseMetadata["stop_reason"] = event.Delta.StopReason
+				// Shared finish fields ride on the terminal chunk too
+				// (chat_models.py:2565-2568, #41926).
+				for key, value := range finishReasonFields(event.Delta.StopReason) {
+					chunk.ResponseMetadata[key] = value
+				}
 			}
 			if event.Delta.StopSequence != "" {
 				chunk.ResponseMetadata["stop_sequence"] = event.Delta.StopSequence

@@ -170,7 +170,8 @@ func (u chatUsage) isZero() bool {
 }
 
 type chatCompletionsChoice struct {
-	Message chatCompletionsMessage `json:"message"`
+	Message      chatCompletionsMessage `json:"message"`
+	FinishReason string                 `json:"finish_reason,omitempty"`
 }
 
 type chatCompletionsMessage struct {
@@ -328,6 +329,9 @@ func (r chatCompletionsResponse) toResponsesPayload() responsePayload {
 	if len(r.Choices) == 0 {
 		return out
 	}
+	// The raw finish_reason rides through normalization for toMessage's
+	// shared finish fields (#41926).
+	out.FinishReason = r.Choices[0].FinishReason
 	msg := r.Choices[0].Message
 	if msg.Content != "" {
 		out.Output = append(out.Output, outputItem{

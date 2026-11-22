@@ -651,6 +651,13 @@ type responsePayload struct {
 	Model  string       `json:"model"`
 	Output []outputItem `json:"output"`
 	Usage  usagePayload `json:"usage"`
+	// Status and IncompleteDetails come from Responses API payloads
+	// ("completed", "incomplete", "failed"; incomplete_details.reason).
+	Status            string         `json:"status,omitempty"`
+	IncompleteDetails map[string]any `json:"incomplete_details,omitempty"`
+	// FinishReason carries a Chat Completions finish_reason through the
+	// normalization in toResponsesPayload; Responses payloads never set it.
+	FinishReason string `json:"-"`
 }
 
 type outputItem struct {
@@ -775,6 +782,23 @@ func (r responsePayload) toMessage() messages.Message {
 	message.ResponseMetadata = map[string]any{
 		"model":          r.Model,
 		"model_provider": "openai",
+	}
+	// Shared finish fields (#41926): Responses payloads map their status,
+	// normalized Chat Completions payloads their finish_reason.
+	hasToolCalls := len(toolCalls) > 0 || len(invalidToolCalls) > 0
+	if r.Status != "" {
+		message.ResponseMetadata["status"] = r.Status
+		if r.IncompleteDetails != nil {
+			message.ResponseMetadata["incomplete_details"] = r.IncompleteDetails
+		}
+		for key, value := range responsesFinishReasonFields(r.Status, r.IncompleteDetails, hasToolCalls, refusalText != "") {
+			message.ResponseMetadata[key] = value
+		}
+	} else if r.FinishReason != "" {
+		message.ResponseMetadata["finish_reason"] = r.FinishReason
+		for key, value := range chatFinishReasonFields(r.FinishReason, hasToolCalls, refusalText != "") {
+			message.ResponseMetadata[key] = value
+		}
 	}
 	message.UsageMetadata = r.Usage.toUsageMetadata()
 	return message

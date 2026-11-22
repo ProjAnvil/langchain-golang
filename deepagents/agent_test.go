@@ -584,7 +584,7 @@ func TestCreateDeepAgentSubagentDeletePersistsInParentState(t *testing.T) {
 // inside the subagent (UP graph.py:918 — the default subagent gets the main
 // agent's tools).
 func TestCreateDeepAgentGeneralPurposeCarriesParentTools(t *testing.T) {
-	marker := agentsmw.NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	marker := agentsmw.NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		return "", nil
 	})
 	ping, pingRan := newPingTool(t)
@@ -661,7 +661,7 @@ func TestCreateDeepAgentGeneralPurposeCarriesParentTools(t *testing.T) {
 // TestDeepAgentOptionSetters pins every functional option against the options
 // struct.
 func TestDeepAgentOptionSetters(t *testing.T) {
-	summarizer := agentsmw.SummarizerFunc(func(string, []messages.Message) (string, error) { return "s", nil })
+	summarizer := agentsmw.SummarizerFunc(func(context.Context, string, []messages.Message) (string, error) { return "s", nil })
 	saver := checkpoint.NewMemorySaver()
 	backend := backends.NewStateBackend()
 	ping, _ := newPingTool(t)
@@ -824,7 +824,7 @@ func TestMergedInterruptConfigs(t *testing.T) {
 func TestDefaultSummarizer(t *testing.T) {
 	ok := &scriptedChatModel{responses: []messages.Message{messages.AI("summary text")}}
 	summarize := defaultSummarizer(ok)
-	got, err := summarize("Summarize:", []messages.Message{messages.Human("hello"), messages.AI("world")})
+	got, err := summarize(t.Context(), "Summarize:", []messages.Message{messages.Human("hello"), messages.AI("world")})
 	if err != nil {
 		t.Fatalf("defaultSummarizer: %v", err)
 	}
@@ -833,7 +833,7 @@ func TestDefaultSummarizer(t *testing.T) {
 	}
 
 	failing := &scriptedChatModel{}
-	if _, err := defaultSummarizer(failing)("p", []messages.Message{messages.Human("x")}); err == nil {
+	if _, err := defaultSummarizer(failing)(t.Context(), "p", []messages.Message{messages.Human("x")}); err == nil {
 		t.Fatal("model failure must propagate")
 	}
 }
@@ -843,7 +843,7 @@ func TestDefaultSummarizer(t *testing.T) {
 func TestCreateDeepAgentCustomSummarizerAccepted(t *testing.T) {
 	model := &scriptedChatModel{responses: []messages.Message{messages.AI("hi")}}
 	agent, err := CreateDeepAgent(model,
-		WithSummarizer(agentsmw.SummarizerFunc(func(string, []messages.Message) (string, error) {
+		WithSummarizer(agentsmw.SummarizerFunc(func(context.Context, string, []messages.Message) (string, error) {
 			return "condensed", nil
 		})),
 	)

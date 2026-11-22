@@ -225,12 +225,11 @@ func (c *eventCollector) HandleEvent(ctx context.Context, event callbacks.Event)
 	if c.closed.Load() {
 		return nil
 	}
-	// Middleware-internal model calls stay out of StreamEvents, matching the
-	// raw event log filtering of Python langchain's InternalCallTransformer
-	// (#39252). Non-chat-model events pass through untouched.
-	if callbacks.IsInternalCall(ctx) && isChatModelEventKind(event.Kind) {
-		return nil
-	}
+	// Middleware-internal model calls pass through to StreamEvents: since
+	// Python langchain 1.4.10 (#41579) internal calls carry a nostream tag
+	// that only drops them from the messages projection — traces and
+	// stream_events keep them. The Go messages-bridge filter
+	// (langgraph/graph/stream_messages.go) owns the messages-mode drop.
 	defer func() { _ = recover() }()
 	select {
 	case c.ch <- event:
@@ -264,12 +263,6 @@ func (p *streamEventProjector) project(e callbacks.Event) StreamEvent {
 		}
 	}
 	return StreamEventFromCallback(e, p.registry.resolve(e.RunID, e.ParentID), agg)
-}
-
-// isChatModelEventKind reports whether kind belongs to a chat-model run's
-// lifecycle (used for internal-call filtering).
-func isChatModelEventKind(kind callbacks.EventKind) bool {
-	return isChatModelKind(kind)
 }
 
 func isChatModelKind(kind callbacks.EventKind) bool {

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestSummarizationMiddlewareNoMessages(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		t.Fatal("summarizer should not be called")
 		return "", nil
 	})
@@ -34,7 +35,7 @@ func TestSummarizationMiddlewareRequiresSummarizer(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareKeepCoversAllMessages(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		t.Fatal("summarizer should not be called")
 		return "", nil
 	})
@@ -50,7 +51,7 @@ func TestSummarizationMiddlewareKeepCoversAllMessages(t *testing.T) {
 
 func TestSummarizationMiddlewareSummarizeErrorPropagates(t *testing.T) {
 	wantErr := errors.New("summarizer down")
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		return "", wantErr
 	})
 	middleware.Trigger = []TriggerClause{{Messages: 2}}
@@ -65,7 +66,7 @@ func TestSummarizationMiddlewareSummarizeErrorPropagates(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareEmptyAfterTrim(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		t.Fatal("summarizer should not be called for an empty trim")
 		return "", nil
 	})
@@ -87,7 +88,7 @@ func TestSummarizationMiddlewareEmptyAfterTrim(t *testing.T) {
 
 func TestSummarizationMiddlewareDefaultTrigger(t *testing.T) {
 	called := false
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		called = true
 		return "summary", nil
 	})
@@ -112,7 +113,7 @@ func TestSummarizationMiddlewareDefaultTrigger(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareTokenTrigger(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		return "summary", nil
 	})
 	middleware.Trigger = []TriggerClause{{Tokens: 10}}
@@ -136,7 +137,7 @@ func TestSummarizationMiddlewareTokenTrigger(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareReportedTokensTrigger(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		return "summary", nil
 	})
 	middleware.Trigger = []TriggerClause{{Tokens: 100}}
@@ -215,7 +216,7 @@ func TestProviderMatches(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareTokenKeepPolicy(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		return "summary", nil
 	})
 	middleware.Trigger = []TriggerClause{{Messages: 4}}
@@ -236,7 +237,7 @@ func TestSummarizationMiddlewareTokenKeepPolicy(t *testing.T) {
 }
 
 func TestSummarizationMiddlewareFractionKeepWithoutProfile(t *testing.T) {
-	middleware := NewSummarizationMiddleware(func(string, []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(context.Context, string, []messages.Message) (string, error) {
 		return "summary", nil
 	})
 	middleware.Trigger = []TriggerClause{{Messages: 1}}
@@ -354,7 +355,7 @@ func TestResolveTokenCounter(t *testing.T) {
 
 func TestSummarizationMiddlewareDefaultPromptUsed(t *testing.T) {
 	var prompt string
-	middleware := NewSummarizationMiddleware(func(p string, _ []messages.Message) (string, error) {
+	middleware := NewSummarizationMiddleware(func(_ context.Context, p string, _ []messages.Message) (string, error) {
 		prompt = p
 		return "summary", nil
 	})

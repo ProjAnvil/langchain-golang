@@ -1292,6 +1292,10 @@ func (r messagePayload) toMessage() messages.Message {
 		"model_provider": "anthropic",
 		"stop_reason":    r.StopReason,
 	}
+	// Shared finish fields alongside the raw stop_reason (#41926).
+	for key, value := range finishReasonFields(r.StopReason) {
+		message.ResponseMetadata[key] = value
+	}
 	if r.StopReason == "refusal" {
 		explanation := ""
 		if r.StopDetails != nil {

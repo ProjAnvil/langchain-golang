@@ -122,7 +122,7 @@ func main() {
 	// keeping only the trailing 2. The summarizer is an ordinary function —
 	// point it at a real model (or an agents.Agent as a tool) in production. ---
 	summarizerCalls := 0
-	summarize := middleware.NewSummarizationMiddleware(func(_ string, msgs []messages.Message) (string, error) {
+	summarize := middleware.NewSummarizationMiddleware(func(_ context.Context, _ string, msgs []messages.Message) (string, error) {
 		summarizerCalls++
 		return fmt.Sprintf("[summary] %d earlier customer message(s) about shipping arrangements.", len(msgs)), nil
 	})
