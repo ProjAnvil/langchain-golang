@@ -143,7 +143,10 @@ func (u chatUsage) toUsagePayload() usagePayload {
 	switch d := inputDetails.(type) {
 	case *chatPromptDetails:
 		if d != nil {
-			out.InputTokensDetails = &inputTokensDetails{CachedTokens: d.CachedTokens}
+			out.InputTokensDetails = &inputTokensDetails{
+				CachedTokens: d.CachedTokens,
+				AudioTokens:  d.AudioTokens,
+			}
 		}
 	case *inputTokensDetails:
 		if d != nil {
@@ -153,7 +156,10 @@ func (u chatUsage) toUsagePayload() usagePayload {
 	switch d := outputDetails.(type) {
 	case *chatCompletionDetails:
 		if d != nil {
-			out.OutputTokensDetails = &outputTokensDetails{ReasoningTokens: d.ReasoningTokens}
+			out.OutputTokensDetails = &outputTokensDetails{
+				ReasoningTokens: d.ReasoningTokens,
+				AudioTokens:     d.AudioTokens,
+			}
 		}
 	case *outputTokensDetails:
 		if d != nil {

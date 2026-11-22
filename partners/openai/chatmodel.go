@@ -709,12 +709,14 @@ type usagePayload struct {
 }
 
 type inputTokensDetails struct {
-	CachedTokens        int `json:"cached_tokens"`
-	CacheCreationTokens int `json:"cache_creation_tokens"`
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	AudioTokens      int `json:"audio_tokens"`
 }
 
 type outputTokensDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
+	AudioTokens     int `json:"audio_tokens"`
 }
 
 func (r responsePayload) toMessage() messages.Message {
@@ -816,20 +818,28 @@ func (r responsePayload) toMessage() messages.Message {
 // normalizing Chat Completions usage) into the core UsageMetadata, including
 // cached-input and reasoning-output details when the payload carries them.
 func (u usagePayload) toUsageMetadata() messages.UsageMetadata {
+	total := u.TotalTokens
+	if total == 0 {
+		// Gateways omit the total; core's convention (and base.py:4611)
+		// completes it from input + output.
+		total = u.InputTokens + u.OutputTokens
+	}
 	md := messages.UsageMetadata{
 		InputTokens:  u.InputTokens,
 		OutputTokens: u.OutputTokens,
-		TotalTokens:  u.TotalTokens,
+		TotalTokens:  total,
 	}
 	if details := u.InputTokensDetails; details != nil {
 		md.InputTokenDetails = &messages.InputTokenDetails{
-			CacheReadInputTokens:     details.CachedTokens,
-			CacheCreationInputTokens: details.CacheCreationTokens,
+			CacheRead:     details.CachedTokens,
+			CacheCreation: details.CacheWriteTokens,
+			Audio:         details.AudioTokens,
 		}
 	}
-	if details := u.OutputTokensDetails; details != nil && details.ReasoningTokens > 0 {
+	if details := u.OutputTokensDetails; details != nil && (details.ReasoningTokens > 0 || details.AudioTokens > 0) {
 		md.OutputTokenDetails = &messages.OutputTokenDetails{
-			ReasoningOutputTokens: details.ReasoningTokens,
+			Reasoning: details.ReasoningTokens,
+			Audio:     details.AudioTokens,
 		}
 	}
 	return md

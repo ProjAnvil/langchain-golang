@@ -36,11 +36,18 @@ func TestQuestionToOpenAIMapping(t *testing.T) {
 	if _, err := questionToOpenAI(coredecisions.Box{Instructions: "find"}); err == nil {
 		t.Fatal("box must error on the Decisions API")
 	}
-	if _, err := questionToOpenAI(coredecisions.Noul{Instructions: map[string]any{"k": "v"}}); err == nil {
-		t.Fatal("non-string instructions must error")
+	// Non-string instructions convert to JSON text (upstream _to_text).
+	predicate, err = questionToOpenAI(coredecisions.Noul{Instructions: map[string]any{"k": "v"}})
+	if err != nil || predicate.(Predicate).Instructions != `{"k":"v"}` {
+		t.Fatalf("non-string instructions convert to text: %#v %v", predicate, err)
 	}
-	if _, err := questionToOpenAI(coredecisions.Score{Instructions: "r", Criteria: []coredecisions.Content{map[string]any{}, "high"}}); err == nil {
-		t.Fatal("non-string score level must error")
+	// Non-string score levels convert to text labels.
+	score, err = questionToOpenAI(coredecisions.Score{Instructions: "r", Criteria: []coredecisions.Content{map[string]any{"n": 1}, "high"}})
+	if err != nil {
+		t.Fatalf("non-string score level: %v", err)
+	}
+	if levels := score.(Score).Levels; levels[0].Label != `{"n":1}` || levels[1].Label != "high" {
+		t.Fatalf("text-converted levels: %#v", levels)
 	}
 }
 
@@ -49,28 +56,24 @@ func TestQuestionToOpenAIMapping(t *testing.T) {
 // refusals are dropped, and usage completes.
 func TestOpenAIResponseToCore(t *testing.T) {
 	input := 5
-	core := responseToCore(Response{
+	core, err := responseToCore(Response{
 		Model: "gpt-test",
 		Answers: map[string]Answer{
 			"risk":  PredicateAnswer{Probability: 0.75},
 			"route": ChoiceAnswer{Choice: "billing", Probabilities: map[string]float64{"billing": 1.0}, Confidence: 1.0},
 			"bool":  ChoiceAnswer{Choice: true},
-			"decl":  RefusalAnswer{},
 		},
 		Usage:     Usage{InputTokens: &input},
 		RequestID: "req_2",
-	})
+	}, map[string]coredecisions.Question{})
+	if err == nil {
+		t.Fatal("a bool choice must fail loud, not drop")
+	}
 	if noul := core.Answers["risk"].(coredecisions.NoulAnswer); noul.Noul != 0.75 {
 		t.Fatalf("predicate mapping: %#v", noul)
 	}
 	if choice := core.Answers["route"].(coredecisions.ChoiceAnswer); choice.Choice != "billing" {
 		t.Fatalf("choice mapping: %#v", choice)
-	}
-	if _, has := core.Answers["bool"]; has {
-		t.Fatal("bool choice must be dropped")
-	}
-	if _, has := core.Answers["decl"]; has {
-		t.Fatal("refusal answer must be dropped")
 	}
 	if core.Usage == nil || core.Usage.TotalTokens != 5 {
 		t.Fatalf("usage: %#v", core.Usage)

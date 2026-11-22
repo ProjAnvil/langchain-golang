@@ -185,8 +185,25 @@ func validateQuestion(q Question) error {
 var answerTypes = []string{"predicate", "choice", "score", "refusal"}
 
 type rawUsage struct {
-	InputTokens  *int `json:"input_tokens"`
-	OutputTokens *int `json:"output_tokens"`
+	InputTokens         *int                   `json:"input_tokens"`
+	OutputTokens        *int                   `json:"output_tokens"`
+	TotalTokens         *int                   `json:"total_tokens"`
+	InputTokensDetails  *rawInputTokenDetails  `json:"input_tokens_details"`
+	OutputTokensDetails *rawOutputTokenDetails `json:"output_tokens_details"`
+}
+
+// rawInputTokenDetails is the wire input_tokens_details object
+// (_to_usage maps cached_tokens→cache_read, cache_write_tokens→
+// cache_creation; classifier.py:355-371).
+type rawInputTokenDetails struct {
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+}
+
+// rawOutputTokenDetails is the wire output_tokens_details object
+// (reasoning_tokens→reasoning).
+type rawOutputTokenDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // parseResponse validates and normalizes a 2xx response body (Python
@@ -223,7 +240,13 @@ func parseResponse(requestID string, body []byte) (Response, error) {
 	}
 	response := Response{Model: raw.Model, Answers: answers, RequestID: requestID}
 	if raw.Usage != nil {
-		response.Usage = Usage{InputTokens: raw.Usage.InputTokens, OutputTokens: raw.Usage.OutputTokens}
+		response.Usage = Usage{
+			InputTokens:         raw.Usage.InputTokens,
+			OutputTokens:        raw.Usage.OutputTokens,
+			TotalTokens:         raw.Usage.TotalTokens,
+			InputTokensDetails:  raw.Usage.InputTokensDetails,
+			OutputTokensDetails: raw.Usage.OutputTokensDetails,
+		}
 	}
 	return response, nil
 }

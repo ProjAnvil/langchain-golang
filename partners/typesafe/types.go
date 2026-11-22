@@ -248,6 +248,50 @@ func (q Score) toAPI() (map[string]any, error) {
 	return out, nil
 }
 
+// Box locates what the instructions describe in an image in the state
+// (the core vocabulary's Box question, supported by TypeSafe since #41767).
+type Box struct {
+	// Instructions describes what to locate in the image.
+	Instructions any
+}
+
+func (Box) questionMarker() {}
+
+// MarshalJSON writes the wire object: type, instructions.
+func (q Box) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteString(`{"type":"box","instructions":`)
+	encoded, err := json.Marshal(q.Instructions)
+	if err != nil {
+		return nil, fmt.Errorf("typesafe: marshal box instructions: %w", err)
+	}
+	buf.Write(encoded)
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+func (q Box) toAPI() (map[string]any, error) {
+	return map[string]any{"type": "box", "instructions": q.Instructions}, nil
+}
+
+// BoxCoordinates gives the edges of a box as fractions of the image height
+// and width, from 0 to 1.
+type BoxCoordinates struct {
+	Top    float64 `json:"top"`
+	Bottom float64 `json:"bottom"`
+	Left   float64 `json:"left"`
+	Right  float64 `json:"right"`
+}
+
+// BoxAnswer locates what a Box question describes; the provider may omit
+// the confidence.
+type BoxAnswer struct {
+	Box        BoxCoordinates
+	Confidence *float64
+}
+
+func (BoxAnswer) answerMarker() {}
+
 // Answer is the sealed union of TypeSafe answer types (types.py:273).
 type Answer interface {
 	answerMarker()

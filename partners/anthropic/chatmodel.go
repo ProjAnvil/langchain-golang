@@ -1161,11 +1161,23 @@ type stopDetailsPayload struct {
 }
 
 type usagePayload struct {
-	InputTokens              int                  `json:"input_tokens"`
-	OutputTokens             int                  `json:"output_tokens"`
-	CacheReadInputTokens     int                  `json:"cache_read_input_tokens"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	// CacheRead is the wire cache_read_input_tokens count.
+	CacheRead int `json:"cache_read_input_tokens"`
+	// CacheCreationInputTokens is the flat wire cache_creation_input_tokens
+	// count; CacheCreationTTL is the newer usage.cache_creation object with
+	// the ephemeral TTL breakdown.
 	CacheCreationInputTokens int                  `json:"cache_creation_input_tokens"`
-	CacheCreation            cacheCreationPayload `json:"cache_creation"`
+	CacheCreationTTL         cacheCreationPayload `json:"cache_creation"`
+	// OutputTokensDetails carries the thinking-token breakdown
+	// (output_tokens_details.thinking_tokens).
+	OutputTokensDetails *outputTokensDetailsPayload `json:"output_tokens_details"`
+}
+
+// outputTokensDetailsPayload is the wire output_tokens_details object.
+type outputTokensDetailsPayload struct {
+	ThinkingTokens int `json:"thinking_tokens"`
 }
 
 // cacheCreationPayload models the newer Anthropic usage.cache_creation object,
@@ -1193,14 +1205,17 @@ func (u *usagePayload) merge(next usagePayload) {
 	if next.OutputTokens != 0 {
 		u.OutputTokens = next.OutputTokens
 	}
-	if next.CacheReadInputTokens != 0 {
-		u.CacheReadInputTokens = next.CacheReadInputTokens
+	if next.CacheRead != 0 {
+		u.CacheRead = next.CacheRead
 	}
 	if next.CacheCreationInputTokens != 0 {
 		u.CacheCreationInputTokens = next.CacheCreationInputTokens
 	}
-	if next.CacheCreation != (cacheCreationPayload{}) {
-		u.CacheCreation = next.CacheCreation
+	if next.CacheCreationTTL != (cacheCreationPayload{}) {
+		u.CacheCreationTTL = next.CacheCreationTTL
+	}
+	if next.OutputTokensDetails != nil {
+		u.OutputTokensDetails = next.OutputTokensDetails
 	}
 }
 
@@ -1211,29 +1226,34 @@ func (u usagePayload) isZero() bool {
 }
 
 // toUsageMetadata mirrors Python's _create_usage_metadata
-// (langchain_anthropic/chat_models.py:2356): Anthropic's input_tokens excludes
-// cached tokens, so cache_read and cache_creation counts are added back to get
-// the true input total. When the newer usage.cache_creation TTL breakdown
-// reports specific ephemeral tokens, Python zeroes the generic cache_creation
-// count to avoid double counting; core's messages.InputTokenDetails has no
-// ephemeral_5m/1h fields (only the flat cache_read_input_tokens /
-// cache_creation_input_tokens ints), so the closest expression here folds the
-// specific ephemeral total into CacheCreationInputTokens.
+// (langchain_anthropic/chat_models.py:3426-3494): Anthropic's input_tokens
+// excludes cached tokens, so cache_read and the cache-creation count are
+// added back to get the true input total. When the usage.cache_creation TTL
+// breakdown reports specific ephemeral tokens, those ride their own
+// input-token-details keys with the generic cache_creation count zeroed
+// (upstream 3443-3465) — the input total still adds the specific tokens.
+// input_token_details is always present (possibly empty), like upstream.
 func (u usagePayload) toUsageMetadata() messages.UsageMetadata {
+	details := &messages.InputTokenDetails{CacheRead: u.CacheRead}
 	cacheCreation := u.CacheCreationInputTokens
-	if specific := u.CacheCreation.total(); specific > 0 {
+	if specific := u.CacheCreationTTL.total(); specific > 0 {
+		details.Ephemeral5mInputTokens = u.CacheCreationTTL.Ephemeral5mInputTokens
+		details.Ephemeral1hInputTokens = u.CacheCreationTTL.Ephemeral1hInputTokens
 		cacheCreation = specific
+		details.CacheCreation = 0
+	} else {
+		details.CacheCreation = cacheCreation
 	}
-	input := u.InputTokens + u.CacheReadInputTokens + cacheCreation
+	input := u.InputTokens + u.CacheRead + cacheCreation
 	meta := messages.UsageMetadata{
-		InputTokens:  input,
-		OutputTokens: u.OutputTokens,
-		TotalTokens:  input + u.OutputTokens,
+		InputTokens:       input,
+		OutputTokens:      u.OutputTokens,
+		TotalTokens:       input + u.OutputTokens,
+		InputTokenDetails: details,
 	}
-	if u.CacheReadInputTokens != 0 || cacheCreation != 0 {
-		meta.InputTokenDetails = &messages.InputTokenDetails{
-			CacheReadInputTokens:     u.CacheReadInputTokens,
-			CacheCreationInputTokens: cacheCreation,
+	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ThinkingTokens > 0 {
+		meta.OutputTokenDetails = &messages.OutputTokenDetails{
+			Reasoning: u.OutputTokensDetails.ThinkingTokens,
 		}
 	}
 	return meta

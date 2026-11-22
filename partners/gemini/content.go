@@ -386,11 +386,11 @@ func usageToMetadata(usage *genai.GenerateContentResponseUsageMetadata) messages
 		if meta.InputTokenDetails == nil {
 			meta.InputTokenDetails = &messages.InputTokenDetails{}
 		}
-		meta.InputTokenDetails.CacheReadInputTokens = int(usage.CachedContentTokenCount)
+		meta.InputTokenDetails.CacheRead = int(usage.CachedContentTokenCount)
 	}
 	if thoughts > 0 {
 		meta.OutputTokenDetails = &messages.OutputTokenDetails{
-			ReasoningOutputTokens: thoughts,
+			Reasoning: thoughts,
 		}
 	}
 	return meta

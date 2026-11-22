@@ -75,8 +75,10 @@ func questionToTypesafe(question decisions.Question) (Question, error) {
 		return Choice{Instructions: q.Instructions, Criteria: criteria}, nil
 	case decisions.Score:
 		return Score{Instructions: q.Instructions, Criteria: q.Criteria}, nil
+	case decisions.Box:
+		return Box{Instructions: q.Instructions}, nil
 	default:
-		return nil, fmt.Errorf("typesafe: unsupported question type %T (TypeSafe has no Box)", question)
+		return nil, fmt.Errorf("typesafe: unsupported question type %T", question)
 	}
 }
 
@@ -101,6 +103,17 @@ func responseToCore(response Response) decisions.ClassifierResponse {
 				Probabilities: v.Probabilities,
 				Confidence:    v.Confidence,
 			}
+		case BoxAnswer:
+			coreBox := decisions.BoxAnswer{
+				Box: decisions.BoxCoordinates{
+					Top:    v.Box.Top,
+					Bottom: v.Box.Bottom,
+					Left:   v.Box.Left,
+					Right:  v.Box.Right,
+				},
+				Confidence: v.Confidence,
+			}
+			answers[id] = coreBox
 		}
 	}
 	core := decisions.ClassifierResponse{

@@ -34,8 +34,9 @@ func TestQuestionToTypesafeMapping(t *testing.T) {
 	if err != nil || len(score.(Score).Criteria) != 2 {
 		t.Fatalf("score: %#v %v", score, err)
 	}
-	if _, err := questionToTypesafe(decisions.Box{Instructions: "find the dog"}); err == nil {
-		t.Fatal("box must error on TypeSafe")
+	box, err := questionToTypesafe(decisions.Box{Instructions: "find the dog"})
+	if err != nil || box.(Box).Instructions != "find the dog" {
+		t.Fatalf("box passes through (#41767): %#v %v", box, err)
 	}
 }
 
@@ -131,4 +132,20 @@ type rejectingHandler struct{}
 
 func (*rejectingHandler) HandleEvent(_ context.Context, _ callbacks.Event) error {
 	return errors.New("tracer down")
+}
+
+// TestParseAnswerBox pins the wire-side box parsing (#41767): coordinates
+// decode, and an absent confidence stays nil.
+func TestParseAnswerBox(t *testing.T) {
+	answer, err := parseAnswer("q", map[string]any{
+		"type": "box",
+		"box":  map[string]any{"top": 0.1, "bottom": 0.9, "left": 0.2, "right": 0.8},
+	})
+	if err != nil {
+		t.Fatalf("parse box: %v", err)
+	}
+	box := answer.(BoxAnswer)
+	if box.Box != (BoxCoordinates{Top: 0.1, Bottom: 0.9, Left: 0.2, Right: 0.8}) || box.Confidence != nil {
+		t.Fatalf("box answer: %#v", box)
+	}
 }

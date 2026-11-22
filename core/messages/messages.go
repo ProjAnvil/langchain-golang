@@ -31,23 +31,33 @@ type ToolCall struct {
 }
 
 // InputTokenDetails breaks down input token counts. Mirrors Python's
-// InputTokenDetails (langchain_core/messages/ai.py).
+// InputTokenDetails (langchain_core/messages/ai.py): the JSON keys are the
+// upstream LangChain keys (cache_read / cache_creation / audio / the
+// ephemeral TTL keys), NOT provider wire field names.
 type InputTokenDetails struct {
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitzero"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitzero"`
+	CacheRead     int `json:"cache_read,omitzero"`
+	CacheCreation int `json:"cache_creation,omitzero"`
+	Audio         int `json:"audio,omitzero"`
+	// Ephemeral5mInputTokens and Ephemeral1hInputTokens carry Anthropic's
+	// TTL cache breakdown as independent keys; when a specific TTL count is
+	// reported, cache_creation stays 0 (upstream keeps the keys separate
+	// instead of folding TTL into cache_creation).
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens,omitzero"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens,omitzero"`
 }
 
 // OutputTokenDetails breaks down output token counts. Mirrors Python's
 // OutputTokenDetails (langchain_core/messages/ai.py).
 type OutputTokenDetails struct {
-	ReasoningOutputTokens int `json:"reasoning_output_tokens,omitzero"`
+	Reasoning int `json:"reasoning,omitzero"`
+	Audio     int `json:"audio,omitzero"`
 }
 
 // UsageMetadata contains token accounting returned by providers.
 type UsageMetadata struct {
-	InputTokens        int                 `json:"input_tokens,omitzero"`
-	OutputTokens       int                 `json:"output_tokens,omitzero"`
-	TotalTokens        int                 `json:"total_tokens,omitzero"`
+	InputTokens        int                 `json:"input_tokens"`
+	OutputTokens       int                 `json:"output_tokens"`
+	TotalTokens        int                 `json:"total_tokens"`
 	InputTokenDetails  *InputTokenDetails  `json:"input_token_details,omitempty"`
 	OutputTokenDetails *OutputTokenDetails `json:"output_token_details,omitempty"`
 }

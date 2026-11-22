@@ -314,7 +314,7 @@ func TestResponsesStreamUsageChunk(t *testing.T) {
 	if um.InputTokens != 3 || um.OutputTokens != 5 || um.TotalTokens != 8 {
 		t.Fatalf("usage = %#v", um)
 	}
-	if um.OutputTokenDetails == nil || um.OutputTokenDetails.ReasoningOutputTokens != 4 {
+	if um.OutputTokenDetails == nil || um.OutputTokenDetails.Reasoning != 4 {
 		t.Fatalf("output token details = %#v", um.OutputTokenDetails)
 	}
 }
@@ -373,10 +373,10 @@ func TestChatCompletionsStreamUsage(t *testing.T) {
 	if um.InputTokens != 10 || um.OutputTokens != 20 || um.TotalTokens != 30 {
 		t.Fatalf("usage = %#v", um)
 	}
-	if um.InputTokenDetails == nil || um.InputTokenDetails.CacheReadInputTokens != 2 {
+	if um.InputTokenDetails == nil || um.InputTokenDetails.CacheRead != 2 {
 		t.Fatalf("input token details = %#v", um.InputTokenDetails)
 	}
-	if um.OutputTokenDetails == nil || um.OutputTokenDetails.ReasoningOutputTokens != 6 {
+	if um.OutputTokenDetails == nil || um.OutputTokenDetails.Reasoning != 6 {
 		t.Fatalf("output token details = %#v", um.OutputTokenDetails)
 	}
 }
@@ -408,7 +408,7 @@ func TestChatCompletionsUsagePromptTokensSpelling(t *testing.T) {
 	if um.InputTokens != 7 || um.OutputTokens != 9 || um.TotalTokens != 16 {
 		t.Fatalf("usage = %#v", um)
 	}
-	if um.OutputTokenDetails == nil || um.OutputTokenDetails.ReasoningOutputTokens != 3 {
+	if um.OutputTokenDetails == nil || um.OutputTokenDetails.Reasoning != 3 {
 		t.Fatalf("output token details = %#v", um.OutputTokenDetails)
 	}
 }

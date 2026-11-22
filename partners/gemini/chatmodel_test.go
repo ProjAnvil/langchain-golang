@@ -209,10 +209,10 @@ func TestChatModelInvokeThoughtsAndCacheUsage(t *testing.T) {
 	if usage.InputTokens != 10 || usage.OutputTokens != 7 || usage.TotalTokens != 17 {
 		t.Errorf("usage: %+v", usage)
 	}
-	if usage.InputTokenDetails == nil || usage.InputTokenDetails.CacheReadInputTokens != 6 {
+	if usage.InputTokenDetails == nil || usage.InputTokenDetails.CacheRead != 6 {
 		t.Errorf("input token details: %+v", usage.InputTokenDetails)
 	}
-	if usage.OutputTokenDetails == nil || usage.OutputTokenDetails.ReasoningOutputTokens != 4 {
+	if usage.OutputTokenDetails == nil || usage.OutputTokenDetails.Reasoning != 4 {
 		t.Errorf("output token details: %+v", usage.OutputTokenDetails)
 	}
 }
