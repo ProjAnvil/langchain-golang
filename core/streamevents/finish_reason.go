@@ -37,7 +37,9 @@ func FinishReasonFields(responseMetadata map[string]any, hasToolCalls bool, hasR
 // a RefusalBlock in its content blocks or an additional_kwargs refusal
 // (the Chat Completions spelling).
 func hasRefusalBlock(message messages.Message) bool {
-	if _, ok := message.AdditionalKwargs["refusal"]; ok {
+	// Truthiness, matching the Chat Completions spelling upstream
+	// (base.py:2208): an empty refusal string does not count.
+	if s, ok := message.AdditionalKwargs["refusal"].(string); ok && s != "" {
 		return true
 	}
 	for _, block := range message.ContentBlocks {

@@ -338,6 +338,12 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 	case "text":
 		block := s.upsertTextBlock(event.Index)
 		block.started = true
+		// A start block can carry opening text — common for the assistant
+		// turn that follows a tool result (chat_models.py:2473-2483): it
+		// seeds the block's text and streams as a chunk.
+		opening := event.ContentBlock.Text
+		block.text += opening
+		s.output.Content += opening
 		if err := s.emitProtocol(ctx, streamevents.Event{
 			Event: streamevents.EventContentBlockStart,
 			Index: event.Index,
@@ -346,6 +352,17 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 			},
 		}); err != nil {
 			return messages.Message{}, false, err
+		}
+		if opening != "" {
+			chunk := messages.AI("")
+			chunk.ContentBlocks = []messages.ContentBlock{messages.TextBlock{
+				Text:  opening,
+				Index: event.Index,
+			}}
+			if err := emitStream(ctx, s.cfg, chunk); err != nil {
+				return messages.Message{}, false, err
+			}
+			return chunk, true, nil
 		}
 	case "tool_use":
 		block := s.upsertToolBlock(event.Index)
@@ -378,8 +395,8 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		return chunk, true, nil
 	case "thinking":
 		block := s.upsertThinkingBlock(event.Index)
-		if event.ContentBlock.Thinking != "" {
-			block.text = event.ContentBlock.Thinking
+		if event.ContentBlock.Thinking != nil && *event.ContentBlock.Thinking != "" {
+			block.text = *event.ContentBlock.Thinking
 		}
 		if event.ContentBlock.Signature != "" {
 			block.signature = event.ContentBlock.Signature
@@ -395,8 +412,12 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		}
 		// Emitted even when empty: under display "omitted" no thinking text
 		// streams, so this start is the first sign of reasoning (#41907).
+		startThinking := ""
+		if event.ContentBlock.Thinking != nil {
+			startThinking = *event.ContentBlock.Thinking
+		}
 		startBlock := messages.ReasoningBlock{
-			Reasoning: event.ContentBlock.Thinking,
+			Reasoning: startThinking,
 			Index:     event.Index,
 		}
 		if event.ContentBlock.Signature != "" {
@@ -420,6 +441,20 @@ func (s *messageStream) contentBlockStart(ctx context.Context, event streamEvent
 		}); err != nil {
 			return messages.Message{}, false, err
 		}
+		// The redacted start also surfaces as a chunk carrying its index
+		// and opaque data (chat_models.py:2413-2458).
+		redacted := messages.AI("")
+		redacted.ContentBlocks = []messages.ContentBlock{messages.ReasoningBlock{
+			Index: event.Index,
+			Extras: map[string]any{
+				"data": event.ContentBlock.Data,
+				"id":   event.ContentBlock.ID,
+			},
+		}}
+		if err := emitStream(ctx, s.cfg, redacted); err != nil {
+			return messages.Message{}, false, err
+		}
+		return redacted, true, nil
 	}
 	return messages.Message{}, false, nil
 }

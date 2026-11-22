@@ -394,7 +394,10 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 			return messages.Message{}, false, err
 		}
 		return chunk, true, nil
-	case "response.completed":
+	case "response.completed", "response.incomplete":
+		// Both terminal statuses go through the same assembly: an
+		// incomplete response maps its incomplete_details.reason onto
+		// the shared finish fields (base.py:5749-5759).
 		s.done = true
 		output := messages.Message{}
 		if event.Response != nil {
@@ -430,8 +433,27 @@ func (s *responseStream) consumeEvent(ctx context.Context) (messages.Message, bo
 		return messages.Message{}, false, nil
 	case "error", "response.failed":
 		// A transient server-error code is retryable like an HTTP 5xx
-		// (#41952); other in-band errors stay plain errors.
-		err := streamServerError(eventType, event.Error)
+		// (#41952); other in-band errors stay plain errors with the
+		// code prefixing the message (base.py:5745).
+		code, message := event.Code, event.Message
+		if code == "" && message == "" {
+			if eventType == "response.failed" && event.Response != nil {
+				// The failure rides the response payload
+				// (base.py:5732-5743): response.error, or the bare
+				// "Response {id} failed." text when absent.
+				if event.Response.Error != nil {
+					code = event.Response.Error.Code
+					message = event.Response.Error.Message
+				} else {
+					message = fmt.Sprintf("Response %s failed.", event.Response.ID)
+				}
+			} else {
+				// Gateway fallback for the nested spelling.
+				code = event.Error.Code
+				message = event.Error.Message
+			}
+		}
+		err := streamServerError(eventType, code, message)
 		_ = s.emitError(ctx, err)
 		return messages.Message{}, false, err
 	default:
@@ -462,6 +484,11 @@ type streamEvent struct {
 	Arguments    string           `json:"arguments"`
 	Response     *responsePayload `json:"response"`
 	Error        streamError      `json:"error"`
+	// Code and Message carry a top-level error event's payload (the real
+	// Responses wire shape; base.py:5744-5748 reads chunk.code and
+	// chunk.message directly).
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type streamError struct {

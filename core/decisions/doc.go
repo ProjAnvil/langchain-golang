@@ -31,5 +31,5 @@ type DecisionModel interface {
 	// chat-model signature (runnables.Option): callbacks, run IDs, tags,
 	// and metadata flow through the provider's event emission, so a
 	// classification run composes with tracing exactly like a model call.
-	Invoke(ctx context.Context, request Request, opts ...runnables.Option) (Response, error)
+	Invoke(ctx context.Context, request ClassifierRequest, opts ...runnables.Option) (ClassifierResponse, error)
 }

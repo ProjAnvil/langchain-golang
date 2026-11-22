@@ -14,10 +14,10 @@ import (
 // noulClassifier builds a fake decision model answering the is_risky Noul
 // question with the given probability.
 func noulClassifier(probability float64) *fakeDecisionModel {
-	return &fakeDecisionModel{response: decisions.Response{
+	return &fakeDecisionModel{response: decisions.ClassifierResponse{
 		Model: "fake",
 		Answers: map[string]decisions.Answer{
-			AutoModeQuestionID: decisions.NoulAnswer{Noul: probability},
+			autoModeQuestionID: decisions.NoulAnswer{Noul: probability},
 		},
 	}}
 }
@@ -150,9 +150,9 @@ func TestGenericAutoModeClassificationStateShape(t *testing.T) {
 	if state["tool_description"] != "Deletes a file." {
 		t.Fatalf("tool description: %#v", state["tool_description"])
 	}
-	question, ok := classifier.requests[0].Questions[AutoModeQuestionID].(decisions.Noul)
+	question, ok := classifier.requests[0].Questions[autoModeQuestionID].(decisions.Noul)
 	if !ok {
-		t.Fatalf("question: %#v", classifier.requests[0].Questions[AutoModeQuestionID])
+		t.Fatalf("question: %#v", classifier.requests[0].Questions[autoModeQuestionID])
 	}
 	if question.Instructions != autoModeInstructions {
 		t.Fatalf("default instructions: %.60q...", question.Instructions)
@@ -192,9 +192,9 @@ func TestGenericAutoModeConfiguredQuestion(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("wrap: %v", err)
 	}
-	question, ok := classifier.requests[0].Questions[AutoModeQuestionID].(decisions.Noul)
+	question, ok := classifier.requests[0].Questions[autoModeQuestionID].(decisions.Noul)
 	if !ok {
-		t.Fatalf("question: %#v", classifier.requests[0].Questions[AutoModeQuestionID])
+		t.Fatalf("question: %#v", classifier.requests[0].Questions[autoModeQuestionID])
 	}
 	if question.Instructions != "Assess the impact." {
 		t.Fatalf("instructions: %q", question.Instructions)

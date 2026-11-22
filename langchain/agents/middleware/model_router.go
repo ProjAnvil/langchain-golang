@@ -100,9 +100,10 @@ func NewModelRouterMiddleware(
 func (m *ModelRouterMiddleware) BeforeAgent(ctx context.Context, state map[string]any) (map[string]any, error) {
 	human, ok := latestHumanMessage(state)
 	if !ok {
-		return nil, fmt.Errorf("middleware: ModelRouterMiddleware requires a human message to route")
+		//nolint:staticcheck // ST1005: verbatim upstream message (model_router.py:148-149)
+		return nil, fmt.Errorf("middleware: ModelRouterMiddleware requires a HumanMessage in the agent state to route on.")
 	}
-	response, err := m.Classifier.Invoke(ctx, decisions.Request{
+	response, err := m.Classifier.Invoke(ctx, decisions.ClassifierRequest{
 		State: human,
 		Questions: map[string]decisions.Question{
 			routerQuestionID: decisions.Choice{
@@ -160,7 +161,7 @@ func (m *ModelRouterMiddleware) StateSchema() []StateField {
 // (model_router.py:119): classified message content never reaches traces.
 func (m *ModelRouterMiddleware) TracePolicy() TracePolicyConfig {
 	return TracePolicyConfig{
-		ProcessInputs: func(any) any { return map[string]any{"omitted": true} },
+		ProcessInputs: func(any) any { return map[string]any{} },
 	}
 }
 

@@ -80,7 +80,7 @@ func TestAdapterEmitsDecisionRunEvents(t *testing.T) {
 	adapter := classifier.AsDecisionModel()
 
 	recorder := callbacks.NewRecorder()
-	response, err := adapter.Invoke(t.Context(), decisions.Request{
+	response, err := adapter.Invoke(t.Context(), decisions.ClassifierRequest{
 		State: "hello",
 		Questions: map[string]decisions.Question{
 			"q": decisions.Noul{Instructions: "urgent?"},
@@ -117,7 +117,7 @@ func TestAdapterEmitsDecisionRunEvents(t *testing.T) {
 	// A handler that rejects every event must not fail the classification
 	// (upstream: tracing failures never fail a successful request).
 	failing := callbacks.NewManager(&rejectingHandler{})
-	response, err = adapter.Invoke(t.Context(), decisions.Request{
+	response, err = adapter.Invoke(t.Context(), decisions.ClassifierRequest{
 		State:     "hello",
 		Questions: map[string]decisions.Question{"q": decisions.Noul{Instructions: "urgent?"}},
 	}, runnables.WithCallbacks(failing))

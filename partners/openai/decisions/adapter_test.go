@@ -93,7 +93,7 @@ func TestOpenAIAdapterEmitsDecisionRunEvents(t *testing.T) {
 	adapter := client.AsDecisionModel()
 
 	recorder := callbacks.NewRecorder()
-	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{
+	if _, err := adapter.Invoke(t.Context(), coredecisions.ClassifierRequest{
 		State:     "hello",
 		Questions: map[string]coredecisions.Question{"q": coredecisions.Noul{Instructions: "risky?"}},
 	}, runnables.WithCallbacks(callbacks.NewManager(recorder))); err != nil {
@@ -128,12 +128,12 @@ func TestOpenAIAdapterErrorPaths(t *testing.T) {
 	adapter := (&Client{Model: "gpt-6-luna", APIKey: "k", BaseURL: "http://unused"}).AsDecisionModel()
 
 	// Invalid request: no questions.
-	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{State: "s"}); err == nil {
+	if _, err := adapter.Invoke(t.Context(), coredecisions.ClassifierRequest{State: "s"}); err == nil {
 		t.Fatal("invalid request must fail")
 	}
 
 	// Unsupported question type: Box has no Decisions counterpart.
-	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{
+	if _, err := adapter.Invoke(t.Context(), coredecisions.ClassifierRequest{
 		State:     "s",
 		Questions: map[string]coredecisions.Question{"q": coredecisions.Box{Instructions: "find"}},
 	}); err == nil {
@@ -148,7 +148,7 @@ func TestOpenAIAdapterErrorPaths(t *testing.T) {
 	defer server.Close()
 	failing := (&Client{Model: "gpt-6-luna", APIKey: "k", BaseURL: server.URL}).AsDecisionModel()
 	recorder := callbacks.NewRecorder()
-	_, err := failing.Invoke(t.Context(), coredecisions.Request{
+	_, err := failing.Invoke(t.Context(), coredecisions.ClassifierRequest{
 		State:     "s",
 		Questions: map[string]coredecisions.Question{"q": coredecisions.Noul{Instructions: "r?"}},
 	}, runnables.WithCallbacks(callbacks.NewManager(recorder)))
@@ -173,7 +173,7 @@ func TestOpenAIAdapterErrorPaths(t *testing.T) {
 // through the adapter.
 func TestOpenAIAdapterScoreMapError(t *testing.T) {
 	adapter := (&Client{Model: "m", APIKey: "k", BaseURL: "http://unused"}).AsDecisionModel()
-	if _, err := adapter.Invoke(t.Context(), coredecisions.Request{
+	if _, err := adapter.Invoke(t.Context(), coredecisions.ClassifierRequest{
 		State: "s",
 		Questions: map[string]coredecisions.Question{"q": coredecisions.Score{
 			Instructions: "r", Criteria: []coredecisions.Content{123, "high"},
@@ -205,7 +205,7 @@ func TestOpenAIAdapterScoreAnswerMapping(t *testing.T) {
 	}))
 	defer server.Close()
 	adapter := (&Client{Model: "gpt-6-luna", APIKey: "k", BaseURL: server.URL}).AsDecisionModel()
-	response, err := adapter.Invoke(t.Context(), coredecisions.Request{
+	response, err := adapter.Invoke(t.Context(), coredecisions.ClassifierRequest{
 		State:     "s",
 		Questions: map[string]coredecisions.Question{"q": coredecisions.Score{Instructions: "r", Criteria: []coredecisions.Content{"low", "high"}}},
 	})

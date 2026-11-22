@@ -11,7 +11,7 @@ import (
 
 func TestLLMToolEmulatorEmulateAllTools(t *testing.T) {
 	// nil toolNames emulates every tool.
-	emulator := NewLLMToolEmulator(nil, WithToolEmulatorFunc(func(ToolCallRequest, string) (string, error) {
+	emulator := NewLLMToolEmulator(nil, WithToolEmulatorFunc(func(context.Context, ToolCallRequest, string) (string, error) {
 		return "fake", nil
 	}))
 	if !emulator.EmulateAll {
@@ -27,7 +27,7 @@ func TestLLMToolEmulatorEmulateAllTools(t *testing.T) {
 
 func TestLLMToolEmulatorEmulateFuncError(t *testing.T) {
 	wantErr := errors.New("emulation failed")
-	emulator := NewLLMToolEmulator([]string{"search"}, WithToolEmulatorFunc(func(ToolCallRequest, string) (string, error) {
+	emulator := NewLLMToolEmulator([]string{"search"}, WithToolEmulatorFunc(func(context.Context, ToolCallRequest, string) (string, error) {
 		return "", wantErr
 	}))
 	_, err := emulator.WrapToolCall(t.Context(), ToolCallRequest{ToolCall: ToolCall{Name: "search", ID: "1"}}, func(context.Context, ToolCallRequest) (messages.Message, error) {

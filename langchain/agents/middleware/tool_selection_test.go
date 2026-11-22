@@ -86,7 +86,7 @@ func TestLLMToolSelectorMiddlewareFiltersTools(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware(
 		WithToolSelectorMaxTools(maxTools),
 		WithToolSelectorAlwaysInclude("weather"),
-		WithToolSelectorFunc(func(request ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(_ context.Context, request ToolSelectionRequest) ([]string, error) {
 			if request.LastUserMessage.Content != "find things" {
 				t.Fatalf("last user mismatch: %#v", request.LastUserMessage)
 			}
@@ -157,7 +157,7 @@ func TestLLMToolSelectorMiddlewareNoToolsCallsHandler(t *testing.T) {
 func TestLLMToolSelectorMiddlewareMissingAlwaysInclude(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware(
 		WithToolSelectorAlwaysInclude("missing"),
-		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 			return []string{}, nil
 		}),
 	)
@@ -180,7 +180,7 @@ func TestLLMToolSelectorMiddlewareMissingAlwaysInclude(t *testing.T) {
 
 func TestLLMToolSelectorMiddlewareInvalidSelection(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware(
-		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 			return []string{"missing"}, nil
 		}),
 	)
@@ -203,7 +203,7 @@ func TestLLMToolSelectorMiddlewareInvalidSelection(t *testing.T) {
 
 func TestLLMToolSelectorMiddlewareRequiresHumanMessage(t *testing.T) {
 	selector := NewLLMToolSelectorMiddleware(
-		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 			return []string{"search"}, nil
 		}),
 	)
@@ -236,7 +236,7 @@ func TestLLMToolSelectorMiddlewareStructuredBeatsCallback(t *testing.T) {
 	fake := newStructuredFakeChatModel(messages.AI(`{"tools":["search"]}`))
 	selector := NewLLMToolSelectorMiddleware(
 		WithToolSelectorModel(fake),
-		WithToolSelectorFunc(func(ToolSelectionRequest) ([]string, error) {
+		WithToolSelectorFunc(func(context.Context, ToolSelectionRequest) ([]string, error) {
 			t.Fatalf("ToolSelectionFunc callback must not be invoked when structured path is available")
 			return nil, nil
 		}),

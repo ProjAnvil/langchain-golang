@@ -34,15 +34,15 @@ type classifierAdapter struct {
 // The classification surfaces as a chat-model run carrying the TypeSafe
 // provider identity and the request's token usage (#41765 base-run
 // semantics; tracing failures never fail the classification).
-func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.Request, opts ...runnables.Option) (decisions.Response, error) {
+func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.ClassifierRequest, opts ...runnables.Option) (decisions.ClassifierResponse, error) {
 	if err := request.Validate(); err != nil {
-		return decisions.Response{}, err
+		return decisions.ClassifierResponse{}, err
 	}
 	questions := make(map[string]Question, len(request.Questions))
 	for id, question := range request.Questions {
 		converted, err := questionToTypesafe(question)
 		if err != nil {
-			return decisions.Response{}, fmt.Errorf("question %q: %w", id, err)
+			return decisions.ClassifierResponse{}, fmt.Errorf("question %q: %w", id, err)
 		}
 		questions[id] = converted
 	}
@@ -51,7 +51,7 @@ func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.Reques
 	response, err := a.classifier.Invoke(ctx, Request{State: request.State, Questions: questions})
 	if err != nil {
 		providerutil.DecisionEnd(ctx, cfg, provider, a.classifier.Model, nil, nil, err)
-		return decisions.Response{}, err
+		return decisions.ClassifierResponse{}, err
 	}
 	core := responseToCore(response)
 	providerutil.DecisionEnd(ctx, cfg, provider, a.classifier.Model, core, core.Usage, nil)
@@ -82,7 +82,7 @@ func questionToTypesafe(question decisions.Question) (Question, error) {
 
 // responseToCore maps a TypeSafe response onto the core envelope, completing
 // partial usage (total = input + output).
-func responseToCore(response Response) decisions.Response {
+func responseToCore(response Response) decisions.ClassifierResponse {
 	answers := make(map[string]decisions.Answer, len(response.Answers))
 	for id, answer := range response.Answers {
 		switch v := answer.(type) {
@@ -103,7 +103,7 @@ func responseToCore(response Response) decisions.Response {
 			}
 		}
 	}
-	core := decisions.Response{
+	core := decisions.ClassifierResponse{
 		Model:     response.Model,
 		Answers:   answers,
 		RequestID: response.RequestID,

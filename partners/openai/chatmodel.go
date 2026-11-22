@@ -658,6 +658,10 @@ type responsePayload struct {
 	// FinishReason carries a Chat Completions finish_reason through the
 	// normalization in toResponsesPayload; Responses payloads never set it.
 	FinishReason string `json:"-"`
+	// Error carries a response.failed event's error object
+	// ({"code", "message"}), classified like an in-band error event
+	// (#41952).
+	Error *streamError `json:"error,omitempty"`
 }
 
 type outputItem struct {
@@ -719,6 +723,7 @@ func (r responsePayload) toMessage() messages.Message {
 	var invalidToolCalls []messages.ToolCall
 	var contentBlocks []messages.ContentBlock
 	var refusalText string
+	var refusalSeen bool
 	for _, output := range r.Output {
 		switch output.Type {
 		case "message":
@@ -730,6 +735,9 @@ func (r responsePayload) toMessage() messages.Message {
 					parts = append(parts, content.Text)
 				}
 				if content.Type == "refusal" {
+					// Presence of a refusal block drives the finish
+					// flag regardless of its text (base.py:5450-5453).
+					refusalSeen = true
 					// The id hangs on the message item (base.py:5269-5277 reads output.id),
 					// as does phase (base.py:5250); the content part itself carries no id.
 					rb := messages.RefusalBlock{Refusal: content.Refusal, ID: output.ID}
@@ -791,12 +799,12 @@ func (r responsePayload) toMessage() messages.Message {
 		if r.IncompleteDetails != nil {
 			message.ResponseMetadata["incomplete_details"] = r.IncompleteDetails
 		}
-		for key, value := range responsesFinishReasonFields(r.Status, r.IncompleteDetails, hasToolCalls, refusalText != "") {
+		for key, value := range responsesFinishReasonFields(r.Status, r.IncompleteDetails, hasToolCalls, refusalSeen) {
 			message.ResponseMetadata[key] = value
 		}
 	} else if r.FinishReason != "" {
 		message.ResponseMetadata["finish_reason"] = r.FinishReason
-		for key, value := range chatFinishReasonFields(r.FinishReason, hasToolCalls, refusalText != "") {
+		for key, value := range chatFinishReasonFields(r.FinishReason, hasToolCalls, refusalSeen) {
 			message.ResponseMetadata[key] = value
 		}
 	}

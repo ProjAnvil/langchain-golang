@@ -37,15 +37,15 @@ type clientAdapter struct {
 // The classification surfaces as a chat-model run carrying the OpenAI
 // provider identity and the request's token usage (#41765 base-run
 // semantics; tracing failures never fail the classification).
-func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.Request, opts ...runnables.Option) (coredecisions.Response, error) {
+func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.ClassifierRequest, opts ...runnables.Option) (coredecisions.ClassifierResponse, error) {
 	if err := request.Validate(); err != nil {
-		return coredecisions.Response{}, err
+		return coredecisions.ClassifierResponse{}, err
 	}
 	questions := make(map[string]Question, len(request.Questions))
 	for id, question := range request.Questions {
 		converted, err := questionToOpenAI(question)
 		if err != nil {
-			return coredecisions.Response{}, fmt.Errorf("question %q: %w", id, err)
+			return coredecisions.ClassifierResponse{}, fmt.Errorf("question %q: %w", id, err)
 		}
 		questions[id] = converted
 	}
@@ -54,7 +54,7 @@ func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.Reques
 	response, err := a.client.Invoke(ctx, Request{Input: request.State, Questions: questions})
 	if err != nil {
 		providerutil.DecisionEnd(ctx, cfg, "openai", a.client.Model, nil, nil, err)
-		return coredecisions.Response{}, err
+		return coredecisions.ClassifierResponse{}, err
 	}
 	core := responseToCore(response)
 	providerutil.DecisionEnd(ctx, cfg, "openai", a.client.Model, core, core.Usage, nil)
@@ -117,7 +117,7 @@ func stringInstructions(instructions any) (string, error) {
 }
 
 // responseToCore maps a Decisions response onto the core envelope.
-func responseToCore(response Response) coredecisions.Response {
+func responseToCore(response Response) coredecisions.ClassifierResponse {
 	answers := make(map[string]coredecisions.Answer, len(response.Answers))
 	for id, answer := range response.Answers {
 		switch v := answer.(type) {
@@ -148,7 +148,7 @@ func responseToCore(response Response) coredecisions.Response {
 			// Dropped: the core vocabulary has no refusal answer type.
 		}
 	}
-	core := coredecisions.Response{
+	core := coredecisions.ClassifierResponse{
 		Model:     response.Model,
 		Answers:   answers,
 		RequestID: response.RequestID,

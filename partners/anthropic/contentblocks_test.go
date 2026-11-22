@@ -258,7 +258,7 @@ func TestPassthroughBlock(t *testing.T) {
 	})
 	if block.Type != "thinking" || block.Text != "some text" || block.ID != "blk_1" ||
 		block.Name != "web_search" || block.ToolUseID != "toolu_1" ||
-		block.Thinking != "reasoning" || block.Signature != "sig_1" || block.Data != "ZW5j" {
+		block.Thinking == nil || *block.Thinking != "reasoning" || block.Signature != "sig_1" || block.Data != "ZW5j" {
 		t.Fatalf("passthrough block: %+v", block)
 	}
 	if block.Input["q"] != "news" {
@@ -283,7 +283,7 @@ func TestPassthroughBlockIgnoresMismatchedTypes(t *testing.T) {
 		"cache_control": "not-a-map",
 	})
 	if block.Type != "" || block.Text != "" || block.ID != "" || block.Name != "" ||
-		block.ToolUseID != "" || block.Thinking != "" || block.Signature != "" || block.Data != "" ||
+		block.ToolUseID != "" || block.Thinking != nil || block.Signature != "" || block.Data != "" ||
 		block.Input != nil || block.CacheControl != nil {
 		t.Fatalf("mismatched field types should be dropped: %+v", block)
 	}

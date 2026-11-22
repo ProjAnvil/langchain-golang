@@ -12,7 +12,12 @@ import (
 	"github.com/projanvil/langchain-golang/core/schema"
 )
 
-type ToolEmulationFunc func(ToolCallRequest, string) (string, error)
+// ToolEmulationFunc invents a tool's output. The context arrives marked as
+// a middleware-internal call (callbacks.WithInternalCall), so an emulation
+// that forwards it to its model keeps those tokens out of the messages
+// projection (#41579); the lc_source metadata marks the run
+// ("tool_emulation", matching upstream).
+type ToolEmulationFunc func(context.Context, ToolCallRequest, string) (string, error)
 
 // LLMToolEmulator intercepts tool calls for tools in its emulation set and
 // produces a synthetic tool-result message instead of executing the real tool.
@@ -92,7 +97,7 @@ func (m *LLMToolEmulator) WrapToolCall(ctx context.Context, request ToolCallRequ
 	}
 	if m.Emulate != nil {
 		prompt := BuildToolEmulationPrompt(request)
-		content, err := m.Emulate(request, prompt)
+		content, err := m.Emulate(callbacks.WithInternalCallSource(ctx, "tool_emulation"), request, prompt)
 		if err != nil {
 			return messages.Message{}, err
 		}

@@ -22,13 +22,19 @@ type Question interface {
 // support.
 type Content = any
 
+// State is the root state accepted by decision models (Python's State
+// alias): a string, JSON object or array, LangChain messages, with
+// standard media blocks anywhere in it. It shares Content's any shape —
+// the alias exists so the exported vocabulary matches upstream's.
+type State = Content
+
 // NoulCriteria optionally describes the two outcomes of a Noul question.
 // Both values accept any JSON-compatible content, so callers can provide a
-// short description or structured examples. Nil fields are omitted on the
-// wire.
+// short description or structured examples. Unset fields stay on the wire
+// as explicit nulls (Python's model_dump).
 type NoulCriteria struct {
-	True  Content `json:"true,omitempty"`
-	False Content `json:"false,omitempty"`
+	True  Content `json:"true"`
+	False Content `json:"false"`
 }
 
 // Noul asks a binary question and reports the probability that its answer
@@ -63,13 +69,11 @@ func (q Noul) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("decisions: marshal noul instructions: %w", err)
 	}
 	buf.Write(encoded)
-	if q.Criteria != nil {
-		buf.WriteString(`,"criteria":`)
-		if encoded, err = json.Marshal(q.Criteria); err != nil {
-			return nil, fmt.Errorf("decisions: marshal noul criteria: %w", err)
-		}
-		buf.Write(encoded)
+	buf.WriteString(`,"criteria":`)
+	if encoded, err = json.Marshal(q.Criteria); err != nil {
+		return nil, fmt.Errorf("decisions: marshal noul criteria: %w", err)
 	}
+	buf.Write(encoded)
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
 }

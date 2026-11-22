@@ -199,6 +199,14 @@ func (s *chatCompletionsStream) next(ctx context.Context) (messages.Message, boo
 			return messages.Message{}, false, fmt.Errorf("decode openai chat completions stream event: %w", err)
 		}
 		if len(event.Choices) == 0 {
+			// An in-band error event is a terminal failure, classified
+			// per #41952 (base.py:777-783): a transient server-error
+			// code/type is retryable.
+			if event.Error != nil {
+				err := chatCompletionsStreamError(*event.Error)
+				_ = emit(ctx, s.cfg, callbacks.EventChatModelError, nil, nil, err)
+				return messages.Message{}, false, err
+			}
 			// The final usage-only chunk (sent because we request
 			// stream_options.include_usage) yields an empty-content chunk
 			// carrying UsageMetadata, mirroring Python's _stream.
@@ -315,6 +323,9 @@ type chatCompletionsStreamEvent struct {
 	// Usage is set on the final choices-less chunk when the request opted in
 	// via stream_options.include_usage.
 	Usage *chatUsage `json:"usage"`
+	// Error carries an in-band error event (the Chat Completions nested
+	// shape), classified per #41952 instead of being dropped.
+	Error *streamError `json:"error,omitempty"`
 }
 
 type chatCompletionsStreamChoice struct {

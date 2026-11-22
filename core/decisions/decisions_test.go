@@ -176,10 +176,12 @@ func TestPartialUsageIsCompleted(t *testing.T) {
 // TestRequestValidateChecksEveryQuestion wires Request.Validate over the
 // question map.
 func TestRequestValidateChecksEveryQuestion(t *testing.T) {
-	if err := (Request{}).Validate(); err == nil {
-		t.Fatal("empty request must fail")
+	// An empty questions mapping is legal (Python's ClassifierRequest is a
+	// bare TypedDict with no runtime validation).
+	if err := (ClassifierRequest{}).Validate(); err != nil {
+		t.Fatalf("empty request must pass: %v", err)
 	}
-	request := Request{
+	request := ClassifierRequest{
 		State:     "state",
 		Questions: map[string]Question{"q": Choice{Instructions: "c"}},
 	}
@@ -219,14 +221,14 @@ func TestAnswerRoundTrip(t *testing.T) {
 }
 
 // TestQuestionWireForms pins each question type's wire form: the type
-// discriminator, field order, and nil-criteria omission.
+// discriminator, field order, and explicit nulls for unset fields.
 func TestQuestionWireForms(t *testing.T) {
 	noul, err := json.Marshal(Noul{Instructions: "yes?", Criteria: &NoulCriteria{True: "good"}})
-	if err != nil || string(noul) != `{"type":"noul","instructions":"yes?","criteria":{"true":"good"}}` {
+	if err != nil || string(noul) != `{"type":"noul","instructions":"yes?","criteria":{"true":"good","false":null}}` {
 		t.Fatalf("noul wire: %s %v", noul, err)
 	}
 	bareNoul, err := json.Marshal(Noul{Instructions: "yes?"})
-	if err != nil || string(bareNoul) != `{"type":"noul","instructions":"yes?"}` {
+	if err != nil || string(bareNoul) != `{"type":"noul","instructions":"yes?","criteria":null}` {
 		t.Fatalf("bare noul wire: %s %v", bareNoul, err)
 	}
 	score, err := json.Marshal(Score{Instructions: "rate", Criteria: []Content{"low", "high"}})
@@ -293,22 +295,18 @@ func TestResponseUnmarshalErrors(t *testing.T) {
 	}
 }
 
-// TestDecodeMapEmptyInputs covers the empty-payload decode branches: an
-// absent probabilities or legend decodes to a nil map, not an error.
+// TestDecodeMapEmptyInputs pins the required-field semantics (pydantic
+// rejects missing probabilities/legend just like missing keys): absent
+// maps are errors, and a nil map marshals back as an explicit null.
 func TestDecodeMapEmptyInputs(t *testing.T) {
-	choice, err := UnmarshalAnswer([]byte(`{"type":"choice","choice":"x"}`))
-	if err != nil {
-		t.Fatalf("choice without probabilities: %v", err)
+	if _, err := UnmarshalAnswer([]byte(`{"type":"choice","choice":"x"}`)); err == nil {
+		t.Fatal("choice without probabilities must fail")
 	}
-	if typed := choice.(ChoiceAnswer); typed.Probabilities != nil {
-		t.Fatalf("absent probabilities: %#v", typed.Probabilities)
+	if _, err := UnmarshalAnswer([]byte(`{"type":"score","score":1}`)); err == nil {
+		t.Fatal("score without legend/probabilities must fail")
 	}
-	score, err := UnmarshalAnswer([]byte(`{"type":"score","score":1}`))
-	if err != nil {
-		t.Fatalf("score without maps: %v", err)
-	}
-	if typed := score.(ScoreAnswer); typed.Legend != nil || typed.Probabilities != nil {
-		t.Fatalf("absent maps: %#v", typed)
+	if _, err := UnmarshalAnswer([]byte(`{"type":"choice","choice":"x","probabilities":{"a":1}}`)); err == nil {
+		t.Fatal("choice without confidence must fail")
 	}
 }
 
@@ -362,5 +360,130 @@ func TestScoreAnswerNilMapsMarshal(t *testing.T) {
 	}
 	if typed := decoded.(ScoreAnswer); typed.Legend != nil || typed.Probabilities != nil {
 		t.Fatalf("nil maps must round trip to nil: %#v", typed)
+	}
+}
+
+// TestUnmarshalAnswerRequiredAndRangeErrors covers the audit-driven
+// validation branches: noul and confidence range checks, and the required
+// fields of every answer type.
+func TestUnmarshalAnswerRequiredAndRangeErrors(t *testing.T) {
+	bad := []string{
+		`{"type":"noul","noul":1.5}`,
+		`{"type":"noul","noul":-0.1}`,
+		`{"type":"choice","choice":"x","probabilities":{"x":1}}`,
+		`{"type":"choice","choice":"x","probabilities":{"x":1},"confidence":1.5}`,
+		`{"type":"score","score":1,"legend":{"0":"l"},"probabilities":{"0":1}}`,
+		`{"type":"score","score":1,"legend":{"0":"l"},"probabilities":{"0":1},"confidence":-1}`,
+		`{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":2}`,
+	}
+	for _, payload := range bad {
+		if _, err := UnmarshalAnswer([]byte(payload)); err == nil {
+			t.Errorf("expected validation error for %s", payload)
+		}
+	}
+}
+
+// TestUnmarshalResponseRequiredKeys covers the response presence checks:
+// missing or null model/answers are rejected (pydantic would).
+func TestUnmarshalResponseRequiredKeys(t *testing.T) {
+	bad := []string{
+		`{"answers":{}}`,
+		`{"model":"m"}`,
+		`{"model":null,"answers":{}}`,
+		`{"model":"m","answers":null}`,
+	}
+	for _, payload := range bad {
+		if _, err := UnmarshalResponse([]byte(payload)); err == nil {
+			t.Errorf("expected presence error for %s", payload)
+		}
+	}
+}
+
+// TestAnswerMarshalForms pins each answer type's wire form: only its own
+// fields, in the core declaration order, with nil confidence on a box kept
+// as an explicit null.
+func TestAnswerMarshalForms(t *testing.T) {
+	noul, _ := json.Marshal(NoulAnswer{Noul: 0.25})
+	if string(noul) != `{"type":"noul","noul":0.25}` {
+		t.Fatalf("noul wire: %s", noul)
+	}
+	choice, _ := json.Marshal(ChoiceAnswer{Choice: "billing", Probabilities: map[string]float64{"billing": 1}, Confidence: 0.9})
+	if string(choice) != `{"type":"choice","choice":"billing","probabilities":{"billing":1},"confidence":0.9}` {
+		t.Fatalf("choice wire: %s", choice)
+	}
+	box, _ := json.Marshal(BoxAnswer{})
+	if string(box) != `{"type":"box","box":{"top":0,"bottom":0,"left":0,"right":0},"confidence":null}` {
+		t.Fatalf("box wire: %s", box)
+	}
+}
+
+// TestScoreAnswerMarshalKeepsNilMapsAsNulls pins the score wire: nil legend
+// and probabilities marshal as explicit nulls between the score and
+// confidence keys.
+func TestScoreAnswerMarshalKeepsNilMapsAsNulls(t *testing.T) {
+	encoded, err := json.Marshal(ScoreAnswer{Score: 1.5, Confidence: 0.5})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(encoded) != `{"type":"score","score":1.5,"legend":null,"probabilities":null,"confidence":0.5}` {
+		t.Fatalf("score wire: %s", encoded)
+	}
+}
+
+// TestDecodeAndMarshalEdgeBranches covers the remaining decode/marshal
+// error paths: integer-key maps with non-integer keys, malformed typed
+// maps, and the error-wrapped decode context.
+func TestDecodeAndMarshalEdgeBranches(t *testing.T) {
+	// Non-integer level keys in score maps.
+	if _, err := UnmarshalAnswer([]byte(
+		`{"type":"score","score":1,"legend":{"x":"low"},"probabilities":{"0":1},"confidence":0.5}`)); err == nil {
+		t.Error("non-integer legend key must fail")
+	}
+	if _, err := UnmarshalAnswer([]byte(
+		`{"type":"score","score":1,"legend":{"0":"low"},"probabilities":{"x":1},"confidence":0.5}`)); err == nil {
+		t.Error("non-integer probabilities key must fail")
+	}
+	// Typed-map decode failures reached through the answer envelope.
+	if _, err := UnmarshalAnswer([]byte(
+		`{"type":"score","score":1,"legend":[1,2],"probabilities":{"0":1},"confidence":0.5}`)); err == nil {
+		t.Error("non-object legend must fail")
+	}
+	if _, err := UnmarshalAnswer([]byte(
+		`{"type":"score","score":1,"legend":{"0":"low"},"probabilities":[1],"confidence":0.5}`)); err == nil {
+		t.Error("non-object probabilities must fail")
+	}
+}
+
+// TestQuestionMarshalErrorBranches covers the instructions/criteria marshal
+// failure paths with unserializable content values.
+func TestQuestionMarshalErrorBranches(t *testing.T) {
+	if _, err := json.Marshal(Noul{Instructions: make(chan int)}); err == nil {
+		t.Error("noul instructions marshal must fail")
+	}
+	if _, err := json.Marshal(Noul{Instructions: "x", Criteria: &NoulCriteria{True: make(chan int)}}); err == nil {
+		t.Error("noul criteria marshal must fail")
+	}
+	if _, err := json.Marshal(Choice{Instructions: make(chan int), Criteria: map[string]Content{"a": nil}}); err == nil {
+		t.Error("choice instructions marshal must fail")
+	}
+	if _, err := json.Marshal(Choice{Instructions: "x", Criteria: map[string]Content{"a": make(chan int)}}); err == nil {
+		t.Error("choice criteria marshal must fail")
+	}
+	if _, err := json.Marshal(Score{Instructions: make(chan int), Criteria: []Content{"a", "b"}}); err == nil {
+		t.Error("score instructions marshal must fail")
+	}
+	if _, err := json.Marshal(Score{Instructions: "x", Criteria: []Content{"a", make(chan int)}}); err == nil {
+		t.Error("score criteria marshal must fail")
+	}
+	if _, err := json.Marshal(Box{Instructions: func() {}}); err == nil {
+		t.Error("box instructions marshal must fail")
+	}
+}
+
+// TestUnmarshalResponseEnvelopeErrors covers the outer decode failure: a
+// model that is not a string fails the envelope decode.
+func TestUnmarshalResponseEnvelopeErrors(t *testing.T) {
+	if _, err := UnmarshalResponse([]byte(`{"model":5,"answers":{}}`)); err == nil {
+		t.Error("non-string model must fail")
 	}
 }

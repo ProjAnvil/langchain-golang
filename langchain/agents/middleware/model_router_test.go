@@ -19,12 +19,12 @@ import (
 // fakeDecisionModel stands in for any decisions.DecisionModel
 // implementation; it returns canned responses and records requests.
 type fakeDecisionModel struct {
-	response decisions.Response
+	response decisions.ClassifierResponse
 	err      error
-	requests []decisions.Request
+	requests []decisions.ClassifierRequest
 }
 
-func (f *fakeDecisionModel) Invoke(_ context.Context, request decisions.Request, _ ...runnables.Option) (decisions.Response, error) {
+func (f *fakeDecisionModel) Invoke(_ context.Context, request decisions.ClassifierRequest, _ ...runnables.Option) (decisions.ClassifierResponse, error) {
 	f.requests = append(f.requests, request)
 	return f.response, f.err
 }
@@ -35,7 +35,7 @@ func routerChoices() (fast, powerful any) {
 
 func TestGenericModelRouterRoutesAndStoresAnswer(t *testing.T) {
 	fast, powerful := routerChoices()
-	classifier := &fakeDecisionModel{response: decisions.Response{
+	classifier := &fakeDecisionModel{response: decisions.ClassifierResponse{
 		Model: "fake",
 		Answers: map[string]decisions.Answer{
 			routerQuestionID: decisions.ChoiceAnswer{
@@ -106,7 +106,7 @@ func TestGenericModelRouterNoHumanMessage(t *testing.T) {
 }
 
 func TestGenericModelRouterMissingAnswer(t *testing.T) {
-	router, err := NewModelRouterMiddleware(&fakeDecisionModel{response: decisions.Response{
+	router, err := NewModelRouterMiddleware(&fakeDecisionModel{response: decisions.ClassifierResponse{
 		Answers: map[string]decisions.Answer{},
 	}}, map[string]ModelChoice{
 		"fast": {Model: fakeModel{label: "fast"}},
@@ -161,7 +161,7 @@ func TestGenericModelRouterSchemasAndPolicy(t *testing.T) {
 	if policy.ProcessInputs == nil {
 		t.Fatal("process-inputs policy must be set")
 	}
-	if got := policy.ProcessInputs("secret"); !reflect.DeepEqual(got, map[string]any{"omitted": true}) {
+	if got := policy.ProcessInputs("secret"); !reflect.DeepEqual(got, map[string]any{}) {
 		t.Fatalf("process inputs: %#v", got)
 	}
 }

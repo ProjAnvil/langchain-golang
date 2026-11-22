@@ -104,27 +104,41 @@ func UnmarshalAnswer(data []byte) (Answer, error) {
 		if wire.Noul == nil {
 			return nil, fmt.Errorf("decisions: noul answer missing \"noul\"")
 		}
+		if err := checkUnitRange(*wire.Noul, "noul"); err != nil {
+			return nil, err
+		}
 		return NoulAnswer{Noul: *wire.Noul}, nil
 	case "choice":
 		if wire.Choice == nil {
 			return nil, fmt.Errorf("decisions: choice answer missing \"choice\"")
 		}
+		if len(wire.Probabilities) == 0 {
+			return nil, fmt.Errorf("decisions: choice answer missing \"probabilities\"")
+		}
 		probabilities, err := decodeStringFloatMap(wire.Probabilities)
 		if err != nil {
 			return nil, fmt.Errorf("decisions: decode choice probabilities: %w", err)
 		}
-		confidence := 0.0
-		if wire.Confidence != nil {
-			confidence = *wire.Confidence
+		if wire.Confidence == nil {
+			return nil, fmt.Errorf("decisions: choice answer missing \"confidence\"")
+		}
+		if err := checkUnitRange(*wire.Confidence, "confidence"); err != nil {
+			return nil, err
 		}
 		return ChoiceAnswer{
 			Choice:        *wire.Choice,
 			Probabilities: probabilities,
-			Confidence:    confidence,
+			Confidence:    *wire.Confidence,
 		}, nil
 	case "score":
 		if wire.Score == nil {
 			return nil, fmt.Errorf("decisions: score answer missing \"score\"")
+		}
+		if len(wire.Legend) == 0 {
+			return nil, fmt.Errorf("decisions: score answer missing \"legend\"")
+		}
+		if len(wire.Probabilities) == 0 {
+			return nil, fmt.Errorf("decisions: score answer missing \"probabilities\"")
 		}
 		legend, err := decodeIntContentMap(wire.Legend)
 		if err != nil {
@@ -134,19 +148,26 @@ func UnmarshalAnswer(data []byte) (Answer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decisions: decode score probabilities: %w", err)
 		}
-		confidence := 0.0
-		if wire.Confidence != nil {
-			confidence = *wire.Confidence
+		if wire.Confidence == nil {
+			return nil, fmt.Errorf("decisions: score answer missing \"confidence\"")
+		}
+		if err := checkUnitRange(*wire.Confidence, "confidence"); err != nil {
+			return nil, err
 		}
 		return ScoreAnswer{
 			Score:         *wire.Score,
 			Legend:        legend,
 			Probabilities: probabilities,
-			Confidence:    confidence,
+			Confidence:    *wire.Confidence,
 		}, nil
 	case "box":
 		if wire.Box == nil {
 			return nil, fmt.Errorf("decisions: box answer missing \"box\"")
+		}
+		if wire.Confidence != nil {
+			if err := checkUnitRange(*wire.Confidence, "confidence"); err != nil {
+				return nil, err
+			}
 		}
 		return BoxAnswer{Box: *wire.Box, Confidence: wire.Confidence}, nil
 	default:
@@ -154,52 +175,70 @@ func UnmarshalAnswer(data []byte) (Answer, error) {
 	}
 }
 
-// MarshalJSON writes one answer in its wire envelope.
+// MarshalJSON writes the wire object in the core field order (types.py
+// NoulAnswer): type, noul.
 func (a NoulAnswer) MarshalJSON() ([]byte, error) {
-	return json.Marshal(answerWire{Type: "noul", Noul: &a.Noul})
+	return []byte(fmt.Sprintf(`{"type":"noul","noul":%s}`, formatFloat(a.Noul))), nil
 }
 
-// MarshalJSON writes one answer in its wire envelope. The basic-type
-// probability map cannot fail to marshal.
+// MarshalJSON writes the wire object in the core field order (types.py
+// ChoiceAnswer): type, choice, probabilities, confidence.
 func (a ChoiceAnswer) MarshalJSON() ([]byte, error) {
 	probabilities, _ := json.Marshal(a.Probabilities)
-	return json.Marshal(answerWire{
-		Type:          "choice",
-		Choice:        &a.Choice,
-		Probabilities: probabilities,
-		Confidence:    &a.Confidence,
-	})
+	return []byte(fmt.Sprintf(`{"type":"choice","choice":%s,"probabilities":%s,"confidence":%s}`,
+		quote(a.Choice), probabilities, formatFloat(a.Confidence))), nil
 }
 
-// MarshalJSON writes one answer in its wire envelope; integer map keys
-// serialize as JSON string keys. Only the legend can fail (arbitrary
-// content values); the probability map cannot.
+// MarshalJSON writes the wire object in the core field order (types.py
+// ScoreAnswer): type, score, legend, probabilities, confidence. Integer
+// map keys serialize as JSON string keys; only the legend (arbitrary
+// content values) can fail.
 func (a ScoreAnswer) MarshalJSON() ([]byte, error) {
 	legend, err := marshalIntKeyMap(a.Legend)
 	if err != nil {
 		return nil, fmt.Errorf("decisions: marshal score legend: %w", err)
 	}
 	probabilities, _ := marshalIntKeyMap(a.Probabilities)
-	return json.Marshal(answerWire{
-		Type:          "score",
-		Score:         &a.Score,
-		Legend:        legend,
-		Probabilities: probabilities,
-		Confidence:    &a.Confidence,
-	})
+	return []byte(fmt.Sprintf(`{"type":"score","score":%s,"legend":%s,"probabilities":%s,"confidence":%s}`,
+		formatFloat(a.Score), legend, probabilities, formatFloat(a.Confidence))), nil
 }
 
-// MarshalJSON writes one answer in its wire envelope.
+// MarshalJSON writes the wire object in the core field order (types.py
+// BoxAnswer): type, box, confidence — a nil confidence stays on the wire
+// as an explicit null. The coordinate struct cannot fail to marshal.
 func (a BoxAnswer) MarshalJSON() ([]byte, error) {
-	box := a.Box
-	return json.Marshal(answerWire{Type: "box", Box: &box, Confidence: a.Confidence})
+	box, _ := json.Marshal(a.Box)
+	confidence := "null"
+	if a.Confidence != nil {
+		confidence = formatFloat(*a.Confidence)
+	}
+	return []byte(fmt.Sprintf(`{"type":"box","box":%s,"confidence":%s}`, box, confidence)), nil
 }
 
-// decodeStringFloatMap decodes {"label": p} wire objects.
-func decodeStringFloatMap(data []byte) (map[string]float64, error) {
-	if len(data) == 0 || string(data) == "null" {
-		return nil, nil
+// formatFloat renders a float the way encoding/json would.
+func formatFloat(value float64) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+// quote renders a string the way encoding/json would.
+func quote(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+// checkUnitRange mirrors pydantic's ge=0.0/le=1.0 constraints on answer
+// probabilities and confidences.
+func checkUnitRange(value float64, field string) error {
+	if value < 0 || value > 1 {
+		return fmt.Errorf("decisions: %s %v out of range [0, 1]", field, value)
 	}
+	return nil
+}
+
+// decodeStringFloatMap decodes {"label": p} wire objects; callers reject
+// absent maps before decoding, so only malformed payloads reach here.
+func decodeStringFloatMap(data []byte) (map[string]float64, error) {
 	var decoded map[string]float64
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return nil, err
@@ -249,10 +288,12 @@ func decodeIntContentMap(data []byte) (map[int]Content, error) {
 	return out, nil
 }
 
-// marshalIntKeyMap serializes an integer-keyed map with string JSON keys.
+// marshalIntKeyMap serializes an integer-keyed map with string JSON keys;
+// a nil map serializes as an explicit null (Python's model_dump keeps the
+// key).
 func marshalIntKeyMap[V any](m map[int]V) ([]byte, error) {
 	if m == nil {
-		return nil, nil
+		return []byte("null"), nil
 	}
 	out := make(map[string]V, len(m))
 	for key, value := range m {
@@ -261,21 +302,20 @@ func marshalIntKeyMap[V any](m map[int]V) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// Request is the complete input for one decision model invocation: the
-// state to classify and the questions keyed by answer ID (Python's
-// ClassifierRequest). State is a string, JSON object, array, or LangChain
-// messages; standard media blocks may appear anywhere in it.
-type Request struct {
+// ClassifierRequest is the complete input for one decision model
+// invocation: the state to classify and the questions keyed by answer ID
+// (Python's ClassifierRequest). State is a string, JSON object, array, or
+// LangChain messages; standard media blocks may appear anywhere in it.
+type ClassifierRequest struct {
 	State     Content             `json:"state"`
 	Questions map[string]Question `json:"questions"`
 }
 
-// Validate checks every question's invariants and that at least one
-// question is present.
-func (r Request) Validate() error {
-	if len(r.Questions) == 0 {
-		return fmt.Errorf("decisions: request requires at least one question")
-	}
+// Validate checks every question's invariants. Python's ClassifierRequest
+// is a bare TypedDict with no runtime validation of its own — an empty
+// questions mapping reaches the provider as-is, and Go does not add a
+// rule here either.
+func (r ClassifierRequest) Validate() error {
 	for id, question := range r.Questions {
 		if err := question.Validate(); err != nil {
 			return fmt.Errorf("question %q: %w", id, err)
@@ -284,23 +324,25 @@ func (r Request) Validate() error {
 	return nil
 }
 
-// Response is the typed answers and metadata returned from one
-// classification request (Python's ClassifierResponse). Access every answer
-// through Answers, or the Nouls/Choices/Scores/Boxes views filtered by
-// answer type. Each mapping preserves the question IDs supplied to the
+// ClassifierResponse is the typed answers and metadata returned from one
+// classification request (Python's ClassifierResponse). Access every
+// answer through Answers, or the Nouls/Choices/Scores/Boxes views filtered
+// by answer type. Each mapping preserves the question IDs supplied to the
 // request.
-type Response struct {
+type ClassifierResponse struct {
 	// Model names the model that answered the request.
 	Model string `json:"model"`
 	// Answers holds all answers keyed by their original question IDs.
 	Answers map[string]Answer `json:"answers"`
 	// Usage reports token usage for the request, or nil when the provider
 	// did not report any. Partial usage is completed on decode: a missing
-	// count is 0 and total_tokens defaults to input+output.
-	Usage *messages.UsageMetadata `json:"usage,omitempty"`
+	// count is 0 and total_tokens defaults to input+output. The wire form
+	// keeps the key as an explicit null when unset (Python's model_dump).
+	Usage *messages.UsageMetadata `json:"usage"`
 	// RequestID is the provider request ID, useful when diagnosing a
-	// request with provider support.
-	RequestID string `json:"request_id,omitempty"`
+	// request with provider support; an empty value stays on the wire as
+	// an explicit null.
+	RequestID string `json:"request_id"`
 }
 
 // responseWire is the wire envelope; unknown fields are ignored.
@@ -312,22 +354,36 @@ type responseWire struct {
 }
 
 // UnmarshalResponse decodes a wire classifier response, rejecting unknown
-// answer types and completing partial usage.
-func UnmarshalResponse(data []byte) (Response, error) {
+// answer types and completing partial usage. The model and answers keys
+// are required (pydantic would reject their absence).
+func UnmarshalResponse(data []byte) (ClassifierResponse, error) {
+	var present struct {
+		Model   json.RawMessage `json:"model"`
+		Answers json.RawMessage `json:"answers"`
+	}
+	if err := json.Unmarshal(data, &present); err != nil {
+		return ClassifierResponse{}, fmt.Errorf("decisions: decode response: %w", err)
+	}
+	if len(present.Model) == 0 || string(present.Model) == "null" {
+		return ClassifierResponse{}, fmt.Errorf("decisions: response missing \"model\"")
+	}
+	if len(present.Answers) == 0 || string(present.Answers) == "null" {
+		return ClassifierResponse{}, fmt.Errorf("decisions: response missing \"answers\"")
+	}
 	var wire responseWire
 	if err := json.Unmarshal(data, &wire); err != nil {
-		return Response{}, fmt.Errorf("decisions: decode response: %w", err)
+		return ClassifierResponse{}, fmt.Errorf("decisions: decode response: %w", err)
 	}
 	answers := make(map[string]Answer, len(wire.Answers))
 	for id, raw := range wire.Answers {
 		answer, err := UnmarshalAnswer(raw)
 		if err != nil {
-			return Response{}, fmt.Errorf("answer %q: %w", id, err)
+			return ClassifierResponse{}, fmt.Errorf("answer %q: %w", id, err)
 		}
 		answers[id] = answer
 	}
 	completeUsage(wire.Usage)
-	return Response{
+	return ClassifierResponse{
 		Model:     wire.Model,
 		Answers:   answers,
 		Usage:     wire.Usage,
@@ -348,7 +404,7 @@ func completeUsage(usage *messages.UsageMetadata) {
 }
 
 // Nouls returns the binary answers keyed by their original question IDs.
-func (r Response) Nouls() map[string]NoulAnswer {
+func (r ClassifierResponse) Nouls() map[string]NoulAnswer {
 	out := map[string]NoulAnswer{}
 	for id, answer := range r.Answers {
 		if typed, ok := answer.(NoulAnswer); ok {
@@ -360,7 +416,7 @@ func (r Response) Nouls() map[string]NoulAnswer {
 
 // Choices returns the categorical answers keyed by their original question
 // IDs.
-func (r Response) Choices() map[string]ChoiceAnswer {
+func (r ClassifierResponse) Choices() map[string]ChoiceAnswer {
 	out := map[string]ChoiceAnswer{}
 	for id, answer := range r.Answers {
 		if typed, ok := answer.(ChoiceAnswer); ok {
@@ -371,7 +427,7 @@ func (r Response) Choices() map[string]ChoiceAnswer {
 }
 
 // Scores returns the ordinal answers keyed by their original question IDs.
-func (r Response) Scores() map[string]ScoreAnswer {
+func (r ClassifierResponse) Scores() map[string]ScoreAnswer {
 	out := map[string]ScoreAnswer{}
 	for id, answer := range r.Answers {
 		if typed, ok := answer.(ScoreAnswer); ok {
@@ -383,7 +439,7 @@ func (r Response) Scores() map[string]ScoreAnswer {
 
 // Boxes returns the localization answers keyed by their original question
 // IDs.
-func (r Response) Boxes() map[string]BoxAnswer {
+func (r ClassifierResponse) Boxes() map[string]BoxAnswer {
 	out := map[string]BoxAnswer{}
 	for id, answer := range r.Answers {
 		if typed, ok := answer.(BoxAnswer); ok {

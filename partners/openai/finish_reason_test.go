@@ -290,3 +290,66 @@ func TestResponsesUnknownStatusCoversDefault(t *testing.T) {
 		t.Fatalf("unknown status: %#v", fields)
 	}
 }
+
+// TestResponsesStreamIncompleteTerminal pins the response.incomplete
+// terminal event (base.py:5749-5759): it assembles the final message like
+// completed, with the incomplete_details.reason mapped onto the shared
+// finish fields.
+func TestResponsesStreamIncompleteTerminal(t *testing.T) {
+	server := sseServer(t,
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_i\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial\"}]}]}}\n\n")
+	recorder := callbacks.NewRecorder()
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
+	stream, err := model.Stream(t.Context(), nil, runnables.WithCallbacks(callbacks.NewManager(recorder)))
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	for {
+		_, ok, err := stream.Next(t.Context())
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if !ok {
+			break
+		}
+	}
+	var end messages.Message
+	for _, event := range recorder.Events() {
+		if event.Kind == callbacks.EventChatModelEnd {
+			if msg, ok := event.Output.(messages.Message); ok {
+				end = msg
+			}
+		}
+	}
+	md := end.ResponseMetadata
+	if md["finish_reason"] != "incomplete" || md["normalized_finish_reason"] != "length" {
+		t.Fatalf("incomplete finish fields: %#v", md)
+	}
+	if end.Content != "partial" {
+		t.Fatalf("content: %q", end.Content)
+	}
+}
+
+// TestResponsesEmptyRefusalBlockNormalizesRefusal pins the presence-based
+// refusal flag (base.py:5450-5453): a refusal block with empty text still
+// normalizes to refusal.
+func TestResponsesEmptyRefusalBlockNormalizesRefusal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"model":"gpt-test",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":""}]}],
+			"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+	model := NewChatModel(modelconfig.WithBaseURL(server.URL), modelconfig.WithModel("gpt-test"))
+	resp, err := model.Invoke(t.Context(), []messages.Message{messages.Human("go")})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if md := resp.ResponseMetadata; md["normalized_finish_reason"] != "refusal" {
+		t.Fatalf("empty-text refusal block: %#v", md)
+	}
+}

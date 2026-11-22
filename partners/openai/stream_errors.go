@@ -8,8 +8,8 @@ import "fmt"
 // carries the same retryable classification an HTTP 5xx gets, without
 // fabricating a status code.
 
-// transientStreamErrorCodes are in-band stream error codes that indicate a
-// transient backend failure (base.py _TRANSIENT_STREAM_ERROR_CODES).
+// transientStreamErrorCodes are the in-band stream error codes that
+// indicate a transient backend failure (base.py _TRANSIENT_STREAM_ERROR_CODES).
 var transientStreamErrorCodes = map[string]bool{
 	"server_error": true,
 }
@@ -22,7 +22,7 @@ type StreamServerError struct {
 	Message string
 	// Code is the error event's code (e.g. "server_error").
 	Code string
-	// Type is the error event's type spelling, when present.
+	// Type is the Chat Completions APIError type spelling, when present.
 	Type string
 	// Event is the stream event type that carried the error.
 	Event string
@@ -37,20 +37,34 @@ func (e *StreamServerError) Error() string {
 // retried request.
 func (e *StreamServerError) IsModelRetryable() bool { return true }
 
-// streamServerError builds the error for one in-band error event: a
-// transient code yields a retryable StreamServerError, anything else the
-// plain stream error as before (#41952).
-func streamServerError(eventType string, payload streamError) error {
-	if transientStreamErrorCodes[payload.Code] || transientStreamErrorCodes[payload.Type] {
-		return &StreamServerError{
-			Message: payload.Message,
-			Code:    payload.Code,
-			Type:    payload.Type,
-			Event:   eventType,
-		}
+// streamServerError builds the error for one Responses API in-band error:
+// the classification reads only the error code (base.py:5746 checks
+// chunk.code alone); a code prefixes the message (base.py:5745
+// f"{chunk.code}: {chunk.message}"). Anything else is the plain stream
+// error as before (#41952).
+func streamServerError(eventType, code, message string) error {
+	if transientStreamErrorCodes[code] {
+		return &StreamServerError{Message: message, Code: code, Event: eventType}
 	}
-	if payload.Message == "" {
+	if code != "" {
+		if message == "" {
+			return fmt.Errorf("openai stream error: %s", code)
+		}
+		return fmt.Errorf("openai stream error: %s: %s", code, message)
+	}
+	if message == "" {
 		return fmt.Errorf("openai stream error")
 	}
-	return fmt.Errorf("openai stream error: %s", payload.Message)
+	return fmt.Errorf("openai stream error: %s", message)
+}
+
+// chatCompletionsStreamError classifies an in-band error event on a Chat
+// Completions stream. The SDK-level check matches (e.code, e.type) against
+// the transient set (base.py:777-783), so both spellings count here; the
+// payload is nested ({"error": {"message", "code", "type"}}).
+func chatCompletionsStreamError(payload streamError) error {
+	if transientStreamErrorCodes[payload.Code] || transientStreamErrorCodes[payload.Type] {
+		return &StreamServerError{Message: payload.Message, Code: payload.Code, Type: payload.Type, Event: "chat.completions"}
+	}
+	return streamServerError("chat.completions", payload.Code, payload.Message)
 }

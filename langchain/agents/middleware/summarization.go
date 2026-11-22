@@ -71,7 +71,8 @@ type ModelProfileProvider interface {
 }
 
 // SummarizerFunc summarizes the buffered messages. The context arrives
-// marked as a middleware-internal call (callbacks.WithInternalCall), so a
+// marked as a middleware-internal call whose lc_source is "summarization"
+// (callbacks.WithInternalCallSource), so a
 // summarizer that forwards it to its model keeps the summary tokens out of
 // the messages stream projection (Python langchain #41579; the Go port marks
 // the call with a context token instead of a nostream tag).
@@ -130,7 +131,7 @@ func (m *SummarizationMiddleware) BeforeModel(ctx context.Context, state map[str
 		summary = "Previous conversation was too long to summarize."
 	} else {
 		prompt := strings.ReplaceAll(m.summaryPrompt(), "{messages}", bufferString(trimmed))
-		s, err := m.Summarize(callbacks.WithInternalCall(ctx), prompt, trimmed)
+		s, err := m.Summarize(callbacks.WithInternalCallSource(ctx, "summarization"), prompt, trimmed)
 		if err != nil {
 			if !errors.Is(err, lcerrors.ErrModelContextOverflow) {
 				return nil, err
@@ -142,7 +143,7 @@ func (m *SummarizationMiddleware) BeforeModel(ctx context.Context, state map[str
 			if !ok {
 				return nil, err
 			}
-			s, err = m.Summarize(callbacks.WithInternalCall(ctx), retryPrompt, trimmed)
+			s, err = m.Summarize(callbacks.WithInternalCallSource(ctx, "summarization"), retryPrompt, trimmed)
 			if err != nil {
 				return nil, err
 			}

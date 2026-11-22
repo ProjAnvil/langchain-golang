@@ -241,6 +241,9 @@ func TestCreateAgentTypeSafeModelRouterSwapsModelEndToEnd(t *testing.T) {
 	}
 }
 
+// autoModeQuestionID mirrors the middleware package's unexported question ID.
+const autoModeQuestionID = "is_risky"
+
 // stubDecisionModel answers every Invoke with canned answers (core
 // decisions.DecisionModel), for the generic middleware end-to-end tests.
 type stubDecisionModel struct {
@@ -248,8 +251,8 @@ type stubDecisionModel struct {
 	err     error
 }
 
-func (s *stubDecisionModel) Invoke(_ context.Context, _ decisions.Request, _ ...runnables.Option) (decisions.Response, error) {
-	return decisions.Response{Model: "stub", Answers: s.answers}, s.err
+func (s *stubDecisionModel) Invoke(_ context.Context, _ decisions.ClassifierRequest, _ ...runnables.Option) (decisions.ClassifierResponse, error) {
+	return decisions.ClassifierResponse{Model: "stub", Answers: s.answers}, s.err
 }
 
 // TestCreateAgentGenericModelRouterRoutesEndToEnd ports the upstream
@@ -318,7 +321,7 @@ func TestCreateAgentGenericAutoModeEndToEnd(t *testing.T) {
 				messages.AI("done"),
 			}}
 			classifier := &stubDecisionModel{answers: map[string]decisions.Answer{
-				agentsmw.AutoModeQuestionID: decisions.NoulAnswer{Noul: tc.probability},
+				autoModeQuestionID: decisions.NoulAnswer{Noul: tc.probability},
 			}}
 			auto, err := agentsmw.NewAutoModeMiddleware(classifier, []any{"echo"})
 			if err != nil {

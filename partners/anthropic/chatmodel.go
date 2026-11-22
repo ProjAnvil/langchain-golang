@@ -1129,7 +1129,7 @@ type contentBlock struct {
 	Source       map[string]any `json:"source,omitempty"`
 	CacheControl map[string]any `json:"cache_control,omitempty"`
 	Caller       map[string]any `json:"caller,omitempty"`
-	Thinking     string         `json:"thinking,omitempty"`
+	Thinking     *string        `json:"thinking,omitempty"`
 	Signature    string         `json:"signature,omitempty"`
 	Data         string         `json:"data,omitempty"`
 }
@@ -1264,8 +1264,12 @@ func (r messagePayload) toMessage() messages.Message {
 				Args: content.Input,
 			})
 		case "thinking":
+			thinking := ""
+			if content.Thinking != nil {
+				thinking = *content.Thinking
+			}
 			blocks = append(blocks, messages.ReasoningBlock{
-				Reasoning: content.Thinking,
+				Reasoning: thinking,
 				Extras:    map[string]any{"signature": content.Signature},
 			})
 		case "redacted_thinking":
