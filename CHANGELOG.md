@@ -2,6 +2,25 @@
 
 All notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.14.2] - 2026-11-22
+
+### Added
+
+- core/retrievers: `MultiVectorRetriever` with `similarity`, `mmr`, and `similarity_score_threshold` search types, configurable `id_key` and `search_kwargs`; `MergerRetriever` (round-robin merge), `TimeWeightedVectorStoreRetriever` (time-decayed salience rescoring), `RePhraseQueryRetriever` (single LLM query rewrite), and `SelfQueryRetriever` with an injectable structured-query translator. Python's vendor-specific builtin translators are not ported.
+- core/retrievers: pure-local document compressors — `LLMChainExtractor`, `LLMChainFilter`, `EmbeddingsFilter`, `CrossEncoderReranker` with a `CrossEncoder` interface, and `LLMListwiseRerank`. All satisfy `DocumentCompressor` and work with `ContextualCompressionRetriever` and `documents.CompressorPipeline`.
+- core/structuredquery: structured-query AST (`Comparison`, `Operation`, `StructuredQuery`), visitor dispatch, allowed operator/comparator validation, and a default visitor that emits `core/vectorstores` filter maps.
+- core/outputparser: `BooleanOutputParser`, `NoOutputParser`, incremental `StreamingXMLParser`, streaming numbered/markdown list parsers with `DropLastN`, `PydanticOutputFunctionsParser`, `PydanticAttrOutputFunctionsParser`, and `PydanticToolsParser` with strict tool-call error aggregation.
+- core/mustache: standalone Mustache engine with sections, inverted sections, partials, delimiter changes, unescaped tags, standalone-tag whitespace handling, and HTML escaping.
+- core/prompts: f-string, Mustache, and Jinja2 formatter mapping, template variable extraction and validation, `MustacheSchema`, `FormatDocument`, and `GetDocumentInfo`. The Jinja2 formatter implements a documented subset (variables, `if`/`else`, `for`, `lower`/`upper`/`default`) and returns an explicit error for unsupported constructs.
+- core/exampleselectors: `MaxMarginalRelevanceExampleSelector` with `FromExamples`, `SortedValues`, and `ExampleToText`.
+- core/indexing: deterministic `HashStringToUUID` (UUIDv5), `HashString`, `HashNestedDict`, `SourceIDAssigner`, and `Batch`.
+- core/utils: `StrictFormatter`, `DictIntOp`, `StringifyDict`, `CommaList`, `SanitizeForPostgres`, ANSI text helpers, `GetFromDictOrEnv`, `EnvVarIsSet`, `ParseAndCheckJSONMarkdown`, `UUID7` (RFC 9562), thread-safe `Tee` / `Safetee` / `AsyncTee` / `BatchIterate`, Google-style docstring parsing, `ToolExampleToMessages`, and Go-idiomatic equivalents of `xor_args`, `mock_now`, `guard_import`, `check_package_version`, and Pydantic subset-model helpers.
+- langchain/agents/middleware: process-level default trace policy with call-time resolution.
+
+### Changed
+
+- 66 new Go files and 305 new unit tests. `go test ./...`, `go vet ./...`, and `gofmt -l` are clean.
+
 ## [0.14.1] - 2026-11-18
 
 ### Added
