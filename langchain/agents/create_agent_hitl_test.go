@@ -1019,3 +1019,89 @@ func TestCreateAgentSummaryStaysOffMessagesStream(t *testing.T) {
 		t.Fatal("the agent's own answer tokens must reach the messages stream")
 	}
 }
+
+// TestCreateAgentHITLPerCallInterrupts ports the upstream per-call mode
+// (test_per_call_same_tool_twice_routes_each_answer_to_its_own_call):
+// per_call raises one interrupt per reviewable call — each carrying a
+// single-call HITLRequest — and a resume map keyed by interrupt ID routes
+// each answer to its own call.
+func TestCreateAgentHITLPerCallInterrupts(t *testing.T) {
+	var toolRuns int
+	model := &sequenceModel{responses: []messages.Message{
+		{Role: messages.RoleAI, ToolCalls: []messages.ToolCall{
+			hitlEchoToolCall("call_1", "one"),
+			hitlEchoToolCall("call_2", "two"),
+		}},
+		messages.AI("done"),
+	}}
+	saver := checkpoint.NewMemorySaver()
+	agent, err := CreateAgent(model, []coretools.Tool{newHitlTestTool(t, &toolRuns)},
+		WithAgentMiddleware(middleware.NewInterruptHumanInTheLoopMiddleware(
+			map[string]middleware.InterruptConfig{
+				"echo": {AllowedDecisions: []middleware.DecisionType{
+					middleware.DecisionApprove, middleware.DecisionReject,
+				}},
+			},
+			middleware.WithInterruptMode(middleware.InterruptModePerCall),
+		)),
+		WithAgentCheckpointer(saver),
+	)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	// Per-call pauses one call at a time: the first interrupt carries only
+	// call_1, its answer unblocks the node until the second interrupt
+	// surfaces call_2.
+	_, interrupts, err := agent.InvokeWithStateOptions(t.Context(),
+		[]messages.Message{messages.Human("hi")}, graphpkg.Options{ThreadID: "t1"})
+	if err != nil || len(interrupts) != 1 {
+		t.Fatalf("first invoke: %v interrupts=%+v", err, interrupts)
+	}
+	first, decodeErr := middleware.HITLRequestFromInterrupt(interrupts[0])
+	if decodeErr != nil || len(first.ActionRequests) != 1 || first.ActionRequests[0].Args["tool_input"] != "one" {
+		t.Fatalf("first interrupt must carry call_1 only: %#v (%v)", first.ActionRequests, decodeErr)
+	}
+	_, interrupts, err = agent.Resume(t.Context(), graphpkg.Options{
+		ThreadID: "t1",
+		// The per-call resume shape: the bare decision dict.
+		Resume: map[string]any{interrupts[0].ID: map[string]any{"type": "approve"}},
+	})
+	if err != nil || len(interrupts) != 1 {
+		t.Fatalf("second pause: %v interrupts=%+v", err, interrupts)
+	}
+	second, decodeErr := middleware.HITLRequestFromInterrupt(interrupts[0])
+	if decodeErr != nil || len(second.ActionRequests) != 1 || second.ActionRequests[0].Args["tool_input"] != "two" {
+		t.Fatalf("second interrupt must carry call_2 only: %#v (%v)", second.ActionRequests, decodeErr)
+	}
+	values, _, err := agent.Resume(t.Context(), graphpkg.Options{
+		ThreadID: "t1",
+		Resume:   map[string]any{interrupts[0].ID: map[string]any{"type": "reject"}},
+	})
+	if err != nil {
+		t.Fatalf("final resume: %v", err)
+	}
+	out, _ := values["messages"].([]messages.Message)
+	if toolRuns != 1 {
+		t.Fatalf("only the approved call may execute, runs=%d", toolRuns)
+	}
+	var toolMessages []messages.Message
+	for _, msg := range out {
+		if msg.Role == messages.RoleTool {
+			toolMessages = append(toolMessages, msg)
+		}
+	}
+	if len(toolMessages) != 2 {
+		t.Fatalf("expected one executed and one rejected tool message, got %#v", toolMessages)
+	}
+	for _, msg := range toolMessages {
+		notification := messages.GetNotificationMetadata(msg)
+		if msg.ToolCallID == "call_1" {
+			if notification != nil {
+				t.Fatalf("approved call must be untagged: %#v", notification)
+			}
+		} else if notification == nil || notification.Source != "hitl_interrupt_decision" ||
+			notification.Data["decision"] != "reject" {
+			t.Fatalf("rejected call tagging: %#v", notification)
+		}
+	}
+}

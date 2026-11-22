@@ -61,6 +61,7 @@ func NewModelRouterMiddleware(
 	choices map[string]ModelChoice,
 	instructions any,
 ) (*ModelRouterMiddleware, error) {
+	warnBetaMiddleware("ModelRouterMiddleware")
 	if classifier == nil {
 		return nil, fmt.Errorf("middleware: ModelRouterMiddleware requires a classifier")
 	}

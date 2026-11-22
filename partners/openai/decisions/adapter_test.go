@@ -1,8 +1,11 @@
 package decisions
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/projanvil/langchain-golang/core/callbacks"
 	coredecisions "github.com/projanvil/langchain-golang/core/decisions"
 )
 
@@ -70,5 +73,49 @@ func TestOpenAIResponseToCore(t *testing.T) {
 	}
 	if core.Usage == nil || core.Usage.TotalTokens != 5 {
 		t.Fatalf("usage: %#v", core.Usage)
+	}
+}
+
+// TestOpenAIAdapterEmitsDecisionRunEvents ports the BaseDecisionModel run
+// semantics (#41765) for the OpenAI adapter: ls_provider/ls_model_name on
+// the chat-model start event, usage on the end event.
+func TestOpenAIAdapterEmitsDecisionRunEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"model": "gpt-6-luna",
+			"answers": [{"name": "q", "type": "predicate", "probability": 0.5}],
+			"usage": {"input_tokens": 7, "output_tokens": 1}
+		}`))
+	}))
+	defer server.Close()
+	client := &Client{Model: "gpt-6-luna", APIKey: "k", BaseURL: server.URL}
+	adapter := client.AsDecisionModel()
+
+	recorder := callbacks.NewRecorder()
+	ctx := callbacks.ContextWithManager(t.Context(), callbacks.NewManager(recorder))
+	if _, err := adapter.Invoke(ctx, coredecisions.Request{
+		State:     "hello",
+		Questions: map[string]coredecisions.Question{"q": coredecisions.Noul{Instructions: "risky?"}},
+	}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	var start, end bool
+	for _, event := range recorder.Events() {
+		switch event.Kind {
+		case callbacks.EventChatModelStart:
+			start = true
+			if event.Metadata["ls_provider"] != "openai" || event.Metadata["ls_model_name"] != "gpt-6-luna" {
+				t.Fatalf("start metadata: %#v", event.Metadata)
+			}
+		case callbacks.EventChatModelEnd:
+			end = true
+			usage, _ := event.Metadata["usage_metadata"].(map[string]any)
+			if usage["total_tokens"] != 8 {
+				t.Fatalf("end usage metadata: %#v", event.Metadata)
+			}
+		}
+	}
+	if !start || !end {
+		t.Fatalf("run events: start=%v end=%v", start, end)
 	}
 }

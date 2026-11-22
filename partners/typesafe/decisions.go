@@ -14,6 +14,7 @@ import (
 
 	"github.com/projanvil/langchain-golang/core/decisions"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
 // AsDecisionModel adapts the classifier onto the core
@@ -29,6 +30,9 @@ type classifierAdapter struct {
 }
 
 // Invoke converts the core request, classifies, and converts the response.
+// The classification surfaces as a chat-model run carrying the TypeSafe
+// provider identity and the request's token usage (#41765 base-run
+// semantics; tracing failures never fail the classification).
 func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.Request) (decisions.Response, error) {
 	if err := request.Validate(); err != nil {
 		return decisions.Response{}, err
@@ -41,11 +45,15 @@ func (a *classifierAdapter) Invoke(ctx context.Context, request decisions.Reques
 		}
 		questions[id] = converted
 	}
+	providerutil.EmitDecisionStart(ctx, provider, a.classifier.Model, request)
 	response, err := a.classifier.Invoke(ctx, Request{State: request.State, Questions: questions})
 	if err != nil {
+		providerutil.EmitDecisionEnd(ctx, provider, a.classifier.Model, nil, nil, err)
 		return decisions.Response{}, err
 	}
-	return responseToCore(response), nil
+	core := responseToCore(response)
+	providerutil.EmitDecisionEnd(ctx, provider, a.classifier.Model, core, core.Usage, nil)
+	return core, nil
 }
 
 // questionToTypesafe maps one core question onto the TypeSafe vocabulary.

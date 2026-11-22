@@ -3,7 +3,9 @@ package middleware
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/projanvil/langchain-golang/core/decisions"
@@ -224,4 +226,42 @@ func TestGenericModelRouterNoHumanDoesNotClassify(t *testing.T) {
 	if len(classifier.requests) != 0 {
 		t.Fatalf("classifier must not be called: %#v", classifier.requests)
 	}
+}
+
+// TestBetaWarningEmittedOnce ports the upstream
+// test_beta_warning_is_emitted_once: warning twice through the shared
+// channel (the constructors use the same helper) yields exactly one line
+// per class name. The constructors' fixed class names may already have
+// fired their process-level once in earlier tests, so this drives the
+// helper with a fresh name.
+func TestBetaWarningEmittedOnce(t *testing.T) {
+	var lines []string
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&sliceWriter{lines: &lines}, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	warnBetaMiddleware("TestBetaOnceMiddleware")
+	warnBetaMiddleware("TestBetaOnceMiddleware")
+	count := 0
+	for _, line := range lines {
+		if strings.Contains(line, "`TestBetaOnceMiddleware` is in beta") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("beta warnings: %d (lines=%q)", count, lines)
+	}
+	if !strings.Contains(lines[0], "It is actively being worked on, so the API may change.") {
+		t.Fatalf("warning text: %q", lines[0])
+	}
+}
+
+// sliceWriter collects log lines for assertions.
+type sliceWriter struct {
+	lines *[]string
+}
+
+func (w *sliceWriter) Write(p []byte) (int, error) {
+	*w.lines = append(*w.lines, string(p))
+	return len(p), nil
 }

@@ -211,3 +211,16 @@ func TestHumanInTheLoopMiddlewareDecisionErrorPropagates(t *testing.T) {
 		t.Fatalf("expected decision processing error, got %v", err)
 	}
 }
+
+// TestDecodeHITLResponseBareDecisionMap pins the per-call resume shape
+// (upstream per-call resume passes the bare decision dict): a map with a
+// "type" key decodes as a single decision.
+func TestDecodeHITLResponseBareDecisionMap(t *testing.T) {
+	decisions, err := DecodeHITLResponse(map[string]any{"type": "approve"})
+	if err != nil || len(decisions) != 1 || decisions[0].Type != DecisionApprove {
+		t.Fatalf("bare decision map: %#v %v", decisions, err)
+	}
+	if _, err := DecodeHITLResponse(map[string]any{"unrelated": 1}); err == nil {
+		t.Fatal("map without decisions or type must fail")
+	}
+}

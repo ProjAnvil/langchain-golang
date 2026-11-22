@@ -81,6 +81,7 @@ func WithAutoModeCriteria(criteria *decisions.NoulCriteria) AutoModeOption {
 // default (auto_mode.py's __init__ always passes the criteria key, so the
 // config Field default never applies).
 func NewAutoModeMiddleware(classifier decisions.DecisionModel, toolList []any, opts ...AutoModeOption) (*AutoModeMiddleware, error) {
+	warnBetaMiddleware("AutoModeMiddleware")
 	if classifier == nil {
 		return nil, fmt.Errorf("middleware: AutoModeMiddleware requires a classifier")
 	}

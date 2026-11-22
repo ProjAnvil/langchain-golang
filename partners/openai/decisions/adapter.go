@@ -15,6 +15,7 @@ import (
 
 	coredecisions "github.com/projanvil/langchain-golang/core/decisions"
 	"github.com/projanvil/langchain-golang/core/messages"
+	"github.com/projanvil/langchain-golang/partners/internal/providerutil"
 )
 
 // AsDecisionModel adapts the client onto the core decisions.DecisionModel
@@ -32,6 +33,9 @@ type clientAdapter struct {
 }
 
 // Invoke converts the core request, classifies, and converts the response.
+// The classification surfaces as a chat-model run carrying the OpenAI
+// provider identity and the request's token usage (#41765 base-run
+// semantics; tracing failures never fail the classification).
 func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.Request) (coredecisions.Response, error) {
 	if err := request.Validate(); err != nil {
 		return coredecisions.Response{}, err
@@ -44,11 +48,15 @@ func (a *clientAdapter) Invoke(ctx context.Context, request coredecisions.Reques
 		}
 		questions[id] = converted
 	}
+	providerutil.EmitDecisionStart(ctx, "openai", a.client.Model, request)
 	response, err := a.client.Invoke(ctx, Request{Input: request.State, Questions: questions})
 	if err != nil {
+		providerutil.EmitDecisionEnd(ctx, "openai", a.client.Model, nil, nil, err)
 		return coredecisions.Response{}, err
 	}
-	return responseToCore(response), nil
+	core := responseToCore(response)
+	providerutil.EmitDecisionEnd(ctx, "openai", a.client.Model, core, core.Usage, nil)
+	return core, nil
 }
 
 // questionToOpenAI maps one core question onto the Decisions API

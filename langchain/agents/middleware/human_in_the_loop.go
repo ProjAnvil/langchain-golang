@@ -85,6 +85,34 @@ type HumanInTheLoopMiddleware struct {
 	// DefaultEditNotice; an empty string disables the notice entirely
 	// (WithEditNotice("")). Python langchain #40463.
 	EditNotice *string
+	// interruptMode selects how interrupt-mode review pauses:
+	// InterruptModeBatched (default) raises one interrupt carrying every
+	// reviewable call; InterruptModePerCall raises one interrupt per
+	// reviewable call, each answered by its own resume value (Python
+	// human_in_the_loop.py InterruptMode).
+	interruptMode InterruptMode
+}
+
+// InterruptMode selects how the interrupt-mode middleware pauses for human
+// decisions (Python human_in_the_loop.py InterruptMode).
+type InterruptMode string
+
+const (
+	// InterruptModeBatched pauses once with every reviewable call packed
+	// into a single HITLRequest; one HITLResponse answers all of them. This
+	// is the default and the historical Go behavior.
+	InterruptModeBatched InterruptMode = "batched"
+	// InterruptModePerCall raises one interrupt per reviewable call, each
+	// carrying a single-call HITLRequest and answered by its own bare
+	// decision resume value ({interrupt id: {"type": ...}} for several,
+	// a scalar for one).
+	InterruptModePerCall InterruptMode = "per_call"
+)
+
+// WithInterruptMode sets the interrupt-mode middleware's pause granularity
+// (see InterruptMode). Ignored by the synchronous Decide mode.
+func WithInterruptMode(mode InterruptMode) HITLOption {
+	return func(m *HumanInTheLoopMiddleware) { m.interruptMode = mode }
 }
 
 func NewHumanInTheLoopMiddleware(interruptOn map[string]InterruptConfig, decide HumanDecisionFunc) *HumanInTheLoopMiddleware {
@@ -191,6 +219,16 @@ func DecodeHITLResponse(v any) ([]Decision, error) {
 			raw, ok = resp["Decisions"]
 		}
 		if !ok {
+			// A bare decision map ({"type": ...}) is the per-call resume
+			// answer shape: one interrupt, one answer (Python per-call
+			// resume passes the decision dict directly).
+			if _, hasType := resp["type"]; hasType {
+				decision, err := decodeDecision(resp)
+				if err != nil {
+					return nil, err
+				}
+				return []Decision{decision}, nil
+			}
 			return nil, fmt.Errorf("cannot decode HITL response from map without a \"decisions\" key")
 		}
 		return decodeDecisionList(raw)
@@ -423,6 +461,21 @@ func (m *HumanInTheLoopMiddleware) AfterModelNode(ctx context.Context, state map
 		// Nothing to review this round: drop any earlier round's edits so
 		// they cannot apply to later tool calls (Python parity).
 		return clearStaleEditedToolCalls(state), nil
+	}
+	if m.interruptMode == InterruptModePerCall {
+		decisions := make([]Decision, 0, len(actionRequests))
+		for i := range actionRequests {
+			response := graphpkg.Interrupt(ctx, hitlRequestValue(HITLRequest{
+				ActionRequests: []ActionRequest{actionRequests[i]},
+				ReviewConfigs:  []ReviewConfig{reviewConfigs[i]},
+			}))
+			single, err := DecodeHITLResponse(response)
+			if err != nil {
+				return nil, fmt.Errorf("per-call decision %d: %w", i, err)
+			}
+			decisions = append(decisions, single...)
+		}
+		return m.applyHITLDecisions(lastAI, interruptIndices, decisions)
 	}
 	response := graphpkg.Interrupt(ctx, hitlRequestValue(HITLRequest{
 		ActionRequests: actionRequests,
